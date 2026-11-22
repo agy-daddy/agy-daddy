@@ -1,0 +1,9 @@
+Agy-Daddy Host (@agy-daddy/host)
+
+This project is derived from and builds upon:
+- iamvicliu/antigravity-suite (baseline commit c349284)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)
+
+Zero-patch architecture, CDP injection, and runtime concepts incorporate work from
+antigravity-suite and its referenced upstream projects. Each component plugin
+carries its own baseline.json and upstream attribution where applicable.

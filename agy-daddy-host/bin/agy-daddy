@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH="$LINK_TARGET" ;;
+    *) SCRIPT_PATH="$(dirname "$SCRIPT_PATH")/$LINK_TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+HOST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLI_JS="$HOST_DIR/src/cli.js"
+
+probe_runtime() {
+  local bin="$1"
+  local is_electron="${2:-0}"
+  [ -x "$bin" ] || return 1
+  if [ "$is_electron" = "1" ]; then
+    ELECTRON_RUN_AS_NODE=1 "$bin" -e '
+      const [maj, min] = process.versions.node.split(".").map(Number);
+      if (maj < 22 || (maj === 22 && min < 4)) process.exit(1);
+      if (typeof WebSocket !== "function" || typeof fetch !== "function") process.exit(1);
+    ' >/dev/null 2>&1
+  else
+    env -u ELECTRON_RUN_AS_NODE "$bin" -e '
+      const [maj, min] = process.versions.node.split(".").map(Number);
+      if (maj < 22 || (maj === 22 && min < 4)) process.exit(1);
+      if (typeof WebSocket !== "function" || typeof fetch !== "function") process.exit(1);
+    ' >/dev/null 2>&1
+  fi
+}
+
+pick_and_exec() {
+  local cand
+  # 1. 显式环境变量 AGY_DADDY_NODE
+  if [ -n "${AGY_DADDY_NODE:-}" ] && probe_runtime "$AGY_DADDY_NODE" "${AGY_DADDY_NODE_ELECTRON:-0}"; then
+    if [ "${AGY_DADDY_NODE_ELECTRON:-0}" = "1" ]; then
+      exec env ELECTRON_RUN_AS_NODE=1 "$AGY_DADDY_NODE" "$CLI_JS" "$@"
+    else
+      exec env -u ELECTRON_RUN_AS_NODE "$AGY_DADDY_NODE" "$CLI_JS" "$@"
+    fi
+  fi
+
+  # 2. 版本管理器 (nvm / fnm / volta)
+  for cand in $(ls -r "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null || true) \
+              $(ls -r "$HOME"/.fnm/node-versions/*/installation/bin/node 2>/dev/null || true) \
+              "$HOME/.volta/bin/node"; do
+    if probe_runtime "$cand" 0; then
+      exec env -u ELECTRON_RUN_AS_NODE "$cand" "$CLI_JS" "$@"
+    fi
+  done
+
+  # 3. PATH 中的 node（经过存活与版本探针，自动跳过动态库损坏的坏 Node）
+  if command -v node >/dev/null 2>&1; then
+    cand="$(command -v node)"
+    if probe_runtime "$cand" 0; then
+      exec env -u ELECTRON_RUN_AS_NODE "$cand" "$CLI_JS" "$@"
+    fi
+  fi
+
+  # 4. 回退至 Antigravity 自带 Electron Helper (ELECTRON_RUN_AS_NODE=1)
+  for cand in \
+    "/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper" \
+    "$HOME/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper"; do
+    if probe_runtime "$cand" 1; then
+      exec env ELECTRON_RUN_AS_NODE=1 "$cand" "$CLI_JS" "$@"
+    fi
+  done
+
+  echo "❌ 未找到可用的 Node.js (>=22.4) 或 Antigravity Electron Helper 运行时。" >&2
+  exit 1
+}
+
+pick_and_exec "$@"

@@ -1,0 +1,34 @@
+{
+  "name": "@agy-daddy/host",
+  "version": "1.0.0",
+  "description": "Zero-patch CDP plugin host and open extensibility foundation for Google Antigravity Desktop.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-host"
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  },
+  "main": "./src/index.js",
+  "bin": {
+    "agy-daddy": "./bin/agy-daddy"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./sdk": "./sdk/index.js"
+  },
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.js",
+    "pretest": "node scripts/build-renderer.js",
+    "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
+  },
+  "keywords": [
+    "antigravity",
+    "agy-daddy",
+    "plugin-host",
+    "cdp",
+    "extensibility"
+  ]
+}

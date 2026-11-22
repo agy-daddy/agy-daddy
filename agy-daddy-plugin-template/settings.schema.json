@@ -1,0 +1,17 @@
+{
+  "title": { "zh-CN": "示例插件设置", "en": "Sample Plugin Settings" },
+  "fields": [
+    {
+      "key": "greeting",
+      "type": "string",
+      "default": "Hello Agy-Daddy",
+      "label": { "zh-CN": "欢迎语", "en": "Greeting text" }
+    },
+    {
+      "key": "showBadge",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "显示顶栏示例胶囊", "en": "Show topbar sample badge" }
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "title": { "zh-CN": "CLI 终端启动器", "en": "CLI Terminal Launcher" },
+  "fields": [
+    {
+      "key": "terminalApp",
+      "type": "enum",
+      "default": "auto",
+      "options": [
+        { "value": "auto", "label": "自动探测" },
+        { "value": "terminal", "label": "macOS Terminal.app" },
+        { "value": "iterm2", "label": "iTerm2" },
+        { "value": "ghostty", "label": "Ghostty" },
+        { "value": "warp", "label": "Warp" },
+        { "value": "rex", "label": "Rex" },
+        { "value": "wezterm", "label": "WezTerm" },
+        { "value": "tmux", "label": "tmux" },
+        { "value": "wt", "label": "Windows Terminal" },
+        { "value": "powershell", "label": "PowerShell" }
+      ],
+      "label": { "zh-CN": "目标终端 / 多路复用器", "en": "Target terminal / multiplexer" }
+    },
+    {
+      "key": "customTerminalPath",
+      "type": "string",
+      "default": "",
+      "label": { "zh-CN": "自定义终端可执行路径", "en": "Custom terminal path" }
+    },
+    {
+      "key": "cliMuxHost",
+      "type": "string",
+      "default": "",
+      "label": { "zh-CN": "SSH 多路复用远端主机", "en": "SSH mux host" }
+    },
+    {
+      "key": "cliDefaultModel",
+      "type": "string",
+      "default": "",
+      "label": { "zh-CN": "默认 CLI 模型", "en": "Default CLI model" }
+    },
+    {
+      "key": "cliSkipPermissions",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "启动时附加跳过权限参数", "en": "Skip permissions on launch" }
+    }
+  ]
+}

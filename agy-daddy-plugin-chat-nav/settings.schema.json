@@ -1,0 +1,29 @@
+{
+  "title": { "zh-CN": "对话栏增强", "en": "Chat Navigation" },
+  "fields": [
+    {
+      "key": "showFloatDock",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "显示右侧悬浮导航条", "en": "Show floating navigation dock" }
+    },
+    {
+      "key": "keepThinkingExpanded",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "锁定思考块防止宿主自动折叠", "en": "Keep thinking blocks expanded" }
+    },
+    {
+      "key": "enableInlineFileEditor",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "启用产物文件头内联编辑", "en": "Enable inline file editor" }
+    },
+    {
+      "key": "enableCmdClickLinks",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "启用 Cmd/Ctrl+点击安全打开外链", "en": "Enable Cmd/Ctrl+click external links" }
+    }
+  ]
+}

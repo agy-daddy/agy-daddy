@@ -1,0 +1,8 @@
+{
+  "source": "iamvicliu/antigravity-suite",
+  "absorbedSha": "c349284",
+  "paths": [
+    "antigravity-hans-overlay.js",
+    "src/i18n/zh-CN.json"
+  ]
+}

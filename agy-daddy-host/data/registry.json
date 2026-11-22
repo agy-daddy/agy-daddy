@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "organization": "agy-daddy",
+  "sourceBaseline": {
+    "repo": "iamvicliu/antigravity-suite",
+    "absorbedSha": "c349284"
+  },
+  "plugins": [
+    {
+      "shortName": "legacy-suite",
+      "id": "agy-daddy.legacy-suite",
+      "name": "Legacy Suite 兼容桥接插件",
+      "layer": 1,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-host/plugins/legacy-suite",
+      "bundledPath": "plugins/legacy-suite",
+      "npmPackage": "@agy-daddy/plugin-legacy-suite",
+      "description": "绞杀者过渡期兼容层：零回退加载 antigravity-suite 既有能力，支持按模块掩码逐步退役"
+    },
+    {
+      "shortName": "proxy",
+      "id": "agy-daddy.proxy",
+      "name": "免重启网络代理网关",
+      "layer": 1,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-proxy",
+      "npmPackage": "@agy-daddy/plugin-proxy",
+      "description": "本地固定转发网关 (127.0.0.1:18766)，支持免重启热切上游/直连/绕过规则与连通性分层探测"
+    },
+    {
+      "shortName": "zh-cn",
+      "id": "agy-daddy.zh-cn",
+      "name": "客户端中文汉化",
+      "layer": 1,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-zh-cn",
+      "npmPackage": "@agy-daddy/plugin-zh-cn",
+      "description": "界面全量词典与正则汉化、中英文无重启回退、思考与会话标题零 Token 翻译"
+    },
+    {
+      "shortName": "cli",
+      "id": "agy-daddy.cli",
+      "name": "CLI 终端启动器",
+      "layer": 1,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-cli",
+      "npmPackage": "@agy-daddy/plugin-cli",
+      "description": "顶栏 CLI 胶囊与多平台/多复用器（Rex/WezTerm/tmux）终端一键启动"
+    },
+    {
+      "shortName": "context",
+      "id": "agy-daddy.context",
+      "name": "上下文胶囊与面板",
+      "layer": 2,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-context",
+      "npmPackage": "@agy-daddy/plugin-context",
+      "description": "顶栏上下文圆环与测速、上下文与附件审计面板、底部实时能量胶囊"
+    },
+    {
+      "shortName": "usage",
+      "id": "agy-daddy.usage",
+      "name": "用量胶囊与面板",
+      "layer": 2,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-usage",
+      "npmPackage": "@agy-daddy/plugin-usage",
+      "description": "顶栏累计用量胶囊、52 周多维度热力图、API 参考费用折算与订阅套餐管理"
+    },
+    {
+      "shortName": "chat-nav",
+      "id": "agy-daddy.chat-nav",
+      "name": "对话栏增强",
+      "layer": 2,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-chat-nav",
+      "npmPackage": "@agy-daddy/plugin-chat-nav",
+      "description": "右侧悬浮导航（顶/底/上下轮/思考展开与防折叠）、内联文件编辑器与 Cmd+外链"
+    },
+    {
+      "shortName": "quota",
+      "id": "agy-daddy.quota",
+      "name": "配额胶囊与面板",
+      "layer": 3,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-quota",
+      "npmPackage": "@agy-daddy/plugin-quota",
+      "description": "顶栏 Gemini/Claude 配额双池胶囊与 5h/周倒计时详情浮窗"
+    },
+    {
+      "shortName": "composer",
+      "id": "agy-daddy.composer",
+      "name": "输入框增强",
+      "layer": 3,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-composer",
+      "npmPackage": "@agy-daddy/plugin-composer",
+      "description": "快捷提示词栏、幽灵追问补全、提示词优化、240K 自动压缩与 Auto-Accept/高危预警"
+    },
+    {
+      "shortName": "remote",
+      "id": "agy-daddy.remote",
+      "name": "远程增强",
+      "layer": 4,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-remote",
+      "npmPackage": "@agy-daddy/plugin-remote",
+      "description": "18765 手机极速 PWA 服务、四通道/Cloudflare 隧道、多浏览器隔离与顶栏扫码浮窗"
+    }
+  ]
+}

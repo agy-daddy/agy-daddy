@@ -1,0 +1,17 @@
+{
+  "antigravityVersion": "2.32.1",
+  "capturedAt": "2026-11-21T00:00:00Z",
+  "sanitized": true,
+  "nodes": [
+    { "tag": "div", "attrs": { "data-testid": "toggle-aux-sidebar" } },
+    { "tag": "div", "attrs": { "data-testid": "agent-input-box" } },
+    { "tag": "div", "attrs": { "contenteditable": "true" } },
+    { "tag": "button", "attrs": { "data-testid": "input-send-button" } },
+    { "tag": "div", "attrs": { "data-testid": "autoscroll-viewport" } },
+    { "tag": "div", "attrs": { "data-testid": "turn-cards-container" } },
+    { "tag": "button", "attrs": { "data-testid": "thinking-collapsible-trigger" } },
+    { "tag": "button", "attrs": { "data-testid": "agent-response" } },
+    { "tag": "div", "attrs": { "data-testid": "conversation-row-sidebar" } },
+    { "tag": "div", "attrs": { "aria-label": "File Viewer header" } }
+  ]
+}

@@ -1,0 +1,6 @@
+Agy-Daddy Chat Navigation Plugin (@agy-daddy/plugin-chat-nav)
+
+This project incorporates floating chat navigation, thinking auto-collapse guard,
+inline file editor, and safe link opening logic derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: ag-enhancer-overlay.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

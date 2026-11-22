@@ -1,0 +1,51 @@
+{
+  "title": { "zh-CN": "手机远程控制台设置", "en": "Mobile Remote Console" },
+  "fields": [
+    {
+      "key": "allowRemoteWrite",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "允许远程写操作（默认关闭，仅只读快照）", "en": "Allow remote write actions (default OFF, read-only)" }
+    },
+    {
+      "key": "loopback",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "开启本机回环监听 (127.0.0.1)", "en": "Enable loopback listener (127.0.0.1)" }
+    },
+    {
+      "key": "lan",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "暴露局域网访问通道（默认关闭）", "en": "Expose LAN access channel (default OFF)" }
+    },
+    {
+      "key": "tailscale",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "启用 Tailscale 组网探测（默认关闭）", "en": "Enable Tailscale channel detection (default OFF)" }
+    },
+    {
+      "key": "bonjour",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "启用 Bonjour (.local) 局域网发现（默认关闭）", "en": "Enable Bonjour (.local) discovery (default OFF)" }
+    },
+    {
+      "key": "cloudflare",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "启用 Cloudflare Tunnel 公网穿透（默认关闭）", "en": "Enable Cloudflare Tunnel (default OFF)" }
+    },
+    {
+      "key": "tunnelMode",
+      "type": "enum",
+      "default": "quick",
+      "options": [
+        { "value": "quick", "label": { "zh-CN": "临时免登录隧道 (Quick)", "en": "Quick Tunnel" } },
+        { "value": "named", "label": { "zh-CN": "固定域名 Token 隧道 (Named)", "en": "Named Tunnel (Token)" } }
+      ],
+      "label": { "zh-CN": "Cloudflare 隧道模式", "en": "Cloudflare Tunnel Mode" }
+    }
+  ]
+}

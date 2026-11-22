@@ -1,0 +1,47 @@
+{
+  "title": { "zh-CN": "网络代理网关", "en": "Proxy Gateway" },
+  "fields": [
+    {
+      "key": "gatewayEnabled",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "启用本地固定转发网关", "en": "Enable local forwarding gateway" }
+    },
+    {
+      "key": "mode",
+      "type": "enum",
+      "default": "direct",
+      "options": [
+        { "value": "direct", "label": "直连 (DIRECT)" },
+        { "value": "upstream", "label": "上游代理 (Upstream)" }
+      ],
+      "label": { "zh-CN": "当前转发模式", "en": "Forwarding mode" }
+    },
+    {
+      "key": "upstreamUrl",
+      "type": "string",
+      "default": "",
+      "label": { "zh-CN": "上游代理地址 (http/https/socks5/socks5h)", "en": "Upstream proxy URL" }
+    },
+    {
+      "key": "noProxy",
+      "type": "string",
+      "default": "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<-loopback>",
+      "label": { "zh-CN": "绕过规则 (NO_PROXY)", "en": "Bypass rules (NO_PROXY)" }
+    },
+    {
+      "key": "gatewayPort",
+      "type": "number",
+      "min": 1024,
+      "max": 65535,
+      "default": 18766,
+      "label": { "zh-CN": "本地监听端口", "en": "Local gateway port" }
+    },
+    {
+      "key": "fallbackToDirectOnUpstreamError",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "上游失败时自动降级直连（默认关闭）", "en": "Fallback to DIRECT when upstream fails" }
+    }
+  ]
+}

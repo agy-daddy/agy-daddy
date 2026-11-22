@@ -1,0 +1,7 @@
+Agy-Daddy Context Plugin (@agy-daddy/plugin-context)
+
+This project incorporates context window analysis, error classification,
+pulse capsule telemetry, and attachment inventory auditing derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: meter-core.js,
+  pulse-capsule-overlay.js, attachment_scan.py, src/renderer/main.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-21T10:09:00.647Z",
+  "upstreams": [
+    {
+      "repo": "elviscjn-cjn/antigravity-context-viewer",
+      "branch": "main",
+      "absorbedSha": "838211fea3d305c72f3fe5f0c6ec340a644d481a",
+      "version": "v0.8.9",
+      "role": "基础框架、顶部上下文圆环看板、Token 分类统计、52 周热力图与 API 折算费用",
+      "mergeStrategy": "定向提取新模型上下文配额、API 价格表与前端渲染修复，禁止合入 app.asar 改盘与解锁逻辑",
+      "localTargets": [
+        "meter-core.js",
+        "meter-collector.js",
+        "meter-renderer.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "codesign",
+        "applyContextUnlock",
+        "meter-context-unlock.js",
+        "meter-enhance.js"
+      ]
+    },
+    {
+      "repo": "akelabs/antigravity-pulse",
+      "branch": "main",
+      "absorbedSha": "5dbab2be4240d3d304e80e7245df89229c9b052b",
+      "version": "v1.3.2",
+      "role": "输入框底部实时能量胶囊 (tok/s、上下文占比、缓存命中与 5h 倒计时)",
+      "mergeStrategy": "仅提取胶囊渲染、速率计算与选择器适配逻辑，禁止合入任何直接改写 workbench.html 或 app.asar 的安装脚本",
+      "localTargets": [
+        "agy-context-capsule.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "workbench.html"
+      ]
+    },
+    {
+      "repo": "n2ns/antigravity-panel",
+      "branch": "main",
+      "absorbedSha": "5caad5a634c053abce5da3eaacf24c0bf8270d74",
+      "version": "v2.8.5",
+      "role": "模型配额倒计时、Auto-Accept 安全自动确认与 Brain 缓存监控设计",
+      "mergeStrategy": "由 Agent 审阅上游功能演进与交互优化后，移植兼容到 Desktop 2.0 悬浮层",
+      "localTargets": [
+        "ag-enhancer-overlay.js",
+        "live-host.js"
+      ],
+      "forbiddenPatterns": []
+    },
+    {
+      "repo": "yiheng8023/antigravity-chinese",
+      "branch": "main",
+      "absorbedSha": "5d53934a2d2a55a0212001ed99c82ecdc6a0b296",
+      "version": "v3.3.57",
+      "role": "适配 Antigravity 2.32.1 的精确词条与安全动态正则规则",
+      "mergeStrategy": "增量提取新增精确词条与安全正则并去重合并，保留本地 [data-uri] 路径保护等跳过规则后更新补丁指纹",
+      "localTargets": [
+        "antigravity-hans-overlay.js",
+        "install.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "codesign"
+      ]
+    },
+    {
+      "repo": "wycocoyu/agy-context-dashboard",
+      "branch": "main",
+      "absorbedSha": "aa22c39fa765b5700c6da7699b132732c259f85b",
+      "version": "v0.9.5",
+      "role": "轻量级状态栏信息排布与指标展示参考",
+      "mergeStrategy": "审阅展示指标与视觉细节，按需合并到顶部/底部状态条并避免重复展示",
+      "localTargets": [
+        "meter-renderer.js",
+        "agy-context-capsule.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar"
+      ]
+    },
+    {
+      "repo": "oil-oil/agy-fast-io",
+      "branch": "main",
+      "absorbedSha": "c9231ac580437829ccd7950efa5ea79b3a7e0503",
+      "version": "v0.2.1",
+      "role": "Antigravity 桌面端快速检索与读写提速规则 (Fast IO：免审白名单命令、同轮并读与必审命令合并)",
+      "mergeStrategy": "审阅 plugin/rules/AGENTS.md 的白名单命令与回合压缩规则演进，同步更新至 rules/fast-io-AGENTS.md 与本地 AGENTS.md",
+      "localTargets": [
+        "rules/fast-io-AGENTS.md"
+      ],
+      "forbiddenPatterns": []
+    }
+  ]
+}

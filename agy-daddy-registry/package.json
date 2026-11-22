@@ -1,0 +1,13 @@
+{
+  "name": "@agy-daddy/registry",
+  "version": "1.0.0",
+  "description": "Official Agy-Daddy plugin registry, integrity hashes, and Antigravity anchor fixture matrix",
+  "license": "MIT",
+  "scripts": {
+    "verify": "node scripts/verify-registry.js",
+    "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  }
+}

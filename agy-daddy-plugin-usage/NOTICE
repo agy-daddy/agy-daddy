@@ -1,0 +1,7 @@
+Agy-Daddy Usage Plugin (@agy-daddy/plugin-usage)
+
+This project incorporates official model pricing tables, 52-week usage heatmaps,
+and ledger integrity protection derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: meter-core.js,
+  meter-collector.js, src/renderer/heatmap.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

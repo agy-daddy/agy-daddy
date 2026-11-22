@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "title": {
+    "zh-CN": "Hello 插件设置",
+    "en": "Hello Plugin Settings"
+  },
+  "fields": [
+    {
+      "key": "enabledGreeting",
+      "type": "boolean",
+      "label": { "zh-CN": "启用欢迎徽章", "en": "Enable Greeting Badge" },
+      "default": true
+    },
+    {
+      "key": "prefix",
+      "type": "string",
+      "label": { "zh-CN": "自定义前缀", "en": "Custom Prefix" },
+      "default": "Hi"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@community/agy-daddy-plugin-chat-search",
+  "version": "1.0.0",
+  "description": "Community isolated-world conversation search plugin attaching to chat-nav chat.search surface",
+  "license": "MIT",
+  "main": "./src/node.js",
+  "agyPlugin": "./agy-plugin.json",
+  "scripts": {
+    "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  }
+}

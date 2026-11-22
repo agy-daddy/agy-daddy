@@ -1,0 +1,41 @@
+{
+  "title": { "zh-CN": "上下文监测与能量胶囊", "en": "Context Monitor & Pulse Capsule" },
+  "fields": [
+    {
+      "key": "showPulseCapsule",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "显示底部实时能量胶囊", "en": "Show bottom pulse capsule" }
+    },
+    {
+      "key": "showSpeedInTopbar",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "顶栏显示生成速度 (tok/s)", "en": "Show generation speed in topbar" }
+    },
+    {
+      "key": "pollIntervalMs",
+      "type": "number",
+      "min": 1000,
+      "max": 30000,
+      "default": 3000,
+      "label": { "zh-CN": "轮询采样间隔 (毫秒)", "en": "Polling interval (ms)" }
+    },
+    {
+      "key": "warnThresholdTokens",
+      "type": "number",
+      "min": 50000,
+      "max": 1000000,
+      "default": 240000,
+      "label": { "zh-CN": "240K 缓存衰减提醒阈值", "en": "Cache cliff warning threshold (tokens)" }
+    },
+    {
+      "key": "cliffThresholdTokens",
+      "type": "number",
+      "min": 100000,
+      "max": 1048576,
+      "default": 328000,
+      "label": { "zh-CN": "高风险缓存断崖阈值", "en": "Critical cache cliff threshold (tokens)" }
+    }
+  ]
+}

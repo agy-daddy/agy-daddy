@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.cli",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "CLI 终端启动器",
+    "en": "CLI Terminal Launcher"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["topbar.rightCluster"]
+  },
+  "provides": {
+    "services": {
+      "cli": { "version": "1.0.0", "realm": "node" }
+    }
+  },
+  "consumes": {
+    "proxy": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:write",
+    "bridge:route",
+    "process:spawn",
+    "fs:brain-read"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "cli", "order": 40 }],
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "cli.launch", "title": { "zh-CN": "在新终端启动 CLI", "en": "Launch CLI in terminal" } }
+    ],
+    "locales": "./locales",
+    "migrations": [
+      { "from": "AntigravityContextMeter", "files": ["settings.json#cli"] }
+    ]
+  }
+}

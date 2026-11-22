@@ -1,0 +1,17 @@
+{
+  "antigravityVersion": "2.33.0",
+  "capturedAt": "2026-11-21T00:00:00Z",
+  "sanitized": true,
+  "nodes": [
+    { "tag": "div", "attrs": { "data-testid": "toggle-aux-sidebar" } },
+    { "tag": "div", "attrs": { "class": "surface-composer" } },
+    { "tag": "div", "attrs": { "data-lexical-editor": "true", "contenteditable": "true" } },
+    { "tag": "button", "attrs": { "aria-label": "Send message", "data-testid": "send-button" } },
+    { "tag": "div", "attrs": { "data-testid": "autoscroll-viewport" } },
+    { "tag": "div", "attrs": { "data-testid": "turn-cards-container" } },
+    { "tag": "button", "attrs": { "data-testid": "thinking-collapsible-trigger" } },
+    { "tag": "button", "attrs": { "data-testid": "turn-cards-container" } },
+    { "tag": "div", "attrs": { "data-testid": "conversation-row-sidebar" } },
+    { "tag": "div", "attrs": { "aria-label": "文件查看器标题栏" } }
+  ]
+}

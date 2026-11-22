@@ -1,0 +1,6 @@
+{
+  "name": "@example/agy-daddy-hello",
+  "version": "1.0.0",
+  "license": "MIT",
+  "agyPlugin": "./agy-plugin.json"
+}

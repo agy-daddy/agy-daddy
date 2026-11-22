@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+*.tmp
+*.bak
+coverage/
+node_modules/
+.live-session.json
+daemon.lock

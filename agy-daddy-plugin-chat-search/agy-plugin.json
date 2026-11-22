@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "community.chat-search",
+  "publisher": "community",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "对话全文检索",
+    "en": "Conversation Search"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["chat.messageList", "chat.scrollViewport"]
+  },
+  "provides": {
+    "services": {
+      "chat-search": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:chat-search.query@1"]
+  },
+  "consumes": {
+    "chat-nav": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": ["dom:read", "dom:write", "bridge:route"],
+  "contributes": {
+    "chat.search": [{ "id": "keyword-regex-search", "title": { "zh-CN": "对话关键字/正则检索", "en": "Search Messages" } }],
+    "settings": { "schema": "./settings.schema.json" },
+    "locales": "./locales"
+  }
+}

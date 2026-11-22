@@ -1,0 +1,7 @@
+Agy-Daddy CLI Launcher Plugin (@agy-daddy/plugin-cli)
+
+This project incorporates cross-platform terminal detection, escaping, and
+multiplexer host validation derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: meter-cli-launcher.js,
+  meter-terminals.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

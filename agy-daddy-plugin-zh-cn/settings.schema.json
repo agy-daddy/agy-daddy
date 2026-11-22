@@ -1,0 +1,38 @@
+{
+  "title": { "zh-CN": "客户端中文汉化", "en": "Chinese Localization" },
+  "fields": [
+    {
+      "key": "lang",
+      "type": "enum",
+      "default": "zh",
+      "options": [
+        { "value": "zh", "label": "简体中文" },
+        { "value": "en", "label": "English (原文)" }
+      ],
+      "label": { "zh-CN": "界面语言", "en": "UI Language" }
+    },
+    {
+      "key": "brandTitle",
+      "type": "enum",
+      "default": "english",
+      "options": [
+        { "value": "english", "label": "保留 Antigravity 英文" },
+        { "value": "translated", "label": "显示“反重力”中文标题" },
+        { "value": "hidden", "label": "隐藏品牌标题" }
+      ],
+      "label": { "zh-CN": "左上角品牌标题显示方式", "en": "Brand title display" }
+    },
+    {
+      "key": "englishLabels",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "模型与权限选项名保留英文", "en": "Keep option labels in English" }
+    },
+    {
+      "key": "enableRemoteThinkingTranslation",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "允许远程翻译思考片段（会外发选中文本至 translate.googleapis.com，默认关闭）", "en": "Enable remote translation via translate.googleapis.com (default OFF)" }
+    }
+  ]
+}

@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-21T00:00:00Z",
+  "anchors": {
+    "topbar.rightCluster": {
+      "description": "顶栏右上角插件胶囊挂载容器",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[class*=\"@container/titlebar\"] > div.shrink-0",
+            "[data-testid=\"toggle-aux-sidebar\"]",
+            "div.h-screen.w-screen > div.flex-1 > div.absolute.right-0.z-50",
+            "div.absolute.right-0.top-0.z-50"
+          ],
+          "closestHint": "div.absolute.right-0"
+        },
+        {
+          "range": ">=1.0.0 <2.0.0",
+          "selectors": [
+            "div.absolute.right-0.top-0.z-50",
+            "[data-testid=\"toggle-aux-sidebar\"]"
+          ]
+        }
+      ]
+    },
+    "composer.root": {
+      "description": "对话输入框根容器与底部操作区",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            ".surface-composer",
+            "[data-testid=\"agent-input-box\"]",
+            ".agy-composer-footer"
+          ]
+        }
+      ]
+    },
+    "composer.editor": {
+      "description": "Lexical / contenteditable 文本编辑器",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            ".surface-composer [data-lexical-editor=\"true\"]",
+            ".surface-composer [contenteditable=\"true\"]",
+            "[data-testid=\"agent-input-box\"] [data-lexical-editor=\"true\"]",
+            "[data-testid=\"agent-input-box\"] [contenteditable=\"true\"]",
+            "[aria-label=\"Message input\"][contenteditable=\"true\"]",
+            "[aria-label=\"消息输入\"][contenteditable=\"true\"]"
+          ]
+        }
+      ]
+    },
+    "composer.sendButton": {
+      "description": "发送或中断生成按钮",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            ".surface-composer [data-testid=\"input-send-button\"]",
+            ".surface-composer [data-testid=\"send-button\"]",
+            ".agy-composer-footer [data-testid=\"input-send-button\"]",
+            ".agy-send-button",
+            "button[aria-label*=\"Send\"]",
+            "button[aria-label*=\"发送\"]"
+          ]
+        }
+      ]
+    },
+    "chat.scrollViewport": {
+      "description": "对话主滚动视口",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"autoscroll-viewport\"]"
+          ]
+        }
+      ]
+    },
+    "chat.messageList": {
+      "description": "对话消息流容器",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"autoscroll-viewport\"] [data-testid=\"turn-cards-container\"]",
+            "[data-testid=\"autoscroll-viewport\"]",
+            "[data-testid=\"user-message\"]"
+          ]
+        }
+      ]
+    },
+    "chat.thinkingTrigger": {
+      "description": "思考过程折叠触发器",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"thinking-collapsible-trigger\"]"
+          ]
+        }
+      ]
+    },
+    "chat.actionButtons": {
+      "description": "对话步骤中的确认与命令执行区域",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"agent-response\"] button",
+            "[data-testid=\"turn-cards-container\"] button",
+            "[role=\"dialog\"] button"
+          ]
+        }
+      ]
+    },
+    "sidebar.conversationRows": {
+      "description": "左侧会话列表行元素",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"conversation-row-sidebar\"]"
+          ]
+        }
+      ]
+    },
+    "fileViewer.header": {
+      "description": "右侧边栏文件查看器标题栏",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[aria-label=\"File Viewer header\"]",
+            "[aria-label=\"文件查看器标题栏\"]",
+            ".group\\/file-row"
+          ]
+        }
+      ]
+    }
+  }
+}

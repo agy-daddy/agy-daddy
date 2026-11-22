@@ -1,0 +1,19 @@
+{
+  "title": { "zh-CN": "模型配额监控", "en": "Model Quota Monitor" },
+  "fields": [
+    {
+      "key": "pollIntervalMs",
+      "type": "number",
+      "min": 5000,
+      "max": 300000,
+      "default": 60000,
+      "label": { "zh-CN": "配额自动刷新间隔 (毫秒)", "en": "Quota refresh interval (ms)" }
+    },
+    {
+      "key": "showCountdownInTopbar",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "顶栏附带最近重置倒计时", "en": "Show reset countdown in topbar" }
+    }
+  ]
+}

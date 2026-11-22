@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "organization": "agy-daddy",
+  "updatedAt": "2026-11-21T23:15:00Z",
+  "plugins": [
+    {
+      "id": "agy-daddy.proxy",
+      "shortName": "proxy",
+      "layer": 1,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-proxy",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-proxy",
+      "localRepo": "agy-daddy-plugin-proxy",
+      "manifestSha512": "sha512-S3A3UbBsszT+I7zaQt7oibK7amTCnEA3HR4CU+X+Dh1ve9wA4HmXeUylSJJ0vwDxBTyStwQRmyVdFJNafwc53g=="
+    },
+    {
+      "id": "agy-daddy.zh-cn",
+      "shortName": "zh-cn",
+      "layer": 1,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-zh-cn",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-zh-cn",
+      "localRepo": "agy-daddy-plugin-zh-cn",
+      "manifestSha512": "sha512-Xkr9fdNyQJ8mu02DIkIHwzZEWxaL4gidDgV4LSqQBG2rS/aXD9gTHMCZs3alVmibkZyPJiYc6xcKVbcc85b6ow=="
+    },
+    {
+      "id": "agy-daddy.cli",
+      "shortName": "cli",
+      "layer": 1,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-cli",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-cli",
+      "localRepo": "agy-daddy-plugin-cli",
+      "manifestSha512": "sha512-D/0EJFe9R3Kxy5GHfJe701MMQ83wu4nfiryswwOFjVz8HrpwI8y1IrboSqmA3fo5zsvf6vQBu56TQltTjNLdfA=="
+    },
+    {
+      "id": "agy-daddy.context",
+      "shortName": "context",
+      "layer": 2,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-context",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-context",
+      "localRepo": "agy-daddy-plugin-context",
+      "manifestSha512": "sha512-kaYO3YBXYAlKtiJcEv5VuNBn2v2jGyNxToxhldsX/wYboBUop26nGbthn8UtWITX79515CqaryDCkSeS/kBviQ=="
+    },
+    {
+      "id": "agy-daddy.usage",
+      "shortName": "usage",
+      "layer": 2,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-usage",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-usage",
+      "localRepo": "agy-daddy-plugin-usage",
+      "manifestSha512": "sha512-s5sKT6hk/cagBEYcInrTTLLjXX6sz66mCtH1naysB8ng7BrewJIO4xCGvli6iXjf/pw9swBXZuYgY9KLOzkH6Q=="
+    },
+    {
+      "id": "agy-daddy.chat-nav",
+      "shortName": "chat-nav",
+      "layer": 2,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-chat-nav",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-chat-nav",
+      "localRepo": "agy-daddy-plugin-chat-nav",
+      "manifestSha512": "sha512-JDkWPoBaAIDb8ynWDtm0u4YL8ZhAg2ExlgBbdDHTz6SVeUTWapB4XlbuXWZPAxxwyFalXieo/Llw6PxcbabYzw=="
+    },
+    {
+      "id": "agy-daddy.quota",
+      "shortName": "quota",
+      "layer": 3,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-quota",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-quota",
+      "localRepo": "agy-daddy-plugin-quota",
+      "manifestSha512": "sha512-SXPyZVyXjz8gCgOYftpkdpDaPJzoIr9FFtxV2Y7Wrv5WlppE1t7b9Z6XjY9h11+Ok+hP1IC8r3Tp9q2BJcrdfA=="
+    },
+    {
+      "id": "agy-daddy.composer",
+      "shortName": "composer",
+      "layer": 3,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-composer",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-composer",
+      "localRepo": "agy-daddy-plugin-composer",
+      "manifestSha512": "sha512-NBelr4SDaznxAgkFbdL39BZbJXcQh8OQYfIALWJFY5GZ8WCa5WiVi4Dr+mUcPaa2PXJxmZCK+vyxgpmhaye1Cw=="
+    },
+    {
+      "id": "agy-daddy.remote",
+      "shortName": "remote",
+      "layer": 4,
+      "trustLevel": "T0",
+      "version": "1.0.0",
+      "npmPackage": "@agy-daddy/plugin-remote",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-remote",
+      "localRepo": "agy-daddy-plugin-remote",
+      "manifestSha512": "sha512-Glm/vbkFt7ah1kdAH0UvU71oEiLxdkVoqqYfUDJxnfnqJu1H1niaGJLFeubtWHiKEYGv64flWuwdB2e41R2LJA=="
+    },
+    {
+      "id": "community.chat-search",
+      "shortName": "chat-search",
+      "layer": 3,
+      "trustLevel": "T1",
+      "version": "1.0.0",
+      "npmPackage": "@community/agy-daddy-plugin-chat-search",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-chat-search",
+      "localRepo": "agy-daddy-plugin-chat-search",
+      "manifestSha512": "sha512-AauXg499AlQCUS78qtSDueNK9o7DvMtF5HhbImnqe/NcA9LvPsnERNl3duEcJ0ST6Pcg+ZZ8QW8TiDduQ3ZiAg==",
+      "reviewed": true
+    }
+  ]
+}

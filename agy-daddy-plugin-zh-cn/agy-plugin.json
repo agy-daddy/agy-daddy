@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.zh-cn",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "客户端中文汉化",
+    "en": "Chinese Localization (Reversible)"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "main",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["sidebar.conversationRows"]
+  },
+  "provides": {
+    "services": {
+      "zh-cn": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:zh-cn.lang@1"]
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "page:main-world",
+    "bridge:route",
+    "net:outbound:translate.googleapis.com"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "lang-toggle", "order": 75 }],
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "zh-cn.toggle-lang", "title": { "zh-CN": "切换界面中/英文", "en": "Toggle Chinese/English" } }
+    ],
+    "locales": "./locales",
+    "migrations": [
+      {
+        "from": "AntigravityContextMeter",
+        "files": ["zh-translation-cache.json", "custom-conversation-titles.json", "modules.json#chinese"]
+      }
+    ]
+  }
+}

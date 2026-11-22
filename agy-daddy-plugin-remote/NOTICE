@@ -1,0 +1,6 @@
+Agy-Daddy Remote Plugin (@agy-daddy/plugin-remote)
+
+This project incorporates the mobile remote PWA server and Cloudflare Tunnel
+security validation logic derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: mobile-remote.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

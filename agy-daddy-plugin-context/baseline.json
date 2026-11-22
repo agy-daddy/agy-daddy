@@ -1,0 +1,10 @@
+{
+  "source": "iamvicliu/antigravity-suite",
+  "absorbedSha": "c349284",
+  "paths": [
+    "meter-core.js",
+    "pulse-capsule-overlay.js",
+    "attachment_scan.py",
+    "src/renderer/main.js"
+  ]
+}

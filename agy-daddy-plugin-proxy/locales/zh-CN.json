@@ -1,0 +1,6 @@
+{
+  "unit.direct": "直连",
+  "unit.upstream": "代理",
+  "unit.stopped": "未启动",
+  "unit.title": "点击热切代理/直连（无需重启 Antigravity）"
+}

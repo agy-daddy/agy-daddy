@@ -1,0 +1,14 @@
+{
+  "name": "@agy-daddy/plugin-chat-nav",
+  "version": "1.0.0",
+  "description": "Agy-Daddy floating chat navigation, thinking expand guard, search slot, inline file editor, and safe external link plugin",
+  "license": "MIT",
+  "main": "./src/node.js",
+  "agyPlugin": "./agy-plugin.json",
+  "scripts": {
+    "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  }
+}

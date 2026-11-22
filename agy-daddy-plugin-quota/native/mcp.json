@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agy-daddy-quota": {
+      "command": "node",
+      "args": ["./native/mcp-server.js"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source": "iamvicliu/antigravity-suite",
+  "absorbedSha": "c349284",
+  "paths": [
+    "meter-proxy.js",
+    "meter-storage-proxy.test.js"
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.composer",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "输入框增强",
+    "en": "Composer Quick Bar & Guard"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "main",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["composer.root", "composer.editor", "composer.sendButton", "chat.actionButtons"]
+  },
+  "provides": {
+    "services": {
+      "composer": { "version": "1.0.0", "realm": "page-main" },
+      "composer-node": { "version": "1.0.0", "realm": "node" }
+    },
+    "surfaces": ["composer.quickActions"],
+    "events": ["composer:auto-compact-triggered@1", "composer:high-risk-detected@1"]
+  },
+  "consumes": {
+    "context": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "page:main-world",
+    "rpc:read",
+    "rpc:write",
+    "bridge:route",
+    "fs:brain-read",
+    "native:install"
+  ],
+  "contributes": {
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "composer.compact", "title": { "zh-CN": "发送 /compact 压缩指令", "en": "Send /compact" } },
+      { "id": "composer.export-md", "title": { "zh-CN": "导出会话为 Markdown", "en": "Export conversation as Markdown" } }
+    ],
+    "locales": "./locales",
+    "native": {
+      "rules": ["./native/fast-io-AGENTS.md"]
+    },
+    "migrations": [
+      { "from": "AntigravityContextMeter", "files": ["settings.json#composer"] }
+    ]
+  }
+}

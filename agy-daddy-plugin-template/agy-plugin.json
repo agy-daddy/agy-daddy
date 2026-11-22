@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "example.hello",
+  "publisher": "example",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "Hello 示例插件",
+    "en": "Hello Sample Plugin"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["topbar.rightCluster"]
+  },
+  "provides": {
+    "services": {
+      "hello": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:hello.greeting@1"],
+    "surfaces": []
+  },
+  "permissions": ["dom:write", "bridge:route"],
+  "contributes": {
+    "topbar.units": [{ "id": "hello-badge", "order": 90 }],
+    "settings": { "schema": "./settings.schema.json" },
+    "locales": "./locales"
+  }
+}

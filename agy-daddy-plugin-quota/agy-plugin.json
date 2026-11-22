@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.quota",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "配额胶囊与面板",
+    "en": "Quota Capsule & Panel"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "main",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["topbar.rightCluster"]
+  },
+  "provides": {
+    "services": {
+      "quota": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:quota.snapshot@1"]
+  },
+  "consumes": {
+    "subscription": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:write",
+    "page:main-world",
+    "rpc:read",
+    "bridge:route",
+    "native:install"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "quota", "order": 30 }],
+    "topbar.popovers": [{ "id": "quota-panel", "anchorId": "quota" }],
+    "settings": { "schema": "./settings.schema.json" },
+    "remote.panels": [{ "id": "quota", "service": "quota" }],
+    "native": {
+      "mcp": "./native/mcp.json"
+    },
+    "locales": "./locales"
+  }
+}

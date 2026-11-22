@@ -1,0 +1,37 @@
+{
+  "title": { "zh-CN": "输入框增强与安全自动化", "en": "Composer Enhancements" },
+  "fields": [
+    {
+      "key": "showQuickBar",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "显示输入框快捷指令栏", "en": "Show quick prompt bar" }
+    },
+    {
+      "key": "ghostSuggest",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "显示下一步幽灵追问建议", "en": "Show ghost follow-up suggestions" }
+    },
+    {
+      "key": "autoAccept",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "自动批准安全步骤 (Auto-Accept，命中高危命令自动拦截，默认关闭)", "en": "Auto-Accept safe steps (blocks high-risk commands, default OFF)" }
+    },
+    {
+      "key": "autoCompact",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "达到阈值时自动触发 /compact（默认关闭）", "en": "Auto-send /compact at threshold (default OFF)" }
+    },
+    {
+      "key": "autoCompactThresholdTokens",
+      "type": "number",
+      "min": 80000,
+      "max": 900000,
+      "default": 240000,
+      "label": { "zh-CN": "自动 /compact 触发阈值 (Tokens)", "en": "Auto-compact threshold (tokens)" }
+    }
+  ]
+}

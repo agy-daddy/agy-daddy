@@ -1,0 +1,8 @@
+{
+  "unit.label": "Remote",
+  "unit.readonly": "Read-only",
+  "unit.writable": "Writable",
+  "panel.title": "Mobile Remote Console",
+  "panel.rotateToken": "Rotate Token",
+  "panel.empty": "Waiting for remote server..."
+}

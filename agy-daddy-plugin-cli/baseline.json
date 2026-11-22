@@ -1,0 +1,10 @@
+{
+  "source": "iamvicliu/antigravity-suite",
+  "absorbedSha": "c349284",
+  "paths": [
+    "meter-cli-launcher.js",
+    "meter-terminals.js",
+    "meter-cli-launcher.test.js",
+    "scripts/cli-window-helper.cs"
+  ]
+}

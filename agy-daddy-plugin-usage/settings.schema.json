@@ -1,0 +1,29 @@
+{
+  "title": { "zh-CN": "累计用量与订阅计费", "en": "Usage & Subscription" },
+  "fields": [
+    {
+      "key": "showCostInTopbar",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "顶栏显示参考 API 费用", "en": "Show reference API cost in topbar" }
+    },
+    {
+      "key": "ultraSubTier",
+      "type": "enum",
+      "default": "auto",
+      "options": [
+        { "value": "auto", "label": "自动识别" },
+        { "value": "5x", "label": "Ultra 5x" },
+        { "value": "20x", "label": "Ultra 20x" }
+      ],
+      "label": { "zh-CN": "Ultra 订阅子档", "en": "Ultra subscription sub-tier" }
+    },
+    {
+      "key": "currency",
+      "type": "enum",
+      "default": "USD",
+      "options": ["USD", "CNY"],
+      "label": { "zh-CN": "参考费用币种", "en": "Display currency" }
+    }
+  ]
+}

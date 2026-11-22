@@ -1,0 +1,47 @@
+name: Reusable Plugin CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: '22.x'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Assert zero runtime dependencies & valid manifest
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) {
+              throw new Error("Zero runtime dependencies required");
+            }
+            const man = JSON.parse(fs.readFileSync("agy-plugin.json", "utf8"));
+            if (!man.id || !man.version || !man.engines?.agyDaddy) {
+              throw new Error("Missing required manifest fields");
+            }
+          '
+      - name: Purple theme gate
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const bad = [/#10b981/i, /#34d399/i, /#059669/i, /#38bdf8/i, /#7dd3fc/i, /#0369a1/i, /#0c4a6e/i, /#fb923c/i, /#c2410c/i];
+            if (fs.existsSync("src")) {
+              for (const f of fs.readdirSync("src")) {
+                const p = path.join("src", f);
+                if (!fs.statSync(p).isFile()) continue;
+                const txt = fs.readFileSync(p, "utf8");
+                for (const re of bad) if (re.test(txt)) throw new Error("Theme gate violation in " + f);
+              }
+            }
+          '
+      - name: Run plugin tests
+        run: npm test

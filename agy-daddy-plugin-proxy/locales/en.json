@@ -1,0 +1,6 @@
+{
+  "unit.direct": "Direct",
+  "unit.upstream": "Proxy",
+  "unit.stopped": "Stopped",
+  "unit.title": "Click to hot-switch Direct/Upstream proxy without restarting Antigravity"
+}

@@ -1,0 +1,6 @@
+Agy-Daddy Quota Plugin (@agy-daddy/plugin-quota)
+
+This project incorporates model quota pool grouping, proto3 zero-fraction rules,
+and reset countdown formatting derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: meter-core.js, ag-enhancer-overlay.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

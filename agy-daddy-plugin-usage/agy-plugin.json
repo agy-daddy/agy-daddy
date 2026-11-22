@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.usage",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "用量胶囊与面板",
+    "en": "Usage Capsule & Panel"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "main",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["topbar.rightCluster"]
+  },
+  "provides": {
+    "services": {
+      "usage": { "version": "1.0.0", "realm": "node" },
+      "subscription": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:usage.summary@1"]
+  },
+  "consumes": {
+    "context": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:write",
+    "page:main-world",
+    "rpc:read",
+    "bridge:route",
+    "native:install"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "tokens", "order": 20 }],
+    "topbar.popovers": [{ "id": "usage-panel", "anchorId": "tokens" }],
+    "settings": { "schema": "./settings.schema.json" },
+    "remote.panels": [{ "id": "usage", "service": "usage" }],
+    "native": {
+      "mcp": "./native/mcp.json"
+    },
+    "locales": "./locales",
+    "migrations": [
+      { "from": "AntigravityContextMeter", "files": ["token-pricing-ledger.json", "custom-plan.json"] }
+    ]
+  }
+}

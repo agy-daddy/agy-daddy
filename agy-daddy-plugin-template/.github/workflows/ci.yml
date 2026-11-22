@@ -1,0 +1,5 @@
+name: Plugin CI
+on: [push, pull_request]
+jobs:
+  ci:
+    uses: agy-daddy/.github/.github/workflows/plugin-ci.yml@main

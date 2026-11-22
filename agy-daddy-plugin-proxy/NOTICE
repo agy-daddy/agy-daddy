@@ -1,0 +1,6 @@
+Agy-Daddy Proxy Gateway Plugin (@agy-daddy/plugin-proxy)
+
+This project incorporates proxy configuration, NO_PROXY matching, and CLI proxy
+environment logic derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284, meter-proxy.js)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)

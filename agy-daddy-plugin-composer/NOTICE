@@ -1,0 +1,8 @@
+Agy-Daddy Composer Plugin (@agy-daddy/plugin-composer)
+
+This project incorporates composer quick actions, high-risk command guards,
+prompt optimization, and Fast-IO native rules derived from:
+- iamvicliu/antigravity-suite (baseline commit c349284: ag-enhancer-overlay.js,
+  rules/fast-io-AGENTS.md)
+  Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)
+- oil-oil/agy-fast-io (MIT License) for native/fast-io-AGENTS.md

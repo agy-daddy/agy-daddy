@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.chat-nav",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "对话栏增强",
+    "en": "Chat Navigation & Editor"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "main",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["chat.scrollViewport", "chat.messageList", "chat.thinkingTrigger"]
+  },
+  "provides": {
+    "services": {
+      "chat-nav": { "version": "1.0.0", "realm": "page-main" }
+    },
+    "events": ["chat:thinking-expanded@1"],
+    "surfaces": ["chat.navButtons", "chat.search"]
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "page:main-world",
+    "bridge:route",
+    "fs:user-files"
+  ],
+  "contributes": {
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "chat-nav.scroll-top", "title": { "zh-CN": "滚动到对话顶部", "en": "Scroll to top" } },
+      { "id": "chat-nav.scroll-bottom", "title": { "zh-CN": "滚动到对话底部", "en": "Scroll to bottom" } },
+      { "id": "chat-nav.expand-thinking", "title": { "zh-CN": "展开全部思考块", "en": "Expand thinking blocks" } }
+    ],
+    "locales": "./locales"
+  }
+}

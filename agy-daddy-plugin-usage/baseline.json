@@ -1,0 +1,10 @@
+{
+  "source": "iamvicliu/antigravity-suite",
+  "absorbedSha": "c349284",
+  "paths": [
+    "meter-core.js",
+    "meter-collector.js",
+    "src/renderer/heatmap.js",
+    "meter-subscription.test.js"
+  ]
+}

@@ -526,7 +526,7 @@ function createTestVscdb(dbPath, fileUris = []) {
   }
 }
 
-test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK 路径解码、临时目录过滤、TTL 缓存与隐式/App 项目升级', async () => {
+test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK 路径解码、临时目录过滤、TTL 缓存与隐式/App 项目升级', () => {
   const prevTestMode = process.env.AGY_DADDY_TEST_MODE;
   process.env.AGY_DADDY_TEST_MODE = '1';
   const tmpDir = makeTempDir('agy-meta-appsync-');
@@ -581,13 +581,16 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     ]);
 
     const storage = createInMemoryStorage();
+    const appSyncTtlMs = 80;
+    let nowMs = 0;
     const store = createWorkspaceMetaStore({
       storage,
       defaultBaseDir: defaultWsPath,
       stateVscdbPath: vscdbPath,
       conversationDbPath: convDbPath,
       sharedReadStatePath: null,
-      appSyncTtlMs: 80
+      appSyncTtlMs,
+      now: () => nowMs
     });
 
     // Test-mode isolation check when paths are omitted
@@ -675,10 +678,11 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     assert.equal(reloadedCjk.groupId, grp.id);
     assert.equal(reloadedCjk.name, '中文工作区');
 
-    // TTL cache check: update vscdb and verify cache serves old until TTL expires
+    // The cache serves the old result until the clock reaches the TTL boundary.
     createTestVscdb(vscdbPath, [urlMod.pathToFileURL(freshPath).href]);
+    nowMs = appSyncTtlMs - 1;
     assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === freshPath), false);
-    await new Promise((r) => setTimeout(r, 100));
+    nowMs = appSyncTtlMs;
     assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === freshPath), true);
   } finally {
     if (prevTestMode === undefined) delete process.env.AGY_DADDY_TEST_MODE;

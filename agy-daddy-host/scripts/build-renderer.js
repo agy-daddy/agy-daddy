@@ -22,7 +22,14 @@ function buildHostRenderer() {
     : '';
   const runtime = fs.readFileSync(path.join(srcDir, 'host-runtime.js'), 'utf8').trim();
 
-  const header = `'use strict';\n// Agy-Daddy Host Renderer Bundle v${pkg.version}\nconst __AGY_HOST_CSS__ = ${JSON.stringify(css)};\nconst __AGY_LIGHTDOM_CSS__ = ${JSON.stringify(lightDomCss)};\n`;
+  const header = [
+    "'use strict';",
+    `// Agy-Daddy Host Renderer Bundle v${pkg.version}`,
+    `const __AGY_HOST_VERSION__ = ${JSON.stringify(pkg.version)};`,
+    `const __AGY_HOST_CSS__ = ${JSON.stringify(css)};`,
+    `const __AGY_LIGHTDOM_CSS__ = ${JSON.stringify(lightDomCss)};`,
+    ''
+  ].join('\n');
   const bundle = [header, themeSrc, runtime].filter(Boolean).join('\n\n') + '\n';
 
   // 构建前严格语法编译验证

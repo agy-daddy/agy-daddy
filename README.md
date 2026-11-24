@@ -27,7 +27,7 @@ Agy-Daddy extends Antigravity without modifying `app.asar` or application binari
 | [`agy-daddy-registry/`](./agy-daddy-registry/) | Trust Registry & Matrix | Trusted plugin index (`registry.json` with SHA-512 manifest digests), canonical `anchors.json` (14 named DOM anchors), and Antigravity version DOM fixtures (`fixtures/antigravity-2.32.json`, `fixtures/antigravity-2.33.json`). |
 | [`agy-daddy-.github/`](./agy-daddy-.github/) | Organization Governance | Community health files, [`CONTRIBUTING.md`](./agy-daddy-.github/CONTRIBUTING.md), [`REVIEW_CHECKLIST.md`](./agy-daddy-.github/REVIEW_CHECKLIST.md), [`LICENSE_AUDIT.md`](./agy-daddy-.github/LICENSE_AUDIT.md), [`CODE_OF_CONDUCT.md`](./agy-daddy-.github/CODE_OF_CONDUCT.md), RFC template (`rfcs/0000-template.md`), reusable GitHub Actions workflows, and Chinese translations (`*_zh.md`). |
 | [`docs/`](./docs/) | Technical Specifications | Architecture specifications and design docs (e.g., [`docs/pc-web-harness/`](./docs/pc-web-harness/)). |
-| [`scripts/monorepo.js`](./scripts/monorepo.js) | Monorepo Orchestrator | Unified build, 7 static/registry verification gates, and full monorepo test runner. |
+| [`scripts/monorepo.js`](./scripts/monorepo.js) | Monorepo Orchestrator | Unified build, 8 static/registry/release verification gates, bundle analysis, and full monorepo test runner. |
 
 ### Official Plugin Inventory (`T0`)
 
@@ -56,7 +56,72 @@ Agy-Daddy extends Antigravity without modifying `app.asar` or application binari
 
 ---
 
-## Quick Start & Common Commands
+## Installation (npm)
+
+### 1. Install the Host CLI
+
+Requires **Node.js `>= 22.4.0`**:
+
+```sh
+# Install globally
+npm install -g @agy-daddy/host
+
+# Or run a one-off diagnostic check via npx
+npx @agy-daddy/host doctor --json
+
+# Upgrade to latest stable or preview (next) channel
+npm install -g @agy-daddy/host@latest
+npm install -g @agy-daddy/host@next
+```
+
+### 2. Install Official Plugins from npm
+
+Install individual official plugins (`T0`) with SHA-512 integrity verification:
+
+```sh
+# Install a single plugin (example: proxy)
+agy-daddy plugin install npm:@agy-daddy/plugin-proxy
+
+# Batch install all 10 official plugins
+for pkg in \
+  plugin-proxy \
+  plugin-zh-cn \
+  plugin-cli \
+  plugin-context \
+  plugin-usage \
+  plugin-chat-nav \
+  plugin-quota \
+  plugin-composer \
+  plugin-remote \
+  plugin-web
+do
+  agy-daddy plugin install "npm:@agy-daddy/${pkg}"
+done
+
+# List installed plugins and trust/activation status
+agy-daddy plugin list
+```
+
+### 3. Launch & Everyday Commands
+
+```sh
+# Run environment diagnostics
+agy-daddy doctor --json
+
+# Start the daemon and attach via CDP live injection
+agy-daddy live
+
+# Start the Agy-Daddy Launcher system tray & daemon
+agy-daddy launcher
+
+# Generate desktop launcher shortcut / enable login auto-start
+agy-daddy install-launcher
+agy-daddy auto-on
+```
+
+---
+
+## Local Development (From Source)
 
 Run all commands from the repository root unless noted otherwise:
 
@@ -65,7 +130,7 @@ Run all commands from the repository root unless noted otherwise:
 #    and verify/rebuild plugin web UI bundles if web/node_modules is present
 npm run build
 
-# 2. Run all 7 static & registry gates:
+# 2. Run all 8 static, registry & release packaging gates:
 #    - Zero runtime dependencies across all packages
 #    - Absence of removed legacy artifacts (legacy-suite / migration.js)
 #    - Manifest, world="isolated", no page:main-world / migrations, and settings.schema.json validation
@@ -73,6 +138,7 @@ npm run build
 #    - Thin host renderer decoupling & theme gate
 #    - Byte-identical parity between host/data/anchors.json and registry/anchors.json
 #    - Registry SHA-512 manifest verification & 14-anchor Antigravity fixture matrix
+#    - Release packaging compliance (public publishConfig, files whitelist without test/, host prepublishOnly)
 npm run verify:gates
 
 # 3. Run unit and contract tests across all packages (sets AGY_DADDY_TEST_MODE=1)
@@ -81,10 +147,13 @@ npm test
 # 4. Run the full CI-equivalent verification pipeline (build + gates + test)
 npm run verify
 
-# 5. Symlink all local official plugins into the local runtime directory
+# 5. Analyze bundle sizes and npm tarball contents
+npm run analyze
+
+# 6. Symlink all local official plugins into the local runtime directory
 ./agy-daddy-host/bin/agy-daddy dev link-all
 
-# 6. Inspect environment diagnostics or run a headless smoke check
+# 7. Inspect environment diagnostics or run a headless smoke check
 ./agy-daddy-host/bin/agy-daddy doctor --json
 ./agy-daddy-host/bin/agy-daddy dev smoke
 ```
@@ -114,6 +183,7 @@ npm run verify
 - **Code of Conduct**: [`agy-daddy-.github/CODE_OF_CONDUCT.md`](./agy-daddy-.github/CODE_OF_CONDUCT.md)
 - **RFC Template**: [`agy-daddy-.github/rfcs/0000-template.md`](./agy-daddy-.github/rfcs/0000-template.md)
 - **Registry Index & Fixtures**: [`agy-daddy-registry/README.md`](./agy-daddy-registry/README.md)
+- **Release Engineering & OIDC Publishing**: [`docs/release-engineering.md`](./docs/release-engineering.md)
 
 ---
 

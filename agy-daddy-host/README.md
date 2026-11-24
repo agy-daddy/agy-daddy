@@ -2,6 +2,24 @@
 
 Google Antigravity 桌面端的 100% 零改包 CDP 纯净微内核（Thin Declarative Host）插件底座。
 
+## 安装与快速开始（npm）
+
+需满足 **Node.js `>= 22.4.0`**：
+
+```sh
+# 1. 全局安装底座 CLI（或使用 npx @agy-daddy/host doctor --json）
+npm install -g @agy-daddy/host
+
+# 2. 从 npm 安装官方插件（可按需单装，例如 proxy / zh-cn / quota）
+agy-daddy plugin install npm:@agy-daddy/plugin-proxy
+agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
+
+# 3. 环境诊断与启动
+agy-daddy doctor --json
+agy-daddy live        # 启动守护进程并执行 CDP 热注入
+agy-daddy launcher    # 启动 Agy-Daddy Launcher 系统托盘与守护进程
+```
+
 ## 目录结构
 
 - `src/contracts/`：插件清单校验、`settings.schema.json`（含声明式 `actions`）与值校验、SemVer 区间匹配、权限与信任分级策略（T0/T1/T2）

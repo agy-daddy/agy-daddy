@@ -5,8 +5,12 @@
   "version": "1.0.0",
   "license": "MIT",
   "displayName": {
-    "zh-CN": "上下文胶囊与面板",
-    "en": "Context Capsule & Panel"
+    "zh-CN": "上下文与实时速度",
+    "en": "Context & Live Speed"
+  },
+  "description": {
+    "zh-CN": "当前对话实时状态面板与单点胶囊（上下文窗口、本对话累计 Token 与实时生成速度，顶栏或输入框下方二选一）",
+    "en": "Real-time current conversation monitor (context window, session tokens, live tok/s speed) with exclusive composer or topbar placement"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -14,7 +18,7 @@
   },
   "main": "./src/node.js",
   "renderer": "./src/renderer.js",
-  "world": "main",
+  "world": "isolated",
   "activationEvents": ["onStartup"],
   "requires": {
     "anchors": ["topbar.rightCluster", "composer.root"]
@@ -22,9 +26,9 @@
   "provides": {
     "services": {
       "context": { "version": "1.0.0", "realm": "node" },
-      "context-ui": { "version": "1.0.0", "realm": "page-main" }
+      "context-ui": { "version": "1.0.0", "realm": "page-isolated" }
     },
-    "events": ["telemetry:generator-calls@1"],
+    "events": ["telemetry:generator-calls@1", "context:auto-compact-triggered@1"],
     "states": ["state:context.snapshot@1"]
   },
   "consumes": {
@@ -33,7 +37,6 @@
   "permissions": [
     "dom:read",
     "dom:write",
-    "page:main-world",
     "rpc:read",
     "fs:brain-read",
     "bridge:route",
@@ -51,9 +54,6 @@
       "mcp": "./native/mcp.json",
       "skills": ["./native/skills"]
     },
-    "locales": "./locales",
-    "migrations": [
-      { "from": "AntigravityContextMeter", "files": ["settings.json#context"] }
-    ]
+    "locales": "./locales"
   }
 }

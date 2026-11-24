@@ -5,13 +5,23 @@
       "key": "greeting",
       "type": "string",
       "default": "Hello Agy-Daddy",
-      "label": { "zh-CN": "欢迎语", "en": "Greeting text" }
+      "placeholder": "Hello Agy-Daddy",
+      "label": { "zh-CN": "欢迎语", "en": "Greeting text" },
+      "description": { "zh-CN": "点击示例胶囊或执行问候命令时展示的提示文本", "en": "Message displayed when clicking the badge or running the greet command" }
     },
     {
       "key": "showBadge",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "显示顶栏示例胶囊", "en": "Show topbar sample badge" }
+      "label": { "zh-CN": "显示顶栏示例胶囊", "en": "Show topbar sample badge" },
+      "description": { "zh-CN": "在顶栏右侧集群挂载示例状态胶囊入口", "en": "Mount the sample capsule inside the topbar right cluster" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "greet-now",
+      "command": "hello.greet",
+      "label": { "zh-CN": "立即发送问候", "en": "Send Greeting Now" }
     }
   ]
 }

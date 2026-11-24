@@ -1,8 +1,8 @@
 {
-  "panel.title": "Context Monitor & Attachment Audit",
+  "panel.title": "Current Conversation Monitor",
   "panel.rescan": "Rescan",
   "panel.noSession": "No active session",
-  "pulse.waiting": "Ctx --",
+  "pulse.waiting": "Ctx -- · Session --",
   "alert.warn240k": "Consider compacting (>240K cache degradation risk)",
   "alert.cliff328k": "High cliff zone (>=328K cache miss risk)",
   "alert.cacheDrop": "Context cache drop detected",

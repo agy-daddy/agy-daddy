@@ -1,14 +1,85 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const {
+  parseTimestampMs,
   summarizeMetadata,
   analyzeTrajectorySteps,
+  extractStepTimestampsFromTrajectory,
   parseGeneratorCall,
+  summarizeSessionGeneratorCalls,
+  resolveThresholdTokens,
+  formatThresholdLabel,
   getContextLimitForModel
 } = require('./context-analyzer');
 const { auditAttachments } = require('./attachment-audit');
 
 const MAX_RECENT_CALLS = 500;
+const transcriptStepTsCache = new Map();
+
+function getDefaultBrainDirsForContext() {
+  const home = os.homedir();
+  return [
+    path.join(home, '.gemini', 'antigravity', 'brain'),
+    path.join(home, '.gemini', 'antigravity-ide', 'brain'),
+    path.join(home, '.gemini', 'antigravity-cli', 'brain')
+  ];
+}
+
+function readTranscriptStepTimestampsCached(cascadeId, brainDirs = null) {
+  if (!cascadeId) return null;
+  const skipDisk = !Array.isArray(brainDirs) && (process.env.AGY_DADDY_TEST_MODE === '1' || Boolean(process.env.NODE_TEST_CONTEXT));
+  if (skipDisk) return null;
+  const dirs = Array.isArray(brainDirs) ? brainDirs : getDefaultBrainDirsForContext();
+  for (const bDir of dirs) {
+    const candidates = [
+      path.join(bDir, String(cascadeId), '.system_generated', 'logs', 'transcript.jsonl'),
+      path.join(bDir, String(cascadeId), 'transcript.jsonl')
+    ];
+    for (const fp of candidates) {
+      let st;
+      try {
+        st = fs.statSync(fp);
+      } catch {
+        continue;
+      }
+      const cached = transcriptStepTsCache.get(fp);
+      if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+        return cached.map;
+      }
+      let content = '';
+      try {
+        content = fs.readFileSync(fp, 'utf8');
+      } catch {
+        continue;
+      }
+      const map = new Map();
+      for (const ln of content.split(/\r?\n/)) {
+        if (!ln || !ln.trim()) continue;
+        let ev;
+        try {
+          ev = JSON.parse(ln);
+        } catch {
+          continue;
+        }
+        if (!ev || typeof ev !== 'object') continue;
+        const ts = parseTimestampMs(ev.created_at || ev.createdAt || ev.timestamp || ev.chatModel?.chatStartMetadata?.createdAt || ev.chatModel?.createdAt);
+        if (ts <= 0) continue;
+        const rawStep = ev.step_index ?? ev.stepIndex;
+        const parsedStep = rawStep !== undefined && rawStep !== null && rawStep !== '' ? Number(rawStep) : NaN;
+        if (Number.isInteger(parsedStep) && parsedStep >= 0 && !map.has(parsedStep)) {
+          map.set(parsedStep, ts);
+        }
+      }
+      transcriptStepTsCache.set(fp, { size: st.size, mtimeMs: st.mtimeMs, map });
+      return map;
+    }
+  }
+  return null;
+}
 
 let disposers = [];
 
@@ -27,15 +98,18 @@ function pickTargetCascadeId(requestedId, summariesObj = {}) {
 function buildAlerts(snapshot, settings = {}) {
   const alerts = [];
   const used = Number(snapshot?.used || 0);
-  const warnAt = Number(settings.warnThresholdTokens) > 0 ? Number(settings.warnThresholdTokens) : 240000;
-  const cliffAt = Number(settings.cliffThresholdTokens) > 0 ? Number(settings.cliffThresholdTokens) : 328000;
+  const budget = Number(snapshot?.budget || 0);
+  const warnRaw = settings.warnThreshold ?? settings.warnThresholdTokens ?? '240K';
+  const cliffRaw = settings.cliffThreshold ?? settings.cliffThresholdTokens ?? '328K';
+  const warnInfo = formatThresholdLabel(warnRaw, budget, 240000);
+  const cliffInfo = formatThresholdLabel(cliffRaw, budget, 328000);
   if (snapshot?.cacheDropDetected) {
     alerts.push({ level: 'danger', code: 'cache_drop', message: '检测到上下文缓存失效' });
   }
-  if (used >= cliffAt) {
-    alerts.push({ level: 'danger', code: 'cache_cliff', message: `高风险断崖区 (>=${Math.round(cliffAt / 1000)}K)` });
-  } else if (used >= warnAt) {
-    alerts.push({ level: 'warn', code: 'cache_warn', message: `建议压缩上下文 (>${Math.round(warnAt / 1000)}K 缓存衰减风险)` });
+  if (used >= cliffInfo.tokens) {
+    alerts.push({ level: 'danger', code: 'cache_cliff', message: `高风险断崖区 (>=${cliffInfo.shortLabel})` });
+  } else if (used >= warnInfo.tokens) {
+    alerts.push({ level: 'warn', code: 'cache_warn', message: `建议压缩上下文 (>${warnInfo.shortLabel} 缓存衰减风险)` });
   }
   if (snapshot?.compressionDetected) {
     alerts.push({ level: 'info', code: 'compressed', message: '检测到自动上下文压缩' });
@@ -51,20 +125,60 @@ async function activate(host) {
   let latestSnapshot = null;
 
   function loadSettings() {
-    const saved = host.storage.readJson('settings.json', {}).data || {};
+    const saved = (typeof host.settings?.get === 'function' ? host.settings.get() : null) || {};
+    let displayLocation = 'composer';
+    if (saved.displayLocation === 'topbar' || saved.displayLocation === 'composer') {
+      displayLocation = saved.displayLocation;
+    } else if (saved.showPulseCapsule === false) {
+      displayLocation = 'topbar';
+    }
+    const showSpeed = saved.showSpeed !== undefined
+      ? saved.showSpeed !== false
+      : saved.showSpeedInTopbar !== false;
+    const VALID_COMPACT_POLICIES = new Set(['remind', 'idle_prompt', 'cliff_auto', 'idle_and_cliff']);
+    const compactPolicy = VALID_COMPACT_POLICIES.has(saved.compactPolicy)
+      ? saved.compactPolicy
+      : 'remind';
+    const warnThreshold = String(saved.warnThreshold ?? (saved.warnThresholdTokens ? String(saved.warnThresholdTokens) : '240K')).trim() || '240K';
+    const cliffThreshold = String(saved.cliffThreshold ?? (saved.cliffThresholdTokens ? String(saved.cliffThresholdTokens) : '328K')).trim() || '328K';
     return {
-      showPulseCapsule: saved.showPulseCapsule !== false,
-      showSpeedInTopbar: saved.showSpeedInTopbar !== false,
+      displayLocation,
+      showSpeed,
       pollIntervalMs: Number(saved.pollIntervalMs) >= 1000 ? Number(saved.pollIntervalMs) : 3000,
-      warnThresholdTokens: Number(saved.warnThresholdTokens) >= 50000 ? Number(saved.warnThresholdTokens) : 240000,
-      cliffThresholdTokens: Number(saved.cliffThresholdTokens) >= 100000 ? Number(saved.cliffThresholdTokens) : 328000
+      warnThreshold,
+      cliffThreshold,
+      compactPolicy,
+      autoCompactOnCacheDrop: saved.autoCompactOnCacheDrop === true
     };
   }
 
-  function recordNewGeneratorCalls(rows, cascadeId) {
+  function recomputeAlertsFromSettings() {
+    if (!latestSnapshot || !latestSnapshot.hasSession) return;
+    const settings = loadSettings();
+    const used = Number(latestSnapshot.used || 0);
+    const warnTokens = resolveThresholdTokens(settings.warnThreshold, latestSnapshot.budget, 240000);
+    const cliffTokens = resolveThresholdTokens(settings.cliffThreshold, latestSnapshot.budget, 328000);
+    const cacheCliffRisk = used >= cliffTokens
+      ? 'critical'
+      : (used >= warnTokens ? 'warn' : 'none');
+    latestSnapshot = {
+      ...latestSnapshot,
+      warnThreshold: settings.warnThreshold,
+      cliffThreshold: settings.cliffThreshold,
+      warnThresholdTokens: warnTokens,
+      cliffThresholdTokens: cliffTokens,
+      cacheCliffRisk,
+      alerts: buildAlerts({ ...latestSnapshot, cacheCliffRisk }, settings),
+      updatedAt: Date.now()
+    };
+    host.storage.writeJson('latest-snapshot.json', latestSnapshot);
+    host.state.set('state:context.snapshot@1', latestSnapshot);
+  }
+
+  function recordNewGeneratorCalls(rows, cascadeId, parseOptions = {}) {
     const newCalls = [];
     for (let i = 0; i < rows.length; i++) {
-      const parsed = parseGeneratorCall(rows[i], cascadeId, 'desktop', i);
+      const parsed = parseGeneratorCall(rows[i], cascadeId, 'desktop', i, parseOptions);
       if (!parsed) continue;
       if (seenCallIds.has(parsed.callId)) continue;
       seenCallIds.add(parsed.callId);
@@ -125,6 +239,7 @@ async function activate(host) {
         remainPercent: null,
         model: null,
         speed: null,
+        sessionUsage: summarizeSessionGeneratorCalls([]),
         groups: null,
         attachments: { items: [], totals: { count: 0, chars: 0, bytes: 0, low: 0, high: 0 } },
         alerts: [],
@@ -162,8 +277,6 @@ async function activate(host) {
       }
     }
 
-    const newCalls = recordNewGeneratorCalls(gmRows, cascadeId);
-
     let steps = [];
     try {
       const trajResp = await host.rpc.call('GetCascadeTrajectory', { cascadeId });
@@ -174,12 +287,30 @@ async function activate(host) {
       }
     } catch {}
 
+    const stepTimestamps = extractStepTimestampsFromTrajectory(steps);
+    const transcriptTsMap = readTranscriptStepTimestampsCached(cascadeId);
+    if (transcriptTsMap instanceof Map) {
+      for (const [s, ts] of transcriptTsMap.entries()) {
+        if (!stepTimestamps.has(s)) stepTimestamps.set(s, ts);
+      }
+    }
+    const fallbackTimestampMs =
+      parseTimestampMs(summaries[cascadeId]?.createdTime) ||
+      parseTimestampMs(summaries[cascadeId]?.lastModifiedTime) ||
+      0;
+
+    const newCalls = recordNewGeneratorCalls(gmRows, cascadeId, {
+      stepTimestamps,
+      fallbackTimestampMs
+    });
+    const sessionUsage = summarizeSessionGeneratorCalls(gmRows, { cascadeId });
+
     const stepAnalysis = analyzeTrajectorySteps(steps, {
       preferredModelId: metaSummary?.modelRaw || '',
       preferredModelLabel: metaSummary?.model || '',
       runtimeBudget: metaSummary?.budget || 0,
-      warnThresholdTokens: settings.warnThresholdTokens,
-      cliffThresholdTokens: settings.cliffThresholdTokens
+      warnThreshold: settings.warnThreshold,
+      cliffThreshold: settings.cliffThreshold
     });
 
     const attachmentAudit = auditAttachments(stepAnalysis.media);
@@ -187,6 +318,12 @@ async function activate(host) {
     const used = metaSummary?.used ?? stepAnalysis.preciseUsed ?? (stepAnalysis.steps > 0 ? stepAnalysis.total.high : null);
     const percent = used !== null && budget > 0 ? Number(((used / budget) * 100).toFixed(1)) : null;
     const remainPercent = percent !== null ? Number(Math.max(0, 100 - percent).toFixed(1)) : null;
+    const warnThresholdTokens = resolveThresholdTokens(settings.warnThreshold, budget, 240000);
+    const cliffThresholdTokens = resolveThresholdTokens(settings.cliffThreshold, budget, 328000);
+    const effectiveUsed = used ?? stepAnalysis.total.high;
+    const cacheCliffRisk = effectiveUsed >= cliffThresholdTokens
+      ? 'critical'
+      : (effectiveUsed >= warnThresholdTokens ? 'warn' : 'none');
 
     if (metaSummary && metaSummary.actual !== null) {
       contextCacheBySession.set(cascadeId, metaSummary);
@@ -227,12 +364,17 @@ async function activate(host) {
       cacheHitRate: metaSummary?.cacheHitRate ?? stepAnalysis.cacheHitRate,
       outputTokens: metaSummary?.output ?? stepAnalysis.outputTokens,
       speed: metaSummary?.speed || null,
+      sessionUsage,
       groups: stepAnalysis.groups,
       stepsCount: stepAnalysis.steps,
       userMessages: stepAnalysis.userMessages,
       assistantMessages: stepAnalysis.assistantMessages,
       cacheDropDetected: stepAnalysis.cacheDropDetected,
-      cacheCliffRisk: stepAnalysis.cacheCliffRisk,
+      cacheCliffRisk,
+      warnThreshold: settings.warnThreshold,
+      cliffThreshold: settings.cliffThreshold,
+      warnThresholdTokens,
+      cliffThresholdTokens,
       compressionDetected: stepAnalysis.compressionDetected,
       compressionDrop: stepAnalysis.compressionDrop,
       attachments: attachmentAudit,
@@ -266,7 +408,17 @@ async function activate(host) {
       return auditAttachments(mediaList);
     },
     async getMobileSnapshot(opts = {}) {
+      const settings = loadSettings();
       const snap = latestSnapshot || await scanCascade(opts);
+      const groups = snap.groups && typeof snap.groups === 'object'
+        ? {
+            user: Number(snap.groups.user?.high || 0),
+            assistant: Number(snap.groups.assistant?.high || 0),
+            thinking: Number(snap.groups.thinking?.high || 0),
+            tools: Number(snap.groups.tools?.high || 0),
+            summaries: Number(snap.groups.summaries?.high || 0)
+          }
+        : null;
       return {
         hasSession: snap.hasSession,
         cascadeId: snap.cascadeId,
@@ -282,6 +434,15 @@ async function activate(host) {
         cacheHitRate: snap.cacheHitRate,
         outputTokens: snap.outputTokens,
         tokPerSec: snap.speed?.tps ?? null,
+        speed: snap.speed || null,
+        cacheCliffRisk: snap.cacheCliffRisk || 'none',
+        cacheDropDetected: Boolean(snap.cacheDropDetected),
+        warnThreshold: snap.warnThreshold || settings.warnThreshold,
+        cliffThreshold: snap.cliffThreshold || settings.cliffThreshold,
+        warnThresholdTokens: snap.warnThresholdTokens ?? resolveThresholdTokens(settings.warnThreshold, snap.budget, 240000),
+        cliffThresholdTokens: snap.cliffThresholdTokens ?? resolveThresholdTokens(settings.cliffThreshold, snap.budget, 328000),
+        groups,
+        sessionUsage: snap.sessionUsage || summarizeSessionGeneratorCalls([]),
         alerts: snap.alerts || [],
         attachmentSummary: snap.attachments?.totals || { count: 0, high: 0 },
         referenceCost: snap.referenceCost || null,
@@ -301,17 +462,33 @@ async function activate(host) {
   const stopRescanRoute = await host.bridge.registerRoute('/rescan', async (body) => serviceMethods.rescan(body || {}));
   const stopAuditRoute = await host.bridge.registerRoute('/audit-attachments', async (body) => serviceMethods.auditAttachments(body?.media || []));
   const stopIngestRoute = await host.bridge.registerRoute('/ingest-renderer-snapshot', async (body) => serviceMethods.ingestRendererSnapshot(body || {}));
-  const stopSettingsRoute = await host.bridge.registerRoute('/settings', async (body) => {
-    if (body?.action === 'save' && body.values) {
-      const cur = host.storage.readJson('settings.json', {}).data || {};
-      const next = { ...cur, ...body.values };
-      host.storage.writeJson('settings.json', next);
-      return { ok: true, values: next };
-    }
-    return { ok: true, values: loadSettings() };
-  });
+  const stopSettingsSub = typeof host.settings?.onChange === 'function'
+    ? host.settings.onChange((_nextValues, changedKeys) => {
+        const keys = Array.isArray(changedKeys) ? changedKeys : [];
+        if (
+          keys.length === 0 ||
+          keys.includes('warnThreshold') ||
+          keys.includes('cliffThreshold') ||
+          keys.includes('warnThresholdTokens') ||
+          keys.includes('cliffThresholdTokens')
+        ) {
+          recomputeAlertsFromSettings();
+        }
+      })
+    : () => {};
+  const stopRescanCmd = typeof host.commands?.register === 'function'
+    ? await host.commands.register('context.rescan', async (opts = {}) => serviceMethods.rescan(opts || {}))
+    : () => {};
 
-  disposers.push(stopSvc, stopSnapRoute, stopRescanRoute, stopAuditRoute, stopIngestRoute, stopSettingsRoute);
+  disposers.push(
+    stopSvc,
+    stopSnapRoute,
+    stopRescanRoute,
+    stopAuditRoute,
+    stopIngestRoute,
+    stopSettingsSub,
+    stopRescanCmd
+  );
 }
 
 async function deactivate() {

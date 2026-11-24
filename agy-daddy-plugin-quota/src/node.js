@@ -1,11 +1,36 @@
 'use strict';
 
-const { buildModelQuotaSnapshot } = require('./quota-engine');
+const { buildModelQuotaSnapshot, DEFAULT_CAPSULE_COLOR_RULES } = require('./quota-engine');
 
 let disposers = [];
 
+function normalizeQuotaSettings(raw = {}) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const validModes = ['off', '5h', 'weekly', 'both'];
+  let topbarCountdownMode = validModes.includes(src.topbarCountdownMode) ? src.topbarCountdownMode : null;
+  if (!topbarCountdownMode) {
+    topbarCountdownMode = src.showCountdownInTopbar === false ? 'off' : 'both';
+  }
+  const capsuleColorRules = Array.isArray(src.capsuleColorRules)
+    ? src.capsuleColorRules.map((v) => String(v))
+    : [...DEFAULT_CAPSULE_COLOR_RULES];
+  return {
+    pollIntervalMs: Number(src.pollIntervalMs) >= 5000 ? Number(src.pollIntervalMs) : 60000,
+    topbarCountdownMode,
+    quotaDisplayMode: src.quotaDisplayMode === 'used' ? 'used' : 'remaining',
+    capsuleColorRules
+  };
+}
+
 async function activate(host) {
   let latestSnapshot = null;
+
+  function loadSettings() {
+    const saved = (typeof host.settings?.get === 'function' ? host.settings.get() : null) || {};
+    return normalizeQuotaSettings(saved);
+  }
+
+  let currentSettings = loadSettings();
 
   async function refreshQuota(options = {}) {
     let userStatusRes = null;
@@ -40,7 +65,8 @@ async function activate(host) {
 
   const serviceMethods = {
     async getSnapshot(opts = {}) {
-      if (!opts.force && latestSnapshot && Date.now() - latestSnapshot.updatedAt < 5000) {
+      const cacheWindowMs = Math.min(5000, currentSettings.pollIntervalMs || 5000);
+      if (!opts.force && latestSnapshot && Date.now() - latestSnapshot.updatedAt < cacheWindowMs) {
         return latestSnapshot;
       }
       return await refreshQuota(opts);
@@ -50,22 +76,53 @@ async function activate(host) {
     },
     async getMobileSnapshot(opts = {}) {
       const snap = latestSnapshot || await refreshQuota(opts);
+      const serializeBucket = (b) => {
+        if (!b) return null;
+        const frac = typeof b.remainingFraction === 'number' && Number.isFinite(b.remainingFraction)
+          ? b.remainingFraction
+          : null;
+        return {
+          remainingFraction: frac,
+          remainingPercent: frac !== null ? Math.round(frac * 100) : null,
+          percentText: b.percentText || '--',
+          usedPercentText: b.usedPercentText || '--',
+          countdownText: b.countdownText || '',
+          resetTimeText: b.resetTimeText || ''
+        };
+      };
+      const serializeModelQuota = (primary, windows) => {
+        const fiveHour = serializeBucket(windows?.fiveHour || (primary?.windowKey === '5h' ? primary : null));
+        const weekly = serializeBucket(windows?.weekly || (primary?.windowKey === 'weekly' ? primary : null));
+        if (!primary && !fiveHour && !weekly) return null;
+        const base = serializeBucket(primary || fiveHour || weekly);
+        return {
+          ...base,
+          fiveHour,
+          weekly
+        };
+      };
       return {
         ultraSubTier: snap.ultraSubTier,
         quotaMultiplier: snap.quotaMultiplier,
-        gemini: snap.gemini ? { percentText: snap.gemini.percentText, countdownText: snap.gemini.countdownText } : null,
-        claude: snap.claude ? { percentText: snap.claude.percentText, countdownText: snap.claude.countdownText } : null,
+        gemini: serializeModelQuota(snap.gemini, snap.geminiWindows),
+        claude: serializeModelQuota(snap.claude, snap.claudeWindows),
         poolsCount: snap.pools.length,
         updatedAt: snap.updatedAt
       };
     }
   };
 
+  const stopSettingsSub = typeof host.settings?.onChange === 'function'
+    ? host.settings.onChange((nextValues) => {
+        currentSettings = normalizeQuotaSettings(nextValues);
+      })
+    : () => {};
+
   const stopSvc = host.services.provide('quota', serviceMethods, { realm: 'node', version: '1.0.0' });
   const stopSnapRoute = await host.bridge.registerRoute('/snapshot', async (body) => await serviceMethods.getSnapshot(body || {}));
   const stopRefreshRoute = await host.bridge.registerRoute('/refresh', async (body) => await serviceMethods.refresh(body || {}));
 
-  disposers.push(stopSvc, stopSnapRoute, stopRefreshRoute);
+  disposers.push(stopSettingsSub, stopSvc, stopSnapRoute, stopRefreshRoute);
 }
 
 async function deactivate() {
@@ -76,6 +133,7 @@ async function deactivate() {
 }
 
 module.exports = {
+  normalizeQuotaSettings,
   activate,
   deactivate
 };

@@ -1,29 +1,176 @@
 {
-  "title": { "zh-CN": "累计用量与订阅计费", "en": "Usage & Subscription" },
+  "title": { "zh-CN": "用量统计与计费", "en": "Usage & Subscription" },
   "fields": [
     {
-      "key": "showCostInTopbar",
+      "key": "activePeriod",
+      "type": "enum",
+      "default": "allTime",
+      "group": { "zh-CN": "统计范围与周期", "en": "Scope & Period" },
+      "options": [
+        { "value": "today", "label": { "zh-CN": "今日", "en": "Today" } },
+        { "value": "month", "label": { "zh-CN": "本月", "en": "This Month" } },
+        { "value": "year", "label": { "zh-CN": "今年", "en": "This Year" } },
+        { "value": "allTime", "label": { "zh-CN": "累计", "en": "All Time" } }
+      ],
+      "label": { "zh-CN": "统计周期（顶栏与面板同步）", "en": "Active period (synced)" },
+      "description": { "zh-CN": "切换顶栏胶囊与详情面板同步展示的统计周期（今日 / 本月 / 今年 / 累计）", "en": "Select the period synced between the topbar capsule and popover panel" }
+    },
+    {
+      "key": "includeIdeUsage",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "顶栏显示参考 API 费用", "en": "Show reference API cost in topbar" }
+      "group": { "zh-CN": "统计范围与周期", "en": "Scope & Period" },
+      "label": { "zh-CN": "包含 Antigravity IDE 用量", "en": "Include Antigravity IDE usage" },
+      "description": { "zh-CN": "计入来自 Antigravity IDE 桌面客户端的对话 Token 与费用统计", "en": "Include token usage and cost recorded from Antigravity IDE desktop client" }
+    },
+    {
+      "key": "includeCliUsage",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "统计范围与周期", "en": "Scope & Period" },
+      "label": { "zh-CN": "包含 Antigravity CLI 用量", "en": "Include Antigravity CLI usage" },
+      "description": { "zh-CN": "计入来自 Antigravity CLI 终端会话的 Token 与费用统计", "en": "Include token usage and cost recorded from Antigravity CLI sessions" }
     },
     {
       "key": "ultraSubTier",
       "type": "enum",
       "default": "auto",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
       "options": [
-        { "value": "auto", "label": "自动识别" },
-        { "value": "5x", "label": "Ultra 5x" },
-        { "value": "20x", "label": "Ultra 20x" }
+        {
+          "value": "auto",
+          "label": {
+            "zh-CN": "自动识别",
+            "zh-TW": "自動識別",
+            "en": "Auto",
+            "ja": "自動検出",
+            "ko": "자동 감지",
+            "es": "Automático",
+            "pt": "Automático",
+            "fr": "Automatique",
+            "ru": "Авто",
+            "it": "Automatico"
+          }
+        },
+        { "value": "pro", "label": { "zh-CN": "Pro", "en": "Pro" } },
+        { "value": "5x", "label": { "zh-CN": "Ultra 5X", "en": "Ultra 5X" } },
+        { "value": "20x", "label": { "zh-CN": "Ultra 20X", "en": "Ultra 20X" } }
       ],
-      "label": { "zh-CN": "Ultra 订阅子档", "en": "Ultra subscription sub-tier" }
+      "label": { "zh-CN": "订阅套餐档位", "en": "Subscription tier" },
+      "description": { "zh-CN": "自动识别或手动指定账号套餐（Pro / Ultra 5X / Ultra 20X），用于配额倍率与官方参考价计算", "en": "Auto-detect or manually select your subscription plan (Pro / Ultra 5X / Ultra 20X)" }
+    },
+    {
+      "key": "subscriptionRegion",
+      "type": "enum",
+      "default": "US",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
+      "options": [
+        { "value": "US", "label": "🇺🇸 美国 (USD · $19.99)" },
+        { "value": "TR", "label": "🇹🇷 土耳其 (TRY · ₺869.99)" },
+        { "value": "NG", "label": "🇳🇬 尼日利亚 (NGN · ₦28500)" },
+        { "value": "IN", "label": "🇮🇳 印度 (INR · ₹1950)" },
+        { "value": "PK", "label": "🇵🇰 巴基斯坦 (PKR · ₨5600)" },
+        { "value": "JP", "label": "🇯🇵 日本 (JPY · ¥2900)" },
+        { "value": "KR", "label": "🇰🇷 韩国 (KRW · ₩29000)" },
+        { "value": "HK", "label": "🇭🇰 中国香港 (HKD · HK$158)" },
+        { "value": "TW", "label": "🇹🇼 中国台湾 (TWD · NT$650)" },
+        { "value": "CN", "label": "🇨🇳 中国大陆 (CNY · ¥140)" },
+        { "value": "SG", "label": "🇸🇬 新加坡 (SGD · S$27.99)" },
+        { "value": "MY", "label": "🇲🇾 马来西亚 (MYR · RM97.99)" },
+        { "value": "TH", "label": "🇹🇭 泰国 (THB · ฿750)" },
+        { "value": "VN", "label": "🇻🇳 越南 (VND · ₫489000)" },
+        { "value": "ID", "label": "🇮🇩 印度尼西亚 (IDR · Rp309000)" },
+        { "value": "PH", "label": "🇵🇭 菲律宾 (PHP · ₱1100)" },
+        { "value": "AU", "label": "🇦🇺 澳大利亚 (AUD · AU$32.99)" },
+        { "value": "NZ", "label": "🇳🇿 新西兰 (NZD · NZ$34.99)" },
+        { "value": "CA", "label": "🇨🇦 加拿大 (CAD · CA$26.99)" },
+        { "value": "MX", "label": "🇲🇽 墨西哥 (MXN · $395)" },
+        { "value": "BR", "label": "🇧🇷 巴西 (BRL · R$96.99)" },
+        { "value": "AR", "label": "🇦🇷 阿根廷 (ARS · $19999)" },
+        { "value": "CL", "label": "🇨🇱 智利 (CLP · $18990)" },
+        { "value": "CO", "label": "🇨🇴 哥伦比亚 (COP · $84900)" },
+        { "value": "PE", "label": "🇵🇪 秘鲁 (PEN · S/76.90)" },
+        { "value": "GB", "label": "🇬🇧 英国 (GBP · £18.99)" },
+        { "value": "EU", "label": "🇪🇺 欧洲/欧盟 (EUR · €21.99)" },
+        { "value": "CH", "label": "🇨🇭 瑞士 (CHF · CHF17)" },
+        { "value": "UA", "label": "🇺🇦 乌克兰 (UAH · ₴900)" },
+        { "value": "PL", "label": "🇵🇱 波兰 (PLN · zł97.99)" },
+        { "value": "SE", "label": "🇸🇪 瑞典 (SEK · kr239)" },
+        { "value": "NO", "label": "🇳🇴 挪威 (NOK · kr239)" },
+        { "value": "DK", "label": "🇩🇰 丹麦 (DKK · kr169)" },
+        { "value": "CZ", "label": "🇨🇿 捷克 (CZK · Kč529)" },
+        { "value": "HU", "label": "🇭🇺 匈牙利 (HUF · Ft8990)" },
+        { "value": "RO", "label": "🇷🇴 罗马尼亚 (RON · lei109.99)" },
+        { "value": "ZA", "label": "🇿🇦 南非 (ZAR · R429.99)" },
+        { "value": "EG", "label": "🇪🇬 埃及 (EGP · E£999)" },
+        { "value": "KE", "label": "🇰🇪 肯尼亚 (KES · KSh2800)" },
+        { "value": "AE", "label": "🇦🇪 阿联酋 (AED · 76.99)" },
+        { "value": "SA", "label": "🇸🇦 沙特阿拉伯 (SAR · 85.99)" },
+        { "value": "IL", "label": "🇮🇱 以色列 (ILS · ₪79.90)" }
+      ],
+      "label": { "zh-CN": "订阅区域", "en": "Subscription region" },
+      "description": { "zh-CN": "选择账号订阅所在地区，自动匹配该区币种、汇率与参考月费用于回本计算", "en": "Select subscription region to resolve local pricing, currency, and exchange rate for ROI" }
+    },
+    {
+      "key": "subscriptionCurrency",
+      "type": "enum",
+      "default": "AUTO",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
+      "options": [
+        { "value": "AUTO", "label": { "zh-CN": "跟随订阅区域默认币种", "en": "Follow region currency" } },
+        "USD", "CNY", "TRY", "NGN", "INR", "PKR", "JPY", "KRW", "HKD", "TWD",
+        "SGD", "MYR", "THB", "VND", "IDR", "PHP", "AUD", "NZD", "CAD", "MXN",
+        "BRL", "ARS", "CLP", "COP", "PEN", "GBP", "EUR", "CHF", "UAH", "PLN",
+        "SEK", "NOK", "DKK", "CZK", "HUF", "RON", "ZAR", "EGP", "KES", "AED",
+        "SAR", "ILS"
+      ],
+      "label": { "zh-CN": "订阅付款币种", "en": "Subscription payment currency" },
+      "description": { "zh-CN": "自定义实际付款所使用的币种，默认跟随上方订阅区域", "en": "Currency of your actual subscription payment (defaults to region currency)" }
+    },
+    {
+      "key": "subscriptionPriceMode",
+      "type": "enum",
+      "default": "preset",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
+      "options": [
+        { "value": "preset", "label": { "zh-CN": "跟随所选区域参考价", "en": "Use region preset price" } },
+        { "value": "custom", "label": { "zh-CN": "自定义实付金额", "en": "Custom actual price" } }
+      ],
+      "label": { "zh-CN": "订阅成本模式", "en": "Subscription price mode" },
+      "description": { "zh-CN": "选择使用区域官方参考价或下方的自定义实付金额计算回本", "en": "Use region preset pricing or custom actual payment below for ROI calculation" }
+    },
+    {
+      "key": "actualPricePaid",
+      "type": "number",
+      "min": 0,
+      "max": 10000000,
+      "default": 0,
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
+      "placeholder": "0",
+      "label": { "zh-CN": "自定义实付订阅金额", "en": "Custom actual price paid" },
+      "description": { "zh-CN": "仅在「自定义实付金额」模式下生效，按上方「订阅付款币种」计价（0 表示免费/赠送）", "en": "Used in custom price mode in the selected payment currency (0 for free/bundled)" }
+    },
+    {
+      "key": "billingCycle",
+      "type": "enum",
+      "default": "monthly",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
+      "options": [
+        { "value": "monthly", "label": { "zh-CN": "月付", "en": "Monthly" } },
+        { "value": "yearly", "label": { "zh-CN": "年付（按月均摊 ÷12）", "en": "Yearly (amortized ÷12)" } },
+        { "value": "free", "label": { "zh-CN": "免费 / 赠送（0 成本）", "en": "Free / Bundled ($0)" } }
+      ],
+      "label": { "zh-CN": "订阅计费周期", "en": "Billing cycle" },
+      "description": { "zh-CN": "设置月付、年付折算或免费赠送，影响回本差额中的实际订阅成本", "en": "Set monthly, yearly amortized, or free/bundled cycle for ROI calculation" }
     },
     {
       "key": "currency",
       "type": "enum",
       "default": "USD",
+      "group": { "zh-CN": "订阅区域与实付成本", "en": "Subscription Region & Cost" },
       "options": ["USD", "CNY"],
-      "label": { "zh-CN": "参考费用币种", "en": "Display currency" }
+      "label": { "zh-CN": "参考费用与回本展示币种", "en": "Display currency" },
+      "description": { "zh-CN": "切换美元 (USD) 或人民币 (CNY) 折算显示各期参考费用与净省金额", "en": "Switch reference API cost and ROI savings display between USD and CNY" }
     }
   ]
 }

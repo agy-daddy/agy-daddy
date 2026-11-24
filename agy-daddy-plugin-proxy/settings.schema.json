@@ -5,29 +5,21 @@
       "key": "gatewayEnabled",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "启用本地固定转发网关", "en": "Enable local forwarding gateway" }
+      "group": { "zh-CN": "转发与网关", "en": "Gateway & Routing" },
+      "label": { "zh-CN": "本地固定转发网关", "en": "Local forwarding gateway" },
+      "description": { "zh-CN": "开启后统一经本地固定端口转发请求，切换上游无需重启客户端", "en": "Route traffic through a fixed local port so switching upstreams needs no restart" }
     },
     {
       "key": "mode",
       "type": "enum",
       "default": "direct",
+      "group": { "zh-CN": "转发与网关", "en": "Gateway & Routing" },
       "options": [
         { "value": "direct", "label": "直连 (DIRECT)" },
         { "value": "upstream", "label": "上游代理 (Upstream)" }
       ],
-      "label": { "zh-CN": "当前转发模式", "en": "Forwarding mode" }
-    },
-    {
-      "key": "upstreamUrl",
-      "type": "string",
-      "default": "",
-      "label": { "zh-CN": "上游代理地址 (http/https/socks5/socks5h)", "en": "Upstream proxy URL" }
-    },
-    {
-      "key": "noProxy",
-      "type": "string",
-      "default": "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<-loopback>",
-      "label": { "zh-CN": "绕过规则 (NO_PROXY)", "en": "Bypass rules (NO_PROXY)" }
+      "label": { "zh-CN": "转发模式", "en": "Forwarding mode" },
+      "description": { "zh-CN": "选择直连出站或转发至下方配置的上游代理", "en": "Choose direct outbound or route via the configured upstream proxy" }
     },
     {
       "key": "gatewayPort",
@@ -35,13 +27,49 @@
       "min": 1024,
       "max": 65535,
       "default": 18766,
-      "label": { "zh-CN": "本地监听端口", "en": "Local gateway port" }
+      "group": { "zh-CN": "转发与网关", "en": "Gateway & Routing" },
+      "unit": { "zh-CN": "端口", "en": "port" },
+      "placeholder": "18766",
+      "label": { "zh-CN": "本地监听端口", "en": "Local gateway port" },
+      "description": { "zh-CN": "转发网关绑定于 127.0.0.1 的固定端口", "en": "Fixed loopback port bound on 127.0.0.1" }
     },
     {
       "key": "fallbackToDirectOnUpstreamError",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "上游失败时自动降级直连（默认关闭）", "en": "Fallback to DIRECT when upstream fails" }
+      "group": { "zh-CN": "转发与网关", "en": "Gateway & Routing" },
+      "label": { "zh-CN": "上游异常时自动直连", "en": "Fallback to DIRECT on error" },
+      "description": { "zh-CN": "默认关闭，仅在严格需要可用性优先时开启", "en": "Disabled by default; falls back to direct connection when upstream fails" }
+    },
+    {
+      "key": "upstreamUrl",
+      "type": "string",
+      "default": "",
+      "group": { "zh-CN": "上游与绕过规则", "en": "Upstream & Bypass Rules" },
+      "placeholder": "http://127.0.0.1:7890",
+      "label": { "zh-CN": "上游代理地址", "en": "Upstream proxy URL" },
+      "description": { "zh-CN": "支持 http://、https://、socks5:// 与 socks5h:// 协议", "en": "Supports http://, https://, socks5://, and socks5h://" }
+    },
+    {
+      "key": "noProxy",
+      "type": "string",
+      "default": "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<-loopback>",
+      "group": { "zh-CN": "上游与绕过规则", "en": "Upstream & Bypass Rules" },
+      "placeholder": "localhost,127.0.0.1,::1",
+      "label": { "zh-CN": "绕过规则 (NO_PROXY)", "en": "Bypass rules (NO_PROXY)" },
+      "description": { "zh-CN": "逗号分隔的域名或 CIDR 网段，匹配后直接放行不走上游", "en": "Comma-separated hosts or CIDRs that bypass the upstream proxy" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "probe",
+      "command": "proxy.probe",
+      "label": { "zh-CN": "探测代理连通性", "en": "Probe Proxy Connectivity" }
+    },
+    {
+      "id": "switch-mode",
+      "command": "proxy.switch-mode",
+      "label": { "zh-CN": "切换代理模式", "en": "Switch Proxy Mode" }
     }
   ]
 }

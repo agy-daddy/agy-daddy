@@ -8,13 +8,17 @@
     "zh-CN": "用量胶囊与面板",
     "en": "Usage Capsule & Panel"
   },
+  "description": {
+    "zh-CN": "顶栏累计用量胶囊、52 周多维度热力图、API 参考费用折算与订阅套餐管理",
+    "en": "Topbar cumulative token capsule, 52-week heatmap, API equivalent cost estimator, and subscription tier config"
+  },
   "engines": {
     "agyDaddy": "^1.0.0",
     "antigravity": ">=2.32.0"
   },
   "main": "./src/node.js",
   "renderer": "./src/renderer.js",
-  "world": "main",
+  "world": "isolated",
   "activationEvents": ["onStartup"],
   "requires": {
     "anchors": ["topbar.rightCluster"]
@@ -31,9 +35,9 @@
   },
   "permissions": [
     "dom:write",
-    "page:main-world",
     "rpc:read",
     "bridge:route",
+    "fs:brain-read",
     "native:install"
   ],
   "contributes": {
@@ -44,9 +48,6 @@
     "native": {
       "mcp": "./native/mcp.json"
     },
-    "locales": "./locales",
-    "migrations": [
-      { "from": "AntigravityContextMeter", "files": ["token-pricing-ledger.json", "custom-plan.json"] }
-    ]
+    "locales": "./locales"
   }
 }

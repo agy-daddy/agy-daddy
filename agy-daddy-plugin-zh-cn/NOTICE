@@ -1,4 +1,4 @@
-Agy-Daddy Chinese Localization Plugin (@agy-daddy/plugin-zh-cn)
+Agy-Daddy Multi-Language Localization Plugin (@agy-daddy/plugin-zh-cn)
 
 This project incorporates reversible DOM localization and UI dictionary rules
 derived from:
@@ -7,3 +7,6 @@ derived from:
   Copyright (c) 2026 Antigravity Context Viewer Contributors (MIT License)
 - yiheng8023/antigravity-chinese (v3.3.57, MIT License)
 - Visual Studio Code Localization Packs (microsoft/vscode-loc, MIT License)
+
+Original MIT-licensed multi-language localization packs (zh-TW, ja, ko, es, pt, fr, ru, it):
+- Copyright (c) 2026 Agy-Daddy Contributors (MIT License)

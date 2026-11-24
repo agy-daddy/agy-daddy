@@ -1,8 +1,8 @@
 {
-  "panel.title": "上下文监测与附件审计",
+  "panel.title": "当前对话实时状态",
   "panel.rescan": "重新扫描",
   "panel.noSession": "暂无活跃会话",
-  "pulse.waiting": "Ctx --",
+  "pulse.waiting": "窗口 -- · 本对话 --",
   "alert.warn240k": "建议压缩上下文（>240K 缓存效率下降风险）",
   "alert.cliff328k": "高风险断崖区（>=328K 易丢缓存）",
   "alert.cacheDrop": "检测到上下文缓存失效",

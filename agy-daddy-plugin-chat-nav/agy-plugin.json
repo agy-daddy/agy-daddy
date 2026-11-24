@@ -8,29 +8,37 @@
     "zh-CN": "对话栏增强",
     "en": "Chat Navigation & Editor"
   },
+  "description": {
+    "zh-CN": "右侧悬浮对话导航条、对话关键词/正则全文检索、思考块锁定、快捷会话切换、复制会话 ID、多格式对话导出（MD/HTML/PDF）、内联文件编辑与安全外链",
+    "en": "Floating chat navigation dock, keyword/regex conversation search, thinking expand guard, conversation switching, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external links"
+  },
   "engines": {
     "agyDaddy": "^1.0.0",
     "antigravity": ">=2.32.0"
   },
   "main": "./src/node.js",
   "renderer": "./src/renderer.js",
-  "world": "main",
+  "world": "isolated",
   "activationEvents": ["onStartup"],
   "requires": {
     "anchors": ["chat.scrollViewport", "chat.messageList", "chat.thinkingTrigger"]
   },
   "provides": {
     "services": {
-      "chat-nav": { "version": "1.0.0", "realm": "page-main" }
+      "chat-nav": { "version": "1.0.0", "realm": "page-isolated" },
+      "chat-nav-node": { "version": "1.0.0", "realm": "node" }
     },
     "events": ["chat:thinking-expanded@1"],
-    "surfaces": ["chat.navButtons", "chat.search"]
+    "states": ["state:chat-nav.search@1"],
+    "surfaces": ["chat.navButtons"]
   },
   "permissions": [
     "dom:read",
     "dom:write",
-    "page:main-world",
+    "rpc:read",
     "bridge:route",
+    "process:spawn",
+    "fs:brain-read",
     "fs:user-files"
   ],
   "contributes": {
@@ -38,7 +46,13 @@
     "commands": [
       { "id": "chat-nav.scroll-top", "title": { "zh-CN": "滚动到对话顶部", "en": "Scroll to top" } },
       { "id": "chat-nav.scroll-bottom", "title": { "zh-CN": "滚动到对话底部", "en": "Scroll to bottom" } },
-      { "id": "chat-nav.expand-thinking", "title": { "zh-CN": "展开全部思考块", "en": "Expand thinking blocks" } }
+      { "id": "chat-nav.expand-thinking", "title": { "zh-CN": "展开全部思考块", "en": "Expand thinking blocks" } },
+      { "id": "chat-nav.search", "title": { "zh-CN": "执行对话全文检索", "en": "Search conversation messages" } },
+      { "id": "chat-nav.copy-id", "title": { "zh-CN": "复制当前会话 ID", "en": "Copy current session ID" } },
+      { "id": "chat-nav.export-md", "title": { "zh-CN": "导出当前对话为 Markdown", "en": "Export conversation as Markdown" } },
+      { "id": "chat-nav.export", "title": { "zh-CN": "导出当前对话 (MD/HTML/PDF)", "en": "Export conversation (MD/HTML/PDF)" } },
+      { "id": "chat-nav.export-all", "title": { "zh-CN": "批量导出当前对话为全部所选格式", "en": "Export conversation in all selected formats" } },
+      { "id": "chat-nav.browseExportDir", "title": { "zh-CN": "选择默认导出保存文件夹", "en": "Browse default export directory" } }
     ],
     "locales": "./locales"
   }

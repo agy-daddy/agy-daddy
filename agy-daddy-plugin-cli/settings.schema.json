@@ -5,43 +5,137 @@
       "key": "terminalApp",
       "type": "enum",
       "default": "auto",
+      "group": { "zh-CN": "终端环境", "en": "Terminal Environment" },
       "options": [
         { "value": "auto", "label": "自动探测" },
         { "value": "terminal", "label": "macOS Terminal.app" },
         { "value": "iterm2", "label": "iTerm2" },
         { "value": "ghostty", "label": "Ghostty" },
         { "value": "warp", "label": "Warp" },
-        { "value": "rex", "label": "Rex" },
+        { "value": "kitty", "label": "Kitty" },
         { "value": "wezterm", "label": "WezTerm" },
+        { "value": "cmux", "label": "cmux" },
+        { "value": "alacritty", "label": "Alacritty" },
+        { "value": "rex", "label": "Rex" },
         { "value": "tmux", "label": "tmux" },
         { "value": "wt", "label": "Windows Terminal" },
-        { "value": "powershell", "label": "PowerShell" }
+        { "value": "powershell", "label": "PowerShell" },
+        { "value": "wsl", "label": "WSL" }
       ],
-      "label": { "zh-CN": "目标终端 / 多路复用器", "en": "Target terminal / multiplexer" }
+      "label": { "zh-CN": "目标终端 / 多路复用器", "en": "Target terminal / multiplexer" },
+      "description": { "zh-CN": "从顶栏点击 CLI 胶囊时优先唤起的终端或会话复用器", "en": "Terminal or multiplexer launched when clicking the topbar CLI capsule" }
     },
     {
       "key": "customTerminalPath",
       "type": "string",
       "default": "",
-      "label": { "zh-CN": "自定义终端可执行路径", "en": "Custom terminal path" }
+      "group": { "zh-CN": "终端环境", "en": "Terminal Environment" },
+      "placeholder": "/Applications/Ghostty.app",
+      "label": { "zh-CN": "终端程序路径", "en": "Terminal executable path" },
+      "description": { "zh-CN": "切换终端后自动检测并回显路径；检测失败时请手动输入或点击「浏览选择」", "en": "Auto-detected on terminal switch; enter a path or browse if detection fails" },
+      "probe": {
+        "command": "cli.detectTerminalPath",
+        "watchKeys": ["terminalApp"],
+        "autoFill": true,
+        "runOnOpen": true,
+        "buttonLabel": { "zh-CN": "重新检测", "en": "Detect" }
+      },
+      "browse": {
+        "command": "cli.browseTerminalPath",
+        "label": { "zh-CN": "浏览选择", "en": "Browse" }
+      }
     },
     {
       "key": "cliMuxHost",
       "type": "string",
       "default": "",
-      "label": { "zh-CN": "SSH 多路复用远端主机", "en": "SSH mux host" }
+      "group": { "zh-CN": "终端环境", "en": "Terminal Environment" },
+      "placeholder": "user@dev-box",
+      "options": [
+        { "value": "", "label": { "zh-CN": "本地终端（留空）", "en": "Local terminal (empty)" } }
+      ],
+      "optionsCommand": "cli.listMuxHosts",
+      "label": { "zh-CN": "SSH 多路复用主机", "en": "SSH mux host" },
+      "description": { "zh-CN": "支持下拉选择 ~/.ssh/config 主机或直接输入 user@host；留空则在本地启动", "en": "Select a host from ~/.ssh/config or type user@host; leave empty for local launch" }
+    },
+    {
+      "key": "cliLabel",
+      "type": "string",
+      "default": "CLI",
+      "group": { "zh-CN": "启动参数", "en": "Launch Options" },
+      "placeholder": "CLI",
+      "label": { "zh-CN": "默认按钮显示名称", "en": "Default button label" },
+      "description": { "zh-CN": "自定义顶栏默认 CLI 启动按钮与菜单标题的显示名称", "en": "Custom display name for the default CLI topbar button and launcher header" }
     },
     {
       "key": "cliDefaultModel",
       "type": "string",
       "default": "",
-      "label": { "zh-CN": "默认 CLI 模型", "en": "Default CLI model" }
+      "group": { "zh-CN": "启动参数", "en": "Launch Options" },
+      "placeholder": "gemini-2.5-pro",
+      "options": [
+        { "value": "", "label": { "zh-CN": "沿用 CLI 默认模型（留空）", "en": "Use CLI default (empty)" } },
+        { "value": "gemini-2.5-pro", "label": "gemini-2.5-pro" },
+        { "value": "gemini-2.5-flash", "label": "gemini-2.5-flash" },
+        { "value": "gemini-3-pro-preview", "label": "gemini-3-pro-preview" },
+        { "value": "claude-sonnet-4-5", "label": "claude-sonnet-4-5" },
+        { "value": "claude-opus-4-6", "label": "claude-opus-4-6" }
+      ],
+      "optionsCommand": "cli.listModels",
+      "label": { "zh-CN": "默认 CLI 模型", "en": "Default CLI model" },
+      "description": { "zh-CN": "支持下拉选择可用模型或直接输入自定义模型标识，留空沿用 CLI 默认配置", "en": "Select an available model or enter a custom model ID; leave blank for default" }
     },
     {
-      "key": "cliSkipPermissions",
-      "type": "boolean",
-      "default": false,
-      "label": { "zh-CN": "启动时附加跳过权限参数", "en": "Skip permissions on launch" }
+      "key": "cliPermissionMode",
+      "type": "enum",
+      "default": "default",
+      "group": { "zh-CN": "启动参数", "en": "Launch Options" },
+      "options": [
+        { "value": "default", "label": { "zh-CN": "默认（沿用 CLI 默认权限）", "en": "Default (CLI default permissions)" } },
+        { "value": "plan", "label": { "zh-CN": "规划只读模式 (--mode plan)", "en": "Plan mode (--mode plan)" } },
+        { "value": "accept-edits", "label": { "zh-CN": "自动接受编辑 (--mode accept-edits)", "en": "Accept edits (--mode accept-edits)" } },
+        { "value": "auto", "label": { "zh-CN": "自动执行模式 (--mode auto)", "en": "Auto mode (--mode auto)" } },
+        { "value": "skip-permissions", "label": { "zh-CN": "免审核 / 跳过全部权限确认 (--dangerously-skip-permissions)", "en": "Skip all permissions (--dangerously-skip-permissions)" } }
+      ],
+      "label": { "zh-CN": "启动权限模式", "en": "Launch permission mode" },
+      "description": { "zh-CN": "设置启动 agy 时的工具执行权限策略；「免审核」仅建议在受信任工作区使用", "en": "Permission policy passed to agy on launch; use skip-permissions only in trusted workspaces" }
+    },
+    {
+      "key": "cliDefaultCommand",
+      "type": "string",
+      "default": "",
+      "group": { "zh-CN": "启动参数", "en": "Launch Options" },
+      "placeholder": "agy",
+      "label": { "zh-CN": "默认启动命令", "en": "Default launch command" },
+      "description": { "zh-CN": "根据模型与权限选项自动拼接生成，支持直接编辑或追加参数；点击启动时会自动探测当前所处项目目录并在对应工作区绝对路径下启动 agy", "en": "Auto-composed from model & permission options; clicking launch automatically detects the active workspace directory and runs agy in its absolute path" },
+      "composer": {
+        "command": "cli.buildDefaultCommand",
+        "watchKeys": ["cliDefaultModel", "cliPermissionMode"],
+        "resetLabel": { "zh-CN": "恢复默认", "en": "Restore Default" },
+        "runOnOpen": true
+      }
+    },
+    {
+      "key": "quickCommands",
+      "type": "list",
+      "maxItems": 20,
+      "default": [],
+      "group": { "zh-CN": "顶栏快捷启动", "en": "Topbar Quick Launch" },
+      "label": { "zh-CN": "自定义快捷启动命令", "en": "Custom quick launch commands" },
+      "description": { "zh-CN": "添加任意终端命令用于顶栏快速启动（如 claude、codex、npm run dev 等），可选择固定在顶栏或收纳进 CLI 菜单", "en": "Add any terminal command to launch from the topbar (pinned button or CLI launcher menu)" },
+      "itemEditor": {
+        "kind": "command-preset",
+        "namePlaceholder": { "zh-CN": "按钮名称（如 Claude / Dev）", "en": "Label (e.g. Claude / Dev)" },
+        "commandPlaceholder": { "zh-CN": "任意终端命令（如 claude --continue）", "en": "Any terminal command" },
+        "allowPinToTopbar": true
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "launch",
+      "command": "cli.launch",
+      "label": { "zh-CN": "在新终端启动 CLI", "en": "Launch CLI in Terminal" }
     }
   ]
 }

@@ -3,5 +3,8 @@
   "nav.prev": "Prev",
   "nav.next": "Next",
   "nav.bottom": "Bottom",
-  "nav.think": "Expand Thinking"
+  "nav.think": "Expand Thinking",
+  "nav.copyId": "Copy Session ID",
+  "nav.exportMd": "Export Conversation",
+  "search.placeholder": "Search messages (regex supported)..."
 }

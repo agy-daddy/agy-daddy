@@ -1,7 +1,7 @@
 {
   "name": "@agy-daddy/plugin-composer",
   "version": "1.0.0",
-  "description": "Agy-Daddy composer quick prompts, ghost follow-ups, 240K auto-compact, Auto-Accept with high-risk guard, and Markdown export plugin",
+  "description": "Agy-Daddy composer quick prompts, ghost follow-ups, 240K auto-compact, and Auto-Accept with high-risk guard plugin",
   "license": "MIT",
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",

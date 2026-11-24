@@ -1,9 +1,12 @@
 'use strict';
 
 const {
+  DEFAULT_LANG,
+  SUPPORTED_LANGUAGES,
   BRAND_TITLE_MODES,
-  EXACT_DICTIONARY,
-  REGEX_DICTIONARY,
+  normalizeLang,
+  getLanguageMeta,
+  getDictionaryStats,
   normalizeBrandTitleMode,
   parseCustomRules,
   translateText
@@ -11,63 +14,115 @@ const {
 
 let disposers = [];
 
-async function activate(host) {
-  let config = {
-    lang: 'zh',
-    brandTitle: BRAND_TITLE_MODES.ENGLISH,
-    englishLabels: false,
-    enableRemoteThinkingTranslation: false,
-    ...(host.storage.readJson('config.json', {}).data || {})
+function normalizeManagedSettings(raw = {}) {
+  return {
+    lang: normalizeLang(raw.lang, DEFAULT_LANG),
+    brandTitle: normalizeBrandTitleMode(raw.brandTitle || BRAND_TITLE_MODES.ENGLISH),
+    englishLabels: Boolean(raw.englishLabels),
+    translateThinking: raw.translateThinking !== false,
+    translateConversationTitles: raw.translateConversationTitles !== false,
+    enableRemoteThinkingTranslation: Boolean(raw.enableRemoteThinkingTranslation)
   };
-  config.brandTitle = normalizeBrandTitleMode(config.brandTitle);
+}
+
+async function activate(host) {
+  let config = normalizeManagedSettings(host.settings.get());
+  let lastNonEnLang = config.lang !== 'en' ? config.lang : DEFAULT_LANG;
+  let syncingSettings = false;
 
   let translationCache = host.storage.readJson('zh-translation-cache.json', {}).data || {};
   let customTitles = host.storage.readJson('custom-conversation-titles.json', {}).data || {};
   let customRulesRaw = [];
 
-  function saveConfig(patch = {}) {
-    config = {
-      ...config,
-      ...patch
-    };
-    config.brandTitle = normalizeBrandTitleMode(config.brandTitle);
-    host.storage.writeJson('config.json', config);
+  function publishLangState() {
+    if (config.lang !== 'en') {
+      lastNonEnLang = config.lang;
+    }
+    const meta = getLanguageMeta(config.lang);
     host.state.set('state:zh-cn.lang@1', {
       lang: config.lang,
+      bcp47: meta.bcp47,
+      shortLabel: meta.shortLabel,
+      lastNonEnLang,
       brandTitle: config.brandTitle,
       englishLabels: config.englishLabels,
+      translateThinking: config.translateThinking,
+      translateConversationTitles: config.translateConversationTitles,
       enableRemoteThinkingTranslation: config.enableRemoteThinkingTranslation
     });
+  }
+
+  async function applyConfigPatch(patch = {}, persistManaged = true) {
+    if (Array.isArray(patch.customRules)) {
+      customRulesRaw = patch.customRules;
+    }
+    const managedPatch = {};
+    if (patch.lang !== undefined) managedPatch.lang = normalizeLang(patch.lang, DEFAULT_LANG);
+    if (patch.brandTitle !== undefined) managedPatch.brandTitle = normalizeBrandTitleMode(patch.brandTitle);
+    if (patch.englishLabels !== undefined) managedPatch.englishLabels = Boolean(patch.englishLabels);
+    if (patch.translateThinking !== undefined) managedPatch.translateThinking = Boolean(patch.translateThinking);
+    if (patch.translateConversationTitles !== undefined) {
+      managedPatch.translateConversationTitles = Boolean(patch.translateConversationTitles);
+    }
+    if (patch.enableRemoteThinkingTranslation !== undefined) {
+      managedPatch.enableRemoteThinkingTranslation = Boolean(patch.enableRemoteThinkingTranslation);
+    }
+
+    config = normalizeManagedSettings({ ...config, ...managedPatch });
+    publishLangState();
+
+    if (persistManaged && Object.keys(managedPatch).length > 0) {
+      syncingSettings = true;
+      try {
+        await host.settings.update(managedPatch);
+      } finally {
+        syncingSettings = false;
+      }
+    }
     return { ...config };
   }
 
+  const stopSettingsSub = host.settings.onChange((nextValues) => {
+    if (syncingSettings) return;
+    config = normalizeManagedSettings(nextValues);
+    publishLangState();
+  });
+
   const serviceMethods = {
-    getDictionaryStats() {
+    getSupportedLanguages() {
+      return SUPPORTED_LANGUAGES.map((item) => ({ ...item }));
+    },
+    getDictionaryStats(targetLang) {
+      if (targetLang === 'all') {
+        return getDictionaryStats('all');
+      }
+      const lang = targetLang
+        ? normalizeLang(targetLang, DEFAULT_LANG)
+        : (config.lang === 'en' ? lastNonEnLang : config.lang);
+      const single = getDictionaryStats(lang);
+      const all = getDictionaryStats('all');
       return {
-        exactCount: EXACT_DICTIONARY.size,
-        regexCount: REGEX_DICTIONARY.length
+        ...single,
+        languages: all.languages
       };
     },
     getConfig() {
+      const activeDictLang = config.lang === 'en' ? lastNonEnLang : config.lang;
       return {
         ...config,
+        lastNonEnLang,
+        supportedLanguages: SUPPORTED_LANGUAGES.map((l) => l.code),
         customRules: customRulesRaw,
         titles: { ...customTitles },
-        dictionaryStats: {
-          exactCount: EXACT_DICTIONARY.size,
-          regexCount: REGEX_DICTIONARY.length
-        }
+        dictionaryStats: getDictionaryStats(activeDictLang)
       };
     },
-    setLang(nextLang) {
-      const normalized = nextLang === 'en' ? 'en' : 'zh';
-      return saveConfig({ lang: normalized });
+    async setLang(nextLang) {
+      const normalized = normalizeLang(nextLang, DEFAULT_LANG);
+      return await applyConfigPatch({ lang: normalized }, true);
     },
-    setConfig(patch = {}) {
-      if (Array.isArray(patch.customRules)) {
-        customRulesRaw = patch.customRules;
-      }
-      return saveConfig(patch);
+    async setConfig(patch = {}) {
+      return await applyConfigPatch(patch, true);
     },
     getCustomTitle(cascadeId) {
       return customTitles[String(cascadeId || '')] || null;
@@ -85,17 +140,34 @@ async function activate(host) {
       const raw = String(text || '').trim();
       if (!raw) return { ok: true, text: '', source: 'empty' };
 
-      const dictResult = translateText(raw, {
-        englishLabels: config.englishLabels,
-        brandTitle: config.brandTitle,
-        customRules: parseCustomRules(customRulesRaw)
-      });
-      if (dictResult !== raw) {
-        return { ok: true, text: dictResult, source: 'dictionary' };
+      const targetLang = options.lang !== undefined
+        ? normalizeLang(options.lang, DEFAULT_LANG)
+        : (options.tl
+          ? normalizeLang(options.tl, lastNonEnLang)
+          : config.lang);
+
+      if (options.kind === 'thinking' && !config.translateThinking) {
+        return { ok: true, text: raw, source: 'disabled', lang: targetLang };
       }
 
-      if (translationCache[raw]) {
-        return { ok: true, text: translationCache[raw], source: 'cache' };
+      if (targetLang !== 'en') {
+        const dictResult = translateText(raw, {
+          lang: targetLang,
+          englishLabels: config.englishLabels,
+          brandTitle: config.brandTitle,
+          customRules: parseCustomRules(customRulesRaw)
+        });
+        if (dictResult !== raw) {
+          return { ok: true, text: dictResult, source: 'dictionary', lang: targetLang };
+        }
+      }
+
+      const cacheKey = `${targetLang}::${raw}`;
+      if (typeof translationCache[cacheKey] === 'string' && translationCache[cacheKey]) {
+        return { ok: true, text: translationCache[cacheKey], source: 'cache', lang: targetLang };
+      }
+      if (targetLang === 'zh' && typeof translationCache[raw] === 'string' && translationCache[raw]) {
+        return { ok: true, text: translationCache[raw], source: 'cache', lang: 'zh' };
       }
 
       const allowRemote = Boolean(config.enableRemoteThinkingTranslation || options.optInRemote === true);
@@ -104,15 +176,17 @@ async function activate(host) {
           ok: false,
           blocked: true,
           reason: 'REMOTE_TRANSLATION_DISABLED',
-          text: raw
+          text: raw,
+          lang: targetLang
         };
       }
 
-      const targetLang = options.tl || 'zh-CN';
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(raw)}`;
+      const remoteLang = targetLang === 'en' ? lastNonEnLang : targetLang;
+      const targetTl = options.tl || getLanguageMeta(remoteLang).googleTl;
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetTl)}&dt=t&q=${encodeURIComponent(raw)}`;
       const resp = await host.net.fetch(url);
       if (!resp || resp.ok === false) {
-        return { ok: false, error: `HTTP ${resp?.status || 'error'}`, text: raw };
+        return { ok: false, error: `HTTP ${resp?.status || 'error'}`, text: raw, lang: targetLang };
       }
       const data = await resp.json();
       const translated = Array.isArray(data?.[0])
@@ -120,15 +194,19 @@ async function activate(host) {
         : raw;
 
       if (translated && translated !== raw) {
-        translationCache[raw] = translated;
+        translationCache[cacheKey] = translated;
         host.storage.writeJson('zh-translation-cache.json', translationCache);
       }
-      return { ok: true, text: translated || raw, source: 'remote' };
+      return { ok: true, text: translated || raw, source: 'remote', lang: targetLang, tl: targetTl };
     },
     async translateConversationTitle(cascadeId, rawTitle, options = {}) {
       const cid = String(cascadeId || '').trim();
       if (cid && customTitles[cid]) {
         return { ok: true, cascadeId: cid, title: customTitles[cid], source: 'custom' };
+      }
+      if (!config.translateConversationTitles) {
+        const raw = String(rawTitle || '').trim();
+        return { ok: true, cascadeId: cid, title: raw, text: raw, source: 'disabled', lang: config.lang };
       }
       const res = await serviceMethods.translateSnippet(rawTitle, options);
       return { ...res, cascadeId: cid, title: res.text };
@@ -136,29 +214,36 @@ async function activate(host) {
   };
 
   const stopSvc = host.services.provide('zh-cn', serviceMethods, { realm: 'node', version: '1.0.0' });
-  const stopCfgRoute = await host.bridge.registerRoute('/config', async () => serviceMethods.getConfig());
-  const stopLangRoute = await host.bridge.registerRoute('/set-lang', async (body) => serviceMethods.setLang(body?.lang));
-  const stopSetCfgRoute = await host.bridge.registerRoute('/set-config', async (body) => serviceMethods.setConfig(body || {}));
-  const stopTransRoute = await host.bridge.registerRoute('/translate', async (body) => serviceMethods.translateSnippet(body?.text, body || {}));
-  const stopTitleTransRoute = await host.bridge.registerRoute('/translate-title', async (body) => {
-    return serviceMethods.translateConversationTitle(body?.cascadeId, body?.title, body || {});
+  const stopToggleCmd = host.commands.register('zh-cn.toggle-lang', async () => {
+    const nextLang = config.lang === 'en' ? lastNonEnLang : 'en';
+    const updated = await applyConfigPatch({ lang: nextLang }, true);
+    const meta = getLanguageMeta(updated.lang);
+    return {
+      ok: true,
+      lang: updated.lang,
+      label: meta.shortLabel,
+      message: `已切换至 ${meta.nativeName}`
+    };
   });
-  const stopDictStatsRoute = await host.bridge.registerRoute('/dictionary-stats', async () => serviceMethods.getDictionaryStats());
-  const stopTitlesRoute = await host.bridge.registerRoute('/titles', async (body) => {
-    if (body?.action === 'set') return serviceMethods.setCustomTitle(body.cascadeId, body.title);
-    return { titles: { ...customTitles } };
+  const stopSetLangCmd = host.commands.register('zh-cn.set-lang', async (nextLang) => {
+    const normalized = normalizeLang(nextLang, DEFAULT_LANG);
+    const updated = await applyConfigPatch({ lang: normalized }, true);
+    const meta = getLanguageMeta(updated.lang);
+    return {
+      ok: true,
+      lang: updated.lang,
+      label: meta.shortLabel,
+      message: `已切换至 ${meta.nativeName}`
+    };
   });
 
-  saveConfig({});
+  publishLangState();
+
   disposers.push(
+    stopSettingsSub,
     stopSvc,
-    stopCfgRoute,
-    stopLangRoute,
-    stopSetCfgRoute,
-    stopTransRoute,
-    stopTitleTransRoute,
-    stopDictStatsRoute,
-    stopTitlesRoute
+    stopToggleCmd,
+    stopSetLangCmd
   );
 }
 

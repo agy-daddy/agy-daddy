@@ -87,6 +87,78 @@ function measure(text, outAcc = null) {
   };
 }
 
+function parseThresholdSpec(raw, fallbackTokens = 240000) {
+  const fb = Number(fallbackTokens) > 0 ? Math.round(Number(fallbackTokens)) : 240000;
+  const fbLabel = formatTokensShort(fb).toUpperCase();
+  if (typeof raw === 'number') {
+    if (Number.isFinite(raw) && raw > 0) {
+      const val = Math.round(raw);
+      return { kind: 'tokens', value: val, label: formatTokensShort(val).toUpperCase() };
+    }
+    return { kind: 'tokens', value: fb, label: fbLabel };
+  }
+  const s = String(raw || '').trim();
+  if (!s) return { kind: 'tokens', value: fb, label: fbLabel };
+
+  const pctMatch = s.match(/^(\d+(?:\.\d+)?)\s*%$/);
+  if (pctMatch) {
+    const pct = Math.max(1, Math.min(99, Number(pctMatch[1])));
+    const cleanPct = Number(pct.toFixed(1));
+    return { kind: 'percent', value: cleanPct, label: `${cleanPct}%` };
+  }
+
+  const mMatch = s.match(/^(\d+(?:\.\d+)?)\s*m$/i);
+  if (mMatch) {
+    const num = Number(mMatch[1]);
+    if (Number.isFinite(num) && num > 0) {
+      const val = Math.round(num * 1000000);
+      return { kind: 'tokens', value: val, label: formatTokensShort(val).toUpperCase() };
+    }
+  }
+
+  const kMatch = s.match(/^(\d+(?:\.\d+)?)\s*k$/i);
+  if (kMatch) {
+    const num = Number(kMatch[1]);
+    if (Number.isFinite(num) && num > 0) {
+      const val = Math.round(num * 1000);
+      return { kind: 'tokens', value: val, label: formatTokensShort(val).toUpperCase() };
+    }
+  }
+
+  const numMatch = s.match(/^(\d+(?:\.\d+)?)$/);
+  if (numMatch) {
+    const num = Number(numMatch[1]);
+    if (Number.isFinite(num) && num > 0) {
+      const val = Math.round(num);
+      return { kind: 'tokens', value: val, label: formatTokensShort(val).toUpperCase() };
+    }
+  }
+
+  return { kind: 'tokens', value: fb, label: fbLabel };
+}
+
+function resolveThresholdTokens(raw, budget, fallbackTokens = 240000) {
+  const spec = parseThresholdSpec(raw, fallbackTokens);
+  if (spec.kind === 'percent') {
+    const b = Number(budget);
+    if (Number.isFinite(b) && b > 0) {
+      return Math.max(1000, Math.round((spec.value / 100) * b));
+    }
+    return Number(fallbackTokens) > 0 ? Math.round(Number(fallbackTokens)) : 240000;
+  }
+  return spec.value;
+}
+
+function formatThresholdLabel(raw, budget, fallbackTokens = 240000) {
+  const spec = parseThresholdSpec(raw, fallbackTokens);
+  const tokens = resolveThresholdTokens(raw, budget, fallbackTokens);
+  return {
+    spec,
+    tokens,
+    shortLabel: spec.kind === 'percent' ? `${spec.value}%` : formatTokensShort(tokens).toUpperCase()
+  };
+}
+
 function emptyGroup() {
   return { chars: 0, bytes: 0, low: 0, high: 0 };
 }
@@ -108,16 +180,30 @@ function normalizeModelId(raw) {
   if (!raw || typeof raw !== 'string') return null;
   const str = raw.trim().toLowerCase().replace(/^word\//, '');
   if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
+  if (str.includes('3.7-flash') || str.includes('3.7 flash')) return 'gemini-3.7-flash';
+  if (str.includes('3.6-flash') || str.includes('3.6 flash')) return 'gemini-3.6-flash';
+  if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) {
+    if (str.includes('3.1')) return 'gemini-3.1-flash-lite';
+    if (str.includes('2.5')) return 'gemini-2.5-flash-lite';
+    return 'gemini-3.5-flash-lite';
+  }
+  if (str.includes('3.1-flash-lite') || str.includes('3.1 flash-lite')) return 'gemini-3.1-flash-lite';
+  if (str.includes('2.5-flash-lite') || str.includes('2.5 flash-lite')) return 'gemini-2.5-flash-lite';
+  if (str.includes('2.5-flash') || str.includes('2.5 flash')) return 'gemini-2.5-flash';
+  if ((str.includes('3.5-flash') || str.includes('3.5 flash')) && !str.includes('flash-lite')) return 'gemini-3.5-flash';
+  if (/\bgemini-3-flash(?:-[a-z0-9]+)?\b/.test(str) || str.includes('3 flash')) return 'gemini-3-flash';
   if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
   if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
+  if (str.includes('4-neon') || str.includes('4 neon') || /\bneon\b/.test(str) || str.includes('m532')) return 'gemini-4-neon';
   if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(str) || str.includes('m668')) {
     return 'gemini-4-argon';
   }
   if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
-  if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
   if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
   if (/(?:opus[-_ ]5[._-]5|5[._-]5[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
   if (/(?:sonnet[-_ ]5[._-]5|5[._-]5[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
+  if (/(?:opus[-_ ]4[._-]6|4[._-]6[-_ ]opus)/.test(str)) return 'claude-opus-4-6';
+  if (/(?:sonnet[-_ ]4[._-]6|4[._-]6[-_ ]sonnet)/.test(str)) return 'claude-sonnet-4-6';
   return null;
 }
 
@@ -160,7 +246,7 @@ function getContextLimitForModel(modelId, label = '', options = {}) {
     if (/5[._-]5|M400|M401|M402|M403|M404|M405/.test(combined)) return CLAUDE_55_LIMIT;
     return 200000;
   }
-  if (combined.includes('GEMINI') || combined.includes('CARBON') || combined.includes('ARGON') || combined.includes('HYDROGEN') || combined.includes('ORCHESTRATOR') || combined.includes('FLASH')) {
+  if (combined.includes('GEMINI') || combined.includes('CARBON') || combined.includes('ARGON') || combined.includes('HYDROGEN') || combined.includes('NEON') || combined.includes('M532') || combined.includes('M668') || combined.includes('M670') || combined.includes('ORCHESTRATOR') || combined.includes('FLASH')) {
     return GEMINI_4_LIMIT;
   }
   return DEFAULT_CONTEXT_LIMIT;
@@ -595,8 +681,8 @@ function analyzeTrajectorySteps(steps, options = {}) {
   const totalInputWithCache = latestInput + latestCacheRead;
   const cacheHitRate = totalInputWithCache > 0 ? Number(((latestCacheRead / totalInputWithCache) * 100).toFixed(1)) : 0;
 
-  const warnThreshold = Number(options.warnThresholdTokens) > 0 ? Number(options.warnThresholdTokens) : 240000;
-  const cliffThreshold = Number(options.cliffThresholdTokens) > 0 ? Number(options.cliffThresholdTokens) : 328000;
+  const warnThreshold = resolveThresholdTokens(options.warnThreshold ?? options.warnThresholdTokens, budget, 240000);
+  const cliffThreshold = resolveThresholdTokens(options.cliffThreshold ?? options.cliffThresholdTokens, budget, 328000);
   const effectiveUsed = preciseUsed ?? totalTextGroup.high;
 
   const cacheDropDetected = Boolean(
@@ -658,7 +744,61 @@ function formatLocalDateStr(dt) {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
-function parseGeneratorCall(row, cascadeId = null, source = 'desktop', fallbackIndex = 0) {
+function extractStepTimestampsFromTrajectory(steps = []) {
+  const map = new Map();
+  const list = Array.isArray(steps) ? steps : [];
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    if (!s || typeof s !== 'object') continue;
+    const rawStep = s.stepIndex ?? s.step_index ?? s.metadata?.stepIndex ?? i;
+    const parsedStep = Number(rawStep);
+    if (!Number.isInteger(parsedStep) || parsedStep < 0) continue;
+    const ts = parseTimestampMs(
+      s.metadata?.createdAt ||
+      s.metadata?.timestamp ||
+      s.createdAt ||
+      s.created_at ||
+      s.timestamp ||
+      s.plannerResponse?.createdAt ||
+      s.userInput?.createdAt
+    );
+    if (ts > 0 && !map.has(parsedStep)) {
+      map.set(parsedStep, ts);
+    }
+  }
+  return map;
+}
+
+function resolveTimestampFromStepMap(stepIndex, stepTimestamps) {
+  if (!stepTimestamps) return 0;
+  if (typeof stepTimestamps.resolve === 'function') {
+    return Number(stepTimestamps.resolve(stepIndex)) || 0;
+  }
+  if (!(stepTimestamps instanceof Map) || stepTimestamps.size === 0) return 0;
+  const hasValidStep = Number.isInteger(stepIndex) && stepIndex >= 0;
+  if (hasValidStep && stepTimestamps.has(stepIndex)) {
+    return Number(stepTimestamps.get(stepIndex)) || 0;
+  }
+  let bestStep = -1;
+  let bestTs = 0;
+  let earliestStep = Infinity;
+  let earliestTs = 0;
+  for (const [s, ts] of stepTimestamps.entries()) {
+    if (!Number.isFinite(ts) || ts <= 946684800000) continue;
+    if (s < earliestStep) {
+      earliestStep = s;
+      earliestTs = ts;
+    }
+    if (hasValidStep && s <= stepIndex && s > bestStep) {
+      bestStep = s;
+      bestTs = ts;
+    }
+  }
+  if (bestTs > 0) return bestTs;
+  return earliestTs > 0 ? earliestTs : 0;
+}
+
+function parseGeneratorCall(row, cascadeId = null, source = 'desktop', fallbackIndex = 0, options = {}) {
   if (!row || typeof row !== 'object') return null;
   const cm = row.chatModel || {};
   const u = cm.usage || row.usage || {};
@@ -692,20 +832,32 @@ function parseGeneratorCall(row, cascadeId = null, source = 'desktop', fallbackI
     : 'streaming';
   const isEstimated = totalTokens <= 0 || outputTokens === 0;
 
-  const rawCreatedAt = row.created_at || row.createdAt || row.timestamp;
+  const rawCreatedAt = row.created_at || row.createdAt || row.timestamp || cm.chatStartMetadata?.createdAt || cm.createdAt;
   let timestamp = parseTimestampMs(rawCreatedAt);
   let date = null;
   let dateIsProvisional = false;
   if (timestamp > 0) {
     date = formatLocalDateStr(new Date(timestamp));
-  } else if (row.date && /^\d{4}-\d{2}-\d{2}/.test(String(row.date))) {
-    date = String(row.date).slice(0, 10);
-    timestamp = Date.parse(date);
-    dateIsProvisional = Boolean(row.dateIsProvisional);
   } else {
-    timestamp = Date.now();
-    date = formatLocalDateStr(new Date(timestamp));
-    dateIsProvisional = true;
+    const stepTs = resolveTimestampFromStepMap(stepIndex, options?.stepTimestamps);
+    const fallbackMs = Number(options?.fallbackTimestampMs) || 0;
+    if (stepTs > 0) {
+      timestamp = stepTs;
+      date = formatLocalDateStr(new Date(timestamp));
+      dateIsProvisional = false;
+    } else if (row.date && /^\d{4}-\d{2}-\d{2}/.test(String(row.date))) {
+      date = String(row.date).slice(0, 10);
+      timestamp = Date.parse(date);
+      dateIsProvisional = Boolean(row.dateIsProvisional);
+    } else if (Number.isFinite(fallbackMs) && fallbackMs > 946684800000) {
+      timestamp = fallbackMs;
+      date = formatLocalDateStr(new Date(timestamp));
+      dateIsProvisional = true;
+    } else {
+      timestamp = Date.now();
+      date = formatLocalDateStr(new Date(timestamp));
+      dateIsProvisional = true;
+    }
   }
 
   const ttftSec = parseDurationSec(cm.timeToFirstToken) ?? safeNum(row.ttftSec);
@@ -743,6 +895,109 @@ function parseGeneratorCall(row, cascadeId = null, source = 'desktop', fallbackI
   };
 }
 
+function summarizeSessionGeneratorCalls(gmRows, options = {}) {
+  const rows = Array.isArray(gmRows) ? gmRows : [];
+  const cascadeId = options.cascadeId || null;
+  const deduped = [];
+  const byCallId = new Map();
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || typeof row !== 'object') continue;
+    const cm = row.chatModel || {};
+    const u = cm.usage || row.usage || {};
+    const modelRaw = String(cm.model || cm.modelOrAlias?.model || cm.responseModel || cm.modelDisplayName || row.model || row.modelId || '').trim();
+    if (isShadowOrImageModel(modelRaw)) continue;
+
+    const inputTokens = Math.max(0, Number(u.inputTokens ?? row.inputTokens ?? row.input_tokens ?? 0) || 0);
+    const cachedTokens = Math.max(0, Number(u.cacheReadTokens ?? row.cacheTokens ?? row.cacheReadTokens ?? row.cache_read_tokens ?? 0) || 0);
+    const outputTokens = Math.max(0, Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens ?? 0) || 0);
+    const thinkingTokens = Math.max(0, Number(u.thinkingOutputTokens ?? row.thinkingTokens ?? row.thinking_output_tokens ?? 0) || 0);
+    const rawResponseTokens = u.responseOutputTokens ?? row.responseTokens;
+    const responseTokens = rawResponseTokens !== undefined && rawResponseTokens !== null
+      ? Math.max(0, Number(rawResponseTokens) || 0)
+      : Math.max(0, outputTokens - thinkingTokens);
+
+    if (inputTokens + cachedTokens + outputTokens <= 0) continue;
+
+    const ttftSec = parseDurationSec(cm.timeToFirstToken) ?? safeNum(row.ttftSec);
+    const streamingSec = parseDurationSec(cm.streamingDuration) ?? safeNum(row.streamingSec);
+    const durationSec = (ttftSec !== null && streamingSec !== null)
+      ? (ttftSec + streamingSec)
+      : (ttftSec ?? streamingSec ?? safeNum(row.durationSec));
+
+    const entry = {
+      inputTokens,
+      cachedTokens,
+      outputTokens,
+      thinkingTokens,
+      responseTokens,
+      ttftSec,
+      streamingSec,
+      durationSec
+    };
+
+    const explicitId = String(
+      u.responseId || u.response_id || row.response_id || row.responseId
+      || u.messageId || u.message_id || row.message_id || row.messageId
+      || row.callId || row.call_id || ''
+    );
+    const callKey = explicitId || extractCallId(row, cascadeId, i);
+    if (callKey) {
+      if (byCallId.has(callKey)) {
+        deduped[byCallId.get(callKey)] = entry;
+      } else {
+        byCallId.set(callKey, deduped.length);
+        deduped.push(entry);
+      }
+    } else {
+      deduped.push(entry);
+    }
+  }
+
+  let inputTokens = 0;
+  let cachedTokens = 0;
+  let outputTokens = 0;
+  let thinkingTokens = 0;
+  let responseTokens = 0;
+  let timedOutput = 0;
+  let timedDuration = 0;
+  let streamOutput = 0;
+  let streamDuration = 0;
+
+  for (const c of deduped) {
+    inputTokens += c.inputTokens;
+    cachedTokens += c.cachedTokens;
+    outputTokens += c.outputTokens;
+    thinkingTokens += c.thinkingTokens;
+    responseTokens += c.responseTokens;
+    if (c.outputTokens > 0 && c.durationSec !== null && c.durationSec > 0) {
+      timedOutput += c.outputTokens;
+      timedDuration += c.durationSec;
+    }
+    if (c.outputTokens > 0 && c.streamingSec !== null && c.streamingSec > 0.05) {
+      streamOutput += c.outputTokens;
+      streamDuration += c.streamingSec;
+    }
+  }
+
+  const totalInputTokens = inputTokens + cachedTokens;
+  const totalTokens = totalInputTokens + outputTokens;
+
+  return {
+    callsCount: deduped.length,
+    inputTokens,
+    cachedTokens,
+    totalInputTokens,
+    outputTokens,
+    thinkingTokens,
+    responseTokens,
+    totalTokens,
+    avgTps: timedDuration > 0 ? Number((timedOutput / timedDuration).toFixed(1)) : null,
+    avgStreamingTps: streamDuration > 0.05 ? Number((streamOutput / streamDuration).toFixed(1)) : null
+  };
+}
+
 function getRingAccentToken(usagePercent, cacheAlert = {}) {
   if (cacheAlert.isCacheDrop || Number(usagePercent) >= 80) {
     return 'var(--ag-ring-danger, #ef4444)';
@@ -750,7 +1005,7 @@ function getRingAccentToken(usagePercent, cacheAlert = {}) {
   if (cacheAlert.isCliff328k || cacheAlert.isWarn240k || Number(usagePercent) >= 50) {
     return 'var(--ag-ring-warn, #f59e0b)';
   }
-  return 'var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))';
+  return 'var(--ag-custom-token-accent, var(--ag-token-accent-default, #71717a))';
 }
 
 module.exports = {
@@ -760,8 +1015,12 @@ module.exports = {
   CLAUDE_55_LIMIT,
   GEMINI_4_LIMIT,
   measure,
+  parseTimestampMs,
   parseDurationSec,
   formatTokensShort,
+  parseThresholdSpec,
+  resolveThresholdTokens,
+  formatThresholdLabel,
   normalizeModelId,
   getModelCandidateKeys,
   getContextLimitForModel,
@@ -769,7 +1028,9 @@ module.exports = {
   classifyRequestError,
   summarizeMetadata,
   analyzeTrajectorySteps,
+  extractStepTimestampsFromTrajectory,
   extractCallId,
   parseGeneratorCall,
+  summarizeSessionGeneratorCalls,
   getRingAccentToken
 };

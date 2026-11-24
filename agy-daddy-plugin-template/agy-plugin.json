@@ -8,6 +8,10 @@
     "zh-CN": "Hello 示例插件",
     "en": "Hello Sample Plugin"
   },
+  "description": {
+    "zh-CN": "Agy-Daddy 微内核 v2 官方示例插件（isolated 世界、全托管配置、声明式命令与样式自注入）",
+    "en": "Official Agy-Daddy microkernel v2 starter plugin (isolated world, host-managed settings, commands, and scoped style injection)"
+  },
   "engines": {
     "agyDaddy": "^1.0.0",
     "antigravity": ">=2.32.0"
@@ -26,9 +30,13 @@
     "states": ["state:hello.greeting@1"],
     "surfaces": []
   },
-  "permissions": ["dom:write", "bridge:route"],
+  "permissions": ["dom:write"],
   "contributes": {
     "topbar.units": [{ "id": "hello-badge", "order": 90 }],
+    "topbar.popovers": [{ "id": "hello-popover", "anchorId": "hello-badge" }],
+    "commands": [
+      { "id": "hello.greet", "title": { "zh-CN": "发送示例问候", "en": "Run Sample Greeting" } }
+    ],
     "settings": { "schema": "./settings.schema.json" },
     "locales": "./locales"
   }

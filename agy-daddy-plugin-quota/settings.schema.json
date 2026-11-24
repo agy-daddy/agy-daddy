@@ -1,5 +1,5 @@
 {
-  "title": { "zh-CN": "模型配额监控", "en": "Model Quota Monitor" },
+  "title": { "zh-CN": "额度监控", "en": "Quota Monitor" },
   "fields": [
     {
       "key": "pollIntervalMs",
@@ -7,13 +7,79 @@
       "min": 5000,
       "max": 300000,
       "default": 60000,
-      "label": { "zh-CN": "配额自动刷新间隔 (毫秒)", "en": "Quota refresh interval (ms)" }
+      "group": { "zh-CN": "显示与刷新", "en": "Display & Refresh" },
+      "unit": { "zh-CN": "毫秒", "en": "ms" },
+      "placeholder": "60000",
+      "label": { "zh-CN": "配额自动刷新间隔", "en": "Quota refresh interval" },
+      "description": { "zh-CN": "后台拉取本地 Antigravity 配额快照的时间间隔 (5s–300s)", "en": "Polling cadence for refreshing local Antigravity quota snapshots" }
     },
     {
-      "key": "showCountdownInTopbar",
-      "type": "boolean",
-      "default": true,
-      "label": { "zh-CN": "顶栏附带最近重置倒计时", "en": "Show reset countdown in topbar" }
+      "key": "topbarCountdownMode",
+      "type": "enum",
+      "default": "both",
+      "group": { "zh-CN": "显示与刷新", "en": "Display & Refresh" },
+      "options": [
+        { "value": "off", "label": { "zh-CN": "关闭", "en": "Off" } },
+        { "value": "5h", "label": { "zh-CN": "仅 5H", "en": "5H Only" } },
+        { "value": "weekly", "label": { "zh-CN": "仅 Week", "en": "Week Only" } },
+        { "value": "both", "label": { "zh-CN": "5H + Week 都开", "en": "Both 5H & Week" } }
+      ],
+      "label": { "zh-CN": "顶栏附带最近重置倒计时", "en": "Topbar reset countdown" },
+      "description": { "zh-CN": "选择顶栏胶囊附带显示 5H、Week 或同时显示最近重置倒计时，也可关闭", "en": "Choose whether to show nearest 5H, weekly, both, or no reset countdown in the topbar capsule" }
+    },
+    {
+      "key": "quotaDisplayMode",
+      "type": "enum",
+      "default": "remaining",
+      "group": { "zh-CN": "显示与刷新", "en": "Display & Refresh" },
+      "options": [
+        { "value": "remaining", "label": { "zh-CN": "剩余额度", "en": "Remaining Quota" } },
+        { "value": "used", "label": { "zh-CN": "已使用额度", "en": "Used Quota" } }
+      ],
+      "label": { "zh-CN": "额度显示方式", "en": "Quota display mode" },
+      "description": { "zh-CN": "切换顶栏胶囊与面板进度条显示「剩余额度」或「已使用额度」百分比", "en": "Switch topbar capsule and panel bars between remaining and used quota percentage" }
+    },
+    {
+      "key": "capsuleColorRules",
+      "type": "list",
+      "maxItems": 20,
+      "default": [
+        "any:remaining<=15:#ef4444",
+        "any:remaining<=35:#f59e0b"
+      ],
+      "group": { "zh-CN": "胶囊颜色规则", "en": "Capsule Color Rules" },
+      "label": { "zh-CN": "胶囊颜色规则", "en": "Capsule color rules" },
+      "description": { "zh-CN": "按从上到下顺序匹配，命中第一条生效；支持按不同限额、剩余/已用阈值自定义胶囊颜色，清空则保持默认中性色", "en": "Evaluated top-to-bottom (first match wins); customize capsule color by target limit and remaining/used threshold" },
+      "itemEditor": {
+        "kind": "threshold-color-rule",
+        "unit": "%",
+        "defaultRule": { "target": "any", "metric": "remaining<=", "threshold": 20, "color": "#ef4444" },
+        "targets": [
+          { "value": "any", "label": { "zh-CN": "任意限额", "en": "Any Limit" } },
+          { "value": "any_5h", "label": { "zh-CN": "任意 5H", "en": "Any 5H" } },
+          { "value": "any_weekly", "label": { "zh-CN": "任意 Week", "en": "Any Week" } },
+          { "value": "gemini", "label": { "zh-CN": "Gemini（任意窗口）", "en": "Gemini (Any)" } },
+          { "value": "gemini_5h", "label": { "zh-CN": "Gemini 5H", "en": "Gemini 5H" } },
+          { "value": "gemini_weekly", "label": { "zh-CN": "Gemini Week", "en": "Gemini Week" } },
+          { "value": "claude", "label": { "zh-CN": "Claude / 3P（任意窗口）", "en": "Claude / 3P (Any)" } },
+          { "value": "claude_5h", "label": { "zh-CN": "Claude 5H", "en": "Claude 5H" } },
+          { "value": "claude_weekly", "label": { "zh-CN": "Claude Week", "en": "Claude Week" } }
+        ],
+        "metrics": [
+          { "value": "remaining<=", "label": { "zh-CN": "剩余 ≤", "en": "Remaining ≤" } },
+          { "value": "used>=", "label": { "zh-CN": "已用 ≥", "en": "Used ≥" } }
+        ],
+        "colors": [
+          { "value": "#ef4444", "label": { "zh-CN": "红色", "en": "Red" } },
+          { "value": "#f59e0b", "label": { "zh-CN": "琥珀橙", "en": "Amber" } },
+          { "value": "#eab308", "label": { "zh-CN": "黄色", "en": "Yellow" } },
+          { "value": "#22c55e", "label": { "zh-CN": "绿色", "en": "Green" } },
+          { "value": "#3b82f6", "label": { "zh-CN": "蓝色", "en": "Blue" } },
+          { "value": "#8b5cf6", "label": { "zh-CN": "紫色", "en": "Purple" } },
+          { "value": "#ec4899", "label": { "zh-CN": "玫红", "en": "Pink" } },
+          { "value": "#71717a", "label": { "zh-CN": "灰色", "en": "Gray" } }
+        ]
+      }
     }
   ]
 }

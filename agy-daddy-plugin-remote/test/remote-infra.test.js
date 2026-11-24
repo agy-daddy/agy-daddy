@@ -34,6 +34,51 @@ function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+function attachFakeStream(broker, sessionId) {
+  const frames = [];
+  const writtenAt = [];
+  const res = {
+    writableEnded: false,
+    destroyed: false,
+    writeHead() {},
+    flushHeaders() {},
+    write(chunk) {
+      frames.push(String(chunk));
+      writtenAt.push(Date.now());
+      return true;
+    },
+    end() {
+      this.writableEnded = true;
+    },
+    on() {}
+  };
+  const req = { headers: {}, on() {} };
+  const client = broker.handleStreamRequest(req, res, { sessionId });
+  return {
+    client,
+    frames,
+    writtenAt,
+    events() {
+      return frames
+        .join('')
+        .split('\n\n')
+        .filter((block) => block && !block.startsWith(':'))
+        .map((block) => {
+          const rec = { id: null, event: 'message', data: null };
+          for (const line of block.split('\n')) {
+            if (line.startsWith('id: ')) rec.id = Number(line.slice(4));
+            else if (line.startsWith('event: ')) rec.event = line.slice(7);
+            else if (line.startsWith('data: ')) rec.data = JSON.parse(line.slice(6));
+          }
+          return rec;
+        });
+    },
+    close() {
+      res.writableEnded = true;
+    }
+  };
+}
+
 async function waitUntil(pred, timeoutMs = 4000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -712,5 +757,108 @@ test('sse-broker: stepOffset deltas, Last-Event-ID replay, attention transitions
     broker.dispose();
     server.close();
     await new Promise((r) => setTimeout(r, 50));
+  }
+});
+
+test('sse-broker: post-write burst keeps the fast delta channel responsive even while listSessions is slow', async () => {
+  let listSessionsCalls = 0;
+  let telemetryCalls = 0;
+  let getDeltaCalls = 0;
+  let listSessionsBusy = false;
+  let deltaSeq = 0;
+
+  const broker = createSseBroker({
+    heartbeatIntervalMs: 0,
+    pollIntervalMs: 200,
+    activePollIntervalMs: 20,
+    metaPollIntervalMs: 60000,
+    burstWindowMs: 400,
+    getDelta: async () => {
+      getDeltaCalls += 1;
+      deltaSeq += 1;
+      return { events: [{ seq: deltaSeq, status: 'done' }], nextOffset: deltaSeq, status: 'CASCADE_RUN_STATUS_IDLE' };
+    },
+    listSessions: async () => {
+      listSessionsCalls += 1;
+      listSessionsBusy = true;
+      await new Promise((r) => setTimeout(r, 200));
+      listSessionsBusy = false;
+      return [{ cascadeId: 's-1', status: 'IDLE' }];
+    },
+    getTelemetry: async () => {
+      telemetryCalls += 1;
+      return { tokens: telemetryCalls };
+    }
+  });
+
+  const stream = attachFakeStream(broker, 's-1');
+  try {
+    // Idle cadence before the write: the delta channel is on the slow 200ms interval.
+    await new Promise((r) => setTimeout(r, 250));
+    const idleCalls = getDeltaCalls;
+    assert.ok(idleCalls >= 1 && idleCalls <= 4, `idle delta cadence out of range: ${idleCalls}`);
+    assert.equal(listSessionsCalls, 0, 'meta channel must stay at its own 60s cadence while idle');
+
+    // Write-side burst: an immediate delta frame must not queue behind the 200ms listSessions call.
+    const beforeFrames = stream.frames.length;
+    const t0 = Date.now();
+    broker.triggerPoll('s-1');
+    const gotDelta = await waitUntil(() => stream.frames.length > beforeFrames, 800);
+    assert.equal(gotDelta, true, 'expected a session.delta frame right after triggerPoll');
+    const latencyMs = stream.writtenAt[beforeFrames] - t0;
+    assert.equal(listSessionsBusy, true, 'listSessions is expected to still be in flight');
+    assert.ok(latencyMs <= 30, `session.delta latency ${latencyMs}ms exceeded the 30ms budget`);
+    assert.ok(stream.events().slice(beforeFrames).some((e) => e.event === 'session.delta'));
+
+    // Burst window: the delta channel samples at the active cadence, meta stays quiet.
+    const burstStart = getDeltaCalls;
+    await new Promise((r) => setTimeout(r, 300));
+    const burstCalls = getDeltaCalls - burstStart;
+    assert.ok(burstCalls >= 8, `expected >=8 delta polls in the 300ms burst window, got ${burstCalls}`);
+    assert.ok(burstCalls <= 40, `delta polling spun too fast: ${burstCalls}`);
+    assert.equal(listSessionsCalls, 1, 'meta channel must not follow the burst cadence');
+    assert.equal(telemetryCalls, 1);
+
+    // After the burst expires the delta channel falls back to the idle interval.
+    const burstEnd = getDeltaCalls;
+    await new Promise((r) => setTimeout(r, 450));
+    const idleAgain = getDeltaCalls - burstEnd;
+    assert.ok(idleAgain >= 1 && idleAgain <= 6, `idle cadence did not resume after burst: ${idleAgain}`);
+    assert.equal(listSessionsCalls, 1);
+  } finally {
+    broker.dispose();
+  }
+});
+
+test('sse-broker: slow channel keeps polling sessions/telemetry while the delta channel is idle', async () => {
+  let listSessionsCalls = 0;
+  let telemetryCalls = 0;
+  let deltaCalls = 0;
+
+  const broker = createSseBroker({
+    heartbeatIntervalMs: 0,
+    pollIntervalMs: 60000,
+    metaPollIntervalMs: 40,
+    getDelta: async () => {
+      deltaCalls += 1;
+      return { events: [] };
+    },
+    listSessions: async () => {
+      listSessionsCalls += 1;
+      return [{ cascadeId: 's-1', status: 'IDLE' }];
+    },
+    getTelemetry: async () => {
+      telemetryCalls += 1;
+      return { tokens: telemetryCalls };
+    }
+  });
+
+  const stream = attachFakeStream(broker, 's-1');
+  try {
+    assert.equal(await waitUntil(() => listSessionsCalls >= 3 && telemetryCalls >= 3, 1500), true);
+    assert.equal(deltaCalls, 0, 'delta channel must stay idle at its own 60s cadence');
+    assert.ok(stream.events().some((e) => e.event === 'telemetry.patch'));
+  } finally {
+    broker.dispose();
   }
 });

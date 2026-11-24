@@ -4,8 +4,10 @@ const crypto = require('node:crypto');
 
 const DEFAULT_RING_BUFFER_SIZE = 200;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15000;
-const DEFAULT_POLL_INTERVAL_MS = 350;
-const DEFAULT_ACTIVE_POLL_INTERVAL_MS = 180;
+const DEFAULT_POLL_INTERVAL_MS = 400;
+const DEFAULT_ACTIVE_POLL_INTERVAL_MS = 70;
+const DEFAULT_META_POLL_INTERVAL_MS = 1200;
+const DEFAULT_BURST_WINDOW_MS = 2500;
 const ATTENTION_STATES = new Set(['PENDING', 'ERROR', 'DONE']);
 const NON_TERMINAL_STEP_STATES = new Set(['generating', 'running', 'pending']);
 
@@ -55,18 +57,27 @@ function normalizeQueueEntry(cascadeId, item) {
 /**
  * Creates a multiplexed SSE broker with ring-buffer Last-Event-ID replay,
  * adaptive stepOffset delta polling, attention transition hooks, and FIFO/Steer queue dispatch.
+ *
+ * Polling runs on two independent channels so a slow session list (or telemetry aggregation)
+ * can never delay a streaming delta frame:
+ *   - fast channel (deltaTimer): pollDeltas() at pollIntervalMs, or activePollIntervalMs while a
+ *     session is streaming or inside a post-write burst window;
+ *   - slow channel (metaTimer): pollSessions() + pollTelemetry() at metaPollIntervalMs.
  */
-function createSseBroker({
-  ringBufferSize = DEFAULT_RING_BUFFER_SIZE,
-  heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-  activePollIntervalMs = DEFAULT_ACTIVE_POLL_INTERVAL_MS,
-  getDelta = null,
-  listSessions = null,
-  getTelemetry = null,
-  dispatchMessage = null,
-  onAttentionTransition = null
-} = {}) {
+function createSseBroker(options = {}) {
+  const {
+    ringBufferSize = DEFAULT_RING_BUFFER_SIZE,
+    heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    activePollIntervalMs = DEFAULT_ACTIVE_POLL_INTERVAL_MS,
+    metaPollIntervalMs = null,
+    burstWindowMs = DEFAULT_BURST_WINDOW_MS,
+    getDelta = null,
+    listSessions = null,
+    getTelemetry = null,
+    dispatchMessage = null,
+    onAttentionTransition = null
+  } = options;
   const maxRing = Number.isFinite(Number(ringBufferSize)) && Number(ringBufferSize) >= 1
     ? Math.floor(Number(ringBufferSize))
     : DEFAULT_RING_BUFFER_SIZE;
@@ -79,6 +90,23 @@ function createSseBroker({
   const activePollMs = Number.isFinite(Number(activePollIntervalMs)) && Number(activePollIntervalMs) > 0
     ? Math.floor(Number(activePollIntervalMs))
     : DEFAULT_ACTIVE_POLL_INTERVAL_MS;
+  const burstMs = Number.isFinite(Number(burstWindowMs)) && Number(burstWindowMs) > 0
+    ? Math.floor(Number(burstWindowMs))
+    : DEFAULT_BURST_WINDOW_MS;
+  const metaExplicit = options.metaPollIntervalMs !== undefined && options.metaPollIntervalMs !== null;
+  let metaMs;
+  if (metaExplicit) {
+    metaMs = Number.isFinite(Number(metaPollIntervalMs)) && Number(metaPollIntervalMs) >= 0
+      ? Math.floor(Number(metaPollIntervalMs))
+      : DEFAULT_META_POLL_INTERVAL_MS;
+  } else if (pollMs > 0 && pollMs < DEFAULT_POLL_INTERVAL_MS) {
+    // A caller that shrank the delta interval (typically a test) expects the session/telemetry
+    // channel to keep the same cadence: attention transitions and RUNNING->IDLE queue dispatch
+    // are only observable through that channel, and a 1200ms cadence makes those tests time out.
+    metaMs = pollMs;
+  } else {
+    metaMs = DEFAULT_META_POLL_INTERVAL_MS;
+  }
 
   const clients = new Set();
   const ringBuffer = [];
@@ -86,13 +114,17 @@ function createSseBroker({
   const sessionStates = new Map(); // cascadeId -> { status, needsAttention, attentionReason }
   const sessionOffsets = new Map(); // sessionId -> number
   const sessionDeltaMeta = new Map(); // sessionId -> { lastStatus, lastTotalSteps, active }
+  const sessionBurstUntil = new Map(); // sessionId -> epoch ms when the post-write burst expires
 
   let nextEventId = 1;
   let heartbeatTimer = null;
-  let pollTimer = null;
-  let currentPollTimerMs = null;
-  let pollInFlight = false;
-  let pollPending = false;
+  let deltaTimer = null;
+  let currentDeltaTimerMs = null;
+  let deltaInFlight = false;
+  let deltaPending = false;
+  let metaTimer = null;
+  let metaInFlight = false;
+  let metaPending = false;
   let lastTelemetryJson = null;
   let disposed = false;
 
@@ -103,9 +135,19 @@ function createSseBroker({
     return false;
   }
 
+  function pruneExpiredBursts(now = Date.now()) {
+    if (sessionBurstUntil.size === 0) return;
+    for (const [sid, until] of sessionBurstUntil) {
+      if (until <= now) sessionBurstUntil.delete(sid);
+    }
+  }
+
   function hasActiveStreaming() {
+    const now = Date.now();
+    pruneExpiredBursts(now);
     for (const client of clients) {
       if (!client.sessionId) continue;
+      if (sessionBurstUntil.has(client.sessionId)) return true;
       const meta = sessionDeltaMeta.get(client.sessionId);
       if (meta?.active) return true;
       const st = sessionStates.get(client.sessionId);
@@ -172,10 +214,22 @@ function createSseBroker({
   }
 
   function stopPollTimer() {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-      currentPollTimerMs = null;
+    stopDeltaTimer();
+    stopMetaTimer();
+  }
+
+  function stopDeltaTimer() {
+    if (deltaTimer) {
+      clearInterval(deltaTimer);
+      deltaTimer = null;
+      currentDeltaTimerMs = null;
+    }
+  }
+
+  function stopMetaTimer() {
+    if (metaTimer) {
+      clearInterval(metaTimer);
+      metaTimer = null;
     }
   }
 
@@ -204,22 +258,37 @@ function createSseBroker({
       stopHeartbeatTimer();
     }
 
-    const shouldPoll = (clients.size > 0 || hasPendingQueues()) &&
+    // Fast channel: only step deltas, so a 200-session list query can never delay a stream frame.
+    const shouldPollDeltas = clients.size > 0 &&
       pollMs > 0 &&
-      (typeof getDelta === 'function' || typeof listSessions === 'function' || typeof getTelemetry === 'function');
-
-    if (shouldPoll) {
+      typeof getDelta === 'function';
+    if (shouldPollDeltas) {
       const desiredMs = hasActiveStreaming() ? Math.min(pollMs, activePollMs) : pollMs;
-      if (!pollTimer || currentPollTimerMs !== desiredMs) {
-        stopPollTimer();
-        currentPollTimerMs = desiredMs;
-        pollTimer = setInterval(() => {
-          void pollOnce();
+      if (!deltaTimer || currentDeltaTimerMs !== desiredMs) {
+        stopDeltaTimer();
+        currentDeltaTimerMs = desiredMs;
+        deltaTimer = setInterval(() => {
+          void pollDeltasOnce();
         }, desiredMs);
-        if (typeof pollTimer.unref === 'function') pollTimer.unref();
+        if (typeof deltaTimer.unref === 'function') deltaTimer.unref();
       }
     } else {
-      stopPollTimer();
+      stopDeltaTimer();
+    }
+
+    // Slow channel: session list (attention transitions, queue dispatch) + telemetry aggregation.
+    const shouldPollMeta = (clients.size > 0 || hasPendingQueues()) &&
+      metaMs > 0 &&
+      (typeof listSessions === 'function' || typeof getTelemetry === 'function');
+    if (shouldPollMeta) {
+      if (!metaTimer) {
+        metaTimer = setInterval(() => {
+          void pollMetaOnce();
+        }, metaMs);
+        if (typeof metaTimer.unref === 'function') metaTimer.unref();
+      }
+    } else {
+      stopMetaTimer();
     }
   }
 
@@ -412,32 +481,59 @@ function createSseBroker({
     }
   }
 
-  async function pollOnce() {
+  async function pollDeltasOnce() {
     if (disposed) return;
-    if (pollInFlight) {
-      pollPending = true;
+    if (deltaInFlight) {
+      deltaPending = true;
       return;
     }
-    pollInFlight = true;
+    deltaInFlight = true;
     try {
-      await pollSessions();
       await pollDeltas();
-      await pollTelemetry();
     } catch {
       // Swallow transient poll errors so stream stays alive
     } finally {
-      pollInFlight = false;
+      deltaInFlight = false;
       updateTimers();
-      if (pollPending && !disposed) {
-        pollPending = false;
-        void pollOnce();
+      if (deltaPending && !disposed) {
+        deltaPending = false;
+        void pollDeltasOnce();
       }
     }
   }
 
-  function triggerPoll() {
+  async function pollMetaOnce() {
     if (disposed) return;
-    void pollOnce();
+    if (metaInFlight) {
+      metaPending = true;
+      return;
+    }
+    metaInFlight = true;
+    try {
+      // Independent try blocks: a failing session list must not starve telemetry (and vice versa).
+      try { await pollSessions(); } catch { /* swallow */ }
+      try { await pollTelemetry(); } catch { /* swallow */ }
+    } finally {
+      metaInFlight = false;
+      updateTimers();
+      if (metaPending && !disposed) {
+        metaPending = false;
+        void pollMetaOnce();
+      }
+    }
+  }
+
+  function triggerPoll(sessionId = null) {
+    if (disposed) return;
+    const sid = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
+    if (sid) {
+      // Post-write burst: keep the fast channel at the active cadence until the
+      // harness has had time to flip the run status to RUNNING.
+      sessionBurstUntil.set(sid, Date.now() + burstMs);
+      updateTimers();
+    }
+    void pollDeltasOnce();
+    void pollMetaOnce();
   }
 
   function handleStreamRequest(req, res, {
@@ -656,6 +752,7 @@ function createSseBroker({
     sessionStates.clear();
     sessionOffsets.clear();
     sessionDeltaMeta.clear();
+    sessionBurstUntil.clear();
   }
 
   return {

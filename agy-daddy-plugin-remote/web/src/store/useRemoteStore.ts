@@ -11,6 +11,7 @@ import type {
   ModelPickerGroup,
   ModelPreferences,
   NormalizedModel,
+  OptimisticUserPayload,
   OrchestratorMasterKey,
   OrchestratorThinkingMap,
   OrchestratorThinkingTier,
@@ -290,14 +291,66 @@ function normalizeQueueItem(raw: unknown, fallbackSessionId: string): QueuedMess
   };
 }
 
-function mergeEvents(prev: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
+function compareSessionEvents(a: SessionEvent, b: SessionEvent): number {
+  const aNeg = a.seq < 0;
+  const bNeg = b.seq < 0;
+  if (aNeg !== bNeg) return aNeg ? 1 : -1;
+  // Negative optimistic seqs (-1, -2, ...) sort by creation order (FIFO): -1 before -2
+  if (aNeg) return b.seq - a.seq;
+  return a.seq - b.seq;
+}
+
+function normalizeComparableUserText(ev: SessionEvent): string {
+  const p = ev.payload || {};
+  let raw = '';
+  if (typeof p.userResponse === 'string' && p.userResponse) {
+    raw = p.userResponse;
+  } else if (typeof p.text === 'string' && p.text) {
+    raw = p.text;
+  } else if (Array.isArray(p.items)) {
+    raw = p.items
+      .map((item) =>
+        typeof item === 'string' ? item : String((item as { text?: string })?.text || '')
+      )
+      .filter(Boolean)
+      .join('\n');
+  }
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
+export function mergeEvents(prev: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
   if (!incoming || incoming.length === 0) return prev;
   if (prev.length === 0) {
-    return incoming.slice().sort((a, b) => a.seq - b.seq);
+    return incoming.slice().sort(compareSessionEvents);
   }
+  const prevSeqs = new Set<number>();
   const bySeq = new Map<number, SessionEvent>();
-  for (const ev of prev) bySeq.set(ev.seq, ev);
+  const optimisticUsers: SessionEvent[] = [];
+  for (const ev of prev) {
+    prevSeqs.add(ev.seq);
+    bySeq.set(ev.seq, ev);
+    if (ev.seq < 0 && ev.kind === 'user') {
+      optimisticUsers.push(ev);
+    }
+  }
+  // Ensure FIFO consumption order (-1 created before -2)
+  optimisticUsers.sort(compareSessionEvents);
+
   for (const ev of incoming) {
+    if (ev.seq >= 0 && ev.kind === 'user' && !prevSeqs.has(ev.seq)) {
+      prevSeqs.add(ev.seq);
+      if (optimisticUsers.length > 0) {
+        const incomingText = normalizeComparableUserText(ev);
+        const matchIdx = optimisticUsers.findIndex(
+          (opt) => normalizeComparableUserText(opt) === incomingText
+        );
+        const [removed] = optimisticUsers.splice(matchIdx >= 0 ? matchIdx : 0, 1);
+        if (removed) {
+          bySeq.delete(removed.seq);
+        }
+      }
+    }
+
     const existing = bySeq.get(ev.seq);
     if (existing && existing.kind === ev.kind && existing.payload && ev.payload) {
       // In-place merge preserving any fields omitted in lightweight delta patches
@@ -313,7 +366,7 @@ function mergeEvents(prev: SessionEvent[], incoming: SessionEvent[]): SessionEve
       bySeq.set(ev.seq, ev);
     }
   }
-  return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+  return Array.from(bySeq.values()).sort(compareSessionEvents);
 }
 
 export function normalizeRootUri(uriOrPath: string | null | undefined): string {
@@ -395,7 +448,7 @@ function buildDefaultPermissionInfo(level: PermissionLevel): PermissionInfo {
   };
 }
 
-class RemoteStoreController {
+export class RemoteStoreController {
   private state: RemoteState;
   private listeners = new Set<() => void>();
   private sse: RemoteSseClient | null = null;
@@ -404,6 +457,7 @@ class RemoteStoreController {
   private prevAttentionIds = new Set<string>();
   private initialized = false;
   private pendingUserModelId = '';
+  private optimisticSeq = 0;
 
   constructor() {
     const urlInit = extractTokenAndScrubUrl();
@@ -598,7 +652,19 @@ class RemoteStoreController {
   public logoutToken(): void {
     clearSavedToken();
     this.sse?.destroy();
-    this.setState({ token: '', bootstrap: null, authError: '' });
+    this.setState({
+      token: '',
+      bootstrap: null,
+      authError: '',
+      sseStatus: 'disconnected',
+      activeSessionId: '',
+      activeSession: null,
+      events: [],
+      sessions: [],
+      queue: [],
+      composerText: '',
+      composerImages: []
+    });
   }
 
   public async connectAndSync(): Promise<void> {
@@ -960,17 +1026,29 @@ class RemoteStoreController {
 
   public async loadSessionDetail(cascadeId: string): Promise<void> {
     if (!cascadeId || !this.state.token) return;
+    const seqAtStart = this.optimisticSeq;
     this.setState({ loadingSession: true });
     try {
       const res = await api.getSession(cascadeId);
       if (this.state.activeSessionId !== cascadeId) return;
-      const events = Array.isArray(res.events) ? res.events : [];
+      const serverEvents = Array.isArray(res.events) ? res.events : [];
+      const inFlightOptimistic = this.state.events.filter(
+        (ev) => ev.seq < 0 && Math.abs(ev.seq) > seqAtStart
+      );
+      const events =
+        inFlightOptimistic.length > 0
+          ? mergeEvents(serverEvents, inFlightOptimistic)
+          : serverEvents.slice().sort(compareSessionEvents);
       this.setState({
         activeSession: res.session || null,
         events,
         loadingSession: false
       });
-      saveSessionSnapshot(cascadeId, res.session || null, events).catch(() => {});
+      saveSessionSnapshot(
+        cascadeId,
+        res.session || null,
+        events.filter((ev) => ev.seq >= 0)
+      ).catch(() => {});
     } catch {
       this.setState({ loadingSession: false });
     }
@@ -986,7 +1064,11 @@ class RemoteStoreController {
     } catch {}
   }
 
-  private replaceServerQueueForSession(sessionId: string, rawQueue: unknown[]): void {
+  private replaceServerQueueForSession(
+    sessionId: string,
+    rawQueue: unknown[],
+    eventsOverride?: SessionEvent[]
+  ): void {
     const normalizedServer = rawQueue
       .map((item) => normalizeQueueItem(item, sessionId))
       .filter((item): item is QueuedMessage => Boolean(item));
@@ -994,7 +1076,7 @@ class RemoteStoreController {
       (q) => q.sessionId !== sessionId || (q.source === 'local' && !this.state.online)
     );
     const next = [...others, ...normalizedServer];
-    this.setState({ queue: next });
+    this.setState(eventsOverride ? { queue: next, events: eventsOverride } : { queue: next });
     saveQueue(next).catch(() => {});
   }
 
@@ -1105,7 +1187,11 @@ class RemoteStoreController {
           : null;
 
       this.setState({ events: merged, activeSession: nextDetail });
-      saveSessionSnapshot(cascadeId, nextDetail, merged).catch(() => {});
+      saveSessionSnapshot(
+        cascadeId,
+        nextDetail,
+        merged.filter((ev) => ev.seq >= 0)
+      ).catch(() => {});
 
       if (status && status.toUpperCase().includes('IDLE')) {
         this.flushPendingQueue();
@@ -1331,6 +1417,7 @@ class RemoteStoreController {
       const created = await api.createSession({ title: text.slice(0, 32) });
       sessionId = created.cascadeId;
       this.setState({ activeSessionId: sessionId });
+      this.sse?.connect(this.state.token, sessionId);
     }
     if (!sessionId) {
       this.showToast('请先创建或选择会话');
@@ -1364,10 +1451,34 @@ class RemoteStoreController {
       return;
     }
 
+    const nextOptId = ++this.optimisticSeq;
+    const clientTempId = `opt_${Date.now()}_${nextOptId}`;
+    const optimisticEvent: SessionEvent<OptimisticUserPayload> = {
+      seq: -nextOptId,
+      kind: 'user',
+      status: 'pending',
+      rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+      payload: {
+        text,
+        images: payloadImages,
+        clientTempId,
+        optimistic: true
+      }
+    };
+
     try {
       this.pendingUserModelId = '';
-      this.setState({ composerText: '', composerImages: [] });
-      await saveDraft(sessionId, '');
+      const optimisticEvents =
+        this.state.activeSessionId === sessionId
+          ? [...this.state.events, optimisticEvent].sort(compareSessionEvents)
+          : this.state.events;
+      this.setState({
+        composerText: '',
+        composerImages: [],
+        events: optimisticEvents
+      });
+      saveDraft(sessionId, '').catch(() => {});
+
       const res = await api.sendMessage(sessionId, {
         text,
         modelId,
@@ -1377,8 +1488,11 @@ class RemoteStoreController {
       });
 
       if (res.queued) {
+        const cleanedEvents = this.state.events.filter(
+          (ev) => ev.payload?.clientTempId !== clientTempId
+        );
         if (Array.isArray(res.queue)) {
-          this.replaceServerQueueForSession(sessionId, res.queue);
+          this.replaceServerQueueForSession(sessionId, res.queue, cleanedEvents);
         } else {
           const item = normalizeQueueItem(
             res.item || {
@@ -1396,10 +1510,13 @@ class RemoteStoreController {
             },
             sessionId
           );
-          if (item) {
-            const exists = this.state.queue.some((q) => q.id === item.id);
-            const nextQ = exists ? this.state.queue : [...this.state.queue, item];
-            this.setState({ queue: nextQ });
+          const exists = item ? this.state.queue.some((q) => q.id === item.id) : true;
+          const nextQ = item && !exists ? [...this.state.queue, item] : this.state.queue;
+          this.setState({
+            events: cleanedEvents,
+            ...(nextQ !== this.state.queue ? { queue: nextQ } : {})
+          });
+          if (item && !exists) {
             await saveQueue(nextQ);
           }
         }
@@ -1407,9 +1524,24 @@ class RemoteStoreController {
         return;
       }
 
-      await this.loadSessionDetail(sessionId);
+      if (this.state.sseStatus !== 'connected') {
+        void this.loadSessionDetail(sessionId);
+      }
     } catch (err) {
-      this.setState({ composerText: text, composerImages: images });
+      const cleanedEvents = this.state.events.filter(
+        (ev) => ev.payload?.clientTempId !== clientTempId
+      );
+      const canRestoreComposer =
+        this.state.activeSessionId === sessionId &&
+        !this.state.composerText &&
+        this.state.composerImages.length === 0;
+      this.setState({
+        events: cleanedEvents,
+        ...(canRestoreComposer ? { composerText: text, composerImages: images } : {})
+      });
+      if (canRestoreComposer && text) {
+        saveDraft(sessionId, text).catch(() => {});
+      }
       this.showToast(`发送失败: ${(err as Error).message}`);
     }
   }
@@ -1436,7 +1568,9 @@ class RemoteStoreController {
           await saveQueue(remaining);
         }
         this.showToast('已立即插队发送');
-        await this.loadSessionDetail(target.sessionId);
+        if (this.state.sseStatus !== 'connected') {
+          void this.loadSessionDetail(target.sessionId);
+        }
         return;
       }
 
@@ -1452,7 +1586,9 @@ class RemoteStoreController {
       this.setState({ queue: remaining });
       await saveQueue(remaining);
       this.showToast('已立即插队发送');
-      await this.loadSessionDetail(target.sessionId);
+      if (this.state.sseStatus !== 'connected') {
+        void this.loadSessionDetail(target.sessionId);
+      }
     } catch (err) {
       const failed = this.state.queue.map((q) =>
         q.id === target.id
@@ -1504,7 +1640,9 @@ class RemoteStoreController {
         const remaining = this.state.queue.filter((q) => q.id !== target.id);
         this.setState({ queue: remaining });
         await saveQueue(remaining);
-        await this.loadSessionDetail(target.sessionId);
+        if (this.state.sseStatus !== 'connected') {
+          void this.loadSessionDetail(target.sessionId);
+        }
       }
     } catch (err) {
       const failed = this.state.queue.map((q) =>
@@ -1549,7 +1687,9 @@ class RemoteStoreController {
       const remaining = this.state.queue.filter((q) => q.id !== next.id);
       this.setState({ queue: remaining });
       await saveQueue(remaining);
-      await this.loadSessionDetail(next.sessionId);
+      if (this.state.sseStatus !== 'connected') {
+        void this.loadSessionDetail(next.sessionId);
+      }
     } catch (err) {
       const failed = this.state.queue.map((q) =>
         q.status === 'sending'

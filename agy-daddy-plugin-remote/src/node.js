@@ -506,6 +506,23 @@ function normalizeSummary(cascadeId, item) {
   };
 }
 
+/**
+ * Derives the delta cursor for a freshly loaded trajectory: the contiguous terminal prefix is
+ * already on screen, so polling resumes right after it, with fingerprints for everything observed.
+ */
+function buildSeededCursor(events) {
+  const fingerprints = new Map();
+  for (const ev of events) {
+    fingerprints.set(ev.seq, crypto.createHash('sha1').update(JSON.stringify(ev)).digest('hex'));
+  }
+  let stepOffset = 0;
+  for (const ev of events) {
+    if (ev.seq !== stepOffset || !TERMINAL_STEP_STATUSES.has(ev.status)) break;
+    stepOffset += 1;
+  }
+  return { stepOffset, fingerprints };
+}
+
 function createStandaloneRpcAdapter(rpc) {
   const cursors = new Map();
 
@@ -533,6 +550,10 @@ function createStandaloneRpcAdapter(rpc) {
       const resp = await rpc.call('GetCascadeTrajectory', { cascadeId });
       const trajectory = isPlainObject(resp?.trajectory) ? resp.trajectory : (isPlainObject(resp) ? resp : {});
       const rawSteps = Array.isArray(trajectory.steps) ? trajectory.steps : (Array.isArray(resp?.steps) ? resp.steps : []);
+      const events = rawSteps.map((s, idx) => normalizeStepEvent(s, idx));
+      // Seed the delta cursor from the detail we just built: the client already rendered the
+      // terminal prefix, so the first delta poll must not re-pull the whole trajectory from 0.
+      cursors.set(cascadeId, buildSeededCursor(events));
       return {
         ok: true,
         session: {
@@ -542,7 +563,7 @@ function createStandaloneRpcAdapter(rpc) {
           numTotalSteps: Number.isFinite(Number(resp?.numTotalSteps)) ? Number(resp.numTotalSteps) : rawSteps.length,
           metadata: trajectory.metadata || null
         },
-        events: rawSteps.map((s, idx) => normalizeStepEvent(s, idx))
+        events
       };
     },
     async getSessionDelta(cascadeId, { afterSeq } = {}) {
@@ -1230,8 +1251,10 @@ async function activate(host) {
   }
 
   const sseBroker = createSseBroker({
-    pollIntervalMs: isTestMode() ? 80 : 350,
-    activePollIntervalMs: isTestMode() ? 45 : 180,
+    pollIntervalMs: isTestMode() ? 80 : 400,
+    activePollIntervalMs: isTestMode() ? 45 : 70,
+    metaPollIntervalMs: isTestMode() ? 100 : 1200,
+    burstWindowMs: 2500,
     heartbeatIntervalMs: 15000,
     async getDelta(sessionId, _offset) {
       try {
@@ -1654,22 +1677,22 @@ async function activate(host) {
         }
       }
       const res = await callHarness('sendMessage', [id, body]);
-      sseBroker.triggerPoll();
+      sseBroker.triggerPoll(id);
       return { ...(isPlainObject(res) ? res : { ok: true }), queued: false };
     },
     async cancelSession(id) {
       const res = await callHarness('cancelSession', [id]);
-      sseBroker.triggerPoll();
+      sseBroker.triggerPoll(id);
       return res;
     },
     async approveStep(id, seq, decision, payload) {
       const res = await callHarness('approveStep', [id, seq, decision, payload]);
-      sseBroker.triggerPoll();
+      sseBroker.triggerPoll(id);
       return res;
     },
     async answerStep(id, seq, answers, payload) {
       const res = await callHarness('answerQuestion', [id, seq, answers, payload]);
-      sseBroker.triggerPoll();
+      sseBroker.triggerPoll(id);
       return res;
     },
     async getComposerPresets() {

@@ -674,6 +674,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
       if (predicate()) return;
       await new Promise((r) => setTimeout(r, 15));
     }
+    throw new Error('waitUntil timed out');
   }
   const tmpExportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cnav-export-'));
   const tmpCustomDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cnav-custom-'));

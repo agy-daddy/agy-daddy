@@ -490,6 +490,17 @@
     const doc = mergedOpts.document || root.document;
     let hostToken = String(mergedOpts.hostToken || '');
     const fetchFn = mergedOpts.fetch || win.fetch || globalThis.fetch;
+    const XWORLD_LIFECYCLE_EVENT = '__agy_xworld_lifecycle__';
+    function dispatchLifecycleEvent(detail) {
+      if (!doc || typeof doc.dispatchEvent !== 'function') return;
+      const EventCtor = (win && typeof win.CustomEvent === 'function')
+        ? win.CustomEvent
+        : (typeof CustomEvent === 'function' ? CustomEvent : null);
+      const ev = EventCtor
+        ? new EventCtor(XWORLD_LIFECYCLE_EVENT, { detail })
+        : { type: XWORLD_LIFECYCLE_EVENT, detail };
+      try { doc.dispatchEvent(ev); } catch {}
+    }
 
     // 防重复挂载：清理已有宿主实例
     if (win.__AGYDaddyHost && typeof win.__AGYDaddyHost.dispose === 'function') {
@@ -597,6 +608,8 @@
       metrics: new Map(),              // pluginId -> { mountMs, observerMs, timersCount, crashes }
       xworldNonce: mergedOpts.xworldNonce || (String(Math.random()).slice(2) + Date.now().toString(36))
     };
+
+    dispatchLifecycleEvent({ type: 'host.reset', nextNonce: state.xworldNonce });
 
     function pickLocaleText(val, fallback = '') {
       if (typeof val === 'string') return val;
@@ -10067,8 +10080,27 @@
               body: JSON.stringify(payload)
             };
             if (opts && opts.signal) fetchInit.signal = opts.signal;
-            const resp = await pluginFetchFn(`http://127.0.0.1:${state.bridgePort}/plugins/${pluginId}${clean}`, fetchInit);
-            return resp.json();
+            const resp = await pluginFetchFn.call(win || globalThis, `http://127.0.0.1:${state.bridgePort}/plugins/${pluginId}${clean}`, fetchInit);
+            if (typeof resp.text === 'function') {
+              const rawText = await resp.text();
+              if (rawText) {
+                try {
+                  return JSON.parse(rawText);
+                } catch {}
+              }
+              if (!resp.ok) {
+                return {
+                  ok: false,
+                  status: resp.status,
+                  error: `HTTP ${resp.status}${rawText ? `: ${rawText.slice(0, 200)}` : ''}`
+                };
+              }
+              return { ok: true };
+            }
+            if (typeof resp.json === 'function') {
+              return resp.json();
+            }
+            return { ok: Boolean(resp.ok), status: resp.status };
           }
         }
       };
@@ -10096,6 +10128,7 @@
     }
 
     async function disposePlugin(pluginId) {
+      dispatchLifecycleEvent({ type: 'plugin.dispose', pluginId });
       const inst = state.pluginInstances.get(pluginId);
       state.pluginInstances.delete(pluginId);
       state.topbarSuppressedPlugins.delete(pluginId);
@@ -10414,6 +10447,7 @@
       async dispose() {
         if (state.disposed) return;
         state.disposed = true;
+        dispatchLifecycleEvent({ type: 'host.dispose', nonce: state.xworldNonce });
         resetDragReorderState();
         state.pendingFlipReorder = null;
         for (const tid of hostRetryTimers) clearTimeout(tid);

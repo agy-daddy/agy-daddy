@@ -550,17 +550,19 @@ test('提示词优化：多模型回退、斜杠前缀保留、自定义提示�
     await new Promise((r) => setTimeout(r, 40));
     assert.match(seenPrompts[seenPrompts.length - 1], /CUSTOM_NO_PLACEHOLDER[\s\S]*<draft>\n补充单测\n<\/draft>/);
 
-    // 3. 全部模型失败 -> 显示错误 toast 且不篡改原草稿
+    // 3. 全部模型失败 -> 仅在优化按钮旁显示错误状态且不篡改原草稿（不在快捷栏重复弹出）
     failAll = true;
     editor.textContent = '保持原样草稿';
     harness.mockDoc.dispatchEvent({ type: 'input', target: editor });
     harness.mockDoc.getElementById('agy-prompt-opt-btn').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(editor.textContent, '保持原样草稿');
+    const optStatus = harness.mockDoc.getElementById('agy-prompt-opt-status');
+    assert.equal(optStatus.hidden, false);
+    assert.equal(optStatus.getAttribute('data-tone'), 'error');
+    assert.match(optStatus.textContent, /429/);
     const toast = harness.mockDoc.getElementById('agy-qcap-toast');
-    assert.equal(toast.hidden, false);
-    assert.equal(toast.getAttribute('data-tone'), 'error');
-    assert.match(toast.textContent, /429/);
+    assert.equal(toast.hidden, true);
 
     await harness.unloadPlugin('agy-daddy.composer');
     harness.assertCleanDispose('agy-daddy.composer');
@@ -1888,7 +1890,7 @@ test('回归：提示词优化失败时气泡不被感知提示遮挡、按钮�
     assert.ok(quickChildren.indexOf('agy-next-step-ghost') >= 0);
     assert.ok(quickChildren.indexOf('agy-qcap-toast') > quickChildren.indexOf('agy-next-step-ghost'), 'toast 必须排在 ghost 之后避免被 sticky 遮挡');
 
-    // 2. 优化失败：按钮旁 #agy-prompt-opt-status 与 #agy-qcap-toast 均可见报错，按钮标记 data-error="true"
+    // 2. 优化失败：仅在按钮旁 #agy-prompt-opt-status 显示报错，#agy-qcap-toast 保持隐藏避免重复显示，按钮标记 data-error="true"
     editor.textContent = '帮我优化这段提示词';
     doc.dispatchEvent({ type: 'input', target: editor });
     doc.getElementById('agy-prompt-opt-btn').click();
@@ -1902,17 +1904,17 @@ test('回归：提示词优化失败时气泡不被感知提示遮挡、按钮�
     assert.equal(optStatus.getAttribute('data-tone'), 'error');
     assert.match(optStatus.textContent, /优化失败：HTTP 429/);
     assert.match(optStatus.getAttribute('title') || '', /Flash Low: HTTP 429/);
-    assert.equal(qcapToast.hidden, false);
-    assert.equal(qcapToast.getAttribute('data-tone'), 'error');
-    assert.match(qcapToast.textContent, /优化失败：HTTP 429/);
+    assert.equal(qcapToast.hidden, true, '按钮旁已显示报错时，快捷栏不应重复显示');
+    assert.equal(doc.getElementById('agy-composer-float-toast'), null);
 
-    // 3. 快捷栏触发重渲染后，进行中的错误提示应保留不被清空
+    // 3. 快捷栏触发重渲染后，进行中的错误提示仍仅在按钮旁保留、快捷栏仍不重复显示
     emitContext({ used: 250000, max: 1000000 });
     await new Promise((r) => setTimeout(r, 20));
     const qcapToastAfterRerender = doc.getElementById('agy-qcap-toast');
-    assert.equal(qcapToastAfterRerender.hidden, false);
-    assert.equal(qcapToastAfterRerender.getAttribute('data-tone'), 'error');
-    assert.match(qcapToastAfterRerender.textContent, /429/);
+    assert.equal(optStatus.hidden, false);
+    assert.equal(optStatus.getAttribute('data-tone'), 'error');
+    assert.match(optStatus.textContent, /429/);
+    assert.equal(qcapToastAfterRerender.hidden, true);
 
     // 点击按钮旁状态胶囊可一键关闭报错状态
     optStatus.click();
@@ -1928,6 +1930,26 @@ test('回归：提示词优化失败时气泡不被感知提示遮挡、按钮�
     assert.equal(optStatus.hidden, false);
     assert.equal(optStatus.getAttribute('data-tone'), 'error');
     assert.match(optStatus.textContent, /429/);
+
+    // 4.5 保留快捷栏但隐藏优化按钮（showQuickBar: true, showPromptOptimizer: false）时，错误仅在 #agy-qcap-toast 显示
+    await composerApi.updateSettings({ showQuickBar: true, showPromptOptimizer: false });
+    assert.equal(doc.getElementById('agy-prompt-opt-wrap'), null);
+    doc.dispatchEvent({
+      type: 'keydown',
+      key: 'O',
+      code: 'KeyO',
+      altKey: true,
+      shiftKey: true,
+      target: editor,
+      preventDefault() {},
+      stopPropagation() {}
+    });
+    await new Promise((r) => setTimeout(r, 40));
+    const quickOnlyToast = doc.getElementById('agy-qcap-toast');
+    assert.equal(quickOnlyToast.hidden, false);
+    assert.equal(quickOnlyToast.getAttribute('data-tone'), 'error');
+    assert.match(quickOnlyToast.textContent, /429/);
+    assert.equal(doc.getElementById('agy-composer-float-toast'), null);
 
     // 5. 同时关闭快捷栏与优化按钮（纯快捷键模式）且发生超时：兜底渲染 #agy-composer-float-toast 中文超时提示
     await composerApi.updateSettings({ showQuickBar: false, showPromptOptimizer: false });
@@ -1958,5 +1980,102 @@ test('回归：提示词优化失败时气泡不被感知提示遮挡、按钮�
     harness.assertCleanDispose('agy-daddy.composer');
   } finally {
     await harness.cleanup();
+  }
+});
+
+test('回归：区分后端 RPC ECONNREFUSED、真桥接传输失败与桥接鉴权失败的错误归因', async () => {
+  const { mount, dispose } = require('../src/renderer');
+  const { createMockDocument } = require(path.join(HOST_ROOT, 'sdk', 'mock-harness'));
+
+  const makeMockCtx = (bridgeImpl) => {
+    const doc = createMockDocument();
+    const rootEl = doc.createElement('div');
+    rootEl.className = 'surface-composer';
+    const editor = doc.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    editor.textContent = '帮我排查接口报错';
+    const sendBtn = doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'input-send-button');
+    rootEl.appendChild(editor);
+    rootEl.appendChild(sendBtn);
+    doc.body.appendChild(rootEl);
+
+    const ctx = {
+      anchors: {
+        query(name) {
+          if (name === 'composer.root') return rootEl;
+          if (name === 'composer.editor') return editor;
+          if (name === 'composer.sendButton') return sendBtn;
+          return null;
+        },
+        queryAll() { return []; },
+        observe() { return () => {}; }
+      },
+      styles: { inject() { return () => {}; } },
+      surfaces: { provide() { return () => {}; } },
+      events: { emit() {}, on() { return () => {}; } },
+      state: { subscribe() { return () => {}; } },
+      services: { provide() { return () => {}; } },
+      settings: { get() { return {}; }, onChange() { return () => {}; } },
+      hostDom: { getSessionId() { return ''; }, isAssistantBusy() { return false; } },
+      bridge: bridgeImpl
+    };
+    return { doc, ctx };
+  };
+
+  // 1. 后端 RPC 返回 ECONNREFUSED -> 不应误报“底座桥接服务不可用”
+  {
+    const { doc, ctx } = makeMockCtx({
+      async post(subPath) {
+        if (subPath === '/optimize-prompt') {
+          return { ok: false, error: 'connect ECONNREFUSED 127.0.0.1:50001' };
+        }
+        return {};
+      }
+    });
+    await mount(ctx, { document: doc });
+    doc.getElementById('agy-prompt-opt-btn').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const statusText = doc.getElementById('agy-prompt-opt-status').textContent;
+    assert.match(statusText, /未能连接 Antigravity 语言服务/);
+    assert.doesNotMatch(statusText, /底座桥接服务不可用/);
+    assert.equal(doc.getElementById('agy-qcap-toast').hidden, true);
+    dispose();
+  }
+
+  // 2. 桥接抛 Failed to fetch -> 仍提示“底座桥接服务不可用”
+  {
+    const { doc, ctx } = makeMockCtx({
+      async post(subPath) {
+        if (subPath === '/optimize-prompt') {
+          throw new TypeError('Failed to fetch');
+        }
+        return {};
+      }
+    });
+    await mount(ctx, { document: doc });
+    doc.getElementById('agy-prompt-opt-btn').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(doc.getElementById('agy-prompt-opt-status').textContent, /底座桥接服务不可用/);
+    assert.equal(doc.getElementById('agy-qcap-toast').hidden, true);
+    dispose();
+  }
+
+  // 3. 桥接返回 Forbidden token -> 提示鉴权已过期
+  {
+    const { doc, ctx } = makeMockCtx({
+      async post(subPath) {
+        if (subPath === '/optimize-prompt') {
+          return { ok: false, error: 'Forbidden token for plugin agy-daddy.composer' };
+        }
+        return {};
+      }
+    });
+    await mount(ctx, { document: doc });
+    doc.getElementById('agy-prompt-opt-btn').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(doc.getElementById('agy-prompt-opt-status').textContent, /底座桥接鉴权已过期/);
+    assert.equal(doc.getElementById('agy-qcap-toast').hidden, true);
+    dispose();
   }
 });

@@ -121,6 +121,7 @@ return await host.mountPlugin(${pidJson}, module.exports, {
 function buildIsolatedWorldPluginScript(pluginId, rendererSource, options = {}) {
   const pidJson = JSON.stringify(pluginId);
   const channelJson = JSON.stringify(options.xworldChannelName || '');
+  const xworldNonceJson = JSON.stringify(options.xworldNonce || (String(options.xworldChannelName || '').startsWith('__agy_xworld_') ? String(options.xworldChannelName).slice('__agy_xworld_'.length) : ''));
   const bridgePortNum = Number(options.bridgePort || 0);
   const tokenJson = JSON.stringify(options.pluginToken || '');
   const anchorsJson = JSON.stringify(options.anchorsRegistry || { anchors: {} });
@@ -135,6 +136,9 @@ if (typeof globalThis.__agyIsolatedDispose === 'function') {
 
 var pluginId = ${pidJson};
 var channelName = ${channelJson};
+var lifecycleEventName = '__agy_xworld_lifecycle__';
+var myNonce = ${xworldNonceJson};
+var instanceId = pluginId + ':' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
 var bridgePort = ${bridgePortNum};
 var privateToken = ${tokenJson};
 var anchorsRegistry = ${anchorsJson};
@@ -414,8 +418,38 @@ function onChannelMessage(ev) {
   }
 }
 
+function onLifecycleEvent(ev) {
+  var d = ev && ev.detail;
+  if (!d || typeof d !== 'object' || disposed) return;
+  if (d.type === 'host.reset' && d.nextNonce && d.nextNonce !== myNonce) {
+    if (typeof globalThis.__agyIsolatedDispose === 'function') {
+      void globalThis.__agyIsolatedDispose();
+    }
+    return;
+  }
+  if (d.type === 'host.dispose' && (!d.nonce || d.nonce === myNonce)) {
+    if (typeof globalThis.__agyIsolatedDispose === 'function') {
+      void globalThis.__agyIsolatedDispose();
+    }
+    return;
+  }
+  if (d.type === 'plugin.dispose' && d.pluginId === pluginId && d.instanceId !== instanceId) {
+    if (typeof globalThis.__agyIsolatedDispose === 'function') {
+      void globalThis.__agyIsolatedDispose();
+    }
+  }
+}
+
+if (doc && typeof doc.dispatchEvent === 'function') {
+  var evPre = typeof CustomEvent === 'function'
+    ? new CustomEvent(lifecycleEventName, { detail: { type: 'plugin.dispose', pluginId: pluginId, instanceId: instanceId } })
+    : { type: lifecycleEventName, detail: { type: 'plugin.dispose', pluginId: pluginId, instanceId: instanceId } };
+  try { doc.dispatchEvent(evPre); } catch {}
+}
+
 if (doc && typeof doc.addEventListener === 'function') {
   doc.addEventListener(channelName, onChannelMessage);
+  doc.addEventListener(lifecycleEventName, onLifecycleEvent);
 }
 
 var sendTextSeq = 0;
@@ -1059,8 +1093,27 @@ var ctx = {
         body: JSON.stringify(payload === undefined ? {} : payload)
       };
       if (opts && opts.signal) fetchInit.signal = opts.signal;
-      var resp = await fetchFn('http://127.0.0.1:' + bridgePort + '/plugins/' + pluginId + clean, fetchInit);
-      return resp.json();
+      var resp = await fetchFn.call(globalThis, 'http://127.0.0.1:' + bridgePort + '/plugins/' + pluginId + clean, fetchInit);
+      if (typeof resp.text === 'function') {
+        var rawText = await resp.text();
+        if (rawText) {
+          try {
+            return JSON.parse(rawText);
+          } catch {}
+        }
+        if (!resp.ok) {
+          return {
+            ok: false,
+            status: resp.status,
+            error: 'HTTP ' + resp.status + (rawText ? ': ' + rawText.slice(0, 200) : '')
+          };
+        }
+        return { ok: true };
+      }
+      if (typeof resp.json === 'function') {
+        return await resp.json();
+      }
+      return { ok: Boolean(resp.ok), status: resp.status };
     }
   }
 };
@@ -1117,6 +1170,7 @@ globalThis.__agyIsolatedDispose = async function() {
   injectedStyleIds.clear();
   if (doc && typeof doc.removeEventListener === 'function') {
     doc.removeEventListener(channelName, onChannelMessage);
+    doc.removeEventListener(lifecycleEventName, onLifecycleEvent);
   }
   dispatchToMain({ direction: 'to-main', action: 'plugin.dispose', pluginId: pluginId });
   try { delete globalThis.__agyIsolatedDispose; } catch {}
@@ -1267,6 +1321,7 @@ class CdpInjector extends EventEmitter {
       const initialSettings = this.getPluginSettings(activeEntry.id, activeEntry.settingsValues || {});
       const isoScript = buildIsolatedWorldPluginScript(activeEntry.id, rendererSource, {
         xworldChannelName: session.xworldChannelName,
+        xworldNonce: session.xworldNonce || '',
         bridgePort: this.getBridgePort(),
         pluginToken: activeEntry.pluginToken || '',
         anchorsRegistry,
@@ -1320,6 +1375,9 @@ class CdpInjector extends EventEmitter {
     if (session.closed || session.reinjectInFlight) return;
     session.reinjectInFlight = true;
     try {
+      for (const pid of Array.from(session.mountedPlugins.keys())) {
+        await this.disposePluginFromSession(session, pid).catch(() => {});
+      }
       session.mountedPlugins.clear();
       session.frameId = await session.client.getMainFrameId();
       await this.injectHostShell(session);

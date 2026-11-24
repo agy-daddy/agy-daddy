@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { FourRealmBus } = require('../src/core/bus');
 const { DynamicBridgeServer, MAX_BODY_BYTES } = require('../src/core/bridge');
-const { discoverFromHubDaemonFiles, createScopedRpcClient } = require('../src/core/rpc');
+const { discoverFromHubDaemonFiles, createScopedRpcClient, createRpcTransport } = require('../src/core/rpc');
 
 test('FourRealmBus: event 瞬时、state 粘性重放、跨域转发、超时降级与彻底清理', async () => {
   const bus = new FourRealmBus({ timeoutMs: 120 });
@@ -182,6 +182,39 @@ test('RPC 多路径回退发现与方法白名单门禁', async () => {
 
     const writeRpc = createScopedRpcClient('p.writer', ['rpc:read', 'rpc:write'], transport);
     assert.equal((await writeRpc.call('SendUserCascadeMessage', {})).ok, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('RPC transport: retryOnTimeout=false 不对超时重复重试，ECONNREFUSED 仍刷新凭据重试', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-rpc-retry-'));
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'hub_2001.json'), JSON.stringify({ httpsPort: 50011, csrfToken: 'tok-1', pid: process.pid }));
+    let calls = 0;
+    let mode = 'timeout';
+    const transport = createRpcTransport({
+      skipCdp: true,
+      daemonDirs: [tmpDir],
+      request: async () => {
+        calls++;
+        if (mode === 'timeout') throw new Error('Local API timeout');
+        if (mode === 'conn' && calls === 1) throw new Error('connect ECONNREFUSED 127.0.0.1:50011');
+        return JSON.stringify({ ok: true, calls });
+      }
+    });
+
+    await assert.rejects(
+      () => transport.call('GetModelResponse', { prompt: 'x' }, { retryOnTimeout: false }),
+      /Local API timeout/
+    );
+    assert.equal(calls, 1, 'retryOnTimeout=false 时超时只尝试一次');
+
+    calls = 0;
+    mode = 'conn';
+    const res = await transport.call('GetModelResponse', { prompt: 'x' }, { retryOnTimeout: false });
+    assert.equal(res.ok, true);
+    assert.equal(calls, 2, 'ECONNREFUSED 应刷新凭据并重试一次');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

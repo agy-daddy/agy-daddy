@@ -685,16 +685,25 @@ async function mount(ctx, options = {}) {
     }
   }
 
-  function formatPromptOptError(rawErr, res = null) {
+  function formatPromptOptError(rawErr, res = null, meta = {}) {
     const raw = String(rawErr || '').trim();
+    const fromBridgeTransport = Boolean(meta?.fromBridgeTransport);
     let message = '';
     if (!raw) {
       message = '提示词优化失败，请重试';
-    } else if (/ROUTE_TIMEOUT|\bETIMEDOUT\b|timeout/i.test(raw)) {
+    } else if (/Forbidden token|Forbidden origin/i.test(raw)) {
+      message = '底座桥接鉴权已过期，请重载插件或刷新窗口';
+    } else if (/Route not found/i.test(raw)) {
+      message = '提示词优化路由未注册，请重载插件';
+    } else if (fromBridgeTransport && /Bridge unavailable|Failed to fetch|ECONNREFUSED|NetworkError/i.test(raw)) {
+      message = '底座桥接服务不可用，请确认 Agy-Daddy 已运行';
+    } else if (!fromBridgeTransport && /Unable to resolve LanguageServer RPC credentials|ECONNREFUSED|ECONNRESET|socket hang up/i.test(raw)) {
+      message = '未能连接 Antigravity 语言服务，请确认已登录并重试';
+    } else if (/HTTP 401|HTTP 403/i.test(raw)) {
+      message = 'Antigravity 登录态已失效，请重新登录后重试';
+    } else if (/ROUTE_TIMEOUT|\bETIMEDOUT\b|timeout|HTTP 502|HTTP 504/i.test(raw)) {
       const attemptSuffix = (raw.match(/（已尝试\s*\d+\s*个模型）/) || [])[0] || '';
       message = `提示词优化超时，请稍后重试${attemptSuffix}`;
-    } else if (/Bridge unavailable|Failed to fetch|ECONNREFUSED|NetworkError/i.test(raw)) {
-      message = '底座桥接服务不可用，请确认 Agy-Daddy 已运行';
     } else if (/(?:失败|超时|先输入|无需|未能|不可用|错误)/.test(raw)) {
       message = raw;
     } else {
@@ -785,16 +794,17 @@ async function mount(ctx, options = {}) {
     };
     activeToastState = stateObj;
 
+    const isOptimizerToast = stateObj.target === 'optimizer';
     let shownInQuick = false;
     let shownInOpt = false;
-    if (toastEl) {
-      applyToastElementState(toastEl, stateObj);
-      shownInQuick = true;
-    }
-    if (stateObj.target === 'optimizer' || stateObj.tone === 'error') {
+    if (isOptimizerToast) {
       if (optStatusEl) {
         applyToastElementState(optStatusEl, stateObj);
         shownInOpt = true;
+        applyToastElementState(toastEl, null);
+      } else if (toastEl) {
+        applyToastElementState(toastEl, stateObj);
+        shownInQuick = true;
       }
       if (optBtnEl) {
         if (stateObj.tone === 'error') optBtnEl.setAttribute?.('data-error', 'true');
@@ -803,6 +813,10 @@ async function mount(ctx, options = {}) {
     } else {
       applyToastElementState(optStatusEl, null);
       optBtnEl?.removeAttribute?.('data-error');
+      if (toastEl) {
+        applyToastElementState(toastEl, stateObj);
+        shownInQuick = true;
+      }
     }
 
     if (!shownInQuick && !shownInOpt) {
@@ -1256,12 +1270,14 @@ async function mount(ctx, options = {}) {
       }
 
       if (!optimized || !editor) {
+        const hasBridgePost = typeof ctx.bridge?.post === 'function';
+        const missingBridge = !res && !hasBridgePost && options.allowLocalFallback !== true;
         const rawErr = res?.message
           || res?.error
-          || (typeof ctx.bridge?.post !== 'function' && options.allowLocalFallback !== true
+          || (missingBridge
             ? 'Bridge unavailable'
             : (!editor ? '未检测到对话输入框，请重试' : '提示词优化失败，请重试'));
-        const formatted = formatPromptOptError(rawErr, res);
+        const formatted = formatPromptOptError(rawErr, res, { fromBridgeTransport: missingBridge });
         promptOptLoading = false;
         syncPromptOptimizerUI();
         showQuickToast(formatted.message, {
@@ -1292,7 +1308,7 @@ async function mount(ctx, options = {}) {
       if (isDisposed) return { ok: false, error: 'DISPOSED' };
       promptOptLoading = false;
       syncPromptOptimizerUI();
-      const formatted = formatPromptOptError(err?.message || '提示词优化失败');
+      const formatted = formatPromptOptError(err?.message || '提示词优化失败', null, { fromBridgeTransport: true });
       showQuickToast(formatted.message, {
         tone: 'error',
         durationMs: 5000,
@@ -1321,7 +1337,7 @@ async function mount(ctx, options = {}) {
     }
     promptOptLoading = true;
     syncPromptOptimizerUI();
-    return replaceComposerTextAsync(editor, orig, { preferPaste: true }).finally(() => {
+    return replaceComposerTextAsync(editor, orig, { preferPaste: true }).catch(() => false).finally(() => {
       if (isDisposed) return;
       promptOptLoading = false;
       syncPromptOptimizerUI();
@@ -1387,6 +1403,11 @@ async function mount(ctx, options = {}) {
     }
 
     if (!optWrapEl) {
+      if (typeof doc.querySelectorAll === 'function') {
+        for (const stale of Array.from(doc.querySelectorAll('#agy-prompt-opt-wrap') || [])) {
+          stale?.remove?.();
+        }
+      }
       optWrapEl = doc.createElement('div');
       optWrapEl.id = 'agy-prompt-opt-wrap';
       optWrapEl.setAttribute?.('data-position', 'above-send');
@@ -1472,8 +1493,10 @@ async function mount(ctx, options = {}) {
       }
     } catch {}
 
-    if (activeToastState && Date.now() < activeToastState.expiresAt && (activeToastState.target === 'optimizer' || activeToastState.tone === 'error')) {
+    if (activeToastState && Date.now() < activeToastState.expiresAt && activeToastState.target === 'optimizer') {
       applyToastElementState(optStatusEl, activeToastState);
+      applyToastElementState(toastEl, null);
+      removeFloatToast();
       if (activeToastState.tone === 'error') optBtnEl?.setAttribute?.('data-error', 'true');
     }
 
@@ -1498,6 +1521,11 @@ async function mount(ctx, options = {}) {
     }
 
     if (!quickBarEl) {
+      if (typeof doc.querySelectorAll === 'function') {
+        for (const stale of Array.from(doc.querySelectorAll('#agy-quick-capsule-bar') || [])) {
+          stale?.remove?.();
+        }
+      }
       quickBarEl = doc.createElement('div');
       quickBarEl.id = 'agy-quick-capsule-bar';
       quickBarEl.className = 'agy-quick-capsule-bar';
@@ -1734,7 +1762,7 @@ async function mount(ctx, options = {}) {
       showQuickToast('');
     });
     appendOwnNode(toastEl);
-    if (activeToastState && Date.now() < activeToastState.expiresAt) {
+    if (activeToastState && Date.now() < activeToastState.expiresAt && !(activeToastState.target === 'optimizer' && optStatusEl)) {
       applyToastElementState(toastEl, activeToastState);
     }
 

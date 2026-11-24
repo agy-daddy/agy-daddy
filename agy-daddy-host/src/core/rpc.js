@@ -167,7 +167,10 @@ function createRpcTransport(options = {}) {
         );
         return JSON.parse(text);
       } catch (err) {
-        if (/HTTP 401|HTTP 403|ECONNREFUSED|timeout/i.test(String(err?.message || ''))) {
+        const msg = String(err?.message || '');
+        const isConnOrAuthErr = /HTTP 401|HTTP 403|ECONNREFUSED|ECONNRESET|EPIPE|socket hang up/i.test(msg);
+        const isTimeoutErr = opts?.retryOnTimeout !== false && /timeout/i.test(msg);
+        if (isConnOrAuthErr || isTimeoutErr) {
           creds = await ensureCreds(true);
           const text = await reqFn(
             `${creds.origin}/exa.language_server_pb.LanguageServerService/${method}`,

@@ -870,3 +870,84 @@ test('POST /host/reload-all 与 /host/daemon/restart：全量代码热重载（�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('buildIsolatedWorldPluginScript: 跨世界生命周期事件清理旧实例且 bridge.post 安全处理非 JSON 错误响应', async () => {
+  const { buildIsolatedWorldPluginScript } = require('../src/core/injector');
+  const mockDoc = createMockDocument();
+  const { ctx: iso1, clearTimers: clear1 } = createRealEnvShim(mockDoc, {
+    fetch: async () => ({
+      ok: false,
+      status: 502,
+      text: async () => 'Bad Gateway: Direct HTTP request timeout'
+    })
+  });
+  const { ctx: iso2, clearTimers: clear2 } = createRealEnvShim(mockDoc, {
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true })
+    })
+  });
+
+  try {
+    let disposedCount1 = 0;
+    let disposedCount2 = 0;
+    let bridgeOut1 = null;
+
+    const rendererSrc1 = `
+      module.exports = {
+        async mount(ctx) {
+          globalThis.__res1 = await ctx.bridge.post('/optimize-prompt', { text: 'hi' });
+        },
+        dispose() {
+          globalThis.__disposed1 = (globalThis.__disposed1 || 0) + 1;
+        }
+      };
+    `;
+    const rendererSrc2 = `
+      module.exports = {
+        mount() {},
+        dispose() {
+          globalThis.__disposed2 = (globalThis.__disposed2 || 0) + 1;
+        }
+      };
+    `;
+
+    const s1 = buildIsolatedWorldPluginScript('agy-daddy.demo', rendererSrc1, {
+      xworldChannelName: '__agy_xworld_nonce1',
+      xworldNonce: 'nonce1',
+      bridgePort: 18888,
+      pluginToken: 'tok1'
+    });
+    await vm.runInContext(s1, iso1);
+    bridgeOut1 = iso1.__res1;
+    assert.equal(bridgeOut1.ok, false);
+    assert.equal(bridgeOut1.status, 502);
+    assert.match(bridgeOut1.error, /HTTP 502: Bad Gateway/);
+
+    // 注入同插件新实例（不同 nonce），应自动触发旧实例 dispose
+    const s2 = buildIsolatedWorldPluginScript('agy-daddy.demo', rendererSrc2, {
+      xworldChannelName: '__agy_xworld_nonce2',
+      xworldNonce: 'nonce2',
+      bridgePort: 18889,
+      pluginToken: 'tok2'
+    });
+    await vm.runInContext(s2, iso2);
+    await new Promise((r) => setTimeout(r, 20));
+    disposedCount1 = iso1.__disposed1 || 0;
+    disposedCount2 = iso2.__disposed2 || 0;
+    assert.equal(disposedCount1, 1, '同 pluginId 新实例注入时应清理遗留旧隔离世界');
+    assert.equal(disposedCount2, 0, '新实例自身不应被误销毁');
+
+    // 发送 host.reset（nextNonce !== 'nonce2'）应清理 iso2
+    mockDoc.dispatchEvent({
+      type: '__agy_xworld_lifecycle__',
+      detail: { type: 'host.reset', nextNonce: 'nonce3' }
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(iso2.__disposed2, 1, '收到新宿主 host.reset 时旧隔离世界应自清理');
+  } finally {
+    clear1();
+    clear2();
+  }
+});

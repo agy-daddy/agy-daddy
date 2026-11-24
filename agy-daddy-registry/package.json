@@ -3,6 +3,22 @@
   "version": "1.0.0",
   "description": "Official Agy-Daddy plugin registry, integrity hashes, and Antigravity anchor fixture matrix",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-registry"
+  },
+  "files": [
+    "registry.json",
+    "anchors.json",
+    "fixtures/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "verify": "node scripts/verify-registry.js",
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"

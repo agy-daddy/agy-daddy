@@ -15,6 +15,11 @@
     "build": "node scripts/monorepo.js build",
     "verify:gates": "node scripts/monorepo.js gates",
     "test": "node scripts/monorepo.js test",
-    "verify": "node scripts/monorepo.js verify"
+    "analyze": "node scripts/monorepo.js analyze",
+    "verify": "node scripts/monorepo.js verify",
+    "release:plan": "node scripts/release.js plan",
+    "release:pack": "node scripts/release.js pack",
+    "release:dry-run": "node scripts/release.js publish --dry-run",
+    "release:healthcheck": "node scripts/release.js healthcheck --mode local"
   }
 }

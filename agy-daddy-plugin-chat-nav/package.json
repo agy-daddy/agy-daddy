@@ -3,8 +3,26 @@
   "version": "1.0.0",
   "description": "Agy-Daddy floating chat navigation, thinking expand guard, search slot, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external link plugin",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-chat-nav"
+  },
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "src/",
+    "locales/",
+    "baseline.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

@@ -3,8 +3,26 @@
   "version": "1.0.0",
   "description": "Agy-Daddy zero-restart local forwarding proxy gateway plugin (127.0.0.1:18766 HTTP/CONNECT/SOCKS5/DIRECT)",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-proxy"
+  },
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "src/",
+    "locales/",
+    "baseline.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

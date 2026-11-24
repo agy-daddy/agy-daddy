@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -245,6 +246,109 @@ function runGates() {
     throw new Error('verifyRegistryAndMatrix() returned non-ok');
   }
   console.log(`✔ Registry SHA-512 (${regResult.pluginsVerified} plugins) & fixture matrix (${regResult.matrix.length} versions × ${regResult.anchorsCount} anchors) verified`);
+
+  // 8. Release packaging compliance gate (public publishConfig, non-empty files whitelist without test/, host prepublishOnly)
+  const publishableDirs = [HOST_DIR, ...pluginDirs, REGISTRY_DIR];
+  for (const dir of publishableDirs) {
+    const rel = path.relative(ROOT_DIR, dir);
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    if (pkg.publishConfig?.access !== 'public') {
+      throw new Error(`Missing publishConfig.access="public" in ${rel}/package.json`);
+    }
+    if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
+      throw new Error(`Missing non-empty "files" whitelist in ${rel}/package.json`);
+    }
+    for (const entry of pkg.files) {
+      const norm = String(entry).replace(/^\.\//, '');
+      if (norm === 'test' || norm === 'test/' || norm.startsWith('test/') || norm.startsWith('web/src')) {
+        throw new Error(`Forbidden dev/test entry "${entry}" in ${rel}/package.json "files"`);
+      }
+    }
+    if (dir === HOST_DIR && !pkg.scripts?.prepublishOnly) {
+      throw new Error('agy-daddy-host/package.json must define scripts.prepublishOnly');
+    }
+  }
+  console.log(`✔ Release packaging compliance verified across ${publishableDirs.length} publishable packages`);
+}
+
+function formatKb(bytes) {
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function runAnalyze() {
+  console.log('=== [analyze] Bundle & tarball size analysis ===');
+  const JS_GZIP_WARN_BYTES = 250 * 1024;
+  const warnings = [];
+
+  const hostBundlePath = path.join(HOST_DIR, 'dist', 'host-renderer.js');
+  if (fs.existsSync(hostBundlePath)) {
+    const buf = fs.readFileSync(hostBundlePath);
+    const gz = zlib.gzipSync(buf).byteLength;
+    console.log(`\n[Host Renderer] dist/host-renderer.js: raw=${formatKb(buf.byteLength)}, gzip=${formatKb(gz)}`);
+  } else {
+    warnings.push('Missing agy-daddy-host/dist/host-renderer.js (run npm run build first)');
+  }
+
+  for (const webPluginName of ['agy-daddy-plugin-remote', 'agy-daddy-plugin-web']) {
+    const distWebDir = path.join(ROOT_DIR, webPluginName, 'dist', 'web');
+    if (!fs.existsSync(distWebDir)) {
+      warnings.push(`Missing ${webPluginName}/dist/web`);
+      continue;
+    }
+    const files = walkFiles(distWebDir).map((f) => {
+      const buf = fs.readFileSync(f);
+      const gz = zlib.gzipSync(buf).byteLength;
+      return {
+        rel: path.relative(distWebDir, f).split(path.sep).join('/'),
+        raw: buf.byteLength,
+        gz
+      };
+    }).sort((a, b) => b.raw - a.raw);
+
+    const totalRaw = files.reduce((s, x) => s + x.raw, 0);
+    const totalGz = files.reduce((s, x) => s + x.gz, 0);
+    console.log(`\n[Web UI] ${webPluginName}/dist/web (${files.length} files, total raw=${formatKb(totalRaw)}, gzip=${formatKb(totalGz)})`);
+    for (const f of files) {
+      const flag = f.rel.endsWith('.js') && f.gz > JS_GZIP_WARN_BYTES ? ' [WARN > 250KB gzip]' : '';
+      if (flag) warnings.push(`${webPluginName}/${f.rel} gzip (${formatKb(f.gz)}) exceeds 250 KB budget`);
+      console.log(`  - ${f.rel.padEnd(44)} raw=${formatKb(f.raw).padStart(9)}  gzip=${formatKb(f.gz).padStart(8)}${flag}`);
+    }
+  }
+
+  console.log('\n[npm Tarball Dry-Run Summary]');
+  const publishableDirs = [HOST_DIR, ...listPluginDirs(), REGISTRY_DIR];
+  for (const dir of publishableDirs) {
+    const res = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: dir,
+      encoding: 'utf8',
+      shell: process.platform === 'win32'
+    });
+    if (res.status !== 0) {
+      throw new Error(`npm pack --dry-run failed in ${path.basename(dir)}: ${res.stderr || res.stdout}`);
+    }
+    const parsed = JSON.parse(res.stdout);
+    const info = Array.isArray(parsed)
+      ? parsed[0]
+      : (parsed && typeof parsed.name === 'string' ? parsed : Object.values(parsed || {})[0]);
+    if (!info) {
+      throw new Error(`Unexpected npm pack --dry-run --json output in ${path.basename(dir)}`);
+    }
+    const leaked = (info.files || [])
+      .map((f) => f.path)
+      .filter((p) => p.startsWith('test/') || p.startsWith('web/src/'));
+    if (leaked.length > 0) {
+      throw new Error(`Tarball for ${info.name} leaked forbidden dev/test files: ${leaked.slice(0, 5).join(', ')}`);
+    }
+    const fileCount = info.entryCount ?? (Array.isArray(info.files) ? info.files.length : 0);
+    console.log(
+      `  - ${String(info.name).padEnd(28)} v${String(info.version).padEnd(7)} files=${String(fileCount).padStart(3)}  size=${formatKb(info.size).padStart(9)}  unpacked=${formatKb(info.unpackedSize).padStart(9)}`
+    );
+  }
+
+  if (warnings.length > 0) {
+    console.warn('\n[analyze] Warnings:');
+    for (const w of warnings) console.warn(`  ! ${w}`);
+  }
 }
 
 function runTests() {
@@ -268,6 +372,28 @@ function runTests() {
     }
   }
 
+  const scriptsTestDir = path.join(ROOT_DIR, 'scripts', 'test');
+  if (fs.existsSync(scriptsTestDir)) {
+    const scriptTests = fs.readdirSync(scriptsTestDir).filter((f) => f.endsWith('.test.js')).sort();
+    if (scriptTests.length > 0) {
+      console.log('\n--- Testing scripts/test ---');
+      const res = spawnSync(
+        process.execPath,
+        ['--test', ...scriptTests.map((f) => path.join(scriptsTestDir, f))],
+        {
+          cwd: ROOT_DIR,
+          stdio: 'inherit',
+          env: { ...process.env, AGY_DADDY_TEST_MODE: '1' }
+        }
+      );
+      const ok = res.status === 0;
+      results.push({ label: 'scripts/test', ok, status: res.status });
+      if (!ok) {
+        console.error(`✖ scripts/test failed with exit code ${res.status}`);
+      }
+    }
+  }
+
   console.log('\n=== [test] Summary ===');
   for (const r of results) {
     console.log(`${r.ok ? '✔' : '✖'} ${r.label} (exit=${r.status})`);
@@ -288,12 +414,14 @@ function main() {
       runGates();
     } else if (cmd === 'test') {
       runTests();
+    } else if (cmd === 'analyze') {
+      runAnalyze();
     } else if (cmd === 'verify') {
       runBuild();
       runGates();
       runTests();
     } else {
-      console.error('Usage: node scripts/monorepo.js <build|gates|test|verify>');
+      console.error('Usage: node scripts/monorepo.js <build|gates|test|analyze|verify>');
       process.exitCode = 1;
     }
   } catch (err) {

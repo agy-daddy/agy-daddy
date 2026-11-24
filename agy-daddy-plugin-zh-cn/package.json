@@ -3,8 +3,27 @@
   "version": "1.0.0",
   "description": "Agy-Daddy reversible 10-language client localization (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en) and zero-token dictionary/regex translator plugin",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-zh-cn"
+  },
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "src/",
+    "locales/",
+    "data/",
+    "baseline.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

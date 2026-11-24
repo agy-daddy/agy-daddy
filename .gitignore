@@ -9,3 +9,5 @@ node_modules/
 daemon.lock
 agy-daddy-diagnostic-bundle*.json
 agy-daddy-host/dist/
+.release-artifacts/
+.env.release.local

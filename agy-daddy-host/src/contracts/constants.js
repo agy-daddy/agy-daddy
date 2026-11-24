@@ -79,6 +79,7 @@ const RPC_WRITE_ALLOWLIST = Object.freeze([
 const CONTRIBUTION_POINTS = Object.freeze([
   'topbar.units',
   'topbar.popovers',
+  'tray.menu',
   'settings',
   'settings.pages',
   'commands',

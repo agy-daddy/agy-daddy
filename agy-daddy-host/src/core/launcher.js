@@ -9,7 +9,7 @@ const { AgyDaddyDaemon, isPidAlive } = require('./daemon');
 const { TrayManager } = require('./tray-manager');
 const { createLiveWatchdog } = require('./live-watchdog');
 const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
-const { findMacAntigravityApp, relaunchAntigravityWithCdp } = require('./lifecycle');
+const { findAntigravityApp, relaunchAntigravityWithCdp } = require('./lifecycle');
 
 function readLauncherLock(stateDir = getStateDir()) {
   const lockPath = path.join(stateDir, 'launcher.lock');
@@ -42,7 +42,7 @@ function createLauncherController(options = {}) {
   const platform = options.platform || process.platform;
   const env = options.env || process.env;
   const stateDir = options.stateDir || getStateDir(options);
-  const appPath = options.appPath || (platform === 'darwin' ? findMacAntigravityApp({ env }) : 'antigravity');
+  const appPath = options.appPath || findAntigravityApp({ platform, env });
 
   const spawnFn = options.spawnFn || spawn;
   const spawnSyncFn = options.spawnSyncFn || spawnSync;

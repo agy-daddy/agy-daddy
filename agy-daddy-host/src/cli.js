@@ -11,6 +11,7 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./core/storage');
 const { runDoctor, exportDiagnosticBundle } = require('./core/doctor');
 const {
   installPlugin,
+  installOfficialPlugins,
   linkPlugin,
   enablePlugin,
   disablePlugin,
@@ -38,7 +39,7 @@ const { createLauncherController, readLauncherLock } = require('./core/launcher'
 const { auditUpstreamsAndBaselines } = require('./core/upstreams');
 
 const BOOLEAN_FLAGS = new Set([
-  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native', 'tray', 'launch-app', 'dock-icon', 'no-takeover'
+  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native', 'tray', 'launch-app', 'dock-icon', 'no-takeover', 'official'
 ]);
 
 function openBrowserUrl(url) {
@@ -455,10 +456,23 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (sub === 'install') {
-      if (!target) throw new Error('Usage: agy-daddy plugin install <name|github:...|npm:...|local:...>');
+      const registryUrl = typeof flags.registry === 'string' ? flags.registry : undefined;
+      if (flags.official || target === '--official' || target === 'official') {
+        const res = await installOfficialPlugins({
+          tag: typeof flags.tag === 'string' ? flags.tag : undefined,
+          npmRegistryUrl: registryUrl,
+          copy: Boolean(flags.copy),
+          defaultNativeEnabled: flags['no-native'] ? false : undefined
+        });
+        console.log(JSON.stringify(res, null, 2));
+        if (!res.ok) process.exitCode = 1;
+        return;
+      }
+      if (!target) throw new Error('Usage: agy-daddy plugin install <name|github:...|npm:...|local:...> | --official');
       const res = await installPlugin(target, {
         trustLevel: flags.trust,
         grantedPermissions,
+        npmRegistryUrl: registryUrl,
         copy: Boolean(flags.copy),
         defaultNativeEnabled: flags['no-native'] ? false : undefined
       });
@@ -633,7 +647,10 @@ async function main(argv = process.argv.slice(2)) {
         } else {
           console.log(`✅ Agy-Daddy Live 已在后台运行中 (PID ${info.pid}${info.port ? `, Bridge :${info.port}` : ''}, 插件 ${info.activePlugins.length} 个, CDP 窗口 ${cdpTargetsCount} 个)`);
           if (cdpTargetsCount === 0 && hostProc.running && !hostProc.hasDebugSwitch) {
-            console.log(`⚠️ 检测到运行中的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口；请按 ⌘Q 退出并重开 Antigravity（后台 Live 将自动补参注入），或在外部终端运行 agy-daddy restart。`);
+            const quitHint = process.platform === 'darwin'
+              ? '请按 ⌘Q 退出并重开 Antigravity'
+              : '请关闭并重开 Antigravity';
+            console.log(`⚠️ 检测到运行中的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口；${quitHint}（后台 Live 将自动补参注入），或在外部终端运行 agy-daddy restart。`);
           }
           console.log('💡 如需在前台重启并查看实时日志，可运行: agy-daddy live --replace');
         }
@@ -735,7 +752,11 @@ async function main(argv = process.argv.slice(2)) {
         console.log(JSON.stringify({ ok: true, dryRun: true, repos: allDirs }, null, 2));
         return;
       }
-      const res = spawnSync(process.execPath, ['--test', 'test/*.test.js'], {
+      const testFiles = fs.readdirSync(path.join(hostRoot, 'test'))
+        .filter((f) => f.endsWith('.test.js'))
+        .sort()
+        .map((f) => path.join('test', f));
+      const res = spawnSync(process.execPath, ['--test', ...testFiles], {
         cwd: hostRoot,
         stdio: 'inherit',
         env: { ...process.env, AGY_DADDY_TEST_MODE: '1' }
@@ -819,6 +840,7 @@ async function main(argv = process.argv.slice(2)) {
   agy-daddy update [--dry-run] | upstreams [--json]   拉取更新与上游基线漂移追踪
   agy-daddy run <commandId>                           执行已安装插件贡献命令
   agy-daddy plugin list|install|link|enable|disable|rollback|native|uninstall|audit
+  agy-daddy plugin install --official [--tag latest|next] [--registry <url>]
   agy-daddy daemon start|stop|status                  管理 agy-daddyd 单实例守护进程
   agy-daddy dev test-all|link-all|clone-all|capture-fixture|smoke`);
 }

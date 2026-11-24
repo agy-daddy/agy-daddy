@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { resolveRuntime } = require('./runtime-resolver');
 const { getStateDir, isTestMode } = require('./paths');
 const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
@@ -119,7 +119,7 @@ ${envXml}
 
 function generateWindowsLauncherBat(options = {}) {
   const antigravityExe = options.antigravityExe || '%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe';
-  const binPath = options.binPath || path.resolve(__dirname, '..', 'cli.js');
+  const binPath = options.binPath || path.resolve(__dirname, '..', '..', 'bin', 'agy-daddy.js');
   const proxyUrl = options.proxyUrl || '';
   const mode = options.mode === 'live' ? 'live' : 'launcher';
   const launchFlags = mode === 'launcher' && options.launchApp ? ' --launch-app' : '';
@@ -156,15 +156,23 @@ StartupWMClass=agy-daddy-launcher
 }
 
 function generateLinuxSystemdUnit(options = {}) {
-  const binPath = options.binPath || path.resolve(__dirname, '..', 'bin', 'agy-daddy');
-  const runtime = options.runtimePath || '/usr/bin/env node';
+  const cliPath = options.binPath || options.cliPath || path.resolve(__dirname, '..', '..', 'bin', 'agy-daddy.js');
+  const runtimeInfo = options.runtimeInfo || (options.runtimePath
+    ? { runtime: options.runtimePath, isElectron: Boolean(options.isElectron) }
+    : resolveRuntime());
+  const execStart = runtimeInfo && runtimeInfo.runtime
+    ? `"${runtimeInfo.runtime}" "${cliPath}" live`
+    : `/usr/bin/env node "${cliPath}" live`;
+  const envLine = runtimeInfo && runtimeInfo.isElectron
+    ? 'Environment=ELECTRON_RUN_AS_NODE=1\n'
+    : '';
   return `[Unit]
 Description=Agy-Daddy CDP Plugin Host Daemon
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=${runtime} ${binPath} daemon start
+${envLine}ExecStart=${execStart}
 Restart=on-failure
 RestartSec=3
 
@@ -181,12 +189,22 @@ function assertSafeTargetDir(targetDir, label) {
 
 function installAutoStart(options = {}) {
   const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  const home = options.homeDir || os.homedir();
   const label = options.label || getLaunchAgentLabel(options.username);
   if (platform === 'win32') {
     const batContent = generateWindowsLauncherBat(options);
     if (options.dryRun) return { ok: true, dryRun: true, platform, content: batContent };
     assertSafeTargetDir(options.targetDir, 'installAutoStart');
-    const dir = path.resolve(options.targetDir);
+    const startupDir = path.join(
+      env.APPDATA || path.join(home, 'AppData', 'Roaming'),
+      'Microsoft',
+      'Windows',
+      'Start Menu',
+      'Programs',
+      'Startup'
+    );
+    const dir = path.resolve(options.targetDir || startupDir);
     fs.mkdirSync(dir, { recursive: true });
     const outPath = path.join(dir, 'agy-daddyd-start.bat');
     fs.writeFileSync(outPath, batContent, 'utf8');
@@ -196,14 +214,32 @@ function installAutoStart(options = {}) {
     const unitContent = generateLinuxSystemdUnit(options);
     if (options.dryRun) return { ok: true, dryRun: true, platform, content: unitContent };
     assertSafeTargetDir(options.targetDir, 'installAutoStart');
-    const dir = path.resolve(options.targetDir);
+    const systemdDir = path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user');
+    const dir = path.resolve(options.targetDir || systemdDir);
     fs.mkdirSync(dir, { recursive: true });
     const outPath = path.join(dir, 'agy-daddyd.service');
     fs.writeFileSync(outPath, unitContent, 'utf8');
-    return { ok: true, platform, filePath: outPath };
+    let loaded = false;
+    let systemctlError = null;
+    if (!isTestMode() && !options.skipSystemctl && process.platform === 'linux') {
+      try {
+        spawnSync('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        const en = spawnSync('systemctl', ['--user', 'enable', '--now', 'agy-daddyd.service'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        if (en.status === 0) {
+          loaded = true;
+        } else {
+          systemctlError = String(en.stderr || en.stdout || `systemctl exit ${en.status}`).trim();
+        }
+      } catch (err) {
+        systemctlError = err?.message || String(err);
+      }
+    }
+    return { ok: true, platform, filePath: outPath, loaded, systemctlError };
   }
 
-  const home = options.homeDir || os.homedir();
   const logDir = options.logDir || (isTestMode() && options.targetDir
     ? path.join(options.targetDir, 'logs')
     : path.join(home, 'Library', 'Logs', 'agy-daddy'));
@@ -238,10 +274,48 @@ function installAutoStart(options = {}) {
 }
 
 function removeAutoStart(options = {}) {
-  const label = options.label || getLaunchAgentLabel(options.username);
-  if (options.dryRun) return { ok: true, dryRun: true, label };
-  assertSafeTargetDir(options.targetDir, 'removeAutoStart');
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
   const home = options.homeDir || os.homedir();
+  const label = options.label || getLaunchAgentLabel(options.username);
+  if (options.dryRun) return { ok: true, dryRun: true, platform, label };
+  assertSafeTargetDir(options.targetDir, 'removeAutoStart');
+
+  if (platform === 'win32') {
+    const startupDir = path.join(
+      env.APPDATA || path.join(home, 'AppData', 'Roaming'),
+      'Microsoft',
+      'Windows',
+      'Start Menu',
+      'Programs',
+      'Startup'
+    );
+    const dir = path.resolve(options.targetDir || startupDir);
+    const batPath = path.join(dir, 'agy-daddyd-start.bat');
+    const existed = fs.existsSync(batPath);
+    if (existed) fs.unlinkSync(batPath);
+    return { ok: true, platform: 'win32', removed: existed, unloaded: false, filePath: batPath };
+  }
+
+  if (platform === 'linux') {
+    const systemdDir = path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user');
+    const dir = path.resolve(options.targetDir || systemdDir);
+    const unitPath = path.join(dir, 'agy-daddyd.service');
+    let unloaded = false;
+    if (!isTestMode() && !options.skipSystemctl && process.platform === 'linux') {
+      try {
+        const dis = spawnSync('systemctl', ['--user', 'disable', '--now', 'agy-daddyd.service'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        unloaded = dis.status === 0;
+      } catch {}
+    }
+    const existed = fs.existsSync(unitPath);
+    if (existed) fs.unlinkSync(unitPath);
+    return { ok: true, platform: 'linux', removed: existed, unloaded, filePath: unitPath };
+  }
+
   const launchDir = path.resolve(options.targetDir || path.join(home, 'Library', 'LaunchAgents'));
   const plistPath = path.join(launchDir, `${label}.plist`);
 
@@ -256,7 +330,7 @@ function removeAutoStart(options = {}) {
 
   const existed = fs.existsSync(plistPath);
   if (existed) fs.unlinkSync(plistPath);
-  return { ok: true, removed: existed, unloaded, filePath: plistPath };
+  return { ok: true, platform: 'darwin', removed: existed, unloaded, filePath: plistPath };
 }
 
 function installMacLauncherApp(options = {}) {
@@ -477,7 +551,8 @@ function detectInsideAntigravitySession(env = process.env) {
 }
 
 function planAntigravityRestart(options = {}) {
-  const inside = detectInsideAntigravitySession(options.env || process.env);
+  const env = options.env || process.env;
+  const inside = detectInsideAntigravitySession(env);
   if (inside && !options.allowSelfTerminate) {
     return {
       ok: false,
@@ -486,18 +561,46 @@ function planAntigravityRestart(options = {}) {
       message: '当前正运行在 Antigravity 内部会话中，已阻止强杀宿主；请在外部终端运行 `agy-daddy restart`。'
     };
   }
-  const appPath = options.appPath || '/Applications/Antigravity.app';
+  const platform = options.platform || process.platform;
+  const rawExtraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
+  const filteredExtraArgs = rawExtraArgs.filter((arg) => !String(arg || '').startsWith('--remote-debugging-port'));
   const proxyEnv = options.proxyEnv || {};
-  const openArgs = [];
-  for (const [k, v] of Object.entries(proxyEnv)) {
-    openArgs.push('--env', `${k}=${v}`);
+
+  if (platform === 'darwin') {
+    const appPath = findMacAntigravityApp({
+      appPath: options.appPath,
+      fsImpl: options.fsImpl || options.fs,
+      homeDir: options.homeDir
+    });
+    const openArgs = [];
+    for (const [k, v] of Object.entries(proxyEnv)) {
+      openArgs.push('--env', `${k}=${v}`);
+    }
+    openArgs.push('-a', appPath, '--args', '--remote-debugging-port=0', ...filteredExtraArgs);
+    return {
+      ok: true,
+      blocked: false,
+      platform: 'darwin',
+      executable: 'open',
+      args: openArgs
+    };
   }
-  openArgs.push('-a', appPath, '--args', '--remote-debugging-port=0', ...(options.extraArgs || []));
+
+  const executable = findAntigravityApp({
+    platform,
+    appPath: options.appPath,
+    env,
+    fsImpl: options.fsImpl || options.fs,
+    homeDir: options.homeDir
+  });
   return {
     ok: true,
     blocked: false,
-    executable: 'open',
-    args: openArgs
+    platform,
+    executable,
+    args: ['--remote-debugging-port=0', ...filteredExtraArgs],
+    env: proxyEnv,
+    detached: true
   };
 }
 
@@ -517,6 +620,54 @@ function findMacAntigravityApp(options = {}) {
   return '/Applications/Antigravity.app';
 }
 
+function findAntigravityApp(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === 'darwin') {
+    return findMacAntigravityApp(options);
+  }
+  if (options.appPath) return options.appPath;
+  const fsImpl = options.fs || options.fsImpl || fs;
+  const env = options.env || process.env;
+  const home = options.homeDir || os.homedir();
+
+  if (platform === 'win32') {
+    if (env.AGY_DADDY_ANTIGRAVITY_EXE) return env.AGY_DADDY_ANTIGRAVITY_EXE;
+    const localAppData = env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local');
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    const candidates = [
+      path.win32.join(localAppData, 'Programs', 'Antigravity', 'Antigravity.exe'),
+      path.win32.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Google Antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Google', 'Antigravity', 'Antigravity.exe')
+    ];
+    for (const cand of candidates) {
+      try {
+        if (fsImpl.existsSync(cand)) return cand;
+      } catch {}
+    }
+    return candidates[0];
+  }
+
+  if (env.AGY_DADDY_ANTIGRAVITY_BIN) return env.AGY_DADDY_ANTIGRAVITY_BIN;
+  const linuxCandidates = [
+    '/opt/antigravity/antigravity',
+    '/opt/Antigravity/antigravity',
+    '/usr/bin/antigravity',
+    '/usr/local/bin/antigravity',
+    '/usr/lib/antigravity/antigravity',
+    '/usr/share/antigravity/antigravity',
+    path.posix.join(home, '.local', 'bin', 'antigravity'),
+    path.posix.join(home, '.local', 'share', 'antigravity', 'antigravity')
+  ];
+  for (const cand of linuxCandidates) {
+    try {
+      if (fsImpl.existsSync(cand)) return cand;
+    } catch {}
+  }
+  return 'antigravity';
+}
+
 function defaultIsPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -529,27 +680,30 @@ function defaultIsPidAlive(pid) {
 
 async function relaunchAntigravityWithCdp(options = {}) {
   const platform = options.platform || process.platform;
-  if (platform !== 'darwin') {
+  if (!['darwin', 'win32', 'linux'].includes(platform)) {
     return {
       ok: false,
       relaunched: false,
       reason: 'UNSUPPORTED_PLATFORM',
-      message: '自动补参重启目前仅支持 macOS'
+      message: `暂不支持在平台 ${platform} 上自动补参重启`
     };
   }
 
   const env = options.env || process.env;
   const fsImpl = options.fsImpl || options.fs || fs;
-  const resolvedAppPath = findMacAntigravityApp({ appPath: options.appPath, fsImpl, homeDir: options.homeDir });
+  const resolvedAppPath = findAntigravityApp({ platform, appPath: options.appPath, fsImpl, homeDir: options.homeDir, env });
   const rawExtraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
   const filteredExtraArgs = rawExtraArgs.filter((arg) => !String(arg || '').startsWith('--remote-debugging-port'));
 
   const plan = planAntigravityRestart({
+    platform,
     appPath: resolvedAppPath,
     proxyEnv: options.proxyEnv || {},
     extraArgs: filteredExtraArgs,
     allowSelfTerminate: Boolean(options.allowSelfTerminate),
-    env
+    env,
+    fsImpl,
+    homeDir: options.homeDir
   });
   if (!plan.ok) {
     return { ...plan, relaunched: false };
@@ -558,17 +712,47 @@ async function relaunchAntigravityWithCdp(options = {}) {
   const inspectHost = options.inspectHostProcess || (() => inspectAntigravityHostProcess({ platform, env }));
   const resolveCdp = options.resolveCdpTarget || ((opts) => resolveActiveCdpTarget(opts));
   const isPidAliveFn = options.isPidAliveFn || defaultIsPidAlive;
+  const killProcess = options.killProcess || ((pid, sig) => process.kill(pid, sig));
   const runOsascript = options.runOsascript || (() => spawnSync(
     'osascript',
     ['-e', 'tell application "Antigravity" to quit'],
     { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }
   ));
-  const killProcess = options.killProcess || ((pid, sig) => process.kill(pid, sig));
-  const launchApp = options.launchApp || ((executable, args) => spawnSync(executable, args, {
-    encoding: 'utf8',
-    timeout: 5000,
-    stdio: ['ignore', 'pipe', 'pipe']
-  }));
+  const gracefulQuit = options.gracefulQuit || ((pid) => {
+    if (platform === 'darwin') {
+      return runOsascript();
+    }
+    if (platform === 'win32') {
+      return spawnSync('taskkill', ['/PID', String(pid)], {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+    }
+    return killProcess(pid, 'SIGTERM');
+  });
+  const launchApp = options.launchApp || ((executable, args, planObj) => {
+    if (platform === 'darwin') {
+      return spawnSync(executable, args, {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+    }
+    try {
+      const child = spawn(executable, args, {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...env, ...((planObj && planObj.env) || {}) },
+        windowsHide: false
+      });
+      if (typeof child.unref === 'function') child.unref();
+      return { status: 0 };
+    } catch (err) {
+      return { status: 1, error: err };
+    }
+  });
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = options.now || (() => Date.now());
 
@@ -610,7 +794,7 @@ async function relaunchAntigravityWithCdp(options = {}) {
   const waitCdpTimeoutMs = options.waitCdpTimeoutMs !== undefined ? Number(options.waitCdpTimeoutMs) : 20000;
 
   if (hostProc.running && hostProc.pid) {
-    try { runOsascript(); } catch {}
+    try { gracefulQuit(hostProc.pid); } catch {}
     const quitStart = now();
     const termThreshold = Math.floor(quitTimeoutMs / 2);
     let sentTerm = false;
@@ -631,12 +815,14 @@ async function relaunchAntigravityWithCdp(options = {}) {
         relaunched: false,
         reason: 'QUIT_TIMEOUT',
         pid: hostProc.pid,
-        message: '等待原 Antigravity 进程退出超时，请手动按 ⌘Q 退出后再试'
+        message: platform === 'darwin'
+          ? '等待原 Antigravity 进程退出超时，请手动按 ⌘Q 退出后再试'
+          : '等待原 Antigravity 进程退出超时，请手动关闭 Antigravity 后再试'
       };
     }
   }
 
-  const launchRes = launchApp(plan.executable, plan.args);
+  const launchRes = launchApp(plan.executable, plan.args, plan);
   if (launchRes && typeof launchRes.status === 'number' && launchRes.status !== 0) {
     return {
       ok: false,
@@ -731,6 +917,7 @@ module.exports = {
   detectInsideAntigravitySession,
   planAntigravityRestart,
   findMacAntigravityApp,
+  findAntigravityApp,
   relaunchAntigravityWithCdp,
   checkAndPullGitUpdate
 };

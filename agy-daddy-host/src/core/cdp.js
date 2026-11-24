@@ -25,18 +25,36 @@ function discoverDevToolsPorts(options = {}) {
     pushPort(env.AGY_DADDY_CDP_PORT || env.AG_CDP_PORT);
   }
 
-  const appData = env.APPDATA || (platform === 'darwin'
-    ? path.join(home, 'Library', 'Application Support')
-    : (env.XDG_CONFIG_HOME || path.join(home, '.config')));
+  const appDataRoots = [];
+  const pushRoot = (dirPath) => {
+    if (!dirPath) return;
+    const norm = platform === 'win32' ? dirPath.toLowerCase() : dirPath;
+    if (!appDataRoots.some((r) => (platform === 'win32' ? r.toLowerCase() : r) === norm)) {
+      appDataRoots.push(dirPath);
+    }
+  };
 
-  for (const dirName of ['Antigravity', 'antigravity-ide']) {
-    try {
-      const portFile = path.join(appData, dirName, 'DevToolsActivePort');
-      if (fsImpl.existsSync(portFile)) {
-        const firstLine = fsImpl.readFileSync(portFile, 'utf8').split(/\r?\n/)[0];
-        pushPort(firstLine);
-      }
-    } catch {}
+  if (platform === 'win32') {
+    pushRoot(env.APPDATA || path.win32.join(home, 'AppData', 'Roaming'));
+    pushRoot(env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local'));
+  } else if (platform === 'darwin') {
+    pushRoot(env.APPDATA || path.join(home, 'Library', 'Application Support'));
+  } else {
+    pushRoot(env.APPDATA || env.XDG_CONFIG_HOME || path.join(home, '.config'));
+  }
+
+  for (const rootDir of appDataRoots) {
+    for (const dirName of ['Antigravity', 'antigravity-ide']) {
+      try {
+        const portFile = platform === 'win32'
+          ? path.win32.join(rootDir, dirName, 'DevToolsActivePort')
+          : path.join(rootDir, dirName, 'DevToolsActivePort');
+        if (fsImpl.existsSync(portFile)) {
+          const firstLine = fsImpl.readFileSync(portFile, 'utf8').split(/\r?\n/)[0];
+          pushPort(firstLine);
+        }
+      } catch {}
+    }
   }
 
   if (!isTestMode() && platform === 'darwin' && options.allowLsof !== false) {
@@ -120,18 +138,100 @@ function parsePsElapsedSeconds(raw) {
   return days * 86400 + hours * 3600 + mins * 60 + secs;
 }
 
+function parseWinCreationElapsedSeconds(rawDate, nowMs = Date.now()) {
+  if (!rawDate) return null;
+  const s = String(rawDate).trim();
+  if (!s) return null;
+  let ts = NaN;
+  const msMatch = s.match(/\/Date\((\d+)(?:[+-]\d+)?\)\//);
+  if (msMatch) {
+    ts = Number(msMatch[1]);
+  } else {
+    ts = Date.parse(s);
+  }
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.floor((nowMs - ts) / 1000));
+}
+
 function inspectAntigravityHostProcess(options = {}) {
   const empty = { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null, command: '' };
-  if (isTestMode() && typeof options.psOutput !== 'string') {
+  const platform = options.platform || process.platform;
+  if (isTestMode() && typeof options.psOutput !== 'string' && options.winProcessJson === undefined) {
+    return empty;
+  }
+
+  if (platform === 'win32') {
+    let rawJson = options.winProcessJson;
+    if (rawJson === undefined) {
+      try {
+        rawJson = execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-Command',
+            "Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object ProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
+          ],
+          {
+            encoding: 'utf8',
+            timeout: 2500,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true
+          }
+        );
+      } catch {
+        return empty;
+      }
+    }
+    let rows = [];
+    if (typeof rawJson === 'string') {
+      const trimmed = rawJson.trim();
+      if (!trimmed) return empty;
+      try {
+        const parsed = JSON.parse(trimmed);
+        rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+      } catch {
+        return empty;
+      }
+    } else if (Array.isArray(rawJson)) {
+      rows = rawJson;
+    } else if (rawJson && typeof rawJson === 'object') {
+      rows = [rawJson];
+    }
+    const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
+    for (const row of rows) {
+      const pid = Number(row?.ProcessId ?? row?.pid);
+      const cmd = String(row?.CommandLine ?? row?.command ?? '').trim();
+      if (!Number.isInteger(pid) || pid <= 0 || !cmd) continue;
+      if (/--type=|--import=|language_server|chrome_crashpad_handler|agy-daddy|ELECTRON_RUN_AS_NODE|--headless(?:\s|=|$)/i.test(cmd)) {
+        continue;
+      }
+      return {
+        running: true,
+        pid,
+        hasDebugSwitch: /--remote-debugging-port(?:=|\s|$)/i.test(cmd),
+        elapsedSec: parseWinCreationElapsedSeconds(row?.CreationDate, nowMs),
+        command: cmd
+      };
+    }
     return empty;
   }
 
   let psOut = '';
   if (typeof options.psOutput === 'string') {
     psOut = options.psOutput;
-  } else if ((options.platform || process.platform) === 'darwin') {
+  } else if (platform === 'darwin') {
     try {
       psOut = execFileSync('ps', ['-ax', '-o', 'pid=,etime=,command='], {
+        encoding: 'utf8',
+        timeout: 1500,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch {
+      return empty;
+    }
+  } else if (platform === 'linux') {
+    try {
+      psOut = execFileSync('ps', ['-eo', 'pid=,etime=,args='], {
         encoding: 'utf8',
         timeout: 1500,
         stdio: ['ignore', 'pipe', 'ignore']
@@ -150,8 +250,13 @@ function inspectAntigravityHostProcess(options = {}) {
     const etime = m[2];
     const cmd = m[3].trim();
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
-    if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)/i.test(cmd)) continue;
+    if (platform === 'darwin') {
+      if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
+      if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)/i.test(cmd)) continue;
+    } else {
+      if (!/(?:^|\/)antigravity(?:\.AppImage)?(?:\s|$)/i.test(cmd)) continue;
+      if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)|agy-daddy|ELECTRON_RUN_AS_NODE/i.test(cmd)) continue;
+    }
     return {
       running: true,
       pid,

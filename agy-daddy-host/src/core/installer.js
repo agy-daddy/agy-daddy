@@ -158,7 +158,14 @@ function parsePluginSource(spec, options = {}) {
   }
 
   // 直接传入本地目录路径
-  if (raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../')) {
+  if (
+    raw.startsWith('/') ||
+    raw.startsWith('./') ||
+    raw.startsWith('../') ||
+    raw.startsWith('.\\') ||
+    raw.startsWith('..\\') ||
+    /^[A-Za-z]:[\\/]/.test(raw)
+  ) {
     return { kind: 'local', path: path.resolve(raw), trustLevel: options.trustLevel || 'T2', spec: `local:${path.resolve(raw)}` };
   }
 
@@ -215,6 +222,19 @@ function copyDirSync(src, dst) {
   }
 }
 
+function moveDirSync(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+  } catch (err) {
+    if (err && (err.code === 'EXDEV' || err.code === 'EPERM' || err.code === 'EACCES')) {
+      copyDirSync(src, dst);
+      fs.rmSync(src, { recursive: true, force: true });
+      return;
+    }
+    throw err;
+  }
+}
+
 function defaultGitRunner(args, cwd) {
   return execFileSync('git', args, {
     cwd,
@@ -230,18 +250,29 @@ async function fetchNpmTarballToDir(parsed, stagingDir, options = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('fetch is unavailable for npm installation');
   }
-  const registryBase = String(options.npmRegistryUrl || 'https://registry.npmjs.org').replace(/\/+$/, '');
+  const registryBase = String(
+    options.npmRegistryUrl || process.env.AGY_DADDY_NPM_REGISTRY || 'https://registry.npmjs.org'
+  ).replace(/\/+$/, '');
   const metaUrl = `${registryBase}/${encodeURIComponent(parsed.packageName)}`;
   const metaResp = await fetchImpl(metaUrl, { headers: { Accept: 'application/json' } });
   if (!metaResp.ok) {
     throw new Error(`Failed to fetch npm metadata (${metaResp.status}): ${metaUrl}`);
   }
   const meta = await metaResp.json();
-  const versions = Object.keys(meta.versions || {}).filter((v) => parseSemver(v));
-  const matching = versions
-    .filter((v) => satisfies(v, parsed.versionRange || '*'))
-    .sort((a, b) => compareSemver(b, a));
-  const targetVer = matching[0];
+  const distTags = meta['dist-tags'] && typeof meta['dist-tags'] === 'object' ? meta['dist-tags'] : {};
+  const requestedRange = String(parsed.versionRange || '*').trim() || '*';
+  let targetVer = null;
+  if (requestedRange !== '*' && distTags[requestedRange] && meta.versions?.[distTags[requestedRange]]) {
+    targetVer = distTags[requestedRange];
+  } else if (requestedRange === '*' && distTags.latest && meta.versions?.[distTags.latest]) {
+    targetVer = distTags.latest;
+  } else {
+    const versions = Object.keys(meta.versions || {}).filter((v) => parseSemver(v));
+    const matching = versions
+      .filter((v) => satisfies(v, requestedRange))
+      .sort((a, b) => compareSemver(b, a));
+    targetVer = matching[0] || null;
+  }
   if (!targetVer) {
     throw new Error(`No matching npm version for ${parsed.packageName}@${parsed.versionRange}`);
   }
@@ -355,14 +386,15 @@ async function installPlugin(spec, options = {}) {
       fs.rmSync(targetDir, { recursive: true, force: true });
     }
 
+    const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
     if (parsed.kind === 'local' && !options.copy) {
-      fs.symlinkSync(parsed.path, targetDir, 'dir');
+      fs.symlinkSync(parsed.path, targetDir, symlinkType);
     } else if (parsed.kind === 'local') {
       copyDirSync(parsed.path, targetDir);
     } else if (parsed.kind === 'git' && parsed.subpath) {
       copyDirSync(gitSourceDir, targetDir);
     } else {
-      fs.renameSync(stagingDir, targetDir);
+      moveDirSync(stagingDir, targetDir);
     }
 
     let initialNativeConfig = null;
@@ -452,13 +484,14 @@ function rollbackPlugin(pluginId, options = {}) {
   fs.rmSync(targetDir, { recursive: true, force: true });
   const symlinkBakPath = path.join(rollbackDir, '.symlink-backup.json');
   let restoredRecord = current.previousRecord || null;
+  const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
   if (fs.existsSync(symlinkBakPath)) {
     const bak = JSON.parse(fs.readFileSync(symlinkBakPath, 'utf8'));
-    fs.symlinkSync(bak.linkTarget, targetDir, 'dir');
+    fs.symlinkSync(bak.linkTarget, targetDir, symlinkType);
     if (bak.prevRecord) restoredRecord = bak.prevRecord;
     fs.rmSync(rollbackDir, { recursive: true, force: true });
   } else {
-    fs.renameSync(rollbackDir, targetDir);
+    moveDirSync(rollbackDir, targetDir);
   }
 
   if (restoredRecord) {
@@ -867,6 +900,55 @@ function sortPluginsByDependency(entries) {
   return ordered;
 }
 
+async function installOfficialPlugins(options = {}) {
+  const registry = options.registry || loadRegistry(options);
+  const rawList = Array.isArray(registry.plugins)
+    ? registry.plugins
+    : Object.values(registry.plugins || {});
+  const official = rawList.filter(
+    (entry) => entry && entry.id && (entry.trustLevel || 'T0') === 'T0' && entry.npmPackage
+  );
+  const tag = String(options.tag || 'latest').trim() || 'latest';
+  const sourceMode = options.source === 'registry' ? 'registry' : 'npm';
+  const installed = [];
+  const failed = [];
+
+  for (const entry of official) {
+    const spec = sourceMode === 'registry'
+      ? entry.id
+      : `npm:${entry.npmPackage}@${tag}`;
+    try {
+      const res = await installPlugin(spec, {
+        ...options,
+        trustLevel: entry.trustLevel || 'T0'
+      });
+      installed.push({
+        id: res.plugin?.id || entry.id,
+        version: res.plugin?.version || null,
+        npmPackage: entry.npmPackage,
+        spec
+      });
+    } catch (err) {
+      failed.push({
+        id: entry.id,
+        npmPackage: entry.npmPackage,
+        spec,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  return {
+    ok: failed.length === 0,
+    tag,
+    total: official.length,
+    installedCount: installed.length,
+    failedCount: failed.length,
+    installed,
+    failed
+  };
+}
+
 module.exports = {
   DEFAULT_REGISTRY_PATH,
   loadRegistry,
@@ -877,6 +959,7 @@ module.exports = {
   parsePluginSource,
   readManifestFromDir,
   installPlugin,
+  installOfficialPlugins,
   linkPlugin,
   enablePlugin: (id, opts) => setPluginEnabled(id, true, opts),
   disablePlugin: (id, opts) => setPluginEnabled(id, false, opts),

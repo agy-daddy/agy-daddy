@@ -52,7 +52,36 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 - **Node.js `>= 22.4.0`**（需具备原生 `WebSocket` 与 `fetch` 支持）。
 - **零运行依赖**：仓库根目录及所有核心包均无需执行 `npm install`。
 - **可选前端 UI 工具链**：`agy-daddy-plugin-remote/web` 与 `agy-daddy-plugin-web/web` 已在 `dist/web/index.html` 内置预编译产物。仅在需要修改上述两个 `web/` 子目录的 TypeScript/Preact/React 源码时，才需进入对应 `web/` 目录执行 `npm install`。
-- **CLI 运行时包装器**：[`./agy-daddy-host/bin/agy-daddy`](../agy-daddy-host/bin/agy-daddy) 会自动探测 `AGY_DADDY_NODE`、`nvm`/`fnm`/`volta`、`PATH` 中的 `node`，或回退至 Antigravity 自带 Electron Helper（`ELECTRON_RUN_AS_NODE=1`）。
+- **CLI 运行时包装器**：[`./agy-daddy-host/bin/agy-daddy.js`](../agy-daddy-host/bin/agy-daddy.js)（支持 macOS / Windows / Linux 的 npm `bin` 入口）与 [`./agy-daddy-host/bin/agy-daddy`](../agy-daddy-host/bin/agy-daddy)（Unix Shell 包装器）会自动探测 `AGY_DADDY_NODE`、`nvm`/`fnm`/`volta`/`scoop`、`PATH` 中的 `node`，或回退至 Antigravity 自带 Electron 运行时（`ELECTRON_RUN_AS_NODE=1`）。
+
+---
+
+## 一键安装（免装 Node.js / npm）
+
+只要本机已安装 **Google Antigravity 桌面端**，即可免装 Node.js 与 npm 一键安装。安装脚本会自动复用 Antigravity 内置 Electron 运行时、校验 tarball SHA-512 完整性摘要，并安装 `@agy-daddy/host` 及全部 10 个官方（`T0`）插件：
+
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.ps1 | iex
+```
+
+常用参数示例（macOS/Linux 通过 `bash -s -- ...` 传参）：
+
+```sh
+# 安装预览版（next）或指定国内镜像源
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --tag next --registry https://registry.npmmirror.com
+
+# 仅安装底座 CLI（跳过官方插件）或卸载
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --host-only
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --uninstall
+```
 
 ---
 
@@ -60,7 +89,7 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 
 ### 1. 安装底座 CLI
 
-需满足 **Node.js `>= 22.4.0`**：
+支持 **macOS、Windows、Linux** 三端（建议 **Node.js `>= 22.4.0`**，若系统 Node 低于 22.4 会自动探测回退到 Antigravity 内置 Electron 运行时）：
 
 ```sh
 # 全局安装底座 CLI
@@ -79,24 +108,14 @@ npm install -g @agy-daddy/host@next
 安装时会自动下载 tarball 并校验 SHA-512 完整性摘要：
 
 ```sh
+# 跨平台一键安装全部 10 个官方插件
+agy-daddy plugin install --official
+
+# 指定预览通道或自定义 npm 镜像源
+agy-daddy plugin install --official --tag next --registry https://registry.npmmirror.com
+
 # 安装单个插件（以代理网关为例）
 agy-daddy plugin install npm:@agy-daddy/plugin-proxy
-
-# 一键批量安装全部 10 个官方插件
-for pkg in \
-  plugin-proxy \
-  plugin-zh-cn \
-  plugin-cli \
-  plugin-context \
-  plugin-usage \
-  plugin-chat-nav \
-  plugin-quota \
-  plugin-composer \
-  plugin-remote \
-  plugin-web
-do
-  agy-daddy plugin install "npm:@agy-daddy/${pkg}"
-done
 
 # 查看已安装插件及信任/启用状态
 agy-daddy plugin list

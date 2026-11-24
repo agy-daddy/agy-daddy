@@ -52,7 +52,36 @@ Agy-Daddy extends Antigravity without modifying `app.asar` or application binari
 - **Node.js `>= 22.4.0`** (with native `WebSocket` and `fetch` support).
 - **Zero runtime dependencies**: No `npm install` is needed at the repository root or in any core package.
 - **Optional frontend UI toolchain**: `agy-daddy-plugin-remote/web` and `agy-daddy-plugin-web/web` ship prebuilt static bundles under `dist/web/index.html`. You only need to run `npm install` inside those `web/` subdirectories if you modify their TypeScript/Preact/React UI source files.
-- **CLI runtime wrapper**: [`./agy-daddy-host/bin/agy-daddy`](./agy-daddy-host/bin/agy-daddy) automatically probes `AGY_DADDY_NODE`, `nvm`/`fnm`/`volta`, `PATH`, or falls back to Antigravity's built-in Electron Helper (`ELECTRON_RUN_AS_NODE=1`).
+- **CLI runtime wrapper**: [`./agy-daddy-host/bin/agy-daddy.js`](./agy-daddy-host/bin/agy-daddy.js) (npm `bin` for macOS, Windows, and Linux) and [`./agy-daddy-host/bin/agy-daddy`](./agy-daddy-host/bin/agy-daddy) (Unix shell wrapper) automatically probe `AGY_DADDY_NODE`, `nvm`/`fnm`/`volta`/`scoop`, `PATH`, or fall back to Antigravity's built-in Electron runtime (`ELECTRON_RUN_AS_NODE=1`).
+
+---
+
+## One-Click Install (Zero Node.js / npm Required)
+
+If you already have **Google Antigravity Desktop** installed, you do **not** need Node.js or npm to install Agy-Daddy. The installer automatically reuses Antigravity's built-in Electron runtime, verifies the SHA-512 tarball integrity, and installs `@agy-daddy/host` + all 10 official (`T0`) plugins:
+
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.ps1 | iex
+```
+
+Common flags (pass via `bash -s -- ...` on macOS/Linux, or clone/save `install.ps1` on Windows):
+
+```sh
+# Install preview (next) channel or use a custom npm mirror
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --tag next --registry https://registry.npmmirror.com
+
+# Install host CLI only (skip official plugins) or uninstall
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --host-only
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash -s -- --uninstall
+```
 
 ---
 
@@ -60,7 +89,7 @@ Agy-Daddy extends Antigravity without modifying `app.asar` or application binari
 
 ### 1. Install the Host CLI
 
-Requires **Node.js `>= 22.4.0`**:
+Works across **macOS, Windows, and Linux** (requires **Node.js `>= 22.4.0`**, or falls back to Antigravity's Electron runtime when invoked via `agy-daddy`):
 
 ```sh
 # Install globally
@@ -76,27 +105,17 @@ npm install -g @agy-daddy/host@next
 
 ### 2. Install Official Plugins from npm
 
-Install individual official plugins (`T0`) with SHA-512 integrity verification:
+Install all 10 official plugins (`T0`) or a single plugin with SHA-512 integrity verification:
 
 ```sh
+# Cross-platform batch install of all 10 official plugins
+agy-daddy plugin install --official
+
+# Or install from the preview (next) channel / custom mirror
+agy-daddy plugin install --official --tag next --registry https://registry.npmmirror.com
+
 # Install a single plugin (example: proxy)
 agy-daddy plugin install npm:@agy-daddy/plugin-proxy
-
-# Batch install all 10 official plugins
-for pkg in \
-  plugin-proxy \
-  plugin-zh-cn \
-  plugin-cli \
-  plugin-context \
-  plugin-usage \
-  plugin-chat-nav \
-  plugin-quota \
-  plugin-composer \
-  plugin-remote \
-  plugin-web
-do
-  agy-daddy plugin install "npm:@agy-daddy/${pkg}"
-done
 
 # List installed plugins and trust/activation status
 agy-daddy plugin list

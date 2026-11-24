@@ -3,7 +3,7 @@
 const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./cdp');
 const {
   detectInsideAntigravitySession,
-  findMacAntigravityApp,
+  findAntigravityApp,
   relaunchAntigravityWithCdp
 } = require('./lifecycle');
 
@@ -19,7 +19,7 @@ function createLiveWatchdog(daemon, options = {}) {
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
   const autoRelaunchEnabled = options.autoRelaunch !== false && env.AGY_DADDY_NO_AUTO_RELAUNCH !== '1';
-  const appPath = options.appPath || findMacAntigravityApp({ env });
+  const appPath = options.appPath || findAntigravityApp({ platform, env });
 
   const silent = Boolean(options.silent || options.json);
   const log = silent ? () => {} : (options.log || ((msg) => console.log(msg)));
@@ -142,7 +142,7 @@ function createLiveWatchdog(daemon, options = {}) {
       return;
     }
     if (platform !== 'darwin') {
-      warn(`⚠️ 检测到 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口，请以 --remote-debugging-port=0 参数启动 Antigravity。`);
+      warn(`⚠️ 检测到运行中的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口（启动时已存在，为保护现场未自动重启）；关闭并重开 Antigravity 将自动补参注入，或在外部终端运行 agy-daddy restart。`);
       return;
     }
     warn(`⚠️ 检测到运行中的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口（启动时已存在，为保护现场未自动重启）；按 ⌘Q 退出并重开 Antigravity 将自动补参注入，或在外部终端运行 agy-daddy restart。`);
@@ -199,7 +199,7 @@ function createLiveWatchdog(daemon, options = {}) {
       );
 
       const canAutoRelaunch = (
-        platform === 'darwin' &&
+        ['darwin', 'win32', 'linux'].includes(platform) &&
         autoRelaunchEnabled &&
         !detectInsideAntigravitySession(env) &&
         isFreshOrNewBare &&

@@ -8,8 +8,72 @@ const { parseSemver, compareSemver, satisfies } = require('../contracts/semver')
 
 const MIN_NODE_RANGE = '>=22.4.0';
 
-function listVersionManagerNodes(homeDir, fsImpl = fs) {
+function listVersionManagerNodes(homeDir, fsImpl = fs, platform = process.platform, env = process.env) {
   const candidates = [];
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.win32.join(homeDir, 'AppData', 'Roaming');
+    const localAppData = env.LOCALAPPDATA || path.win32.join(homeDir, 'AppData', 'Local');
+
+    if (env.NVM_SYMLINK) {
+      const symlinkExe = path.win32.join(env.NVM_SYMLINK, 'node.exe');
+      if (fsImpl.existsSync(symlinkExe)) {
+        candidates.push({ path: symlinkExe, source: 'nvm-windows', isElectron: false });
+      }
+    }
+    const nvmHome = env.NVM_HOME || path.win32.join(appData, 'nvm');
+    if (fsImpl.existsSync(nvmHome)) {
+      try {
+        const dirs = fsImpl.readdirSync(nvmHome, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => ({ dir: d.name, ver: parseSemver(d.name) }))
+          .filter((x) => x.ver)
+          .sort((a, b) => compareSemver(b.ver, a.ver));
+        for (const item of dirs) {
+          const bin = path.win32.join(nvmHome, item.dir, 'node.exe');
+          if (fsImpl.existsSync(bin)) {
+            candidates.push({ path: bin, source: 'nvm-windows', isElectron: false });
+          }
+        }
+      } catch {}
+    }
+
+    for (const fnmBase of [appData, localAppData]) {
+      const fnmDir = path.win32.join(fnmBase, 'fnm', 'node-versions');
+      if (fsImpl.existsSync(fnmDir)) {
+        try {
+          const dirs = fsImpl.readdirSync(fnmDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => ({ dir: d.name, ver: parseSemver(d.name) }))
+            .filter((x) => x.ver)
+            .sort((a, b) => compareSemver(b.ver, a.ver));
+          for (const item of dirs) {
+            const bin = path.win32.join(fnmDir, item.dir, 'installation', 'node.exe');
+            if (fsImpl.existsSync(bin)) {
+              candidates.push({ path: bin, source: 'fnm', isElectron: false });
+            }
+          }
+        } catch {}
+      }
+    }
+
+    for (const voltaExe of [
+      path.win32.join(localAppData, 'Volta', 'bin', 'node.exe'),
+      path.win32.join(homeDir, '.volta', 'bin', 'node.exe')
+    ]) {
+      if (fsImpl.existsSync(voltaExe)) {
+        candidates.push({ path: voltaExe, source: 'volta', isElectron: false });
+      }
+    }
+
+    for (const scoopApp of ['nodejs', 'nodejs-lts']) {
+      const scoopExe = path.win32.join(homeDir, 'scoop', 'apps', scoopApp, 'current', 'node.exe');
+      if (fsImpl.existsSync(scoopExe)) {
+        candidates.push({ path: scoopExe, source: 'scoop', isElectron: false });
+      }
+    }
+    return candidates;
+  }
+
   const nvmDir = path.join(homeDir, '.nvm', 'versions', 'node');
   if (fsImpl.existsSync(nvmDir)) {
     try {
@@ -51,18 +115,20 @@ function listVersionManagerNodes(homeDir, fsImpl = fs) {
   return candidates;
 }
 
-function listPathNodes(env, fsImpl = fs) {
-  const rawPath = String(env.PATH || '');
-  const sep = process.platform === 'win32' ? ';' : ':';
-  const exeName = process.platform === 'win32' ? 'node.exe' : 'node';
+function listPathNodes(env, fsImpl = fs, platform = process.platform) {
+  const rawPath = String(env.PATH || env.Path || '');
+  const sep = platform === 'win32' ? ';' : ':';
+  const exeName = platform === 'win32' ? 'node.exe' : 'node';
+  const pathMod = platform === 'win32' ? path.win32 : path.posix;
   const out = [];
   const seen = new Set();
   for (const dir of rawPath.split(sep)) {
     const clean = dir.trim();
     if (!clean) continue;
-    const full = path.join(clean, exeName);
-    if (seen.has(full)) continue;
-    seen.add(full);
+    const full = pathMod.join(clean, exeName);
+    const dedupKey = platform === 'win32' ? full.toLowerCase() : full;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
     try {
       if (fsImpl.existsSync(full)) {
         out.push({ path: full, source: 'path', isElectron: false });
@@ -72,7 +138,7 @@ function listPathNodes(env, fsImpl = fs) {
   return out;
 }
 
-function listElectronHelpers(homeDir, platform = process.platform, fsImpl = fs) {
+function listElectronHelpers(homeDir, platform = process.platform, fsImpl = fs, env = process.env) {
   const paths = [];
   if (platform === 'darwin') {
     paths.push(
@@ -80,17 +146,31 @@ function listElectronHelpers(homeDir, platform = process.platform, fsImpl = fs) 
       path.join(homeDir, 'Applications', 'Antigravity.app', 'Contents', 'Frameworks', 'Antigravity Helper.app', 'Contents', 'MacOS', 'Antigravity Helper')
     );
   } else if (platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
-    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    paths.push(
-      path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
-      path.join(programFiles, 'Google Antigravity', 'Antigravity.exe')
-    );
+    const localAppData = env.LOCALAPPDATA || path.win32.join(homeDir, 'AppData', 'Local');
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    const raw = [
+      path.win32.join(localAppData, 'Programs', 'Antigravity', 'Antigravity.exe'),
+      path.win32.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Google Antigravity', 'Antigravity.exe'),
+      path.win32.join(programFiles, 'Google', 'Antigravity', 'Antigravity.exe')
+    ];
+    const seen = new Set();
+    for (const p of raw) {
+      const key = p.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(p);
+    }
   } else {
     paths.push(
       '/opt/antigravity/antigravity',
+      '/opt/Antigravity/antigravity',
       '/usr/lib/antigravity/antigravity',
-      path.join(homeDir, '.local', 'share', 'antigravity', 'antigravity')
+      '/usr/share/antigravity/antigravity',
+      path.posix.join(homeDir, '.local', 'share', 'antigravity', 'antigravity'),
+      '/usr/bin/antigravity',
+      '/usr/local/bin/antigravity'
     );
   }
   return paths
@@ -149,9 +229,9 @@ function resolveRuntime(options = {}) {
   if (Array.isArray(options.candidates)) {
     rawCandidates.push(...options.candidates);
   } else {
-    rawCandidates.push(...listVersionManagerNodes(homeDir, fsImpl));
-    rawCandidates.push(...listPathNodes(env, fsImpl));
-    rawCandidates.push(...listElectronHelpers(homeDir, platform, fsImpl));
+    rawCandidates.push(...listVersionManagerNodes(homeDir, fsImpl, platform, env));
+    rawCandidates.push(...listPathNodes(env, fsImpl, platform));
+    rawCandidates.push(...listElectronHelpers(homeDir, platform, fsImpl, env));
   }
 
   const seen = new Set();

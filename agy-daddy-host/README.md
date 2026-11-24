@@ -2,17 +2,30 @@
 
 Google Antigravity 桌面端的 100% 零改包 CDP 纯净微内核（Thin Declarative Host）插件底座。
 
+## 一键安装（免装 Node.js / npm）
+
+macOS / Linux：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.sh | bash
+```
+
+Windows (PowerShell)：
+
+```powershell
+irm https://raw.githubusercontent.com/agy-daddy/agy-daddy/main/scripts/install.ps1 | iex
+```
+
 ## 安装与快速开始（npm）
 
-需满足 **Node.js `>= 22.4.0`**：
+支持 macOS / Windows / Linux（建议 **Node.js `>= 22.4.0`**，入口 `bin/agy-daddy.js` 支持自动探测回退 Antigravity Electron 运行时）：
 
 ```sh
 # 1. 全局安装底座 CLI（或使用 npx @agy-daddy/host doctor --json）
 npm install -g @agy-daddy/host
 
-# 2. 从 npm 安装官方插件（可按需单装，例如 proxy / zh-cn / quota）
-agy-daddy plugin install npm:@agy-daddy/plugin-proxy
-agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
+# 2. 跨平台一键安装全部官方插件（或按需单装，例如 npm:@agy-daddy/plugin-proxy）
+agy-daddy plugin install --official
 
 # 3. 环境诊断与启动
 agy-daddy doctor --json

@@ -13,8 +13,15 @@ concurrency:
 
 jobs:
   verify:
-    name: Build, Gates & Monorepo Tests
-    runs-on: ubuntu-latest
+    name: Build, Gates & Monorepo Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,6 +35,7 @@ jobs:
         run: npm run verify
 
       - name: Analyze bundle sizes and npm tarball contents
+        if: runner.os == 'Linux'
         run: |
           {
             echo "## Bundle & Tarball Analysis"

@@ -492,6 +492,7 @@ function pickNonEmptyString(...values) {
 
 /**
  * Creates a persisted store for workspace projects, groups, pinned sessions, and overrides.
+ * The optional `now` function returns milliseconds for cache expiry checks.
  */
 function createWorkspaceMetaStore({
   storage = null,
@@ -500,7 +501,8 @@ function createWorkspaceMetaStore({
   stateVscdbPath,
   sharedReadStatePath,
   conversationDbTtlMs = DEFAULT_CONVERSATION_DB_TTL_MS,
-  appSyncTtlMs = DEFAULT_APP_SYNC_TTL_MS
+  appSyncTtlMs = DEFAULT_APP_SYNC_TTL_MS,
+  now = () => Date.now()
 } = {}) {
   const fallbackDefaultPath = normalizeLocalPath(defaultBaseDir)
     || path.join(os.homedir(), 'antigravity-workspace');
@@ -524,11 +526,11 @@ function createWorkspaceMetaStore({
     : DEFAULT_APP_SYNC_TTL_MS;
 
   const dbCache = {
-    cachedAt: 0,
+    cachedAt: null,
     byId: new Map()
   };
   const appSyncCache = {
-    cachedAt: 0,
+    cachedAt: null,
     projects: []
   };
   const knownImplicitProjectsById = new Map();
@@ -736,8 +738,8 @@ function createWorkspaceMetaStore({
 
   function loadConversationSummaryMap() {
     if (!resolvedConversationDbPath) return new Map();
-    const now = Date.now();
-    if (dbCache.cachedAt > 0 && (now - dbCache.cachedAt) < dbCacheTtlMs) {
+    const nowMs = now();
+    if (dbCache.cachedAt !== null && (nowMs - dbCache.cachedAt) < dbCacheTtlMs) {
       return dbCache.byId;
     }
     const rows = readConversationRowsFromDb(resolvedConversationDbPath);
@@ -748,7 +750,7 @@ function createWorkspaceMetaStore({
       }
       byId.set(row.conversation_id.trim(), row);
     }
-    dbCache.cachedAt = now;
+    dbCache.cachedAt = nowMs;
     dbCache.byId = byId;
     return byId;
   }
@@ -757,8 +759,8 @@ function createWorkspaceMetaStore({
     if (!resolvedStateVscdbPath && !resolvedConversationDbPath) {
       return [];
     }
-    const now = Date.now();
-    if (appSyncCache.cachedAt > 0 && (now - appSyncCache.cachedAt) < appSyncCacheTtlMs) {
+    const nowMs = now();
+    if (appSyncCache.cachedAt !== null && (nowMs - appSyncCache.cachedAt) < appSyncCacheTtlMs) {
       return appSyncCache.projects.map((p) => ({ ...p }));
     }
 
@@ -833,7 +835,7 @@ function createWorkspaceMetaStore({
       }
     }
 
-    appSyncCache.cachedAt = now;
+    appSyncCache.cachedAt = nowMs;
     appSyncCache.projects = collected;
     return collected.map((p) => ({ ...p }));
   }

@@ -7,7 +7,6 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { AgyDaddyDaemon } = require('../src/core/daemon');
-const { PluginDataStore } = require('../src/core/storage');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 const WORKSPACE_ROOT = path.resolve(HOST_ROOT, '..');
@@ -140,43 +139,18 @@ function createMockRpcTransport() {
   };
 }
 
-test('Phase 3 Full Matrix: 全 10 仓拓扑启动 + 端到端数据流 + legacy-suite 100% 退场 + 跨仓主题门禁', async () => {
+test('Phase 3 Full Matrix: 全 9 官方仓全员 Isolated 拓扑启动 + 全托管配置/命令数据流 + 零 page:main-world 与主题解耦门禁', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-phase3-full-'));
   const stateDir = path.join(root, 'state');
-  const legacySrcDir = path.join(root, 'legacy-src');
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.mkdirSync(legacySrcDir, { recursive: true });
 
-  for (const fname of [
-    'meter-core.js',
-    'meter-renderer.js',
-    'ag-enhancer-overlay.js',
-    'pulse-capsule-overlay.js',
-    'antigravity-hans-overlay.js'
-  ]) {
-    fs.writeFileSync(path.join(legacySrcDir, fname), `// mock ${fname}`);
-  }
-
-  new PluginDataStore('agy-daddy.legacy-suite', { stateDir }).writeJson('settings.json', {
-    sourceDir: legacySrcDir,
-    disabledModules: []
-  });
-
-  // 故意逆序传入 9 个插件以验证宿主拓扑激活顺序 + 加上 legacy-suite 共 10 仓
-  const pluginSpecs = [
-    ...ALL_OFFICIAL_PLUGINS.slice().reverse().map((p) => ({
-      id: p.id,
-      trustLevel: 'T0',
-      installPath: p.dir,
-      enabled: true
-    })),
-    {
-      id: 'agy-daddy.legacy-suite',
-      trustLevel: 'T0',
-      installPath: path.join(HOST_ROOT, 'plugins', 'legacy-suite'),
-      enabled: true
-    }
-  ];
+  // 故意逆序传入 9 个官方插件以验证宿主拓扑激活顺序
+  const pluginSpecs = ALL_OFFICIAL_PLUGINS.slice().reverse().map((p) => ({
+    id: p.id,
+    trustLevel: 'T0',
+    installPath: p.dir,
+    enabled: true
+  }));
 
   const daemon = new AgyDaddyDaemon({
     stateDir,
@@ -188,9 +162,19 @@ test('Phase 3 Full Matrix: 全 10 仓拓扑启动 + 端到端数据流 + legacy-
   try {
     const started = await daemon.start();
     assert.deepEqual(started.activationErrors, []);
-    assert.equal(daemon.activePlugins.size, 10);
+    assert.equal(daemon.activePlugins.size, 9);
 
-    // 1. 端到端数据流: context -> telemetry:generator-calls@1 -> usage -> subscription 5x -> quota -> remote HTTP /api/snapshot
+    // 0. 确认全员 Isolated World、零 page:main-world、零 migrations，且旧包袱已彻底移除
+    assert.equal(fs.existsSync(path.join(HOST_ROOT, 'plugins', 'legacy-suite')), false);
+    assert.equal(fs.existsSync(path.join(HOST_ROOT, 'src', 'core', 'migration.js')), false);
+    for (const entry of daemon.activePlugins.values()) {
+      assert.equal(entry.manifest.world, 'isolated', `${entry.id} must declare world="isolated"`);
+      assert.equal(entry.trustPolicy.world, 'isolated', `${entry.id} must run in isolated world`);
+      assert.equal((entry.manifest.permissions || []).includes('page:main-world'), false, `${entry.id} must not request page:main-world`);
+      assert.equal(entry.manifest.contributes?.migrations, undefined, `${entry.id} must not declare migrations`);
+    }
+
+    // 1. 端到端数据流: context -> telemetry:generator-calls@1 -> usage (托管配置 5x) -> subscription -> quota -> remote HTTP /api/snapshot
     const ctxSvc = daemon.bus.getServiceProxy('context');
     const ctxSnap = await ctxSvc.rescan({ cascadeId: 'sess-phase3' });
     assert.equal(ctxSnap.used, 10300);
@@ -201,8 +185,10 @@ test('Phase 3 Full Matrix: 全 10 仓拓扑启动 + 端到端数据流 + legacy-
     assert.ok(usageSum.callsCount >= 1);
     assert.equal(usageSum.totalTokens, 10300);
 
-    const subSvc = daemon.bus.getServiceProxy('subscription');
-    await subSvc.setCustomPlan({ ultraSubTier: '5x' });
+    // 通过底座全托管设置将 usage 切到 5x 并联动 quota
+    const usageUpd = await daemon.updatePluginSettings('agy-daddy.usage', { ultraSubTier: '5x' });
+    assert.equal(usageUpd.ok, true);
+    assert.equal(usageUpd.values.ultraSubTier, '5x');
 
     const quotaSvc = daemon.bus.getServiceProxy('quota');
     const quotaSnap = await quotaSvc.refresh();
@@ -230,31 +216,32 @@ test('Phase 3 Full Matrix: 全 10 仓拓扑启动 + 端到端数据流 + legacy-
     assert.equal(snapResp.json.panels.quota.data.quotaMultiplier, 5);
     assert.equal(snapResp.json.panels.quota.data.gemini.percentText, '85%');
 
-    // 2. legacy-suite 100% 退场验证
-    const all9Ids = ALL_OFFICIAL_PLUGINS.map((p) => p.id);
-    const legacySvc = daemon.bus.getServiceProxy('legacy-suite');
-    const retired = await legacySvc.isFullyRetired(all9Ids);
-    assert.equal(retired.retired, true);
-    assert.deepEqual(retired.remainingOverlays, []);
-    assert.deepEqual(retired.remainingFeatures, []);
-
-    const rec = await legacySvc.reconcileWithActivePlugins(all9Ids);
-    assert.equal(rec.ok, true);
-
-    const bundle = await legacySvc.getBundle();
-    for (const key of ['meter', 'enhancer', 'pulse', 'hans']) {
-      assert.equal(bundle.skipped.includes(key), true, `legacy overlay ${key} should be skipped`);
+    // 2. 验证声明式命令引擎与宿主 /host/plugins 元数据齐备
+    const hostHeaders = { 'Content-Type': 'application/json', 'X-AGY-Host-Token': started.hostToken };
+    const plResp = await httpRequest(`http://127.0.0.1:${started.port}/host/plugins`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: {}
+    });
+    assert.equal(plResp.status, 200);
+    assert.equal(plResp.json.plugins.length, 9);
+    for (const p of plResp.json.plugins) {
+      assert.equal(p.world, 'isolated');
+      assert.ok(p.settingsSchema && Array.isArray(p.settingsSchema.fields), `${p.id} missing settingsSchema`);
+      assert.ok(p.settingsValues && typeof p.settingsValues === 'object', `${p.id} missing settingsValues`);
     }
-    assert.deepEqual(bundle.included, []);
-    assert.equal(bundle.parts.every((p) => p.key === 'feature-mask'), true);
 
-    // 3. 跨全 9 仓 src/ 静态紫色主题门禁
+    const zhToggle = await daemon.executeCommand('zh-cn.toggle-lang', []);
+    assert.ok(zhToggle);
+
+    // 3. 跨全 9 仓 src/ 静态紫色主题门禁与零 registerSection 回归检查
     for (const plugin of ALL_OFFICIAL_PLUGINS) {
       const srcDir = path.join(plugin.dir, 'src');
       for (const file of fs.readdirSync(srcDir)) {
         const full = path.join(srcDir, file);
         if (!fs.statSync(full).isFile()) continue;
         const content = fs.readFileSync(full, 'utf8');
+        assert.equal(content.includes('registerSection'), false, `${plugin.id} (${file}) must not call removed registerSection`);
         for (const re of FORBIDDEN_THEME_REGEXES) {
           assert.equal(re.test(content), false, `${plugin.id} (${file}) violated purple theme gate: ${re}`);
         }
@@ -319,17 +306,14 @@ test('Phase 3 Degradation Matrix: 5 组孤立单插件独立启动、降级可�
     assert.equal(writeBlocked.status, 403);
   });
 
-  // Case 2: composer standalone
+  // Case 2: composer standalone & context defaults
   await runIsolatedPlugin('agy-daddy.composer', async ({ daemon }) => {
     const composerNode = daemon.bus.getServiceProxy('composer-node');
     const settings = await composerNode.getSettings();
     assert.equal(settings.autoAccept, false);
-    assert.equal(settings.autoCompact, false);
-    const md = await composerNode.exportMarkdown({
-      steps: [{ userInput: { userResponse: '孤立测试输入' } }]
-    });
-    assert.equal(md.ok, true);
-    assert.match(md.markdown, /孤立测试输入/);
+    assert.equal('autoCompact' in settings, false);
+    const pool = await composerNode.listQuickPrompts();
+    assert.equal(pool.builtins.some((b) => b.id === 'copyid' || b.id === 'export'), false);
   });
 
   // Case 3: quota standalone
@@ -342,21 +326,28 @@ test('Phase 3 Degradation Matrix: 5 组孤立单插件独立启动、降级可�
     assert.equal(snap.claude.percentText, '40%');
   });
 
-  // Case 4: chat-nav standalone
+  // Case 4: chat-nav standalone（验证私有 /settings 已移除，系统内置 /__settings 与业务 /file/read 正常）
   await runIsolatedPlugin('agy-daddy.chat-nav', async ({ daemon, started, root }) => {
     const tok = daemon.bridge.getPluginToken('agy-daddy.chat-nav');
     assert.ok(tok);
     const sampleFile = path.join(root, 'sample.txt');
     fs.writeFileSync(sampleFile, 'hello-chat-nav');
 
-    const settingsRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/settings`, {
+    const oldSettingsRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/settings`, {
       method: 'POST',
       headers: { 'X-AGY-Plugin-Token': tok, 'Content-Type': 'application/json' },
       body: {}
     });
-    assert.equal(settingsRes.status, 200);
-    assert.equal(settingsRes.json.ok, true);
-    assert.equal(settingsRes.json.values.showFloatDock, true);
+    assert.equal(oldSettingsRes.status, 404);
+
+    const sysSettingsRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/__settings`, {
+      method: 'POST',
+      headers: { 'X-AGY-Plugin-Token': tok, 'Content-Type': 'application/json' },
+      body: { action: 'get' }
+    });
+    assert.equal(sysSettingsRes.status, 200);
+    assert.equal(sysSettingsRes.json.ok, true);
+    assert.equal(sysSettingsRes.json.values.showFloatDock, true);
 
     const readRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/file/read`, {
       method: 'POST',
@@ -366,6 +357,31 @@ test('Phase 3 Degradation Matrix: 5 组孤立单插件独立启动、降级可�
     assert.equal(readRes.status, 200);
     assert.equal(readRes.json.ok, true);
     assert.equal(readRes.json.content, 'hello-chat-nav');
+
+    const chatNavNode = daemon.bus.getServiceProxy('chat-nav-node');
+    const md = await chatNavNode.exportMarkdown({
+      steps: [{ userInput: { userResponse: '孤立测试输入' } }]
+    });
+    assert.equal(md.ok, true);
+    assert.match(md.markdown, /孤立测试输入/);
+
+    const expRouteRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/export-md`, {
+      method: 'POST',
+      headers: { 'X-AGY-Plugin-Token': tok, 'Content-Type': 'application/json' },
+      body: { cascadeId: 'sess-matrix-1', steps: [{ userInput: { userResponse: '路由导出' } }] }
+    });
+    assert.equal(expRouteRes.status, 200);
+    assert.equal(expRouteRes.json.ok, true);
+    assert.match(expRouteRes.json.markdown, /路由导出/);
+
+    const sessRouteRes = await httpRequest(`http://127.0.0.1:${started.port}/plugins/agy-daddy.chat-nav/session-id`, {
+      method: 'POST',
+      headers: { 'X-AGY-Plugin-Token': tok, 'Content-Type': 'application/json' },
+      body: { cascadeId: 'sess-matrix-1' }
+    });
+    assert.equal(sessRouteRes.status, 200);
+    assert.equal(sessRouteRes.json.ok, true);
+    assert.equal(sessRouteRes.json.cascadeId, 'sess-matrix-1');
   });
 
   // Case 5: zh-cn standalone

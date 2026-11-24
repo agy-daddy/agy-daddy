@@ -7,7 +7,6 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { AgyDaddyDaemon } = require('../src/core/daemon');
-const { PluginDataStore } = require('../src/core/storage');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 const PROXY_PLUGIN_DIR = path.resolve(HOST_ROOT, '..', 'agy-daddy-plugin-proxy');
@@ -33,23 +32,10 @@ function sendHttpViaGateway(gatewayPort, targetUrl) {
   });
 }
 
-test('Phase 2 跨仓联调：AgyDaddyDaemon 同时挂载 proxy + context + legacy-suite 掩码协调与热切换', async () => {
+test('Phase 2 跨仓联调：AgyDaddyDaemon 全员 Isolated World 挂载 proxy + context，全托管配置热切换与命令联动', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-phase2-int-'));
   const stateDir = path.join(root, 'state');
-  const legacySrcDir = path.join(root, 'legacy-src');
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.mkdirSync(legacySrcDir, { recursive: true });
-
-  fs.writeFileSync(path.join(legacySrcDir, 'meter-core.js'), '// mock meter-core');
-  fs.writeFileSync(path.join(legacySrcDir, 'meter-renderer.js'), '// mock meter-renderer');
-  fs.writeFileSync(path.join(legacySrcDir, 'ag-enhancer-overlay.js'), '// mock enhancer');
-  fs.writeFileSync(path.join(legacySrcDir, 'pulse-capsule-overlay.js'), '// mock pulse');
-  fs.writeFileSync(path.join(legacySrcDir, 'antigravity-hans-overlay.js'), '// mock hans');
-
-  new PluginDataStore('agy-daddy.legacy-suite', { stateDir }).writeJson('settings.json', {
-    sourceDir: legacySrcDir,
-    disabledModules: []
-  });
 
   // 启动临时目标站点与临时上游 HTTP 代理
   const targetHits = [];
@@ -132,14 +118,21 @@ test('Phase 2 跨仓联调：AgyDaddyDaemon 同时挂载 proxy + context + legac
     rpcTransport: mockRpcTransport,
     plugins: [
       { id: 'agy-daddy.proxy', trustLevel: 'T0', installPath: PROXY_PLUGIN_DIR, enabled: true },
-      { id: 'agy-daddy.context', trustLevel: 'T0', installPath: CONTEXT_PLUGIN_DIR, enabled: true },
-      { id: 'agy-daddy.legacy-suite', trustLevel: 'T0', installPath: path.join(HOST_ROOT, 'plugins', 'legacy-suite'), enabled: true }
+      { id: 'agy-daddy.context', trustLevel: 'T0', installPath: CONTEXT_PLUGIN_DIR, enabled: true }
     ]
   });
 
   try {
     const started = await daemon.start();
     assert.deepEqual(started.activationErrors, []);
+    assert.equal(daemon.activePlugins.size, 2);
+
+    // 0. 验证两个插件均为 isolated 世界且零 page:main-world 权限
+    for (const entry of daemon.activePlugins.values()) {
+      assert.equal(entry.manifest.world, 'isolated');
+      assert.equal(entry.trustPolicy.world, 'isolated');
+      assert.equal((entry.manifest.permissions || []).includes('page:main-world'), false);
+    }
 
     // 1. 验证宿主启动参数聚合包含 proxy 插件注入的本地转发网关与环境变量
     const proxySvc = daemon.bus.getServiceProxy('proxy');
@@ -153,46 +146,46 @@ test('Phase 2 跨仓联调：AgyDaddyDaemon 同时挂载 proxy + context + legac
     assert.equal(launchSpec.env.HTTP_PROXY, `http://127.0.0.1:${gwPort}`);
     assert.equal(launchSpec.env.HTTPS_PROXY, `http://127.0.0.1:${gwPort}`);
 
-    // 2. 验证真实 HTTP 请求经代理网关直连 -> 免重启热切换上游代理
+    // 2. 验证真实 HTTP 请求经代理网关直连 -> 通过底座全托管配置免重启热切换上游代理
     const directRes = await sendHttpViaGateway(gwPort, `http://127.0.0.1:${targetPort}/p2-direct`);
     assert.equal(directRes.statusCode, 200);
     assert.equal(upstreamHits.length, 0);
 
-    await proxySvc.setConfig({
+    const updProxy = await daemon.updatePluginSettings('agy-daddy.proxy', {
       mode: 'upstream',
       upstreamUrl: `http://127.0.0.1:${upstreamPort}`,
       noProxy: 'localhost'
     });
+    assert.equal(updProxy.ok, true);
+    assert.equal(updProxy.values.mode, 'upstream');
+
     const upRes = await sendHttpViaGateway(gwPort, `http://127.0.0.1:${targetPort}/p2-upstream`);
     assert.equal(upRes.statusCode, 200);
     assert.equal(upstreamHits.length, 1);
 
-    // 3. 验证 context 服务采样、telemetry 事件广播、粘性状态及移动端快照
+    // 验证命令引擎可调用 proxy.switch-mode 双向同步托管配置
+    await daemon.executeCommand('proxy.switch-mode', ['direct']);
+    assert.equal(daemon.getPluginSettings('agy-daddy.proxy').mode, 'direct');
+
+    // 3. 验证 context 服务采样、命令触发、托管配置更新、telemetry 事件广播与移动端快照
     const callsEvents = [];
     daemon.bus.onEvent('test', 'telemetry:generator-calls@1', (p) => callsEvents.push(p));
 
     const ctxSvc = daemon.bus.getServiceProxy('context');
-    const snap = await ctxSvc.rescan({ cascadeId: 'sess-phase2' });
+    const snap = await daemon.executeCommand('context.rescan', [{ cascadeId: 'sess-phase2' }]);
     assert.equal(snap.used, 10250);
     assert.equal(snap.budget, 1048576);
     assert.equal(callsEvents.length, 1);
     assert.equal(callsEvents[0].calls[0].callId, 'call-p2-1');
     assert.equal(daemon.bus.getState('state:context.snapshot@1').value.cascadeId, 'sess-phase2');
 
+    const updCtx = await daemon.updatePluginSettings('agy-daddy.context', { warnThreshold: '180K' });
+    assert.equal(updCtx.ok, true);
+    assert.equal(updCtx.values.warnThreshold, '180K');
+
     const mobileSnap = await ctxSvc.getMobileSnapshot({ cascadeId: 'sess-phase2' });
     assert.equal(mobileSnap.cascadeId, 'sess-phase2');
     assert.equal(mobileSnap.tokPerSec, 250);
-
-    // 4. 验证 legacy-suite 绞杀者掩码自动与已剥离插件协调，杜绝双 UI
-    const legacySvc = daemon.bus.getServiceProxy('legacy-suite');
-    const rec = await legacySvc.reconcileWithActivePlugins(Array.from(daemon.activePlugins.keys()));
-    assert.ok(rec.disabledModules.includes('proxy'));
-    assert.ok(rec.disabledModules.includes('pulse'));
-    assert.ok(rec.disabledModules.includes('tokens'));
-
-    const bundle = await legacySvc.getBundle();
-    assert.equal(bundle.skipped.includes('pulse'), true);
-    assert.match(bundle.parts[0].code, /"showTopbarTokens":false/);
   } finally {
     await daemon.stop();
     for (const s of targetSockets) try { s.destroy(); } catch {}

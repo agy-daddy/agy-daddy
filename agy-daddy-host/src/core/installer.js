@@ -9,7 +9,13 @@ const { safeReadJsonSync, safeWriteJsonSync, withFileLockSync } = require('./sto
 const { validateManifest, evaluateTrustPolicy } = require('../contracts/manifest-validator');
 const { satisfies, compareSemver, parseSemver } = require('../contracts/semver');
 const { extractTarGzToDir } = require('./tar');
-const { syncPluginNativeArtifacts, removePluginNativeArtifacts } = require('./native-sync');
+const {
+  normalizeNativeConfig,
+  inspectPluginNativeStatus,
+  rollbackPluginRules,
+  syncPluginNativeArtifacts,
+  removePluginNativeArtifacts
+} = require('./native-sync');
 
 const DEFAULT_REGISTRY_PATH = path.resolve(__dirname, '..', '..', 'data', 'registry.json');
 const HOST_ROOT_DIR = path.resolve(__dirname, '..', '..');
@@ -352,6 +358,23 @@ async function installPlugin(spec, options = {}) {
       fs.renameSync(stagingDir, targetDir);
     }
 
+    let initialNativeConfig = null;
+    if (manifest?.contributes?.native && typeof manifest.contributes.native === 'object') {
+      if (options.nativeConfig && typeof options.nativeConfig === 'object' && !Array.isArray(options.nativeConfig)) {
+        initialNativeConfig = normalizeNativeConfig(manifest.contributes.native, options.nativeConfig, true);
+      } else if (options.syncNative === false) {
+        initialNativeConfig = normalizeNativeConfig(manifest.contributes.native, {}, false);
+      } else if (prevRecord?.nativeConfig && typeof prevRecord.nativeConfig === 'object') {
+        initialNativeConfig = normalizeNativeConfig(manifest.contributes.native, prevRecord.nativeConfig, true);
+      } else {
+        initialNativeConfig = normalizeNativeConfig(
+          manifest.contributes.native,
+          {},
+          options.defaultNativeEnabled !== false
+        );
+      }
+    }
+
     const record = {
       id: pluginId,
       version: manifest.version,
@@ -361,6 +384,7 @@ async function installPlugin(spec, options = {}) {
       nodeIsolation: trustPolicy.nodeIsolation,
       autoUpdateAllowed: trustPolicy.autoUpdateAllowed,
       grantedPermissions: trustPolicy.granted,
+      nativeConfig: initialNativeConfig,
       sourceKind: parsed.kind,
       sourceSpec: parsed.spec,
       subpath: parsed.subpath || null,
@@ -376,7 +400,8 @@ async function installPlugin(spec, options = {}) {
       ? { ok: true, synced: false, skipped: true }
       : syncPluginNativeArtifacts(targetDir, manifest, {
           ...options,
-          grantedPermissions: trustPolicy.granted
+          grantedPermissions: trustPolicy.granted,
+          nativeConfig: initialNativeConfig
         });
 
     index.plugins[pluginId] = record;
@@ -447,13 +472,133 @@ function rollbackPlugin(pluginId, options = {}) {
   return { ok: true, plugin: index.plugins[safeId] };
 }
 
+function updatePluginNativeConfig(pluginId, configPatch = {}, options = {}) {
+  const safeId = assertSafePluginId(pluginId);
+  const index = readInstalledIndex(options);
+  const record = index.plugins[safeId];
+  if (!record) {
+    return { ok: false, error: `Plugin not installed: ${safeId}` };
+  }
+  if (!record.installPath || !fs.existsSync(record.installPath)) {
+    return { ok: false, error: `Plugin install path missing for ${safeId}` };
+  }
+  const manifest = readManifestFromDir(record.installPath);
+  if (!manifest?.contributes?.native || typeof manifest.contributes.native !== 'object') {
+    return { ok: false, error: `Plugin does not declare native extensions: ${safeId}` };
+  }
+
+  const nextConfig = normalizeNativeConfig(
+    manifest.contributes.native,
+    { ...(record.nativeConfig || {}), ...(configPatch && typeof configPatch === 'object' ? configPatch : {}) },
+    true
+  );
+  const nativeSync = syncPluginNativeArtifacts(record.installPath, manifest, {
+    ...options,
+    grantedPermissions: Array.isArray(record.grantedPermissions) ? record.grantedPermissions : [],
+    nativeConfig: nextConfig
+  });
+  if (!nativeSync.ok) {
+    return { ok: false, error: nativeSync.reason || 'Native sync failed', nativeSync };
+  }
+
+  record.nativeConfig = nextConfig;
+  record.updatedAt = new Date().toISOString();
+  index.plugins[safeId] = record;
+  writeInstalledIndex(index, options);
+
+  return {
+    ok: true,
+    id: safeId,
+    nativeConfig: nextConfig,
+    nativeSync,
+    nativeStatus: inspectPluginNativeStatus(safeId, manifest, {
+      ...options,
+      pluginDir: record.installPath,
+      nativeConfig: nextConfig
+    })
+  };
+}
+
+function rollbackPluginNativeRules(pluginId, options = {}) {
+  const safeId = assertSafePluginId(pluginId);
+  const index = readInstalledIndex(options);
+  const record = index.plugins[safeId];
+  if (!record) {
+    return { ok: false, rolledBack: false, error: `Plugin not installed: ${safeId}` };
+  }
+
+  let manifest = null;
+  if (record.installPath && fs.existsSync(record.installPath)) {
+    try { manifest = readManifestFromDir(record.installPath); } catch {}
+  }
+
+  const res = rollbackPluginRules(safeId, options);
+  if (!res.ok) {
+    return {
+      ...res,
+      nativeConfig: record.nativeConfig || null,
+      nativeStatus: inspectPluginNativeStatus(safeId, manifest, {
+        ...options,
+        pluginDir: record.installPath,
+        nativeConfig: record.nativeConfig
+      })
+    };
+  }
+
+  const nextConfig = manifest?.contributes?.native
+    ? normalizeNativeConfig(
+        manifest.contributes.native,
+        { ...(record.nativeConfig || {}), rules: Boolean(res.rulesEnabledAfterRollback) },
+        true
+      )
+    : { ...(record.nativeConfig || {}), rules: Boolean(res.rulesEnabledAfterRollback) };
+
+  record.nativeConfig = nextConfig;
+  record.updatedAt = new Date().toISOString();
+  index.plugins[safeId] = record;
+  writeInstalledIndex(index, options);
+
+  return {
+    ...res,
+    nativeConfig: nextConfig,
+    nativeStatus: inspectPluginNativeStatus(safeId, manifest, {
+      ...options,
+      pluginDir: record.installPath,
+      nativeConfig: nextConfig
+    })
+  };
+}
+
 function uninstallPlugin(pluginId, options = {}) {
   const safeId = assertSafePluginId(pluginId);
   const pluginsDir = getPluginsDir(options);
   const index = readInstalledIndex(options);
-  if (!index.plugins[safeId]) {
+  const record = index.plugins[safeId];
+  if (!record) {
     return { ok: false, error: `Plugin not installed: ${safeId}` };
   }
+
+  let manifest = null;
+  if (record.installPath && fs.existsSync(record.installPath)) {
+    try { manifest = readManifestFromDir(record.installPath); } catch {}
+  }
+  const nativeStatus = inspectPluginNativeStatus(safeId, manifest, {
+    ...options,
+    pluginDir: record.installPath,
+    nativeConfig: record.nativeConfig
+  });
+  const hasNative = Boolean(nativeStatus.hasNative || nativeStatus.synced);
+
+  if (options.requireNativeConfirm === true && !options.confirmNativeDelete && hasNative) {
+    return {
+      ok: false,
+      needsNativeUninstallConfirm: true,
+      id: safeId,
+      nativeInfo: nativeStatus,
+      error: '该插件包含原生扩展，请确认提示后再执行卸载删除'
+    };
+  }
+
   const targetDir = path.join(pluginsDir, safeId);
   const rollbackDir = path.join(pluginsDir, '.rollback', `${safeId}.prev`);
   try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
@@ -461,7 +606,7 @@ function uninstallPlugin(pluginId, options = {}) {
   const nativeCleanup = removePluginNativeArtifacts(safeId, options);
   delete index.plugins[safeId];
   writeInstalledIndex(index, options);
-  return { ok: true, id: safeId, nativeCleanup };
+  return { ok: true, id: safeId, nativeCleanup, hadNative: hasNative };
 }
 
 function listInstalledPlugins(options = {}) {
@@ -518,6 +663,9 @@ module.exports = {
   enablePlugin: (id, opts) => setPluginEnabled(id, true, opts),
   disablePlugin: (id, opts) => setPluginEnabled(id, false, opts),
   rollbackPlugin,
+  updatePluginNativeConfig,
+  rollbackPluginNativeRules,
+  inspectPluginNativeStatus,
   uninstallPlugin,
   listInstalledPlugins,
   sortPluginsByDependency

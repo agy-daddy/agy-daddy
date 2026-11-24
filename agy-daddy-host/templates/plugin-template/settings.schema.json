@@ -9,13 +9,23 @@
       "key": "enabledGreeting",
       "type": "boolean",
       "label": { "zh-CN": "启用欢迎徽章", "en": "Enable Greeting Badge" },
+      "description": { "zh-CN": "在 Antigravity 顶栏区域挂载插件示例胶囊", "en": "Show the sample plugin badge inside the topbar area" },
       "default": true
     },
     {
       "key": "prefix",
       "type": "string",
+      "placeholder": "Hi",
       "label": { "zh-CN": "自定义前缀", "en": "Custom Prefix" },
+      "description": { "zh-CN": "拼接在欢迎语前方的问候词前缀", "en": "Prefix prepended to greeting notifications" },
       "default": "Hi"
+    }
+  ],
+  "actions": [
+    {
+      "id": "greet-now",
+      "command": "hello.greet",
+      "label": { "zh-CN": "测试问候命令", "en": "Test Greeting Command" }
     }
   ]
 }

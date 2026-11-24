@@ -114,6 +114,29 @@ test('DynamicBridgeServer: Origin 严格校验、按插件 Token 隔离与反注
     assert.equal(hostOk.status, 200);
     assert.deepEqual(await hostOk.json(), { ok: true, host: true });
 
+    // 插件内置系统路由（/__settings, /__command）仅需合法插件 Token，不计入插件自定义路由计数
+    bridge.registerPluginSystemRoute('/__settings', async (body, meta) => ({
+      ok: true,
+      system: true,
+      pluginId: meta.pluginId,
+      action: body.action || 'get'
+    }));
+    assert.equal(bridge.countPluginRoutes('agy-daddy.beta'), 0);
+    const sysOk = await fetch(`http://127.0.0.1:${port}/plugins/agy-daddy.beta/__settings`, {
+      method: 'POST',
+      headers: { Origin: 'https://127.0.0.1:51410', 'Content-Type': 'application/json', 'X-AGY-Plugin-Token': tokenB },
+      body: JSON.stringify({ action: 'get' })
+    });
+    assert.equal(sysOk.status, 200);
+    assert.deepEqual(await sysOk.json(), { ok: true, system: true, pluginId: 'agy-daddy.beta', action: 'get' });
+
+    const sysCross = await fetch(`http://127.0.0.1:${port}/plugins/agy-daddy.beta/__settings`, {
+      method: 'POST',
+      headers: { Origin: 'https://127.0.0.1:51410', 'Content-Type': 'application/json', 'X-AGY-Plugin-Token': tokenA },
+      body: '{}'
+    });
+    assert.equal(sysCross.status, 403);
+
     // 卸载清理路由与吊销 Token
     bridge.unregisterPluginRoutes('agy-daddy.alpha');
     const afterUnload = await fetch(`http://127.0.0.1:${port}/plugins/agy-daddy.alpha/echo`, {
@@ -122,6 +145,12 @@ test('DynamicBridgeServer: Origin 严格校验、按插件 Token 隔离与反注
       body: '{}'
     });
     assert.equal(afterUnload.status, 403);
+    const sysAfterUnload = await fetch(`http://127.0.0.1:${port}/plugins/agy-daddy.alpha/__settings`, {
+      method: 'POST',
+      headers: { Origin: 'https://127.0.0.1:51410', 'X-AGY-Plugin-Token': tokenA },
+      body: '{}'
+    });
+    assert.equal(sysAfterUnload.status, 403);
   } finally {
     await bridge.stop();
   }

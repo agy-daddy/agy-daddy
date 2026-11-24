@@ -19,6 +19,7 @@ class FourRealmBus {
   constructor(options = {}) {
     this.defaultTimeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 5000;
     this.eventListeners = new Map(); // topic -> Set<{ pluginId, fn }>
+    this.anyListeners = new Set();   // Set<{ pluginId, fn }>
     this.stateStore = new Map();     // key -> { value, version, updatedAt, publisher }
     this.stateListeners = new Map(); // key -> Set<{ pluginId, fn }>
     this.services = new Map();       // name -> { pluginId, realm, version, methods }
@@ -53,19 +54,47 @@ class FourRealmBus {
     };
   }
 
-  emitEvent(pluginId, topic, payload = null) {
-    const cleanPayload = payload === undefined ? null : ensureJsonSerializable(payload, `event:${topic}`);
-    const listeners = this.eventListeners.get(topic);
-    if (!listeners || listeners.size === 0) return 0;
-    let delivered = 0;
-    for (const entry of Array.from(listeners)) {
+  onAny(pluginIdOrFn, maybeFn) {
+    const pluginId = typeof pluginIdOrFn === 'function' ? '__anonymous__' : String(pluginIdOrFn || '__anonymous__');
+    const fn = typeof pluginIdOrFn === 'function' ? pluginIdOrFn : maybeFn;
+    if (typeof fn !== 'function') {
+      throw new Error('onAny requires a listener function');
+    }
+    const entry = { pluginId, fn };
+    this.anyListeners.add(entry);
+    return () => {
+      this.anyListeners.delete(entry);
+    };
+  }
+
+  _notifyAny(kind, topicOrKey, payload, meta) {
+    if (this.anyListeners.size === 0) return;
+    const event = { kind, topicOrKey, payload, meta };
+    for (const entry of Array.from(this.anyListeners)) {
       try {
-        entry.fn(cleanPayload, { topic, publisher: pluginId });
-        delivered++;
+        entry.fn(event);
       } catch {
-        // 单订阅者失败不扩散
+        // 单通配订阅者失败不扩散
       }
     }
+  }
+
+  emitEvent(pluginId, topic, payload = null) {
+    const cleanPayload = payload === undefined ? null : ensureJsonSerializable(payload, `event:${topic}`);
+    const meta = { topic, publisher: pluginId };
+    const listeners = this.eventListeners.get(topic);
+    let delivered = 0;
+    if (listeners && listeners.size > 0) {
+      for (const entry of Array.from(listeners)) {
+        try {
+          entry.fn(cleanPayload, meta);
+          delivered++;
+        } catch {
+          // 单订阅者失败不扩散
+        }
+      }
+    }
+    this._notifyAny('event', topic, cleanPayload, meta);
     return delivered;
   }
 
@@ -80,14 +109,16 @@ class FourRealmBus {
       publisher: pluginId
     };
     this.stateStore.set(key, next);
+    const meta = { key, version: next.version, publisher: pluginId, updatedAt: next.updatedAt };
     const listeners = this.stateListeners.get(key);
     if (listeners) {
       for (const entry of Array.from(listeners)) {
         try {
-          entry.fn(next.value, { key, version: next.version, publisher: pluginId, updatedAt: next.updatedAt });
+          entry.fn(next.value, meta);
         } catch {}
       }
     }
+    this._notifyAny('state', key, next.value, meta);
     return next;
   }
 
@@ -287,6 +318,12 @@ class FourRealmBus {
       }
       if (set.size === 0) this.hooks.delete(hookName);
     }
+    for (const entry of Array.from(this.anyListeners)) {
+      if (entry.pluginId === pluginId) {
+        this.anyListeners.delete(entry);
+        removed++;
+      }
+    }
     return removed;
   }
 
@@ -303,6 +340,9 @@ class FourRealmBus {
     }
     for (const set of this.hooks.values()) {
       for (const e of set) if (e.pluginId === pluginId) count++;
+    }
+    for (const e of this.anyListeners) {
+      if (e.pluginId === pluginId) count++;
     }
     return count;
   }

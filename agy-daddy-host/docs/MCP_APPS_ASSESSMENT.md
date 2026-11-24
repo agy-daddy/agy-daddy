@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Usage 52 周热力图与期间账单 (`usage`) | 顶栏 Popover / DOM 注入 | **高**：纯数据可视化，对页面 React/Composer 无耦合 | 提供 `usage_summary` MCP 工具，并在支持 MCP App 资源渲染时作为官方侧栏/全页视图承载，显著降低 DOM 改版脆弱性 |
 | Quota 多池与 Ultra 倍率面板 (`quota`) | 顶栏 Popover | **中-高**：只读状态展示 | 提供 `quota_status` MCP 工具，Agent 对话可直接查询剩余配额；顶栏 G4/C 胶囊仍保留以便秒级 glanceable 感知 |
-| 上下文快照与 240K 预警 (`context`) | 主世界 + Pulse 底部胶囊 | **部分**：底部胶囊需强绑定 `composer.root` | 提供 `context_status` MCP 工具与 `context-governance` Skill；顶栏圆环与底部胶囊保留主世界渲染 |
+| 上下文快照与 240K 预警 (`context`) | Isolated World + 自注入 Pulse 底部胶囊 | **部分**：底部胶囊需强绑定 `composer.root` | 提供 `context_status` MCP 工具与 `context-governance` Skill；顶栏圆环与底部胶囊保留 Isolated World 渲染 |
 | 汉化 / 对话导航 / 输入框快捷栏 | 宿主 DOM 重写与键盘监听 | **低（不适用 MCP Apps）** | 依赖全局快捷键（`⌘1~⌘9`、`Tab`）与高危红框实时拦截，继续由 CDP 宿主加载 |
 
 ## 2. 安全与生命周期结论

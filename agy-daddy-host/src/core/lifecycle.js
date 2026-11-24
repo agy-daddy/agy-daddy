@@ -5,7 +5,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { resolveRuntime } = require('./runtime-resolver');
-const { isTestMode } = require('./paths');
+const { getStateDir, isTestMode } = require('./paths');
+const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
 
 function sanitizeUserLabel(user) {
   return String(user || os.userInfo().username || 'user').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -39,6 +40,7 @@ function generateMacLaunchAgentPlist(options = {}) {
 
   const envEntries = {
     PATH: options.pathEnv || `${path.join(home, '.local', 'bin')}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+    AGY_DADDY_LAUNCHD: '1',
     ...(runtimeInfo?.isElectron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     ...(options.env || {})
   };
@@ -271,6 +273,195 @@ function planAntigravityRestart(options = {}) {
   };
 }
 
+function findMacAntigravityApp(options = {}) {
+  if (options.appPath) return options.appPath;
+  const fsImpl = options.fs || options.fsImpl || fs;
+  const home = options.homeDir || os.homedir();
+  const candidates = [
+    '/Applications/Antigravity.app',
+    path.join(home, 'Applications', 'Antigravity.app')
+  ];
+  for (const cand of candidates) {
+    try {
+      if (fsImpl.existsSync(cand)) return cand;
+    } catch {}
+  }
+  return '/Applications/Antigravity.app';
+}
+
+function defaultIsPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function relaunchAntigravityWithCdp(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform !== 'darwin') {
+    return {
+      ok: false,
+      relaunched: false,
+      reason: 'UNSUPPORTED_PLATFORM',
+      message: '自动补参重启目前仅支持 macOS'
+    };
+  }
+
+  const env = options.env || process.env;
+  const fsImpl = options.fsImpl || options.fs || fs;
+  const resolvedAppPath = findMacAntigravityApp({ appPath: options.appPath, fsImpl, homeDir: options.homeDir });
+  const rawExtraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
+  const filteredExtraArgs = rawExtraArgs.filter((arg) => !String(arg || '').startsWith('--remote-debugging-port'));
+
+  const plan = planAntigravityRestart({
+    appPath: resolvedAppPath,
+    proxyEnv: options.proxyEnv || {},
+    extraArgs: filteredExtraArgs,
+    allowSelfTerminate: Boolean(options.allowSelfTerminate),
+    env
+  });
+  if (!plan.ok) {
+    return { ...plan, relaunched: false };
+  }
+
+  const inspectHost = options.inspectHostProcess || (() => inspectAntigravityHostProcess({ platform, env }));
+  const resolveCdp = options.resolveCdpTarget || ((opts) => resolveActiveCdpTarget(opts));
+  const isPidAliveFn = options.isPidAliveFn || defaultIsPidAlive;
+  const runOsascript = options.runOsascript || (() => spawnSync(
+    'osascript',
+    ['-e', 'tell application "Antigravity" to quit'],
+    { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }
+  ));
+  const killProcess = options.killProcess || ((pid, sig) => process.kill(pid, sig));
+  const launchApp = options.launchApp || ((executable, args) => spawnSync(executable, args, {
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'pipe']
+  }));
+  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const now = options.now || (() => Date.now());
+
+  const hostProc = inspectHost() || { running: false, pid: null, hasDebugSwitch: false };
+  if (options.onlyIfBare && hostProc.running && hostProc.hasDebugSwitch) {
+    return {
+      ok: true,
+      relaunched: false,
+      reason: 'ALREADY_HAS_DEBUG_SWITCH',
+      pid: hostProc.pid || null
+    };
+  }
+
+  const cooldownMs = Number.isFinite(Number(options.cooldownMs)) ? Number(options.cooldownMs) : 20000;
+  const lockPath = options.lockPath || path.join(options.stateDir || getStateDir(options), 'relaunch.lock');
+  if (options.enforceCooldown) {
+    try {
+      if (fsImpl.existsSync(lockPath)) {
+        const rawTs = Number(String(fsImpl.readFileSync(lockPath, 'utf8') || '').trim());
+        if (Number.isFinite(rawTs) && now() - rawTs < cooldownMs) {
+          return {
+            ok: false,
+            skipped: true,
+            relaunched: false,
+            reason: 'COOLDOWN_ACTIVE'
+          };
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    fsImpl.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fsImpl.writeFileSync(lockPath, String(now()), 'utf8');
+  } catch {}
+
+  const pollIntervalMs = Math.max(10, Number(options.pollIntervalMs) || 500);
+  const quitTimeoutMs = Math.max(0, options.quitTimeoutMs !== undefined ? Number(options.quitTimeoutMs) : 8000);
+  const waitCdpTimeoutMs = options.waitCdpTimeoutMs !== undefined ? Number(options.waitCdpTimeoutMs) : 20000;
+
+  if (hostProc.running && hostProc.pid) {
+    try { runOsascript(); } catch {}
+    const quitStart = now();
+    const termThreshold = Math.floor(quitTimeoutMs / 2);
+    let sentTerm = false;
+
+    while (isPidAliveFn(hostProc.pid)) {
+      const elapsed = now() - quitStart;
+      if (elapsed >= quitTimeoutMs) break;
+      if (!sentTerm && elapsed >= termThreshold) {
+        sentTerm = true;
+        try { killProcess(hostProc.pid, 'SIGTERM'); } catch {}
+      }
+      await sleep(Math.min(pollIntervalMs, Math.max(1, quitTimeoutMs - elapsed)));
+    }
+
+    if (isPidAliveFn(hostProc.pid)) {
+      return {
+        ok: false,
+        relaunched: false,
+        reason: 'QUIT_TIMEOUT',
+        pid: hostProc.pid,
+        message: '等待原 Antigravity 进程退出超时，请手动按 ⌘Q 退出后再试'
+      };
+    }
+  }
+
+  const launchRes = launchApp(plan.executable, plan.args);
+  if (launchRes && typeof launchRes.status === 'number' && launchRes.status !== 0) {
+    return {
+      ok: false,
+      relaunched: false,
+      reason: 'LAUNCH_FAILED',
+      error: String(launchRes.stderr || launchRes.stdout || launchRes.error?.message || `exit ${launchRes.status}`).trim()
+    };
+  }
+  if (launchRes && launchRes.error) {
+    return {
+      ok: false,
+      relaunched: false,
+      reason: 'LAUNCH_FAILED',
+      error: launchRes.error.message || String(launchRes.error)
+    };
+  }
+
+  if (waitCdpTimeoutMs <= 0) {
+    return { ok: true, relaunched: true, port: null, targets: [], targetsCount: 0 };
+  }
+
+  const waitStart = now();
+  let lastPort = null;
+  while (true) {
+    try {
+      const cdpRes = await resolveCdp({ timeoutMs: 1200 });
+      if (cdpRes?.port) lastPort = cdpRes.port;
+      if (Array.isArray(cdpRes?.targets) && cdpRes.targets.length > 0) {
+        return {
+          ok: true,
+          relaunched: true,
+          port: cdpRes.port || lastPort,
+          targets: cdpRes.targets,
+          targetsCount: cdpRes.targets.length
+        };
+      }
+    } catch {}
+    const elapsed = now() - waitStart;
+    if (elapsed >= waitCdpTimeoutMs) break;
+    await sleep(Math.min(pollIntervalMs, Math.max(1, waitCdpTimeoutMs - elapsed)));
+  }
+
+  return {
+    ok: false,
+    relaunched: true,
+    reason: 'CDP_WAIT_TIMEOUT',
+    port: lastPort,
+    targets: [],
+    targetsCount: 0,
+    message: '已重启 Antigravity，但等待 CDP 窗口就绪超时'
+  };
+}
+
 function checkAndPullGitUpdate(repoDir, options = {}) {
   const dir = path.resolve(repoDir);
   if (!fs.existsSync(path.join(dir, '.git'))) {
@@ -303,5 +494,7 @@ module.exports = {
   installMacLauncherApp,
   detectInsideAntigravitySession,
   planAntigravityRestart,
+  findMacAntigravityApp,
+  relaunchAntigravityWithCdp,
   checkAndPullGitUpdate
 };

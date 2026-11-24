@@ -29,9 +29,12 @@ const {
 } = require('../src/core/lifecycle');
 const { auditUpstreamsAndBaselines } = require('../src/core/upstreams');
 
-test('主题引擎 5 预设 / 14 槽位 / 三态外观、5 分页设置中心与小红点状态', async () => {
-  assert.equal(Object.keys(HEAT_PRESETS).length, 5);
+test('主题引擎系统中性配色 / 14 槽位 / 三态外观、三段式设置中心与小红点状态', async () => {
+  assert.ok(HEAT_PRESETS.system);
   assert.equal(Object.keys(COLOR_SLOTS).length, 14);
+  for (const preset of Object.values(HEAT_PRESETS)) {
+    assert.equal(/#a78bfa|#7c3aed/i.test(JSON.stringify(preset)), false);
+  }
 
   const doc = createMockDocument();
   const hostRuntime = createHostRuntime({
@@ -48,27 +51,37 @@ test('主题引擎 5 预设 / 14 槽位 / 三态外观、5 分页设置中心与
       }
     });
 
-    const applied = hostRuntime.setTheme('light', undefined, 'purple');
+    const applied = hostRuntime.setTheme('light', undefined, 'system');
     assert.equal(applied.effectiveMode, 'light');
-    assert.equal(applied.accent, '#7c3aed');
-    assert.equal(seenTheme.heatPreset, 'purple');
+    assert.equal(applied.accent, '#18181b');
+    assert.equal(seenTheme.heatPreset, 'system');
     assert.equal(seenTheme.effectiveMode, 'light');
 
-    // 打开设置中心并切换 5 个分页
+    const appliedDark = hostRuntime.setTheme('dark', undefined, 'system');
+    assert.equal(appliedDark.effectiveMode, 'dark');
+    assert.equal(appliedDark.accent, '#e4e4e7');
+
+    // 打开设置中心并验证两段式导航（通用 / 外观）及底部运行诊断区
     hostRuntime.toggleSettingsPanel(true);
     const shadow = doc.getElementById('agy-daddy-host').shadowRoot;
-    for (const tabId of ['plugins', 'theme', 'health', 'manage', 'general']) {
-      assert.ok(shadow.querySelector(`#agy-tab-${tabId}`), `Missing tab ${tabId}`);
+    for (const tabId of ['plugins', 'appearance']) {
+      assert.ok(shadow.querySelector(`#agy-tab-${tabId}`), `Missing segment ${tabId}`);
     }
-    shadow.querySelector('#agy-tab-theme').click();
-    assert.ok(shadow.querySelector('#agy-theme-settings-card'));
-    shadow.querySelector('#agy-preset-blue').click();
-    assert.equal(seenTheme.heatPreset, 'blue');
+    assert.equal(shadow.querySelector('#agy-tab-plugins').textContent, '通用');
+    assert.equal(shadow.querySelector('#agy-tab-appearance').textContent, '外观');
+    assert.equal(shadow.querySelector('#agy-tab-diagnostics'), null);
+    assert.equal(shadow.querySelector('#agy-tab-manage'), null);
+    assert.equal(shadow.querySelector('#agy-tab-general'), null);
+    assert.ok(shadow.querySelector('#agy-diagnostics-summary-card'));
 
-    shadow.querySelector('#agy-tab-general').click();
+    shadow.querySelector('#agy-tab-appearance').click();
+    assert.equal(shadow.querySelector('#agy-theme-settings-card'), null);
+    assert.equal(shadow.querySelector('#agy-appearance-mode-card'), null);
+    assert.ok(shadow.querySelector('#agy-topbar-layout-card'));
+    assert.ok(shadow.querySelector('#agy-general-settings-card'));
+
     hostRuntime.setUpdateInfo({ hasUpdate: true, currentVersion: '1.0.0', latestVersion: '1.1.0' });
     assert.equal(shadow.querySelector('#agy-update-dot').hidden, false);
-    shadow.querySelector('#agy-tab-general').click();
     assert.match(shadow.querySelector('#agy-general-settings-card').textContent, /1\.1\.0/);
   } finally {
     await hostRuntime.dispose();
@@ -91,6 +104,7 @@ test('lifecycle 跨平台自启/桌面启动器、防自杀重启守卫、git �
   try {
     const plist = generateMacLaunchAgentPlist({ username: 'tester', logDir: path.join(root, 'logs') });
     assert.match(plist, /com\.tester\.agy-daddyd/);
+    assert.match(plist, /AGY_DADDY_LAUNCHD/);
     assert.doesNotMatch(plist, /\/opt\/homebrew\/opt\/node@22/);
 
     const winBat = generateWindowsLauncherBat({ proxyUrl: 'http://127.0.0.1:18766' });
@@ -153,5 +167,95 @@ test('CLI 新增运维与多仓开发命令冒烟验证 (upstreams / auto-on --d
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('顶栏 Popover 同步创建 Light-DOM browser occluder、调用 setPortalOverlayOpen 并在外部弹窗打开时降级让位', async () => {
+  const prevMo = globalThis.MutationObserver;
+  const observerInstances = [];
+  globalThis.MutationObserver = class MockMutationObserver {
+    constructor(cb) {
+      this.cb = cb;
+      observerInstances.push(this);
+    }
+    observe() {}
+    disconnect() {}
+  };
+
+  const doc = createMockDocument();
+  const portalCalls = [];
+  const win = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    location: { href: 'https://127.0.0.1:51410/' },
+    electronNative: {
+      wcvBrowser: {
+        setPortalOverlayOpen(open) {
+          portalCalls.push(Boolean(open));
+          return Promise.resolve();
+        }
+      }
+    }
+  };
+
+  const hostRuntime = createHostRuntime({
+    document: doc,
+    window: win,
+    anchorsRegistry: loadAnchorsRegistry()
+  });
+
+  try {
+    let popHandle = null;
+    await hostRuntime.mountPlugin('test.occluder.plugin', {
+      mount(ctx) {
+        popHandle = ctx.topbar.registerPopover({ id: 'remote-panel', title: '远程访问' });
+      }
+    });
+
+    const hostEl = doc.getElementById('agy-daddy-host');
+    assert.ok(hostEl);
+    assert.equal(doc.getElementById('agy-popover-browser-occluder'), null);
+
+    // 1. 打开 Popover：应在 Light DOM 创建并显示 occluder，且调用 setPortalOverlayOpen(true)
+    popHandle.toggle(true);
+    const occluder = doc.getElementById('agy-popover-browser-occluder');
+    assert.ok(occluder, 'Expected Light-DOM browser occluder element');
+    assert.equal(occluder.getAttribute('data-browser-occluder'), 'true');
+    assert.equal(occluder.hidden, false);
+    assert.equal(hostEl.getAttribute('data-elevated'), 'true');
+    assert.ok(parseFloat(occluder.style.getPropertyValue('width')) >= 240);
+    assert.ok(parseFloat(occluder.style.getPropertyValue('height')) >= 200);
+    assert.deepEqual(portalCalls, [true]);
+
+    // 2. 关闭 Popover：隐藏 occluder 并释放 setPortalOverlayOpen(false)
+    popHandle.toggle(false);
+    assert.equal(occluder.hidden, true);
+    assert.equal(hostEl.getAttribute('data-elevated'), 'false');
+    assert.deepEqual(portalCalls, [true, false]);
+
+    // 3. 再次打开后，外部原生弹窗 [role="dialog"] 出现时自动让位 (data-under-dialog="true") 并收起 Popover
+    popHandle.toggle(true);
+    assert.equal(occluder.hidden, false);
+    const extDialog = doc.createElement('div');
+    extDialog.setAttribute('role', 'dialog');
+    doc.body.appendChild(extDialog);
+    for (const obs of observerInstances) obs.cb();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(hostEl.getAttribute('data-under-dialog'), 'true');
+    assert.equal(occluder.hidden, true);
+
+    // 4. 弹窗关闭后恢复层级
+    extDialog.remove();
+    for (const obs of observerInstances) obs.cb();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(hostEl.getAttribute('data-under-dialog'), 'false');
+
+    // 5. dispose 后彻底清理 Light-DOM occluder
+    await hostRuntime.dispose();
+    assert.equal(doc.getElementById('agy-popover-browser-occluder'), null);
+  } finally {
+    await hostRuntime.dispose();
+    if (prevMo === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = prevMo;
   }
 });

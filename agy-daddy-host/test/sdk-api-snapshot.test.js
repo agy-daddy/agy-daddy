@@ -35,19 +35,54 @@ test('Plugin API v1 SDK 导出快照与 index.d.ts 契约锁定', () => {
     assert.ok(sdk[key] !== undefined, `Missing SDK export: ${key}`);
   }
   assert.equal(sdk.HOST_API_VERSION, '1.0.0');
+  assert.equal(sdk.KNOWN_ANCHORS.length, 14);
+  for (const a of ['settings.dialog', 'settings.nav', 'settings.content', 'settings.openTrigger']) {
+    assert.ok(sdk.KNOWN_ANCHORS.includes(a), `Missing KNOWN_ANCHORS entry: ${a}`);
+  }
 
   const dts = fs.readFileSync(path.join(HOST_ROOT, 'sdk', 'index.d.ts'), 'utf8');
-  for (const sym of ['interface AgyPluginManifest', 'interface AgyHostApi', 'interface AgyRendererContext', 'function createPluginScaffold']) {
+  for (const sym of [
+    'interface AgyPluginManifest',
+    'interface AgyHostApi',
+    'interface AgyRendererContext',
+    'interface SettingsAction',
+    'function createPluginScaffold',
+    'settings.dialog',
+    'hostDom:',
+    'surfaces:',
+    'styles:',
+    'commands:'
+  ]) {
     assert.ok(dts.includes(sym), `index.d.ts missing declaration: ${sym}`);
   }
+  assert.equal(dts.includes('registerSection'), false, 'index.d.ts must not expose removed registerSection');
+  assert.equal(dts.includes('migrations?:'), false, 'index.d.ts must not expose removed migrations');
 });
 
-test('createPluginScaffold 脚手架生成可立即通过 npm test 的独立插件', () => {
+test('createPluginScaffold 脚手架默认 isolated 且使用 ctx.settings / ctx.styles.inject', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-scaffold-'));
   try {
     const outDir = path.join(tmp, 'third-hello');
-    const created = sdk.createPluginScaffold(outDir, { id: 'third.sample', world: 'isolated' });
+    const created = sdk.createPluginScaffold(outDir, { id: 'third.sample' });
     assert.equal(created.ok, true);
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'agy-plugin.json'), 'utf8'));
+    assert.equal(manifest.world, 'isolated');
+    assert.equal((manifest.permissions || []).includes('page:main-world'), false);
+    assert.equal(sdk.validateManifest(manifest).ok, true);
+
+    const schema = JSON.parse(fs.readFileSync(path.join(outDir, 'settings.schema.json'), 'utf8'));
+    assert.equal(sdk.validateSettingsSchema(schema).ok, true);
+    assert.ok(Array.isArray(schema.actions) && schema.actions.length >= 1);
+
+    const rendererSrc = fs.readFileSync(path.join(outDir, 'src', 'renderer.js'), 'utf8');
+    assert.match(rendererSrc, /ctx\.styles\.inject/);
+    assert.match(rendererSrc, /ctx\.settings\.get/);
+    assert.match(rendererSrc, /ctx\.commands\.execute/);
+
+    const nodeSrc = fs.readFileSync(path.join(outDir, 'src', 'node.js'), 'utf8');
+    assert.match(nodeSrc, /host\.settings\.get/);
+    assert.match(nodeSrc, /host\.commands\.register/);
 
     const r = spawnSync('npm', ['test'], {
       cwd: outDir,

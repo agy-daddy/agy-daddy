@@ -4,7 +4,10 @@ const os = require('os');
 const path = require('path');
 
 function isTestMode() {
-  return process.env.AGY_DADDY_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  return process.env.AGY_DADDY_TEST_MODE === '1'
+    || process.env.NODE_ENV === 'test'
+    || Boolean(process.env.NODE_TEST_CONTEXT)
+    || (Array.isArray(process.execArgv) && process.execArgv.includes('--test'));
 }
 
 function assertSafePluginId(pluginId) {
@@ -51,21 +54,8 @@ function getPluginDataDir(pluginId, options = {}) {
   return path.join(getStateDir(options), 'plugins-data', safeId);
 }
 
-function getLegacyStateDir(options = {}) {
-  if (options.legacyStateDir) return path.resolve(options.legacyStateDir);
-  if (process.env.AGY_DADDY_LEGACY_STATE_DIR) return path.resolve(process.env.AGY_DADDY_LEGACY_STATE_DIR);
-  if (isTestMode()) {
-    return null;
-  }
-  const home = options.homeDir || os.homedir();
-  const platform = options.platform || process.platform;
-  if (platform === 'win32') {
-    return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'AntigravityContextMeter');
-  }
-  if (platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'AntigravityContextMeter');
-  }
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'antigravity-context-meter');
+function getHostSettingsPath(options = {}) {
+  return path.join(getStateDir(options), 'host-settings.json');
 }
 
 module.exports = {
@@ -74,5 +64,5 @@ module.exports = {
   getStateDir,
   getPluginsDir,
   getPluginDataDir,
-  getLegacyStateDir
+  getHostSettingsPath
 };

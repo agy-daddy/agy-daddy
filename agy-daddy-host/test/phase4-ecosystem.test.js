@@ -8,14 +8,13 @@ const path = require('node:path');
 const HOST_ROOT = path.resolve(__dirname, '..');
 const WORKSPACE_ROOT = path.resolve(HOST_ROOT, '..');
 const CHAT_NAV_DIR = path.join(WORKSPACE_ROOT, 'agy-daddy-plugin-chat-nav');
-const CHAT_SEARCH_DIR = path.join(WORKSPACE_ROOT, 'agy-daddy-plugin-chat-search');
 const GITHUB_INFRA_DIR = path.join(WORKSPACE_ROOT, 'agy-daddy-.github');
 const REGISTRY_DIR = path.join(WORKSPACE_ROOT, 'agy-daddy-registry');
 const TEMPLATE_DIR = path.join(WORKSPACE_ROOT, 'agy-daddy-plugin-template');
 
 const { createMockHostHarness, createMockElement } = require('../sdk/mock-harness');
 
-test('Phase 4 基础设施 3 仓结构完备且社区插件 community.chat-search 与 chat-nav 表面联动成功', async () => {
+test('Phase 4 基础设施 3 仓结构完备且 chat-nav 内置全文检索与 chat.navButtons 扩展联动成功', async () => {
   for (const reqFile of [
     path.join(GITHUB_INFRA_DIR, '.github', 'workflows', 'plugin-ci.yml'),
     path.join(GITHUB_INFRA_DIR, '.github', 'workflows', 'anchors-matrix.yml'),
@@ -38,7 +37,7 @@ test('Phase 4 基础设施 3 仓结构完备且社区插件 community.chat-searc
   });
 
   const listEl = harness.mockDoc.querySelector('[data-testid="turn-cards-container"]');
-  for (const txt of ['Step 1: boot host', 'Step 2: verify chat.search surface']) {
+  for (const txt of ['Step 1: boot host', 'Step 2: verify builtin chat search']) {
     const c = createMockElement('div', harness.mockDoc);
     c.textContent = txt;
     listEl.appendChild(c);
@@ -48,25 +47,39 @@ test('Phase 4 基础设施 3 仓结构完备且社区插件 community.chat-searc
     const { port } = await harness.bridge.start(0);
     harness.rendererHost.configure({ bridgePort: port });
 
-    // 先加载 T0 主世界 chat-nav，提供 #agy-chat-search-slot
-    await harness.loadAndRunPlugin(CHAT_NAV_DIR, { trustLevel: 'T0', inProcessRenderer: true });
-    // 再加载 T1/T2 隔离世界社区插件 community.chat-search
-    const searchLoaded = await harness.loadAndRunPlugin(CHAT_SEARCH_DIR, { trustLevel: 'T2' });
-    assert.equal(searchLoaded.trust.world, 'isolated');
+    // 加载 T0 隔离世界 chat-nav，内置对话全文检索与 chat.navButtons 扩展槽位
+    const navLoaded = await harness.loadAndRunPlugin(CHAT_NAV_DIR, { trustLevel: 'T0' });
+    assert.equal(navLoaded.trust.world, 'isolated');
 
-    // chat-search 渲染入 chat-nav 提供的 #agy-chat-search-slot 扩展位内
-    const slot = harness.mockDoc.getElementById('agy-chat-search-slot');
+    const slot = harness.mockDoc.querySelector('#agy-chat-search-slot');
     assert.ok(slot);
-    assert.ok(slot.querySelector('#agy-community-chat-search'));
+    assert.ok(slot.querySelector('#agy-chat-search-box'));
 
-    const searchInput = harness.mockDoc.getElementById('agy-community-search-input');
-    searchInput.value = 'surface';
+    const searchInput = harness.mockDoc.getElementById('agy-chat-search-input');
+    searchInput.value = 'builtin';
     searchInput.dispatchEvent({ type: 'change', target: searchInput });
-    assert.equal(harness.mockDoc.getElementById('agy-community-search-count').textContent, '1/1');
+    assert.equal(harness.mockDoc.getElementById('agy-chat-search-count').textContent, '1/1');
 
-    await harness.unloadPlugin('community.chat-search');
-    assert.equal(slot.querySelector('#agy-community-chat-search'), null);
-    harness.assertCleanDispose('community.chat-search');
+    // 第三方隔离插件通过 ctx.surfaces.mount 消费 chat.navButtons 插槽
+    let stopNavExt = null;
+    await harness.rendererHost.mountPlugin('community.nav-ext', {
+      mount(ctx) {
+        stopNavExt = ctx.surfaces.mount('chat.navButtons', (slotEl) => {
+          const extBtn = createMockElement('button', harness.mockDoc);
+          extBtn.id = 'community-nav-ext-btn';
+          slotEl.appendChild(extBtn);
+          return () => extBtn.remove();
+        });
+      },
+      dispose() {
+        stopNavExt?.();
+        stopNavExt = null;
+      }
+    });
+    assert.ok(harness.mockDoc.getElementById('agy-chat-nav-extra').querySelector('#community-nav-ext-btn'));
+
+    await harness.rendererHost.disposePlugin('community.nav-ext');
+    assert.equal(harness.mockDoc.getElementById('community-nav-ext-btn'), null);
 
     await harness.unloadPlugin('agy-daddy.chat-nav');
     harness.assertCleanDispose('agy-daddy.chat-nav');

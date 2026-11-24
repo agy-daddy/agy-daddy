@@ -20,7 +20,6 @@ const {
   listInstalledPlugins
 } = require('../src/core/installer');
 const { runDoctor, exportDiagnosticBundle } = require('../src/core/doctor');
-const { createMockHostHarness } = require('../sdk/mock-harness');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 
@@ -251,57 +250,20 @@ test('安装器：Monorepo subpath 安装、升级、回滚与路径穿越拦截
   }
 });
 
-test('legacy-suite 兼容插件只读读取源仓并支持模块掩码控制，且 doctor 诊断包完整脱敏', async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-legacy-suite-'));
-  const prevLegacyDir = process.env.AGY_LEGACY_SUITE_DIR;
-  const harness = createMockHostHarness();
+test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 14 锚点并导出完整脱敏诊断包', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-doctor-clean-'));
   try {
-    const legacyPluginDir = path.join(HOST_ROOT, 'plugins', 'legacy-suite');
-    const defaultSourceRepo = '/Volumes/external/Projects/antigravity-suite';
-    if (process.env.CI === 'true' || (!prevLegacyDir && !fs.existsSync(defaultSourceRepo))) {
-      const mockSourceRepo = path.join(tmp, 'mock-antigravity-suite');
-      fs.mkdirSync(mockSourceRepo, { recursive: true });
-      for (const stubFile of [
-        'meter-core.js',
-        'meter-renderer.js',
-        'ag-enhancer-overlay.js',
-        'pulse-capsule-overlay.js',
-        'antigravity-hans-overlay.js'
-      ]) {
-        fs.writeFileSync(path.join(mockSourceRepo, stubFile), `// stub ${stubFile}\n`, 'utf8');
-      }
-      process.env.AGY_LEGACY_SUITE_DIR = mockSourceRepo;
-    } else {
-      assert.equal(fs.existsSync(prevLegacyDir || defaultSourceRepo), true);
-    }
-
-    await harness.loadAndRunPlugin(legacyPluginDir, {
-      trustLevel: 'T0',
-      inProcessRenderer: true
-    });
-
-    const svc = harness.bus.getServiceProxy('legacy-suite');
-    const st = await svc.getStatus();
-    assert.equal(st.sourceExists, true);
-    assert.deepEqual(st.included, ['meter', 'enhancer', 'pulse', 'hans']);
-
-    await svc.setDisabledModules(['pulse', 'hans', 'remote']);
-    const maskedBundle = await svc.getBundle();
-    assert.deepEqual(maskedBundle.included, ['meter', 'enhancer']);
-    assert.ok(maskedBundle.skipped.includes('pulse'));
-    assert.ok(maskedBundle.skipped.includes('hans'));
-    assert.equal(maskedBundle.parts[0].key, 'feature-mask');
-    assert.match(maskedBundle.parts[0].code, /"showTopbarRemote":false/);
-
-    await harness.unloadPlugin('agy-daddy.legacy-suite');
-    harness.assertCleanDispose('agy-daddy.legacy-suite');
+    assert.equal(fs.existsSync(path.join(HOST_ROOT, 'plugins', 'legacy-suite')), false);
+    assert.throws(() => parsePluginSource('legacy-suite'), /Unknown plugin source/);
 
     // doctor 与脱敏导出校验
     const bundlePath = path.join(tmp, 'diag-bundle.json');
     const secretVal = 'super_secret_token_9876543210abcdef';
     const docReport = await runDoctor({ stateDir: tmp, pluginsDir: path.join(tmp, 'plugins'), skipCdp: true });
     assert.equal(docReport.ok, true);
-    assert.equal(docReport.anchors.count, 10);
+    assert.equal(docReport.anchors.count, 14);
+    assert.equal(docReport.legacySuite, undefined);
+    assert.equal(docReport.migration, undefined);
 
     const exp = await exportDiagnosticBundle(bundlePath, {
       stateDir: tmp,
@@ -310,14 +272,13 @@ test('legacy-suite 兼容插件只读读取源仓并支持模块掩码控制，�
       extraSecrets: [secretVal]
     });
     assert.equal(exp.ok, true);
+    assert.equal(exp.path, bundlePath);
+    assert.ok(exp.report && exp.report.anchors.count === 14);
     const writtenText = fs.readFileSync(bundlePath, 'utf8');
     const userHome = os.homedir();
     assert.equal(writtenText.includes(userHome), false, 'Diagnostic bundle leaked homedir');
     assert.equal(writtenText.includes(secretVal), false, 'Diagnostic bundle leaked secret');
   } finally {
-    if (prevLegacyDir === undefined) delete process.env.AGY_LEGACY_SUITE_DIR;
-    else process.env.AGY_LEGACY_SUITE_DIR = prevLegacyDir;
-    await harness.cleanup();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

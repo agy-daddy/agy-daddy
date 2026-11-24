@@ -51,12 +51,15 @@ function createScopedNetFetch(pluginId, permissions, bus = null, fetchImpl = glo
 if (require.main === module) {
   const routeHandlers = new Map();
   const serviceMethods = new Map();
+  const commandHandlers = new Map();
   const eventHandlers = new Map();
   const stateHandlers = new Map();
+  const settingsListeners = new Set();
   const pendingRpc = new Map();
   let rpcSeq = 0;
   let pluginMod = null;
   let pluginId = '';
+  let currentSettings = {};
 
   function sendParent(msg) {
     if (typeof process.send === 'function') {
@@ -64,13 +67,15 @@ if (require.main === module) {
     }
   }
 
-  function callParent(action, payload) {
+  function callParent(action, payload, timeoutMs) {
     const id = ++rpcSeq;
+    const defaultTimeout = action === 'rpcCall' ? 25000 : 8000;
+    const limit = Number(timeoutMs) > 0 ? Math.min(60000, Math.max(1000, Number(timeoutMs))) : defaultTimeout;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingRpc.delete(id);
         reject(new Error(`Worker IPC timeout: ${action}`));
-      }, 8000);
+      }, limit);
       pendingRpc.set(id, { resolve, reject, timer });
       sendParent({ type: 'ipc-call', id, action, payload });
     });
@@ -114,6 +119,27 @@ if (require.main === module) {
       return;
     }
 
+    if (msg.type === 'command-invoke') {
+      const fn = commandHandlers.get(msg.commandId);
+      try {
+        if (typeof fn !== 'function') throw new Error(`Command not found in worker: ${msg.commandId}`);
+        const result = await fn(...(Array.isArray(msg.args) ? msg.args : []));
+        sendParent({ type: 'command-reply', reqId: msg.reqId, result: result === undefined ? null : result });
+      } catch (err) {
+        sendParent({ type: 'command-reply', reqId: msg.reqId, error: err?.message || String(err) });
+      }
+      return;
+    }
+
+    if (msg.type === 'settings-changed') {
+      currentSettings = msg.values && typeof msg.values === 'object' ? { ...msg.values } : {};
+      const changedKeys = Array.isArray(msg.changedKeys) ? [...msg.changedKeys] : [];
+      for (const fn of Array.from(settingsListeners)) {
+        try { fn({ ...currentSettings }, changedKeys); } catch {}
+      }
+      return;
+    }
+
     if (msg.type === 'event-deliver') {
       const set = eventHandlers.get(msg.topic);
       if (set) {
@@ -136,23 +162,31 @@ if (require.main === module) {
 
     if (msg.type === 'init') {
       pluginId = msg.pluginId;
+      currentSettings = msg.settingsValues && typeof msg.settingsValues === 'object'
+        ? { ...msg.settingsValues }
+        : {};
       const store = new PluginDataStore(pluginId, { stateDir: msg.stateDir });
       const perms = msg.grantedPermissions || [];
       const hostProxy = {
         pluginId,
+        manifest: msg.manifest || null,
         permissions: [...perms],
         storage: store,
         bridge: {
-          async registerRoute(subPath, handler) {
+          async registerRoute(subPath, handler, opts = {}) {
             const clean = subPath.startsWith('/') ? subPath : `/${subPath}`;
             routeHandlers.set(clean, handler);
-            await callParent('registerRoute', { subPath: clean });
+            await callParent('registerRoute', { subPath: clean, timeoutMs: opts?.timeoutMs });
             return () => routeHandlers.delete(clean);
           }
         },
         rpc: {
           getOrigin: () => callParent('rpcGetOrigin', {}),
-          call: (method, body) => callParent('rpcCall', { method, body })
+          call: (method, body, opts = {}) => callParent(
+            'rpcCall',
+            { method, body, timeoutMs: opts?.timeoutMs },
+            opts?.timeoutMs
+          )
         },
         services: {
           async provide(name, methods, opts = {}) {
@@ -165,7 +199,17 @@ if (require.main === module) {
               methodNames: Object.keys(mObj)
             });
           },
-          call: (name, method, args = [], opts = {}) => callParent('callService', { name, method, args, opts })
+          call: (name, method, args = [], opts = {}) => callParent('callService', { name, method, args, opts }),
+          get: (name, opts = {}) => new Proxy({}, {
+            get(_, prop) {
+              if (prop === 'then') return undefined;
+              return async (...args) => {
+                const res = await callParent('callService', { name, method: String(prop), args, opts });
+                return res && typeof res === 'object' && 'value' in res ? res.value : res;
+              };
+            }
+          }),
+          has: (name) => callParent('hasService', { name })
         },
         events: {
           emit: (topic, payload) => callParent('emitEvent', { topic, payload }),
@@ -191,6 +235,51 @@ if (require.main === module) {
         },
         net: {
           fetch: createScopedNetFetch(pluginId, perms)
+        },
+        settings: {
+          get() {
+            return { ...currentSettings };
+          },
+          async update(patch) {
+            const res = await callParent('updateSettings', { patch: patch || {} });
+            if (res && res.values && typeof res.values === 'object') {
+              currentSettings = { ...res.values };
+            }
+            return res;
+          },
+          async save(values) {
+            const res = await callParent('updateSettings', { patch: values || {} });
+            if (res && res.values && typeof res.values === 'object') {
+              currentSettings = { ...res.values };
+            }
+            return res;
+          },
+          onChange(fn) {
+            if (typeof fn !== 'function') return () => {};
+            settingsListeners.add(fn);
+            return () => settingsListeners.delete(fn);
+          }
+        },
+        commands: {
+          async register(commandId, handler) {
+            if (typeof commandId !== 'string' || !commandId.trim()) {
+              throw new Error('commandId must be a non-empty string');
+            }
+            if (typeof handler !== 'function') {
+              throw new Error(`Command handler for ${commandId} must be a function`);
+            }
+            commandHandlers.set(commandId, handler);
+            await callParent('registerCommand', { commandId });
+            return () => {
+              if (commandHandlers.get(commandId) === handler) {
+                commandHandlers.delete(commandId);
+              }
+              void callParent('unregisterCommand', { commandId }).catch(() => {});
+            };
+          },
+          execute(commandId, args = []) {
+            return callParent('executeCommand', { commandId, args: Array.isArray(args) ? args : [] });
+          }
         }
       };
 

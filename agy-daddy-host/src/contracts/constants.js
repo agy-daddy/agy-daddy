@@ -21,6 +21,7 @@ const STATIC_PERMISSIONS = Object.freeze([
   'net:listen',
   'process:spawn',
   'host:launch-args',
+  'host:control',
   'native:install'
 ]);
 
@@ -28,6 +29,7 @@ const HIGH_RISK_PERMISSIONS = Object.freeze([
   'page:main-world',
   'process:spawn',
   'host:launch-args',
+  'host:control',
   'rpc:write',
   'fs:user-files',
   'net:listen',
@@ -39,6 +41,7 @@ const T1_RESTRICTED_PERMISSIONS = Object.freeze([
   'page:main-world',
   'process:spawn',
   'host:launch-args',
+  'host:control',
   'rpc:write'
 ]);
 
@@ -48,9 +51,13 @@ const RPC_READ_ALLOWLIST = Object.freeze([
   'GetCascadeTrajectoryGeneratorMetadata',
   'GetAllCascadeTrajectories',
   'GetCascadeTrajectory',
+  'GetCascadeTrajectorySteps',
   'GetModelResponse',
   'GetAvailableModels',
-  'ListAvailableModels'
+  'ListAvailableModels',
+  'GetCascadeModelConfigData',
+  'GetPermissionSettings',
+  'GetCapabilities'
 ]);
 
 const RPC_WRITE_ALLOWLIST = Object.freeze([
@@ -59,7 +66,14 @@ const RPC_WRITE_ALLOWLIST = Object.freeze([
   'SetUserModelConfig',
   'UpdateCascadeSettings',
   'CancelCascadeInvocation',
-  'AcceptCascadeStep'
+  'AcceptCascadeStep',
+  'HandleCascadeUserInteraction',
+  'CancelCascadeSteps',
+  'DeleteQueuedUserInputStep',
+  'SendAllQueuedMessages',
+  'RevertToCascadeStep',
+  'UpdateConversationAnnotations',
+  'UpdatePermissionSettings'
 ]);
 
 const CONTRIBUTION_POINTS = Object.freeze([
@@ -75,8 +89,7 @@ const CONTRIBUTION_POINTS = Object.freeze([
   'remote.panels',
   'remote.actions',
   'native',
-  'locales',
-  'migrations'
+  'locales'
 ]);
 
 const SETTINGS_FIELD_TYPES = Object.freeze([
@@ -97,7 +110,11 @@ const KNOWN_ANCHORS = Object.freeze([
   'chat.thinkingTrigger',
   'chat.actionButtons',
   'sidebar.conversationRows',
-  'fileViewer.header'
+  'fileViewer.header',
+  'settings.dialog',
+  'settings.nav',
+  'settings.content',
+  'settings.openTrigger'
 ]);
 
 function isValidPermission(perm) {

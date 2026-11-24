@@ -1265,7 +1265,7 @@ function localExportMarkdown(events = [], opts = {}) {
     }
     if (host?.services && typeof host.services.call === 'function') {
       try {
-        const res = await host.services.call('composer-node', 'optimizePrompt', [clean, {}], { optional: true });
+        const res = await host.services.call('composer-node', 'optimizePrompt', [clean, {}], { optional: true, timeoutMs: 50000 });
         if (res?.ok && res.value?.ok) {
           return res.value;
         }

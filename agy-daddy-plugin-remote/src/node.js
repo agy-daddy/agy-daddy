@@ -1699,7 +1699,7 @@ async function activate(host) {
       };
     },
     async optimizePrompt(text, opts = {}) {
-      const res = await host.services.call('composer-node', 'optimizePrompt', [text, opts], { optional: true });
+      const res = await host.services.call('composer-node', 'optimizePrompt', [text, opts], { optional: true, timeoutMs: 50000 });
       if (!res?.ok) {
         return { ok: false, statusCode: 503, error: res?.error || 'COMPOSER_UNAVAILABLE' };
       }

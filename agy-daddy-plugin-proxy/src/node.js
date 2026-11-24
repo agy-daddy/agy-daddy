@@ -267,7 +267,7 @@ async function activate(host) {
   const stopArgHook = host.hooks.register('hostLaunchArgs', () => {
     const gwUrl = getLocalGatewayUrl();
     if (!currentConfig.gatewayEnabled || !gwUrl) return [];
-    return [`--proxy-server=${gwUrl}`, '--proxy-bypass-list=<-loopback>'];
+    return [`--proxy-server=${gwUrl}`, '--proxy-bypass-list=localhost;127.0.0.1;[::1];<local>'];
   });
 
   const stopEnvHook = host.hooks.register('hostLaunchEnv', () => {

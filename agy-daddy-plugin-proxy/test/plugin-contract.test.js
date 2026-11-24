@@ -78,7 +78,7 @@ test('插件契约：isolated 世界、托管配置免重启热重载、命令�
     const argHooks = await harness.bus.runHooks('hostLaunchArgs', { appPath: '/Applications/Antigravity.app' });
     const flatArgs = argHooks.flatMap((h) => h.result);
     assert.ok(flatArgs.includes(`--proxy-server=http://127.0.0.1:${st0.gatewayPort}`));
-    assert.ok(flatArgs.includes('--proxy-bypass-list=<-loopback>'));
+    assert.ok(flatArgs.includes('--proxy-bypass-list=localhost;127.0.0.1;[::1];<local>'));
 
     const envHooks = await harness.bus.runHooks('hostLaunchEnv', {});
     assert.equal(envHooks[0].result.HTTP_PROXY, `http://127.0.0.1:${st0.gatewayPort}`);

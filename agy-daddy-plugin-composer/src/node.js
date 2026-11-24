@@ -223,21 +223,24 @@ async function activate(host) {
       const attemptTimeoutMs = Number(opts.attemptTimeoutMs) > 0 ? Number(opts.attemptTimeoutMs) : 18000;
       const candidates = await resolveFastModelCandidates(opts);
 
+      const liveSettings = host.settings?.get?.();
       const customTemplate = opts.customPrompt !== undefined
         ? String(opts.customPrompt || '')
-        : String(hostedSettings.optimizerPrompt || '');
+        : String(liveSettings?.optimizerPrompt ?? hostedSettings.optimizerPrompt ?? '');
       const prompt = buildPromptOptimizeInstruction(draftBody, customTemplate);
       const attempts = [];
 
       for (const cand of candidates.slice(0, 4)) {
-        if ((Date.now() - startedAt) >= overallBudgetMs) break;
+        const remainingMs = overallBudgetMs - (Date.now() - startedAt);
+        if (remainingMs <= 500) break;
         const modelEnum = String(cand?.model || '').trim();
         if (!modelEnum) continue;
+        const callTimeoutMs = Math.max(1, Math.min(attemptTimeoutMs, remainingMs));
         try {
           const resPayload = await host.rpc.call(
             'GetModelResponse',
             { prompt, model: modelEnum },
-            { timeoutMs: attemptTimeoutMs }
+            { timeoutMs: callTimeoutMs, retryOnTimeout: false }
           );
           const rawResp = resPayload?.response ?? resPayload?.text ?? '';
           const cleaned = cleanOptimizedPromptOutput(rawResp, slashPrefix);
@@ -284,6 +287,8 @@ async function activate(host) {
           attempts
         };
       }
+
+      modelCache.fetchedAt = 0;
 
       const lastAttempt = attempts[attempts.length - 1];
       const summary = lastAttempt
@@ -385,7 +390,9 @@ async function activate(host) {
           }
         }
 
-        const lastAttempt = attempts[attempts.length - 1];
+        modelCache.fetchedAt = 0;
+
+      const lastAttempt = attempts[attempts.length - 1];
         const summary = lastAttempt
           ? `${lastAttempt.error}${attempts.length > 1 ? `（已尝试 ${attempts.length} 个模型）` : ''}`
           : '未能连接语言模型服务，请确认 Antigravity 已登录且模型可用';

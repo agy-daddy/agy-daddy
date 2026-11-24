@@ -142,7 +142,7 @@ test('Phase 2 跨仓联调：AgyDaddyDaemon 全员 Isolated World 挂载 proxy +
 
     const launchSpec = await daemon.collectHostLaunchSpec('/Applications/Antigravity.app');
     assert.ok(launchSpec.args.includes(`--proxy-server=http://127.0.0.1:${gwPort}`));
-    assert.ok(launchSpec.args.includes('--proxy-bypass-list=<-loopback>'));
+    assert.ok(launchSpec.args.includes('--proxy-bypass-list=localhost;127.0.0.1;[::1];<local>'));
     assert.equal(launchSpec.env.HTTP_PROXY, `http://127.0.0.1:${gwPort}`);
     assert.equal(launchSpec.env.HTTPS_PROXY, `http://127.0.0.1:${gwPort}`);
 

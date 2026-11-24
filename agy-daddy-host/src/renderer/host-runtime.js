@@ -50,6 +50,7 @@
     plus: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     star: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
     download: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    menu: '<svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
     settings: '<svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>'
   };
 
@@ -489,6 +490,17 @@
     const doc = mergedOpts.document || root.document;
     let hostToken = String(mergedOpts.hostToken || '');
     const fetchFn = mergedOpts.fetch || win.fetch || globalThis.fetch;
+    const XWORLD_LIFECYCLE_EVENT = '__agy_xworld_lifecycle__';
+    function dispatchLifecycleEvent(detail) {
+      if (!doc || typeof doc.dispatchEvent !== 'function') return;
+      const EventCtor = (win && typeof win.CustomEvent === 'function')
+        ? win.CustomEvent
+        : (typeof CustomEvent === 'function' ? CustomEvent : null);
+      const ev = EventCtor
+        ? new EventCtor(XWORLD_LIFECYCLE_EVENT, { detail })
+        : { type: XWORLD_LIFECYCLE_EVENT, detail };
+      try { doc.dispatchEvent(ev); } catch {}
+    }
 
     // 防重复挂载：清理已有宿主实例
     if (win.__AGYDaddyHost && typeof win.__AGYDaddyHost.dispose === 'function') {
@@ -591,10 +603,13 @@
       anchorSubs: new Map(),           // subId -> { pluginId, anchorName, fn, lastHit }
       pluginInstances: new Map(),      // pluginId -> { pluginObj, ctx }
       topbarSuppressedPlugins: new Set(), // 显式声明当前无可用顶栏单元的插件（如已切至底部输入框）
+      auxSidebarExpanded: false,       // 右侧辅助边栏是否处于展开态
       crashCounts: new Map(),          // pluginId -> number[]
       metrics: new Map(),              // pluginId -> { mountMs, observerMs, timersCount, crashes }
       xworldNonce: mergedOpts.xworldNonce || (String(Math.random()).slice(2) + Date.now().toString(36))
     };
+
+    dispatchLifecycleEvent({ type: 'host.reset', nextNonce: state.xworldNonce });
 
     function pickLocaleText(val, fallback = '') {
       if (typeof val === 'string') return val;
@@ -716,6 +731,7 @@
     let barEl = null;
     let overflowBtnEl = null;
     let overflowMenuEl = null;
+    let overflowTitleEl = null;
     let overflowListEl = null;
     let settingsBtnEl = null;
     let modalBackdropEl = null;
@@ -728,11 +744,15 @@
     let occluderObservedEl = null;
     let occluderWindowResizeHandler = null;
     let occluderRafPending = false;
+    let auxSidebarObserver = null;
+    let rightOverlayResizeObserver = null;
+    let rightOverlayObservedEl = null;
     let themeObserver = null;
     let removeMediaListener = null;
     let activePopoverId = null;
     let styleSeq = 0;
     let serviceInvokeSeq = 0;
+    const boundOverflowUnitNodes = new WeakSet();
 
     const nativeState = {
       dialogEl: null,
@@ -823,6 +843,8 @@
       overflowBtnEl.textContent = '⋯';
       overflowBtnEl.setAttribute('title', '更多顶栏插件');
       overflowBtnEl.setAttribute('aria-label', '更多顶栏插件');
+      overflowBtnEl.setAttribute('aria-haspopup', 'menu');
+      overflowBtnEl.setAttribute('aria-expanded', 'false');
       setHidden(overflowBtnEl, true);
       overflowBtnEl.addEventListener('click', () => toggleOverflowMenu());
       barEl.appendChild(overflowBtnEl);
@@ -837,7 +859,12 @@
       dot.className = 'ag-update-dot';
       setHidden(dot, !state.updateInfo?.hasUpdate);
       settingsBtnEl.appendChild(dot);
-      settingsBtnEl.addEventListener('click', () => toggleSettingsPanel());
+      settingsBtnEl.addEventListener('click', () => {
+        if (overflowMenuEl && !overflowMenuEl.hidden) {
+          toggleOverflowMenu(false);
+        }
+        toggleSettingsPanel();
+      });
       syncTopbarEntryVisibility();
       barEl.appendChild(settingsBtnEl);
 
@@ -852,6 +879,7 @@
       const ovTitle = doc.createElement('span');
       ovTitle.className = 'ag-panel-title';
       ovTitle.textContent = '更多顶栏插件';
+      overflowTitleEl = ovTitle;
       ovTitleWrap.appendChild(ovTitle);
       const ovActions = doc.createElement('div');
       ovActions.className = 'ag-panel-actions';
@@ -919,6 +947,8 @@
       applyThemeVars();
       startThemeWatchers();
       ensureSharedObserver();
+      startAuxSidebarWatcher();
+      syncAuxSidebarState({ forceRender: false });
       syncNativeSettingsIntegration();
       syncExternalDialogLayering();
       return shadow;
@@ -1734,6 +1764,200 @@
       syncBrowserOccluder(true);
     }
 
+    function syncOverflowPopoverOpenAttr() {
+      if (!overflowBtnEl?.setAttribute) return;
+      const hasOverflowPopoverOpen = Array.from(state.popovers.values()).some((p) => {
+        if (!p?.node || p.node.hidden || !p.anchorId) return false;
+        const exactKey = `${p.pluginId}:${p.anchorId}`;
+        const anchorUnit = state.units.get(exactKey)
+          || Array.from(state.units.values()).find((u) => u.id === p.anchorId);
+        return Boolean(anchorUnit?.inOverflow);
+      });
+      overflowBtnEl.setAttribute('data-popover-open', hasOverflowPopoverOpen ? 'true' : 'false');
+    }
+
+    function detectAuxSidebarExpanded() {
+      if (!doc?.querySelectorAll) return false;
+      try {
+        const panelHosts = Array.from(doc.querySelectorAll('[data-side-panel-open], [data-aux-pane-open]'))
+          .filter((el) => el && !isHostOwnedElement(el));
+        if (panelHosts.length > 0) {
+          return panelHosts.some((el) => (
+            el.getAttribute?.('data-side-panel-open') === 'true'
+            || el.getAttribute?.('data-aux-pane-open') === 'true'
+          ));
+        }
+
+        const vw = Number(win?.innerWidth || doc?.documentElement?.clientWidth || 0);
+        const stripCandidates = Array.from(
+          doc.querySelectorAll('[data-side-panel-strip="true"], .agy-aux-tab, [data-testid="side-panel-new-tab-button"]')
+        ).filter((el) => el && !isHostOwnedElement(el));
+        for (const el of stripCandidates) {
+          if (el.hidden || el.getAttribute?.('aria-hidden') === 'true') continue;
+          if (el.closest?.('[hidden], [aria-hidden="true"]')) continue;
+          if (typeof win?.getComputedStyle === 'function') {
+            try {
+              const cs = win.getComputedStyle(el);
+              if (cs?.display === 'none' || cs?.visibility === 'hidden' || cs?.opacity === '0') continue;
+            } catch {}
+          }
+          if (typeof el.getBoundingClientRect === 'function') {
+            const rect = el.getBoundingClientRect();
+            if (!rect || (rect.width <= 0 && rect.height <= 0)) continue;
+            if (rect.top < -4 || rect.top > 64 || rect.right <= 0) continue;
+            if (vw > 0 && rect.left >= vw - 10) continue;
+          }
+          return true;
+        }
+      } catch {}
+      return false;
+    }
+
+    function findTopRightOverlayEl() {
+      if (!doc?.querySelector) return null;
+      try {
+        const toggleBtn = doc.querySelector('[data-testid="toggle-aux-sidebar"]');
+        if (toggleBtn && !isHostOwnedElement(toggleBtn)) {
+          let cur = toggleBtn;
+          for (let d = 0; cur && d < 4; d++) {
+            const cls = String(cur.className || '');
+            if (/\bright-0\b/.test(cls) && /\b(?:absolute|fixed)\b/.test(cls)) {
+              return cur;
+            }
+            cur = cur.parentElement || null;
+          }
+        }
+        const direct = doc.querySelector('div.absolute.right-0.z-50, div.absolute.right-0.top-0.z-50');
+        if (direct && !isHostOwnedElement(direct)) return direct;
+        if (toggleBtn?.parentElement && !isHostOwnedElement(toggleBtn.parentElement)) {
+          return toggleBtn.parentElement;
+        }
+      } catch {}
+      return null;
+    }
+
+    function measureRightChromeWidth(rightOverlayEl = null) {
+      const target = rightOverlayEl || findTopRightOverlayEl();
+      const vw = Number(win?.innerWidth || doc?.documentElement?.clientWidth || 0);
+      if (target && typeof target.getBoundingClientRect === 'function') {
+        try {
+          const rect = target.getBoundingClientRect();
+          if (rect && Number.isFinite(rect.width) && rect.width > 0) {
+            const occupied = (vw > 0 && Number.isFinite(rect.left))
+              ? Math.max(rect.width, vw - rect.left)
+              : rect.width;
+            return Math.max(36, Math.min(180, Math.round(occupied)));
+          }
+        } catch {}
+      }
+      return 36;
+    }
+
+    function syncAuxSidebarLayoutMetrics() {
+      const rootEl = doc?.documentElement;
+      const compactActive = Boolean(state.auxSidebarExpanded && state.units.size > 0 && hostEl);
+      if (!compactActive) {
+        hostEl?.style?.removeProperty?.('--ag-host-right');
+        rootEl?.removeAttribute?.('data-agy-aux-compact');
+        rootEl?.style?.removeProperty?.('--agy-aux-strip-pr');
+        if (rightOverlayResizeObserver) {
+          try { rightOverlayResizeObserver.disconnect(); } catch {}
+          rightOverlayObservedEl = null;
+        }
+        return;
+      }
+
+      const rightOverlayEl = findTopRightOverlayEl();
+      const rightChromeW = measureRightChromeWidth(rightOverlayEl);
+      const compactRight = rightChromeW + 8;
+      hostEl?.style?.setProperty?.('--ag-host-right', `${compactRight}px`);
+
+      let hostW = 56;
+      if (typeof hostEl?.getBoundingClientRect === 'function') {
+        try {
+          const rect = hostEl.getBoundingClientRect();
+          if (rect && Number.isFinite(rect.width) && rect.width > 0) {
+            hostW = Math.max(32, Math.min(160, Math.round(rect.width)));
+          }
+        } catch {}
+      }
+      const stripPr = Math.max(80, compactRight + hostW + 12);
+      rootEl?.setAttribute?.('data-agy-aux-compact', 'true');
+      rootEl?.style?.setProperty?.('--agy-aux-strip-pr', `${stripPr}px`);
+
+      if (rightOverlayEl && typeof ResizeObserver === 'function') {
+        if (!rightOverlayResizeObserver) {
+          rightOverlayResizeObserver = new ResizeObserver(() => {
+            if (!state.disposed && state.auxSidebarExpanded) {
+              syncAuxSidebarLayoutMetrics();
+            }
+          });
+        }
+        if (rightOverlayObservedEl !== rightOverlayEl) {
+          try { rightOverlayResizeObserver.disconnect(); } catch {}
+          rightOverlayObservedEl = rightOverlayEl;
+          try { rightOverlayResizeObserver.observe(rightOverlayEl); } catch {}
+        }
+      }
+    }
+
+    function computeHighestUnitRisk(units = []) {
+      let hasWarn = false;
+      for (const u of units) {
+        if (!u) continue;
+        if (u.tone === 'danger') return 'danger';
+        if (u.tone === 'warn') hasWarn = true;
+        if (Array.isArray(u.segments)) {
+          for (const seg of u.segments) {
+            if (seg?.tone === 'danger') return 'danger';
+            if (seg?.tone === 'warn') hasWarn = true;
+          }
+        }
+      }
+      return hasWarn ? 'warn' : '';
+    }
+
+    function syncAuxSidebarState(opts = {}) {
+      const prev = Boolean(state.auxSidebarExpanded);
+      const next = detectAuxSidebarExpanded();
+      state.auxSidebarExpanded = next;
+
+      if (prev !== next || opts.forceRender) {
+        if (overflowMenuEl && !overflowMenuEl.hidden) {
+          toggleOverflowMenu(false);
+        }
+        renderUnits();
+        if (activePopoverId) {
+          const activePop = state.popovers.get(activePopoverId);
+          if (activePop?.node && !activePop.node.hidden) {
+            positionPopoverNearAnchor(activePop.node, activePop.pluginId, activePop.anchorId);
+          }
+        }
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => {
+            if (!state.disposed) syncAuxSidebarLayoutMetrics();
+          });
+        }
+      } else if (next) {
+        syncAuxSidebarLayoutMetrics();
+      }
+      return next;
+    }
+
+    function startAuxSidebarWatcher() {
+      if (auxSidebarObserver || typeof MutationObserver !== 'function' || !doc?.documentElement) return;
+      auxSidebarObserver = new MutationObserver(() => {
+        if (!state.disposed) syncAuxSidebarState();
+      });
+      try {
+        auxSidebarObserver.observe(doc.documentElement, {
+          attributes: true,
+          subtree: true,
+          attributeFilter: ['data-side-panel-open', 'data-aux-pane-open']
+        });
+      } catch {}
+    }
+
     function toggleOverflowMenu(force) {
       if (!overflowMenuEl) return false;
       const open = typeof force === 'boolean' ? force : Boolean(overflowMenuEl.hidden);
@@ -1742,9 +1966,11 @@
         positionPopoverNearAnchor(overflowMenuEl, null, null, overflowBtnEl);
         setHidden(overflowMenuEl, false);
         overflowBtnEl?.setAttribute?.('data-active', 'true');
+        overflowBtnEl?.setAttribute?.('aria-expanded', 'true');
       } else {
         setHidden(overflowMenuEl, true);
         overflowBtnEl?.setAttribute?.('data-active', 'false');
+        overflowBtnEl?.setAttribute?.('aria-expanded', 'false');
       }
       updateElevationAttr();
       return open;
@@ -1753,16 +1979,25 @@
     function renderUnits() {
       if (!barEl) return;
       const ordered = getOrderedUnits();
-      const pinned = [];
-      const unpinned = [];
-      for (const u of ordered) {
-        if (isUnitPinned(u.pluginId, u.id)) pinned.push(u);
-        else unpinned.push(u);
-      }
+      const auxCompact = Boolean(state.auxSidebarExpanded && ordered.length > 0);
+      hostEl?.setAttribute?.('data-aux-collapsed', auxCompact ? 'true' : 'false');
+      barEl?.setAttribute?.('data-compact', auxCompact ? 'true' : 'false');
 
-      const maxVis = Math.max(1, Number(state.hostSettings.maxVisibleUnits) || DEFAULT_HOST_SETTINGS.maxVisibleUnits);
-      const visibleUnits = pinned.slice(0, maxVis);
-      const overflowUnits = [...pinned.slice(maxVis), ...unpinned];
+      let visibleUnits = [];
+      let overflowUnits = [];
+      if (auxCompact) {
+        overflowUnits = ordered;
+      } else {
+        const pinned = [];
+        const unpinned = [];
+        for (const u of ordered) {
+          if (isUnitPinned(u.pluginId, u.id)) pinned.push(u);
+          else unpinned.push(u);
+        }
+        const maxVis = Math.max(1, Number(state.hostSettings.maxVisibleUnits) || DEFAULT_HOST_SETTINGS.maxVisibleUnits);
+        visibleUnits = pinned.slice(0, maxVis);
+        overflowUnits = [...pinned.slice(maxVis), ...unpinned];
+      }
 
       const anchorRef = overflowBtnEl || settingsBtnEl;
       for (const u of visibleUnits) {
@@ -1783,22 +2018,85 @@
         }
       }
 
-      if (overflowBtnEl) {
-        if (overflowUnits.length > 0) {
-          setHidden(overflowBtnEl, false);
-          overflowBtnEl.setAttribute('data-overflow-count', String(overflowUnits.length));
-          overflowBtnEl.textContent = `⋯ ${overflowUnits.length}`;
+      if (settingsBtnEl) {
+        if (auxCompact && state.hostSettings.showTopbarEntry !== false && overflowListEl) {
+          overflowListEl.appendChild?.(settingsBtnEl);
+          setHidden(settingsBtnEl, false);
         } else {
-          setHidden(overflowBtnEl, true);
-          overflowBtnEl.removeAttribute?.('data-overflow-count');
-          overflowBtnEl.textContent = '⋯';
-          if (overflowMenuEl && !overflowMenuEl.hidden) {
-            setHidden(overflowMenuEl, true);
-            overflowBtnEl.setAttribute?.('data-active', 'false');
+          if (settingsBtnEl.parentElement !== barEl) {
+            barEl.appendChild?.(settingsBtnEl);
+          }
+          syncTopbarEntryVisibility();
+        }
+      }
+
+      if (overflowBtnEl) {
+        if (auxCompact) {
+          setHidden(overflowBtnEl, false);
+          overflowBtnEl.setAttribute('data-compact-trigger', 'true');
+          overflowBtnEl.setAttribute('data-overflow-count', String(overflowUnits.length));
+          const compactTitle = '插件菜单（侧边栏展开时已自动收起）';
+          overflowBtnEl.setAttribute('title', compactTitle);
+          overflowBtnEl.setAttribute('aria-label', compactTitle);
+          overflowBtnEl.setAttribute('aria-expanded', overflowMenuEl && !overflowMenuEl.hidden ? 'true' : 'false');
+          clearElement(overflowBtnEl);
+          const riskLevel = computeHighestUnitRisk(overflowUnits);
+          if (riskLevel && doc?.createElement) {
+            const riskDot = doc.createElement('span');
+            riskDot.className = 'ag-unit-dot';
+            riskDot.setAttribute('data-level', riskLevel);
+            overflowBtnEl.appendChild(riskDot);
+          }
+          if (doc?.createElement) {
+            const iconWrap = doc.createElement('span');
+            iconWrap.className = 'ag-unit-icon';
+            iconWrap.appendChild(createIconEl('menu'));
+            overflowBtnEl.appendChild(iconWrap);
+            const countSpan = doc.createElement('span');
+            countSpan.className = 'ag-compact-count';
+            countSpan.textContent = String(overflowUnits.length);
+            overflowBtnEl.appendChild(countSpan);
+            if (state.updateInfo?.hasUpdate && state.hostSettings.showTopbarEntry !== false) {
+              const updDot = doc.createElement('span');
+              updDot.className = 'ag-update-dot';
+              overflowBtnEl.appendChild(updDot);
+            }
+          }
+          if (overflowTitleEl) {
+            overflowTitleEl.textContent = '顶栏插件';
+          }
+        } else {
+          overflowBtnEl.removeAttribute?.('data-compact-trigger');
+          overflowBtnEl.setAttribute('title', '更多顶栏插件');
+          overflowBtnEl.setAttribute('aria-label', '更多顶栏插件');
+          if (overflowTitleEl) {
+            overflowTitleEl.textContent = '更多顶栏插件';
+          }
+          if (overflowUnits.length > 0) {
+            setHidden(overflowBtnEl, false);
+            overflowBtnEl.setAttribute('data-overflow-count', String(overflowUnits.length));
+            overflowBtnEl.setAttribute('aria-expanded', overflowMenuEl && !overflowMenuEl.hidden ? 'true' : 'false');
+            overflowBtnEl.textContent = `⋯ ${overflowUnits.length}`;
+          } else {
+            setHidden(overflowBtnEl, true);
+            overflowBtnEl.removeAttribute?.('data-overflow-count');
+            overflowBtnEl.setAttribute('aria-expanded', 'false');
+            overflowBtnEl.textContent = '⋯';
+            if (overflowMenuEl && !overflowMenuEl.hidden) {
+              setHidden(overflowMenuEl, true);
+              overflowBtnEl.setAttribute?.('data-active', 'false');
+            }
           }
         }
       }
-      syncTopbarEntryVisibility();
+
+      const hasVisibleBarItem = visibleUnits.length > 0
+        || Boolean(overflowBtnEl && !overflowBtnEl.hidden)
+        || Boolean(!auxCompact && settingsBtnEl && !settingsBtnEl.hidden);
+      setHidden(barEl, !hasVisibleBarItem);
+
+      syncOverflowPopoverOpenAttr();
+      syncAuxSidebarLayoutMetrics();
       updateElevationAttr();
     }
 
@@ -1920,6 +2218,7 @@
       if (unit?.node?.setAttribute) {
         unit.node.setAttribute('data-active', active ? 'true' : 'false');
       }
+      syncOverflowPopoverOpenAttr();
     }
 
     function normalizeAnchorRect(raw) {
@@ -1999,6 +2298,7 @@
       if (exceptKey !== '__overflow__' && overflowMenuEl && !overflowMenuEl.hidden) {
         setHidden(overflowMenuEl, true);
         overflowBtnEl?.setAttribute?.('data-active', 'false');
+        overflowBtnEl?.setAttribute?.('aria-expanded', 'false');
       }
       if (exceptKey !== '__settings__' && state.settingsMode === 'modal') {
         setHidden(modalBackdropEl, true);
@@ -2187,6 +2487,19 @@
         if (typeof def.render === 'function') def.render(node);
       } else if (node?.setAttribute) {
         node.setAttribute('data-agy-slot', `unit:${key}`);
+      }
+
+      if (node && typeof node.addEventListener === 'function' && !boundOverflowUnitNodes.has(node)) {
+        boundOverflowUnitNodes.add(node);
+        node.addEventListener('click', () => {
+          const unitKey = node.getAttribute?.('data-plugin-id') && node.getAttribute?.('data-unit-id')
+            ? `${node.getAttribute('data-plugin-id')}:${node.getAttribute('data-unit-id')}`
+            : key;
+          const rec = state.units.get(unitKey) || state.units.get(key);
+          if (rec?.inOverflow && overflowMenuEl && !overflowMenuEl.hidden) {
+            toggleOverflowMenu(false);
+          }
+        });
       }
 
       state.units.set(key, {
@@ -2979,6 +3292,7 @@
       if (state.disposed) return;
       syncNativeSettingsIntegration();
       syncExternalDialogLayering();
+      syncAuxSidebarState();
       for (const sub of Array.from(state.anchorSubs.values())) {
         const el = queryAnchor(sub.anchorName);
         if (el !== sub.lastHit) {
@@ -9766,8 +10080,27 @@
               body: JSON.stringify(payload)
             };
             if (opts && opts.signal) fetchInit.signal = opts.signal;
-            const resp = await pluginFetchFn(`http://127.0.0.1:${state.bridgePort}/plugins/${pluginId}${clean}`, fetchInit);
-            return resp.json();
+            const resp = await pluginFetchFn.call(win || globalThis, `http://127.0.0.1:${state.bridgePort}/plugins/${pluginId}${clean}`, fetchInit);
+            if (typeof resp.text === 'function') {
+              const rawText = await resp.text();
+              if (rawText) {
+                try {
+                  return JSON.parse(rawText);
+                } catch {}
+              }
+              if (!resp.ok) {
+                return {
+                  ok: false,
+                  status: resp.status,
+                  error: `HTTP ${resp.status}${rawText ? `: ${rawText.slice(0, 200)}` : ''}`
+                };
+              }
+              return { ok: true };
+            }
+            if (typeof resp.json === 'function') {
+              return resp.json();
+            }
+            return { ok: Boolean(resp.ok), status: resp.status };
           }
         }
       };
@@ -9795,6 +10128,7 @@
     }
 
     async function disposePlugin(pluginId) {
+      dispatchLifecycleEvent({ type: 'plugin.dispose', pluginId });
       const inst = state.pluginInstances.get(pluginId);
       state.pluginInstances.delete(pluginId);
       state.topbarSuppressedPlugins.delete(pluginId);
@@ -10008,7 +10342,11 @@
     }
     if (win?.addEventListener) {
       occluderWindowResizeHandler = () => {
-        if (!state.disposed && getActiveElevatedPanelEl()) {
+        if (state.disposed) return;
+        if (state.auxSidebarExpanded) {
+          syncAuxSidebarLayoutMetrics();
+        }
+        if (getActiveElevatedPanelEl()) {
           syncBrowserOccluder(false);
         }
       };
@@ -10058,6 +10396,8 @@
       closeSettings,
       toggleSettingsPanel,
       syncNativeSettings: syncNativeSettingsIntegration,
+      syncAuxSidebar: () => syncAuxSidebarState(),
+      isAuxSidebarExpanded: () => Boolean(state.auxSidebarExpanded),
       getSettingsMode: () => state.settingsMode,
       getHostSettings: getHostSettingsSnapshot,
       updateHostSettings(patch = {}) {
@@ -10090,6 +10430,9 @@
         };
         const dot = shadow?.querySelector ? shadow.querySelector('#agy-update-dot') : null;
         if (dot) setHidden(dot, !state.updateInfo.hasUpdate);
+        if (state.auxSidebarExpanded) {
+          renderUnits();
+        }
         if (state.settingsMode !== 'closed' && state.activeSettingsTab === 'appearance') {
           renderSettingsBody();
         }
@@ -10104,6 +10447,7 @@
       async dispose() {
         if (state.disposed) return;
         state.disposed = true;
+        dispatchLifecycleEvent({ type: 'host.dispose', nonce: state.xworldNonce });
         resetDragReorderState();
         state.pendingFlipReorder = null;
         for (const tid of hostRetryTimers) clearTimeout(tid);
@@ -10125,6 +10469,17 @@
           try { sharedObserver.disconnect(); } catch {}
           sharedObserver = null;
         }
+        if (auxSidebarObserver) {
+          try { auxSidebarObserver.disconnect(); } catch {}
+          auxSidebarObserver = null;
+        }
+        if (rightOverlayResizeObserver) {
+          try { rightOverlayResizeObserver.disconnect(); } catch {}
+          rightOverlayResizeObserver = null;
+          rightOverlayObservedEl = null;
+        }
+        doc?.documentElement?.removeAttribute?.('data-agy-aux-compact');
+        doc?.documentElement?.style?.removeProperty?.('--agy-aux-strip-pr');
         if (themeObserver) {
           try { themeObserver.disconnect(); } catch {}
           themeObserver = null;

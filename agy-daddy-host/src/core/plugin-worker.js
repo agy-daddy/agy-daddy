@@ -184,7 +184,7 @@ if (require.main === module) {
           getOrigin: () => callParent('rpcGetOrigin', {}),
           call: (method, body, opts = {}) => callParent(
             'rpcCall',
-            { method, body, timeoutMs: opts?.timeoutMs },
+            { method, body, timeoutMs: opts?.timeoutMs, retryOnTimeout: opts?.retryOnTimeout },
             opts?.timeoutMs
           )
         },

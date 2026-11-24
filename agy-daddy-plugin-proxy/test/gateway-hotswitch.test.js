@@ -390,3 +390,89 @@ test('LocalProxyGateway: DIRECT / HTTP upstream / SOCKS5h / CONNECT / NO_PROXY �
     await target.close();
   }
 });
+
+test('LocalProxyGateway: 回环慢 HTTP POST 不受短 connect timeout 强杀，且 502 错误保留 Origin CORS 头', async () => {
+  const slowServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
+        res.end(JSON.stringify({ ok: true, echo: body }));
+      }, 260);
+    });
+  });
+  await new Promise((r) => slowServer.listen(0, '127.0.0.1', r));
+  const slowPort = slowServer.address().port;
+
+  const deadServer = net.createServer();
+  await new Promise((r) => deadServer.listen(0, '127.0.0.1', r));
+  const deadPort = deadServer.address().port;
+  await new Promise((r) => deadServer.close(r));
+
+  const gw = new LocalProxyGateway({
+    port: 0,
+    mode: 'direct',
+    timeoutMs: 120
+  });
+
+  try {
+    const st = await gw.start(0);
+    const gwPort = st.port;
+
+    const slowRes = await new Promise((resolve, reject) => {
+      const payload = JSON.stringify({ text: '慢请求验证' });
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: gwPort,
+        method: 'POST',
+        path: `http://127.0.0.1:${slowPort}/optimize-prompt`,
+        headers: {
+          Host: `127.0.0.1:${slowPort}`,
+          Origin: 'https://127.0.0.1:63786',
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          Connection: 'close'
+        },
+        agent: false
+      }, (res) => {
+        let out = '';
+        res.on('data', (c) => { out += c; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, body: out }));
+      });
+      req.on('error', reject);
+      req.end(payload);
+    });
+    assert.equal(slowRes.statusCode, 200);
+    assert.equal(JSON.parse(slowRes.body).ok, true);
+
+    const errRes = await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: gwPort,
+        method: 'POST',
+        path: `http://127.0.0.1:${deadPort}/optimize-prompt`,
+        headers: {
+          Host: `127.0.0.1:${deadPort}`,
+          Origin: 'https://127.0.0.1:63786',
+          'Content-Type': 'application/json',
+          'Content-Length': 2,
+          Connection: 'close'
+        },
+        agent: false
+      }, (res) => {
+        let out = '';
+        res.on('data', (c) => { out += c; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: out }));
+      });
+      req.on('error', reject);
+      req.end('{}');
+    });
+    assert.equal(errRes.statusCode, 502);
+    assert.equal(errRes.headers['access-control-allow-origin'], 'https://127.0.0.1:63786');
+    assert.equal(errRes.headers['access-control-allow-private-network'], 'true');
+  } finally {
+    await gw.stop();
+    await new Promise((r) => slowServer.close(r));
+  }
+});

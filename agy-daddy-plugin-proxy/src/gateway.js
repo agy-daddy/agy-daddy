@@ -34,6 +34,25 @@ function buildBasicProxyAuthHeader(username, password) {
   return 'Basic ' + Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
 }
 
+function isLoopbackHost(hostname) {
+  const clean = String(hostname || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  if (!clean) return false;
+  if (clean === 'localhost' || clean === '::1' || clean === '0:0:0:0:0:0:0:1') return true;
+  if (clean === '127.0.0.1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(clean)) return true;
+  return false;
+}
+
+function buildGatewayErrorHeaders(clientReq, extra = {}) {
+  const headers = { ...extra };
+  const origin = clientReq?.headers?.origin;
+  if (origin) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Vary'] = 'Origin';
+    headers['Access-Control-Allow-Private-Network'] = 'true';
+  }
+  return headers;
+}
+
 function parseAuthority(rawAuthority, defaultPort = 443) {
   const s = String(rawAuthority || '').trim();
   if (!s) return null;
@@ -169,6 +188,8 @@ class LocalProxyGateway {
     this.requestedPort = options.port !== undefined ? Number(options.port) : DEFAULT_GATEWAY_PORT;
     this.port = 0;
     this.timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 8000;
+    this.httpTimeoutMs = Number(options.httpTimeoutMs) > 0 ? Number(options.httpTimeoutMs) : Math.max(this.timeoutMs, 120000);
+    this.loopbackHttpTimeoutMs = options.loopbackHttpTimeoutMs !== undefined ? Math.max(0, Number(options.loopbackHttpTimeoutMs) || 0) : 0;
     this.config = {
       mode: options.mode === 'upstream' ? 'upstream' : 'direct',
       upstreamUrl: normalizeProxyUrl(options.upstreamUrl || ''),
@@ -259,6 +280,8 @@ class LocalProxyGateway {
 
   sendHttpDirect(target, clientReq, clientRes) {
     const mod = target.url.protocol === 'https:' ? https : http;
+    const isLoopback = isLoopbackHost(target.hostname);
+    const reqTimeoutMs = isLoopback ? this.loopbackHttpTimeoutMs : this.httpTimeoutMs;
     const upstreamReq = mod.request({
       hostname: target.hostname,
       port: target.port,
@@ -271,12 +294,14 @@ class LocalProxyGateway {
       upstreamRes.pipe(clientRes);
     });
 
-    upstreamReq.setTimeout(this.timeoutMs, () => upstreamReq.destroy(new Error('Direct HTTP request timeout')));
+    if (reqTimeoutMs > 0) {
+      upstreamReq.setTimeout(reqTimeoutMs, () => upstreamReq.destroy(new Error('Direct HTTP request timeout')));
+    }
     upstreamReq.on('error', (err) => {
       this.stats.errorCount++;
       this.stats.lastError = err.message;
       if (!clientRes.headersSent) {
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        clientRes.writeHead(502, buildGatewayErrorHeaders(clientReq, { 'Content-Type': 'text/plain; charset=utf-8' }));
         clientRes.end(`Bad Gateway: ${err.message}`);
       } else {
         clientRes.destroy(err);
@@ -311,7 +336,7 @@ class LocalProxyGateway {
       this.stats.errorCount++;
       this.stats.lastError = err.message;
       if (!clientRes.headersSent) {
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        clientRes.writeHead(502, buildGatewayErrorHeaders(clientReq, { 'Content-Type': 'text/plain; charset=utf-8' }));
         clientRes.end(`Bad Gateway (SOCKS5): ${err.message}`);
       }
       return;
@@ -330,12 +355,14 @@ class LocalProxyGateway {
       upstreamRes.pipe(clientRes);
     });
 
-    upstreamReq.setTimeout(this.timeoutMs, () => upstreamReq.destroy(new Error('SOCKS5 HTTP forward timeout')));
+    if (this.httpTimeoutMs > 0) {
+      upstreamReq.setTimeout(this.httpTimeoutMs, () => upstreamReq.destroy(new Error('SOCKS5 HTTP forward timeout')));
+    }
     upstreamReq.on('error', (err) => {
       this.stats.errorCount++;
       this.stats.lastError = err.message;
       if (!clientRes.headersSent) {
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        clientRes.writeHead(502, buildGatewayErrorHeaders(clientReq, { 'Content-Type': 'text/plain; charset=utf-8' }));
         clientRes.end(`Bad Gateway: ${err.message}`);
       } else {
         clientRes.destroy(err);
@@ -370,7 +397,9 @@ class LocalProxyGateway {
       upstreamRes.pipe(clientRes);
     });
 
-    upstreamReq.setTimeout(this.timeoutMs, () => upstreamReq.destroy(new Error('HTTP upstream request timeout')));
+    if (this.httpTimeoutMs > 0) {
+      upstreamReq.setTimeout(this.httpTimeoutMs, () => upstreamReq.destroy(new Error('HTTP upstream request timeout')));
+    }
     upstreamReq.on('error', (err) => {
       if (!settledRes && !clientRes.headersSent && this.config.fallbackToDirectOnUpstreamError && ['GET', 'HEAD', 'OPTIONS', 'DELETE'].includes(String(clientReq.method || 'GET').toUpperCase())) {
         this.stats.fallbackCount++;
@@ -381,7 +410,7 @@ class LocalProxyGateway {
       this.stats.errorCount++;
       this.stats.lastError = err.message;
       if (!clientRes.headersSent) {
-        clientRes.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        clientRes.writeHead(502, buildGatewayErrorHeaders(clientReq, { 'Content-Type': 'text/plain; charset=utf-8' }));
         clientRes.end(`Bad Gateway (HTTP upstream): ${err.message}`);
       } else {
         clientRes.destroy(err);

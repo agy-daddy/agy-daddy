@@ -678,7 +678,10 @@ class AgyDaddyDaemon {
             reply(await rpc.getOrigin());
           } else if (action === 'rpcCall') {
             const rpc = createScopedRpcClient(pluginId, perms, this.rpcTransport);
-            reply(await rpc.call(payload.method, payload.body, { timeoutMs: payload.timeoutMs }));
+            reply(await rpc.call(payload.method, payload.body, {
+              timeoutMs: payload.timeoutMs,
+              retryOnTimeout: payload.retryOnTimeout
+            }));
           } else if (action === 'provideService') {
             const methodMap = {};
             for (const mName of payload.methodNames || []) {

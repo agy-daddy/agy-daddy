@@ -668,6 +668,13 @@ test('conversation-export 纯函数：Markdown/HTML/PDF 渲染、格式归一化
 });
 
 test('复制会话 ID 与多格式对话导出（保存对话框默认行为、默认路径直存、单选直出/多选先选格式、目录浏览与零残留）', async () => {
+  async function waitUntil(predicate, timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  }
   const tmpExportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cnav-export-'));
   const tmpCustomDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cnav-custom-'));
   const prevExportDir = process.env.AGY_DADDY_EXPORT_DIR;
@@ -758,12 +765,12 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
 
     // 2. 点击右侧悬浮栏「复制会话 ID」按钮
     const copyBtn = harness.mockDoc.getElementById('agy-nav-copy-id');
+    const toastEl = harness.mockDoc.getElementById('agy-chat-nav-toast');
     assert.ok(copyBtn);
     copyBtn.click();
-    await new Promise((r) => setTimeout(r, 30));
+    await waitUntil(() => copiedTexts.length >= 1 && !toastEl.hidden);
     assert.equal(copiedTexts[0], sessionUuid);
     assert.equal(copyBtn.getAttribute('data-active'), 'true');
-    const toastEl = harness.mockDoc.getElementById('agy-chat-nav-toast');
     assert.equal(toastEl.hidden, false);
     assert.match(toastEl.textContent, /已复制会话 ID/);
 
@@ -777,7 +784,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
     // 3a. 对话框取消：提示已取消导出且不写盘
     process.env.AGY_DADDY_TEST_SAVE_DIALOG_RESULT = '__CANCEL__';
     exportBtn.click();
-    await new Promise((r) => setTimeout(r, 40));
+    await waitUntil(() => !exportBtn.disabled && /已取消导出/.test(toastEl.textContent));
     assert.equal(fmtMenu.hidden, true);
     assert.equal(exportBtn.disabled, false);
     assert.match(toastEl.textContent, /已取消导出/);
@@ -787,7 +794,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
     const dialogMdPath = path.join(tmpExportDir, 'dialog-picked');
     process.env.AGY_DADDY_TEST_SAVE_DIALOG_RESULT = dialogMdPath;
     exportBtn.click();
-    await new Promise((r) => setTimeout(r, 45));
+    await waitUntil(() => !exportBtn.disabled && fs.existsSync(`${dialogMdPath}.md`) && copiedTexts.length >= 2);
     assert.equal(exportBtn.disabled, false);
     assert.equal(fs.existsSync(`${dialogMdPath}.md`), true);
     assert.match(fs.readFileSync(`${dialogMdPath}.md`, 'utf8'), new RegExp(`请排查 ${sessionUuid}`));
@@ -801,7 +808,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
       exportSaveDir: tmpCustomDir
     });
     exportBtn.click();
-    await new Promise((r) => setTimeout(r, 45));
+    await waitUntil(() => !exportBtn.disabled && fs.readdirSync(tmpCustomDir).some((f) => f.endsWith('.md')));
     const directMdFiles = fs.readdirSync(tmpCustomDir).filter((f) => f.endsWith('.md'));
     assert.equal(directMdFiles.length, 1);
     assert.match(fs.readFileSync(path.join(tmpCustomDir, directMdFiles[0]), 'utf8'), /已定位并修复/);
@@ -824,7 +831,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
     // 5a. 点击 HTML 格式选项 -> 收起菜单并直接保存为 .html
     harness.mockDoc.getElementById('agy-export-fmt-html').click();
     assert.equal(fmtMenu.hidden, true);
-    await new Promise((r) => setTimeout(r, 45));
+    await waitUntil(() => !exportBtn.disabled && fs.readdirSync(tmpCustomDir).some((f) => f.endsWith('.html')));
     const htmlFiles = fs.readdirSync(tmpCustomDir).filter((f) => f.endsWith('.html'));
     assert.equal(htmlFiles.length, 1);
     assert.match(fs.readFileSync(path.join(tmpCustomDir, htmlFiles[0]), 'utf8'), /<!DOCTYPE html>/);
@@ -838,7 +845,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
     exportBtn.click();
     assert.equal(fmtMenu.hidden, false);
     harness.mockDoc.getElementById('agy-export-fmt-pdf').click();
-    await new Promise((r) => setTimeout(r, 50));
+    await waitUntil(() => !exportBtn.disabled && fs.existsSync(`${dialogPdfPath}.pdf`));
     assert.equal(fs.existsSync(`${dialogPdfPath}.pdf`), true);
     assert.equal(fs.readFileSync(`${dialogPdfPath}.pdf`).subarray(0, 5).toString('ascii'), '%PDF-');
 
@@ -851,14 +858,14 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
       assert.equal(fmtMenu.hidden, false);
       harness.mockDoc.getElementById('agy-export-fmt-all').click();
       assert.equal(fmtMenu.hidden, true);
-      await new Promise((r) => setTimeout(r, 45));
+      await waitUntil(() => !exportBtn.disabled && /已取消导出/.test(toastEl.textContent));
       assert.match(toastEl.textContent, /已取消导出/);
       assert.equal(fs.readdirSync(batchDialogDir).length, 0);
 
       process.env.AGY_DADDY_TEST_DIR_DIALOG_RESULT = batchDialogDir;
       exportBtn.click();
       harness.mockDoc.getElementById('agy-export-fmt-all').click();
-      await new Promise((r) => setTimeout(r, 60));
+      await waitUntil(() => !exportBtn.disabled && fs.readdirSync(batchDialogDir).length === 3);
       assert.equal(exportBtn.disabled, false);
       assert.match(toastEl.textContent, /已全部保存 3 个文件/);
       const dlgFiles = fs.readdirSync(batchDialogDir).sort();
@@ -878,7 +885,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
       process.env.AGY_DADDY_TEST_DIR_DIALOG_RESULT = '__CANCEL__';
       exportBtn.click();
       harness.mockDoc.getElementById('agy-export-fmt-all').click();
-      await new Promise((r) => setTimeout(r, 60));
+      await waitUntil(() => !exportBtn.disabled && fs.readdirSync(batchDirectDir).length === 3);
       const dirFiles = fs.readdirSync(batchDirectDir).sort();
       assert.equal(dirFiles.length, 3);
 
@@ -948,7 +955,7 @@ test('复制会话 ID 与多格式对话导出（保存对话框默认行为、�
     });
     exportBtn.click();
     assert.equal(fmtMenu.hidden, true);
-    await new Promise((r) => setTimeout(r, 50));
+    await waitUntil(() => !exportBtn.disabled && fs.readdirSync(tmpCustomDir).some((f) => f.endsWith('.pdf')));
     const directPdfFiles = fs.readdirSync(tmpCustomDir).filter((f) => f.endsWith('.pdf'));
     assert.equal(directPdfFiles.length, 1);
     assert.equal(fs.readFileSync(path.join(tmpCustomDir, directPdfFiles[0])).subarray(0, 5).toString('ascii'), '%PDF-');

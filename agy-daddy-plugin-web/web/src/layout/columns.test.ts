@@ -16,13 +16,13 @@ describe('Suite F1: columns geometry', () => {
   it('exposes expected layout constants', () => {
     expect(SIDEBAR_MIN).toBe(264);
     expect(SIDEBAR_MAX).toBe(420);
-    expect(SIDEBAR_DEFAULT).toBe(280);
+    expect(SIDEBAR_DEFAULT).toBe(268);
     expect(SIDEBAR_COLLAPSED).toBe(56);
     expect(SIDEBAR_AUTO_COLLAPSE).toBe(1024);
     expect(CENTER_MIN).toBe(400);
     expect(RIGHTBAR_MIN).toBe(300);
     expect(RIGHTBAR_MAX_RATIO).toBe(0.7);
-    expect(RIGHTBAR_DEFAULT_RATIO).toBe(0.45);
+    expect(RIGHTBAR_DEFAULT_RATIO).toBe(0.28);
   });
 
   it('computes 1440px three-column full expand layout with exact widths', () => {
@@ -32,9 +32,9 @@ describe('Suite F1: columns geometry', () => {
     });
 
     expect(layout.sidebarCollapsed).toBe(false);
-    expect(layout.sidebar).toBe(280);
+    expect(layout.sidebar).toBe(268);
     expect(layout.rightbarVisible).toBe(true);
-    expect(layout.rightbar).toBe(Math.round(1440 * 0.45));
+    expect(layout.rightbar).toBe(Math.round(1440 * 0.28));
     expect(layout.center).toBe(1440 - layout.sidebar - layout.rightbar);
     expect(layout.center).toBeGreaterThanOrEqual(CENTER_MIN);
     expect(layout.sidebar + layout.center + layout.rightbar).toBe(1440);

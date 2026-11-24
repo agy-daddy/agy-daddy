@@ -1,6 +1,16 @@
 export { SessionSidebar, type SessionSidebarProps } from './SessionSidebar';
 export { SessionEventCard, type SessionEventCardProps } from './SessionEventCard';
 export { SessionStream, type SessionStreamProps } from './SessionStream';
+export { MarkdownContent, type MarkdownContentProps } from './MarkdownContent';
+export {
+  extractCodeActionTargetFile,
+  extractCodeActionDiffStats,
+  extractCodeActionDiffLines,
+  collectSessionEditedFiles,
+  type CodeActionDiffStats,
+  type CodeActionDiffLine,
+  type SessionEditedFileSummary,
+} from './codeActionUtils';
 export {
   ChatNavDock,
   serializeEventsToHtml,

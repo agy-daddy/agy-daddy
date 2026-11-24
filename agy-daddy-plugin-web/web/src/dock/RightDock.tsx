@@ -22,6 +22,9 @@ export interface RightDockProps {
   defaultTab?: RightDockTab;
   onTabChange?: (tab: RightDockTab) => void;
   refreshKey?: number | string;
+  diffBadgeCount?: number;
+  focusedDiffFile?: { path: string; nonce: number } | null;
+  focusedFilePath?: { path: string; nonce: number } | null;
 }
 
 interface RootOption {
@@ -65,6 +68,9 @@ export function RightDock({
   defaultTab = 'files',
   onTabChange,
   refreshKey,
+  diffBadgeCount = 0,
+  focusedDiffFile = null,
+  focusedFilePath = null,
 }: RightDockProps) {
   const { t } = useI18n();
   const [uncontrolledTab, setUncontrolledTab] = useState<RightDockTab>(defaultTab);
@@ -231,7 +237,12 @@ export function RightDock({
                 onClick={() => handleSelectTab(tab.id)}
                 data-testid={`dock-tab-${tab.id}`}
               >
-                {t(tab.labelKey)}
+                <span>{t(tab.labelKey)}</span>
+                {tab.id === 'diff' && diffBadgeCount > 0 && (
+                  <span className={styles.tabBadge} data-testid="dock-diff-badge">
+                    {diffBadgeCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -280,6 +291,7 @@ export function RightDock({
             refreshKey={combinedRefreshKey}
             onFileSaved={() => setDiffBumpCount((n) => n + 1)}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
+            focusedFile={focusedFilePath}
           />
         )}
         {currentTab === 'diff' && (
@@ -287,6 +299,7 @@ export function RightDock({
             root={currentRoot}
             refreshKey={diffRefreshKey}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
+            focusedFile={focusedDiffFile}
           />
         )}
         {currentTab === 'artifacts' && (

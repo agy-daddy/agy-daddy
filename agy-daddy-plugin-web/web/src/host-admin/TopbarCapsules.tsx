@@ -460,10 +460,10 @@ export function TopbarCapsules({
         <div
           className={styles.statusPill}
           data-connection={connectionStatus}
-          title={hubOrigin ? `Hub: ${hubOrigin}` : undefined}
+          title={hubOrigin ? `${conn.label} · Hub: ${hubOrigin}` : conn.label}
         >
           <span className={`${styles.statusDot} ${conn.dotClass}`} aria-hidden="true" />
-          <span>{conn.label}</span>
+          <span className={styles.statusLabelText}>{conn.label}</span>
           {!rpcConnected && <span className={styles.rpcWarn}>· {t('topbar.rpc.disconnected')}</span>}
         </div>
 
@@ -504,7 +504,7 @@ export function TopbarCapsules({
         </button>
 
         <select
-          className={styles.triggerBtn}
+          className={`${styles.triggerBtn} ${styles.localeSelect}`}
           value={locale}
           onChange={(ev) => {
             setLocale(normalizeLocale(ev.target.value) || 'en');

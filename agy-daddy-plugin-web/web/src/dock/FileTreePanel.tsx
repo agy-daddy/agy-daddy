@@ -10,6 +10,7 @@ export interface FileTreePanelProps {
   refreshKey?: number | string;
   onFileSaved?: (path: string, bytes: number) => void;
   onAuthorizeRoot?: (root: string) => Promise<void> | void;
+  focusedFile?: { path: string; nonce: number } | null;
 }
 
 function mergeNodeChildren(nodes: FsNode[], targetPath: string, children: FsNode[]): FsNode[] {
@@ -37,7 +38,7 @@ function collectDefaultExpanded(nodes: FsNode[]): Record<string, boolean> {
   return next;
 }
 
-export function FileTreePanel({ root, refreshKey, onFileSaved, onAuthorizeRoot }: FileTreePanelProps) {
+export function FileTreePanel({ root, refreshKey, onFileSaved, onAuthorizeRoot, focusedFile }: FileTreePanelProps) {
   const { t } = useI18n();
   const [treeEntries, setTreeEntries] = useState<FsNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -147,6 +148,21 @@ export function FileTreePanel({ root, refreshKey, onFileSaved, onAuthorizeRoot }
       treeAbortRef.current?.abort();
     };
   }, [loadTree, refreshKey]);
+
+  useEffect(() => {
+    const rawTarget = focusedFile?.path?.trim();
+    if (!rawTarget || !root) return;
+    const cleaned = rawTarget.replace(/^file:\/\//i, '').replace(/\/+$/, '');
+    const normRoot = root.replace(/\/+$/, '');
+    let relPath = cleaned;
+    if (cleaned === normRoot) return;
+    if (cleaned.startsWith(`${normRoot}/`)) {
+      relPath = cleaned.slice(normRoot.length + 1);
+    }
+    if (relPath && !relPath.startsWith('/')) {
+      void loadFile(relPath);
+    }
+  }, [focusedFile?.path, focusedFile?.nonce, root, loadFile]);
 
   useEffect(() => {
     return () => {

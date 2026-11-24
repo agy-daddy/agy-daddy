@@ -9,6 +9,7 @@ export interface GitDiffPanelProps {
   root: string;
   refreshKey?: number | string;
   onAuthorizeRoot?: (root: string) => Promise<void> | void;
+  focusedFile?: { path: string; nonce: number } | null;
 }
 
 interface ParsedDiffLine {
@@ -96,7 +97,7 @@ function parseUnifiedDiff(diffText: string): ParsedDiffSection[] {
   return sections;
 }
 
-export function GitDiffPanel({ root, refreshKey, onAuthorizeRoot }: GitDiffPanelProps) {
+export function GitDiffPanel({ root, refreshKey, onAuthorizeRoot, focusedFile }: GitDiffPanelProps) {
   const { t } = useI18n();
   const [data, setData] = useState<GitDiffResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -162,6 +163,23 @@ export function GitDiffPanel({ root, refreshKey, onAuthorizeRoot }: GitDiffPanel
       abortRef.current?.abort();
     };
   }, [loadDiff, refreshKey]);
+
+  useEffect(() => {
+    const targetRaw = focusedFile?.path?.trim();
+    if (!targetRaw || !data?.files || data.files.length === 0) return;
+    const normalized = targetRaw.replace(/^file:\/\//i, '').replace(/\/+$/, '');
+    const exact = data.files.find((f) => f.path === normalized);
+    if (exact) {
+      setSelectedFilePath(exact.path);
+      return;
+    }
+    const suffixMatch = data.files.find(
+      (f) => normalized.endsWith(`/${f.path}`) || f.path.endsWith(`/${normalized}`),
+    );
+    if (suffixMatch) {
+      setSelectedFilePath(suffixMatch.path);
+    }
+  }, [focusedFile?.path, focusedFile?.nonce, data?.files]);
 
   const totals = useMemo(() => {
     const files = data?.files || [];

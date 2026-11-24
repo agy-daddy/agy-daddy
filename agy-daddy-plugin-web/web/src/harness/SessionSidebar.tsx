@@ -49,7 +49,9 @@ export interface SessionSidebarProps {
   onDeleteProject?: (id: string) => Promise<void> | void;
   onCreateGroup?: (name: string) => Promise<void> | void;
   onToggleGroupCollapsed?: (id: string, collapsed: boolean) => Promise<void> | void;
+  onRenameGroup?: (id: string, name: string) => Promise<void> | void;
   onDeleteGroup?: (id: string) => Promise<void> | void;
+  onMarkSessionRead?: (cascadeId: string) => Promise<void> | void;
 }
 
 function parseTimestamp(iso: string | null | undefined): number {
@@ -81,6 +83,24 @@ function isSessionRunning(session: SessionSummary): boolean {
   if (session.isRunning === true) return true;
   const normalized = String(session.status || '').toUpperCase();
   return normalized.includes('RUNNING') || normalized.includes('GENERATING');
+}
+
+function EditGlyph() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11.4 2.6a1.4 1.4 0 0 1 2 2L5.5 12.5 2.5 13.5l1-3 7.9-7.9Z" />
+    </svg>
+  );
 }
 
 function PinGlyph() {
@@ -243,6 +263,7 @@ interface SessionSidebarRowProps {
   onSelectSession: (cascadeId: string) => void;
   onPinSession?: (cascadeId: string, pinned: boolean) => Promise<void> | void;
   onAssignSessionProject?: (cascadeId: string, projectId: string | null) => Promise<void> | void;
+  onMarkSessionRead?: (cascadeId: string) => Promise<void> | void;
 }
 
 const SessionSidebarRow = React.memo(function SessionSidebarRow({
@@ -258,7 +279,9 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
   onSelectSession,
   onPinSession,
   onAssignSessionProject,
+  onMarkSessionRead,
 }: SessionSidebarRowProps) {
+  const [copiedId, setCopiedId] = useState(false);
   const running = isSessionRunning(session);
   const unread = !running && session.unread === true;
   const timeLabel = formatRelativeTime(
@@ -270,7 +293,19 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
   const hasKnownProject = Boolean(
     session.projectId && projects.some((proj) => proj.id === session.projectId),
   );
-  const hasActions = Boolean(onPinSession || onAssignSessionProject);
+  const hasActions = Boolean(onPinSession || onAssignSessionProject || onMarkSessionRead);
+
+  const handleCopySessionId = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(session.cascadeId);
+      }
+      setCopiedId(true);
+      window.setTimeout(() => setCopiedId(false), 1500);
+    } catch {
+      // Ignore clipboard failures
+    }
+  };
 
   return (
     <div
@@ -365,37 +400,64 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
         </div>
       )}
 
-      {isMenuOpen && onAssignSessionProject && (
+      {isMenuOpen && (
         <div className={styles.rowActionsPopover} onClick={(e) => e.stopPropagation()}>
-          <label className={styles.assignField}>
-            <span className={styles.assignFieldLabel}>{t('sidebar.assignProject')}</span>
-            <select
-              className={styles.assignSelect}
-              data-testid={`assign-project-${session.cascadeId}`}
-              aria-label={t('sidebar.assignProject')}
-              title={t('sidebar.assignProject')}
-              value={session.projectId ?? ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
+          {onAssignSessionProject && (
+            <label className={styles.assignField}>
+              <span className={styles.assignFieldLabel}>{t('sidebar.assignProject')}</span>
+              <select
+                className={styles.assignSelect}
+                data-testid={`assign-project-${session.cascadeId}`}
+                aria-label={t('sidebar.assignProject')}
+                title={t('sidebar.assignProject')}
+                value={session.projectId ?? ''}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  const nextVal = e.target.value;
+                  void onAssignSessionProject(session.cascadeId, nextVal ? nextVal : null);
+                  onToggleMenu(session.cascadeId);
+                }}
+              >
+                <option value="">{t('sidebar.noProject')}</option>
+                {!hasKnownProject && session.projectId && (
+                  <option value={session.projectId}>
+                    {session.projectName || session.projectId}
+                  </option>
+                )}
+                {projects.map((proj) => (
+                  <option key={proj.id} value={proj.id}>
+                    {proj.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <div className={styles.popoverActionRow}>
+            {unread && onMarkSessionRead && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onMarkSessionRead(session.cascadeId);
+                  onToggleMenu(session.cascadeId);
+                }}
+              >
+                {t('sidebar.markRead')}
+              </button>
+            )}
+            <button
+              type="button"
+              className={styles.popoverMiniBtn}
+              onClick={(e) => {
                 e.stopPropagation();
-                const nextVal = e.target.value;
-                void onAssignSessionProject(session.cascadeId, nextVal ? nextVal : null);
-                onToggleMenu(session.cascadeId);
+                void handleCopySessionId();
               }}
             >
-              <option value="">{t('sidebar.noProject')}</option>
-              {!hasKnownProject && session.projectId && (
-                <option value={session.projectId}>
-                  {session.projectName || session.projectId}
-                </option>
-              )}
-              {projects.map((proj) => (
-                <option key={proj.id} value={proj.id}>
-                  {proj.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {copiedId ? t('sidebar.copiedId') : t('sidebar.copySessionId')}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -406,6 +468,8 @@ interface ProjectTreeItemProps {
   project: ProjectItem;
   sessions: SessionSummary[];
   totalSessionCount: number;
+  runningCount?: number;
+  unreadCount?: number;
   isExpanded: boolean;
   isFilterSelected: boolean;
   creating: boolean;
@@ -429,6 +493,8 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
   project,
   sessions,
   totalSessionCount,
+  runningCount = 0,
+  unreadCount = 0,
   isExpanded,
   isFilterSelected,
   creating,
@@ -440,110 +506,190 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
   onDeleteProject,
   renderSessionRow,
 }: ProjectTreeItemProps) {
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project.name);
   const syncedFromApp = isSyncedAppProject(project);
   const canMoveToGroup = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject) && groups.length > 0;
+  const canRename = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject);
   const workspaceUri = toWorkspaceUri(project.rootPath);
+
+  const handleRenameSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextName = nameDraft.trim();
+    if (nextName && nextName !== project.name) {
+      void onUpdateProject?.(project.id, { name: nextName });
+    }
+    setEditingName(false);
+  };
 
   return (
     <div className={styles.projectNode}>
-      <div
-        className={`${styles.projectItem} ${isFilterSelected ? styles.projectItemActive : ''}`}
-        data-testid={`project-item-${project.id}`}
-        data-active={isFilterSelected ? 'true' : 'false'}
-        data-expanded={isExpanded ? 'true' : 'false'}
-        data-source={syncedFromApp ? 'app' : project.implicit ? 'implicit' : 'custom'}
-        onClick={() => onHeaderClick(project.id)}
-      >
-        <button
-          type="button"
-          className={styles.projectMainBtn}
-          aria-expanded={isExpanded}
-          title={project.rootPath || project.name}
-          onClick={(e) => {
-            e.stopPropagation();
-            onHeaderClick(project.id);
-          }}
+      {editingName ? (
+        <form
+          className={styles.inlineRenameRow}
+          onSubmit={handleRenameSubmit}
+          onClick={(e) => e.stopPropagation()}
         >
-          <span className={styles.projectFolderIcon}>
-            <FolderGlyph size={13} />
-          </span>
-          <span className={styles.projectName}>{project.name}</span>
-          <span className={styles.projectMeta}>
-            {syncedFromApp && (
-              <span
-                className={styles.appSyncBadge}
-                data-testid={`project-app-badge-${project.id}`}
-                title={t('sidebar.syncedFromApp')}
-              >
-                {t('sidebar.syncedFromApp')}
-              </span>
-            )}
-            <span
-              className={styles.projectSessionCount}
-              data-testid={`project-session-count-${project.id}`}
-              aria-label={t('sidebar.sessionCount')}
-            >
-              {totalSessionCount}
-            </span>
-          </span>
-        </button>
-        <div className={styles.projectActions} onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            className={styles.inlineRenameInput}
+            value={nameDraft}
+            autoFocus
+            aria-label={t('sidebar.renameProject')}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setNameDraft(project.name);
+                setEditingName(false);
+              }
+            }}
+          />
+          <button type="submit" className={styles.inlineRenameSaveBtn}>
+            {t('common.save')}
+          </button>
           <button
             type="button"
-            className={styles.iconBtn}
-            data-testid={`project-new-session-${project.id}`}
-            title={t('sidebar.newSessionInProject')}
-            aria-label={t('sidebar.newSessionInProject')}
-            disabled={creating}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCreateSession({
-                projectId: project.id,
-                workspaceUri,
-              });
+            className={styles.inlineRenameCancelBtn}
+            onClick={() => {
+              setNameDraft(project.name);
+              setEditingName(false);
             }}
           >
-            +
+            ×
           </button>
-          {canMoveToGroup && onUpdateProject && (
-            <select
-              className={styles.projectMoveSelect}
-              data-testid={`move-project-group-${project.id}`}
-              aria-label={t('sidebar.moveToGroup')}
-              title={t('sidebar.moveToGroup')}
-              value={project.groupId ?? ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                const nextGroupId = e.target.value || null;
-                void onUpdateProject(project.id, { groupId: nextGroupId });
-              }}
-            >
-              <option value="">{t('sidebar.ungroupedProjects')}</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          )}
-          {!project.implicit && onDeleteProject && (
+        </form>
+      ) : (
+        <div
+          className={`${styles.projectItem} ${isFilterSelected ? styles.projectItemActive : ''}`}
+          data-testid={`project-item-${project.id}`}
+          data-active={isFilterSelected ? 'true' : 'false'}
+          data-expanded={isExpanded ? 'true' : 'false'}
+          data-source={syncedFromApp ? 'app' : project.implicit ? 'implicit' : 'custom'}
+          onClick={() => onHeaderClick(project.id)}
+        >
+          <button
+            type="button"
+            className={styles.projectMainBtn}
+            aria-expanded={isExpanded}
+            title={project.rootPath || project.name}
+            onClick={(e) => {
+              e.stopPropagation();
+              onHeaderClick(project.id);
+            }}
+          >
+            <span className={styles.projectFolderIcon}>
+              <FolderGlyph size={13} />
+            </span>
+            <span className={styles.projectName}>{project.name}</span>
+            <span className={styles.projectMeta}>
+              {runningCount > 0 && (
+                <span
+                  className={styles.projectRunningDot}
+                  title={t('sidebar.filterRunning')}
+                  aria-label={t('sidebar.filterRunning')}
+                />
+              )}
+              {runningCount === 0 && unreadCount > 0 && (
+                <span
+                  className={styles.projectUnreadDot}
+                  title={t('sidebar.unreadBadge')}
+                  aria-label={t('sidebar.unreadBadge')}
+                />
+              )}
+              {syncedFromApp && (
+                <span
+                  className={styles.appSyncBadge}
+                  data-testid={`project-app-badge-${project.id}`}
+                  title={t('sidebar.syncedFromApp')}
+                >
+                  {t('sidebar.syncedFromApp')}
+                </span>
+              )}
+              <span
+                className={styles.projectSessionCount}
+                data-testid={`project-session-count-${project.id}`}
+                aria-label={t('sidebar.sessionCount')}
+              >
+                {totalSessionCount}
+              </span>
+            </span>
+          </button>
+          <div className={styles.projectActions} onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-              data-testid={`delete-project-${project.id}`}
-              title={t('sidebar.deleteProject')}
-              aria-label={t('sidebar.deleteProject')}
+              className={styles.iconBtn}
+              data-testid={`project-new-session-${project.id}`}
+              title={t('sidebar.newSessionInProject')}
+              aria-label={t('sidebar.newSessionInProject')}
+              disabled={creating}
               onClick={(e) => {
                 e.stopPropagation();
-                void onDeleteProject(project.id);
+                onCreateSession({
+                  projectId: project.id,
+                  workspaceUri,
+                });
               }}
             >
-              ×
+              +
             </button>
-          )}
+            {canRename && (
+              <button
+                type="button"
+                className={styles.iconBtn}
+                data-testid={`rename-project-${project.id}`}
+                title={t('sidebar.renameProject')}
+                aria-label={`${t('sidebar.renameProject')} ${project.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setNameDraft(project.name);
+                  setEditingName(true);
+                }}
+              >
+                <EditGlyph />
+              </button>
+            )}
+            {canMoveToGroup && onUpdateProject && (
+              <select
+                className={styles.projectMoveSelect}
+                data-testid={`move-project-group-${project.id}`}
+                aria-label={t('sidebar.moveToGroup')}
+                title={t('sidebar.moveToGroup')}
+                value={project.groupId ?? ''}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  const nextGroupId = e.target.value || null;
+                  void onUpdateProject(project.id, { groupId: nextGroupId });
+                }}
+              >
+                <option value="">{t('sidebar.ungroupedProjects')}</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {!project.implicit && onDeleteProject && (
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                data-testid={`delete-project-${project.id}`}
+                title={t('sidebar.deleteProject')}
+                aria-label={t('sidebar.deleteProject')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onDeleteProject(project.id);
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {isExpanded && (
         <div
@@ -553,7 +699,22 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
           {sessions.length > 0 ? (
             sessions.map(renderSessionRow)
           ) : (
-            <div className={styles.emptyProjectHint}>{t('sidebar.noSessionsInProject')}</div>
+            <div className={styles.emptyProjectRow}>
+              <span className={styles.emptyProjectHint}>{t('sidebar.noSessionsInProject')}</span>
+              <button
+                type="button"
+                className={styles.emptyProjectNewBtn}
+                disabled={creating}
+                onClick={() =>
+                  onCreateSession({
+                    projectId: project.id,
+                    workspaceUri,
+                  })
+                }
+              >
+                + {t('sidebar.startFirstSession')}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -585,13 +746,19 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   onDeleteProject,
   onCreateGroup,
   onToggleGroupCollapsed,
+  onRenameGroup,
   onDeleteGroup,
+  onMarkSessionRead,
 }: SessionSidebarProps) {
   const { locale, t } = useI18n();
   const [internalQuery, setInternalQuery] = useState('');
   const [internalFilter, setInternalFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'unread'>('all');
   const [localGroupCollapsed, setLocalGroupCollapsed] = useState<Record<string, boolean>>({});
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  const [quietProjectsExpanded, setQuietProjectsExpanded] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupNameDraft, setGroupNameDraft] = useState('');
   const [openActionSessionId, setOpenActionSessionId] = useState<string | null>(null);
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
@@ -610,7 +777,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const deferredQuery = useDeferredValue(effectiveQuery);
   const effectiveFilter = selectedProjectFilter !== undefined ? selectedProjectFilter : internalFilter;
   const hasActiveFilterState = Boolean(
-    effectiveQuery.trim() || effectiveFilter !== 'all' || includeInternal,
+    effectiveQuery.trim() || effectiveFilter !== 'all' || includeInternal || statusFilter !== 'all',
   );
 
   const handleSearchChange = (ev: React.ChangeEvent<HTMLInputElement>) => {
@@ -708,6 +875,85 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     [projectGroups],
   );
 
+  const projectActivityById = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        hasActive: boolean;
+        runningCount: number;
+        unreadCount: number;
+        loadedCount: number;
+        latestActivityMs: number;
+      }
+    >();
+    for (const s of sessions) {
+      if (!s.projectId) continue;
+      const cur = map.get(s.projectId) ?? {
+        hasActive: false,
+        runningCount: 0,
+        unreadCount: 0,
+        loadedCount: 0,
+        latestActivityMs: 0,
+      };
+      cur.loadedCount += 1;
+      if (s.cascadeId === activeSessionId) cur.hasActive = true;
+      const running = isSessionRunning(s);
+      if (running) cur.runningCount += 1;
+      else if (s.unread === true) cur.unreadCount += 1;
+      const ts = Math.max(
+        parseTimestamp(s.lastCompletedTime),
+        parseTimestamp(s.lastModifiedTime),
+        parseTimestamp(s.createdTime),
+      );
+      if (ts > cur.latestActivityMs) cur.latestActivityMs = ts;
+      map.set(s.projectId, cur);
+    }
+    return map;
+  }, [sessions, activeSessionId]);
+
+  const sortProjectsSmart = useMemo(() => {
+    return (list: ProjectItem[]): ProjectItem[] => {
+      return [...list].sort((a, b) => {
+        const ma = projectActivityById.get(a.id);
+        const mb = projectActivityById.get(b.id);
+        const aHasActive = ma?.hasActive ? 1 : 0;
+        const bHasActive = mb?.hasActive ? 1 : 0;
+        if (bHasActive !== aHasActive) return bHasActive - aHasActive;
+
+        const aRunning = (ma?.runningCount ?? 0) > 0 ? 1 : 0;
+        const bRunning = (mb?.runningCount ?? 0) > 0 ? 1 : 0;
+        if (bRunning !== aRunning) return bRunning - aRunning;
+
+        const aUnread = (ma?.unreadCount ?? 0) > 0 ? 1 : 0;
+        const bUnread = (mb?.unreadCount ?? 0) > 0 ? 1 : 0;
+        if (bUnread !== aUnread) return bUnread - aUnread;
+
+        const aLoaded = (ma?.loadedCount ?? 0) > 0 ? 1 : 0;
+        const bLoaded = (mb?.loadedCount ?? 0) > 0 ? 1 : 0;
+        if (bLoaded !== aLoaded) return bLoaded - aLoaded;
+
+        const aLatest = Math.max(
+          ma?.latestActivityMs ?? 0,
+          parseTimestamp(a.lastModifiedTime),
+          parseTimestamp(a.updatedAt),
+        );
+        const bLatest = Math.max(
+          mb?.latestActivityMs ?? 0,
+          parseTimestamp(b.lastModifiedTime),
+          parseTimestamp(b.updatedAt),
+        );
+        if (bLatest !== aLatest) return bLatest - aLatest;
+
+        const aCount = Math.max(ma?.loadedCount ?? 0, a.sessionCount ?? 0);
+        const bCount = Math.max(mb?.loadedCount ?? 0, b.sessionCount ?? 0);
+        if ((bCount > 0 ? 1 : 0) !== (aCount > 0 ? 1 : 0)) {
+          return bCount > 0 ? 1 : -1;
+        }
+        return 0;
+      });
+    };
+  }, [projectActivityById]);
+
   const { projectsByGroup, ungroupedProjects } = useMemo(() => {
     const groupIds = new Set(sortedGroups.map((g) => g.id));
     const grouped = new Map<string, ProjectItem[]>();
@@ -721,8 +967,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         ungrouped.push(proj);
       }
     }
-    return { projectsByGroup: grouped, ungroupedProjects: ungrouped };
-  }, [projects, sortedGroups]);
+    for (const [gid, list] of grouped.entries()) {
+      grouped.set(gid, sortProjectsSmart(list));
+    }
+    return { projectsByGroup: grouped, ungroupedProjects: sortProjectsSmart(ungrouped) };
+  }, [projects, sortedGroups, sortProjectsSmart]);
 
   const sortedSessions = useMemo(
     () =>
@@ -750,9 +999,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     [sessions],
   );
 
+  const totalRunningCount = useMemo(
+    () => sessions.filter((s) => isSessionRunning(s)).length,
+    [sessions],
+  );
+  const totalUnreadCount = useMemo(
+    () => sessions.filter((s) => !isSessionRunning(s) && s.unread === true).length,
+    [sessions],
+  );
+
   const sortedAndFiltered = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
     return sortedSessions.filter((s) => {
+      if (statusFilter === 'running' && !isSessionRunning(s)) return false;
+      if (statusFilter === 'unread' && (isSessionRunning(s) || s.unread !== true)) return false;
+
       if (effectiveFilter === '__none__') {
         if (s.projectId) return false;
       } else if (effectiveFilter && effectiveFilter !== 'all') {
@@ -778,7 +1039,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [sortedSessions, effectiveFilter, deferredQuery, projectById, t]);
+  }, [sortedSessions, statusFilter, effectiveFilter, deferredQuery, projectById, t]);
 
   const allSessionCountByProject = useMemo(() => {
     const counts = new Map<string, number>();
@@ -867,6 +1128,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         onSelectSession={onSelectSession}
         onPinSession={onPinSession}
         onAssignSessionProject={onAssignSessionProject}
+        onMarkSessionRead={onMarkSessionRead}
       />
     );
   };
@@ -874,6 +1136,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const shouldRenderProject = (proj: ProjectItem): boolean => {
     if (effectiveFilter === '__none__') return false;
     if (isSpecificProjectFilter) return proj.id === effectiveFilter;
+    if (statusFilter !== 'all') {
+      return (regularByProject.get(proj.id)?.length ?? 0) > 0;
+    }
     if (isSearching) {
       const q = deferredQuery.trim().toLowerCase();
       const matchesProjectMeta =
@@ -887,11 +1152,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const renderProjectNode = (proj: ProjectItem) => {
     if (!shouldRenderProject(proj)) return null;
     const projSessions = regularByProject.get(proj.id) ?? [];
+    const activity = projectActivityById.get(proj.id);
     const totalSessionCount = Math.max(
       allSessionCountByProject.get(proj.id) ?? 0,
       typeof proj.sessionCount === 'number' ? proj.sessionCount : 0,
     );
-    const isExpanded = isSearching || isSpecificProjectFilter ? true : !collapsedProjects[proj.id];
+    const isExpanded = isSearching || isSpecificProjectFilter || statusFilter !== 'all'
+      ? true
+      : !collapsedProjects[proj.id];
 
     return (
       <ProjectTreeItem
@@ -899,6 +1167,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         project={proj}
         sessions={projSessions}
         totalSessionCount={totalSessionCount}
+        runningCount={activity?.runningCount ?? 0}
+        unreadCount={activity?.unreadCount ?? 0}
         isExpanded={isExpanded}
         isFilterSelected={effectiveFilter === proj.id}
         creating={creating}
@@ -912,6 +1182,31 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       />
     );
   };
+
+  const { activeUngroupedProjects, quietUngroupedProjects } = useMemo(() => {
+    const visible = ungroupedProjects.filter(shouldRenderProject);
+    if (isSearching || isSpecificProjectFilter || statusFilter !== 'all') {
+      return { activeUngroupedProjects: visible, quietUngroupedProjects: [] as ProjectItem[] };
+    }
+    const activeList: ProjectItem[] = [];
+    const quietList: ProjectItem[] = [];
+    for (const p of visible) {
+      const act = projectActivityById.get(p.id);
+      const isActiveOrExplicit =
+        Boolean(act?.hasActive) ||
+        (act?.loadedCount ?? 0) > 0 ||
+        (!isSyncedAppProject(p) && !p.implicit);
+      if (isActiveOrExplicit) {
+        activeList.push(p);
+      } else {
+        quietList.push(p);
+      }
+    }
+    if (quietList.length < 4) {
+      return { activeUngroupedProjects: visible, quietUngroupedProjects: [] as ProjectItem[] };
+    }
+    return { activeUngroupedProjects: activeList, quietUngroupedProjects: quietList };
+  }, [ungroupedProjects, projectActivityById, isSearching, isSpecificProjectFilter, statusFilter, regularByProject, deferredQuery, effectiveFilter]);
 
   const showInternalToggle = Boolean(onToggleIncludeInternal || hiddenInternalCount > 0);
   const hasVisibleProjects =
@@ -997,6 +1292,56 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         </div>
       </div>
 
+      {(totalRunningCount > 0 || totalUnreadCount > 0 || statusFilter !== 'all') && (
+        <div className={styles.quickAttentionBar} data-testid="sidebar-attention-filters">
+          <button
+            type="button"
+            className={`${styles.attentionChip} ${statusFilter === 'all' ? styles.attentionChipActive : ''}`}
+            onClick={() => setStatusFilter('all')}
+          >
+            {t('sidebar.allProjects')}
+          </button>
+          {totalRunningCount > 0 && (
+            <button
+              type="button"
+              className={`${styles.attentionChip} ${statusFilter === 'running' ? styles.attentionChipActive : ''}`}
+              onClick={() => setStatusFilter((prev) => (prev === 'running' ? 'all' : 'running'))}
+              data-testid="sidebar-filter-running"
+            >
+              <span className={styles.attentionDotRunning} aria-hidden="true" />
+              <span>{t('sidebar.filterRunning')}</span>
+              <span className={styles.attentionCount}>{totalRunningCount}</span>
+            </button>
+          )}
+          {totalUnreadCount > 0 && (
+            <button
+              type="button"
+              className={`${styles.attentionChip} ${statusFilter === 'unread' ? styles.attentionChipActive : ''}`}
+              onClick={() => setStatusFilter((prev) => (prev === 'unread' ? 'all' : 'unread'))}
+              data-testid="sidebar-filter-unread"
+            >
+              <span className={styles.attentionDotUnread} aria-hidden="true" />
+              <span>{t('sidebar.filterUnread')}</span>
+              <span className={styles.attentionCount}>{totalUnreadCount}</span>
+            </button>
+          )}
+          {hasActiveFilterState && (
+            <button
+              type="button"
+              className={styles.attentionResetBtn}
+              onClick={() => {
+                setStatusFilter('all');
+                if (searchQuery === undefined) setInternalQuery('');
+                onSearchQueryChange?.('');
+                handleFilterChange('all');
+              }}
+            >
+              {t('sidebar.resetFilters')}
+            </button>
+          )}
+        </div>
+      )}
+
       {showFilterDrawer && (
         <div className={styles.filterDrawer} data-testid="sidebar-filter-drawer">
           <input
@@ -1071,7 +1416,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             aria-label={t('sidebar.projectPathPlaceholder')}
             title={defaultSessionPath ? `${t('sidebar.defaultPathLabel')}: ${defaultSessionPath}` : undefined}
             value={projectPath}
-            onChange={(ev) => setProjectPath(ev.target.value)}
+            onChange={(ev) => {
+              const nextPath = ev.target.value;
+              setProjectPath(nextPath);
+              if (!projectName.trim()) {
+                const derived = extractWorkspaceName(nextPath);
+                if (derived) setProjectName(derived);
+              }
+            }}
             data-testid="new-project-path"
           />
           <select
@@ -1202,36 +1554,92 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     data-collapsed={effectiveCollapsed ? 'true' : 'false'}
                   >
                     <div className={styles.groupHeader}>
-                      <button
-                        type="button"
-                        className={styles.groupToggleBtn}
-                        data-testid={`toggle-group-${group.id}`}
-                        aria-expanded={!effectiveCollapsed}
-                        aria-label={
-                          effectiveCollapsed
-                            ? t('sidebar.expandGroup')
-                            : t('sidebar.collapseGroup')
-                        }
-                        onClick={() => handleToggleGroup(group)}
-                      >
-                        <ChevronGlyph expanded={!effectiveCollapsed} />
-                        <span className={styles.groupName}>{group.name}</span>
-                        <span className={styles.groupCount}>{groupProjects.length}</span>
-                      </button>
-                      {onDeleteGroup && (
-                        <button
-                          type="button"
-                          className={`${styles.iconBtn} ${styles.iconBtnDanger} ${styles.groupDeleteBtn}`}
-                          data-testid={`delete-group-${group.id}`}
-                          title={t('sidebar.deleteGroup')}
-                          aria-label={t('sidebar.deleteGroup')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void onDeleteGroup(group.id);
+                      {editingGroupId === group.id ? (
+                        <form
+                          className={styles.inlineRenameRow}
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const trimmed = groupNameDraft.trim();
+                            if (trimmed && trimmed !== group.name) {
+                              void onRenameGroup?.(group.id, trimmed);
+                            }
+                            setEditingGroupId(null);
                           }}
                         >
-                          ×
-                        </button>
+                          <input
+                            type="text"
+                            className={styles.inlineRenameInput}
+                            value={groupNameDraft}
+                            autoFocus
+                            aria-label={t('sidebar.renameGroup')}
+                            onChange={(e) => setGroupNameDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                setEditingGroupId(null);
+                              }
+                            }}
+                          />
+                          <button type="submit" className={styles.inlineRenameSaveBtn}>
+                            {t('common.save')}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.inlineRenameCancelBtn}
+                            onClick={() => setEditingGroupId(null)}
+                          >
+                            ×
+                          </button>
+                        </form>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className={styles.groupToggleBtn}
+                            data-testid={`toggle-group-${group.id}`}
+                            aria-expanded={!effectiveCollapsed}
+                            aria-label={
+                              effectiveCollapsed
+                                ? t('sidebar.expandGroup')
+                                : t('sidebar.collapseGroup')
+                            }
+                            onClick={() => handleToggleGroup(group)}
+                          >
+                            <ChevronGlyph expanded={!effectiveCollapsed} />
+                            <span className={styles.groupName}>{group.name}</span>
+                            <span className={styles.groupCount}>{groupProjects.length}</span>
+                          </button>
+                        {onRenameGroup && (
+                          <button
+                            type="button"
+                            className={`${styles.iconBtn} ${styles.groupDeleteBtn}`}
+                            data-testid={`rename-group-${group.id}`}
+                            title={t('sidebar.renameGroup')}
+                            aria-label={`${t('sidebar.renameGroup')} ${group.name}`}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setGroupNameDraft(group.name);
+                                setEditingGroupId(group.id);
+                              }}
+                            >
+                              <EditGlyph />
+                            </button>
+                          )}
+                          {onDeleteGroup && (
+                            <button
+                              type="button"
+                              className={`${styles.iconBtn} ${styles.iconBtnDanger} ${styles.groupDeleteBtn}`}
+                              data-testid={`delete-group-${group.id}`}
+                              title={t('sidebar.deleteGroup')}
+                              aria-label={t('sidebar.deleteGroup')}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void onDeleteGroup(group.id);
+                              }}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                     {!effectiveCollapsed && visibleProjects.length > 0 && (
@@ -1243,12 +1651,31 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 );
               })}
 
-            {effectiveFilter !== '__none__' &&
-              ungroupedProjects.some(shouldRenderProject) && (
-                <div className={styles.ungroupedSection}>
-                  {ungroupedProjects.map(renderProjectNode)}
-                </div>
-              )}
+            {effectiveFilter !== '__none__' && activeUngroupedProjects.length > 0 && (
+              <div className={styles.ungroupedSection}>
+                {activeUngroupedProjects.map(renderProjectNode)}
+              </div>
+            )}
+
+            {effectiveFilter !== '__none__' && quietUngroupedProjects.length > 0 && (
+              <div className={styles.quietProjectsSection} data-testid="quiet-projects-section">
+                <button
+                  type="button"
+                  className={styles.quietProjectsToggle}
+                  aria-expanded={quietProjectsExpanded}
+                  onClick={() => setQuietProjectsExpanded((prev) => !prev)}
+                  data-testid="quiet-projects-toggle"
+                >
+                  <ChevronGlyph expanded={quietProjectsExpanded} />
+                  <span>{t('sidebar.otherProjects', { count: quietUngroupedProjects.length })}</span>
+                </button>
+                {quietProjectsExpanded && (
+                  <div className={styles.ungroupedSection}>
+                    {quietUngroupedProjects.map(renderProjectNode)}
+                  </div>
+                )}
+              </div>
+            )}
 
             {(standaloneRegularSessions.length > 0 || effectiveFilter === '__none__') &&
               (hasProjectsOrGroups ? (

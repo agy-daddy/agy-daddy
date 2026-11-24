@@ -9,6 +9,7 @@ import type {
   SessionEventKind,
   WebSearchPayload,
 } from '../types';
+import { extractCodeActionDiffStats, extractCodeActionTargetFile } from './codeActionUtils';
 
 export const TOOL_CALL_KINDS: ReadonlySet<SessionEventKind> = new Set<SessionEventKind>([
   'command',
@@ -76,12 +77,18 @@ export interface WorkGroupSummary {
   thoughtCount: number;
   toolCount: number;
   totalThinkingSeconds: number;
+  editCount?: number;
+  totalAdditions?: number;
+  totalDeletions?: number;
 }
 
 export function summarizeWorkGroup(events: readonly SessionEvent[]): WorkGroupSummary {
   let thoughtCount = 0;
   let toolCount = 0;
   let totalThinkingSeconds = 0;
+  let editCount = 0;
+  let totalAdditions = 0;
+  let totalDeletions = 0;
 
   for (const ev of events) {
     if (isIntermediateThinkingEvent(ev)) {
@@ -90,10 +97,21 @@ export function summarizeWorkGroup(events: readonly SessionEvent[]): WorkGroupSu
       totalThinkingSeconds += parseThinkingDurationSeconds(p?.thinkingDuration);
     } else {
       toolCount += 1;
+      if (ev.kind === 'code_action') {
+        editCount += 1;
+        const stats = extractCodeActionDiffStats(ev.payload as CodeActionPayload);
+        totalAdditions += stats.additions ?? 0;
+        totalDeletions += stats.deletions ?? 0;
+      }
     }
   }
 
-  return { thoughtCount, toolCount, totalThinkingSeconds };
+  return {
+    thoughtCount,
+    toolCount,
+    totalThinkingSeconds,
+    ...(editCount > 0 ? { editCount, totalAdditions, totalDeletions } : {}),
+  };
 }
 
 export type TimelineEntry =
@@ -111,6 +129,9 @@ export type TimelineEntry =
       thoughtCount: number;
       toolCount: number;
       totalThinkingSeconds: number;
+      editCount?: number;
+      totalAdditions?: number;
+      totalDeletions?: number;
     };
 
 export function groupTimelineEvents(events: SessionEvent[]): TimelineEntry[] {
@@ -209,20 +230,9 @@ export function formatToolBrief(
 
     case 'code_action': {
       const p = event.payload as CodeActionPayload;
-      const file = shortenPath(p.actionSpec?.targetFile || event.title || 'code');
-      const stats = p.diffStats;
-      const add =
-        typeof stats?.additions === 'number'
-          ? stats.additions
-          : typeof stats?.linesAdded === 'number'
-            ? stats.linesAdded
-            : null;
-      const del =
-        typeof stats?.deletions === 'number'
-          ? stats.deletions
-          : typeof stats?.linesRemoved === 'number'
-            ? stats.linesRemoved
-            : null;
+      const resolvedFile = extractCodeActionTargetFile(p, event.title);
+      const file = resolvedFile ? shortenPath(resolvedFile) : 'code';
+      const { additions: add, deletions: del } = extractCodeActionDiffStats(p);
       const hint = add !== null || del !== null ? `+${add ?? 0}/-${del ?? 0}` : undefined;
       return {
         icon: '✏️',

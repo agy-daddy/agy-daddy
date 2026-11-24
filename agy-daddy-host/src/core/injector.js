@@ -8,6 +8,7 @@ const { resolveActiveCdpTarget, CdpClient } = require('./cdp');
 const { loadAnchorsRegistry, buildResolvedAnchorsMap } = require('./anchors');
 
 const DEFAULT_HOST_BUNDLE_PATH = path.resolve(__dirname, '..', '..', 'dist', 'host-renderer.js');
+const HOST_PKG_VERSION = require('../../package.json').version;
 
 function buildHostBootstrapScript(bundleSource, bootOptions = {}) {
   const serialized = JSON.stringify(bootOptions);
@@ -125,7 +126,7 @@ function buildIsolatedWorldPluginScript(pluginId, rendererSource, options = {}) 
   const bridgePortNum = Number(options.bridgePort || 0);
   const tokenJson = JSON.stringify(options.pluginToken || '');
   const anchorsJson = JSON.stringify(options.anchorsRegistry || { anchors: {} });
-  const hostVersionJson = JSON.stringify(options.hostVersion || '1.0.0');
+  const hostVersionJson = JSON.stringify(options.hostVersion || HOST_PKG_VERSION);
   const initialSettingsJson = JSON.stringify(options.initialSettings && typeof options.initialSettings === 'object' ? options.initialSettings : {});
 
   return `(async function(){
@@ -1359,7 +1360,7 @@ class CdpInjector extends EventEmitter {
         bridgePort: this.getBridgePort(),
         pluginToken: activeEntry.pluginToken || '',
         anchorsRegistry,
-        hostVersion: '1.0.0',
+        hostVersion: HOST_PKG_VERSION,
         initialSettings
       });
       const evalRes = await session.client.evaluate(isoScript, { contextId });

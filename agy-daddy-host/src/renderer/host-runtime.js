@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
 
-  const HOST_VERSION = '1.0.0';
+  const HOST_VERSION = '1.1.0';
   const HOST_ELEMENT_ID = 'agy-daddy-host';
   const NATIVE_SETTINGS_MOUNT_ID = 'agy-native-settings-mount';
   const DEFAULT_ACCENT = '#18181b';

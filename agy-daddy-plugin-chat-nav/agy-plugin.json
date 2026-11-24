@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "agy-daddy.chat-nav",
   "publisher": "agy-daddy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "displayName": {
     "zh-CN": "对话栏增强",

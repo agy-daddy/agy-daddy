@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync, spawn } = require('child_process');
+const HOST_PKG_VERSION = require('../package.json').version;
 const { getStateDir, isTestMode } = require('./core/paths');
 const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./core/cdp');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./core/storage');
@@ -826,7 +827,7 @@ async function main(argv = process.argv.slice(2)) {
     throw new Error(`Unknown dev subcommand: ${sub}`);
   }
 
-  console.log(`Agy-Daddy Launcher & Host v1.0.0
+  console.log(`Agy-Daddy Launcher & Host v${HOST_PKG_VERSION}
 
 用法:
   agy-daddy doctor [--json] [--bundle <file>]         运行环境诊断 / 导出脱敏诊断包

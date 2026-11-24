@@ -1278,3 +1278,102 @@ test('remote-v2: filters internal temp/probe workspaces (agy-model-probe-*, rout
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('remote-v2: getSessionDetail seeds the delta cursor so the first SSE poll resumes after the terminal prefix', async () => {
+  const TOTAL_STEPS = 50;
+  const completedSteps = Array.from({ length: TOTAL_STEPS }, (_, idx) => ({
+    stepIndex: idx,
+    type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+    status: 'CORTEX_STEP_STATUS_DONE',
+    plannerResponse: { response: `done-step-${idx}` }
+  }));
+  const stepCalls = [];
+  let liveStep = null;
+
+  const harness = createMockHostHarness({
+    onRpc(method, params) {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'cid-50': {
+              title: 'Long Finished Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              stepCount: TOTAL_STEPS,
+              lastModifiedTime: '2026-11-24T10:00:00Z'
+            }
+          }
+        };
+      }
+      if (method === 'GetCascadeTrajectory') {
+        return {
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          numTotalSteps: TOTAL_STEPS,
+          trajectory: { cascadeId: params.cascadeId, steps: completedSteps }
+        };
+      }
+      if (method === 'GetCascadeTrajectorySteps') {
+        stepCalls.push({ stepOffset: params.stepOffset });
+        if (params.stepOffset < TOTAL_STEPS) {
+          return {
+            status: 'CASCADE_RUN_STATUS_IDLE',
+            numTotalSteps: TOTAL_STEPS,
+            steps: completedSteps.slice(params.stepOffset)
+          };
+        }
+        return {
+          status: liveStep ? 'CASCADE_RUN_STATUS_RUNNING' : 'CASCADE_RUN_STATUS_IDLE',
+          numTotalSteps: TOTAL_STEPS + (liveStep ? 1 : 0),
+          steps: liveStep ? [liveStep] : []
+        };
+      }
+      if (method === 'GetUserStatus') {
+        return { userStatus: { cascadeModelConfigData: { defaultOverrideModelConfig: { modelOrAlias: { model: 'MODEL_A' } }, clientModelConfigs: [] } } };
+      }
+      if (method === 'GetAvailableModels') {
+        return { response: { defaultAgentModelId: 'MODEL_A', models: { MODEL_A: { model: 'MODEL_A', displayName: 'Model A' } } } };
+      }
+      return { ok: true };
+    }
+  });
+
+  try {
+    const { port: bridgePort } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort, hostToken: harness.bridge.hostToken });
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const remoteSvc = harness.bus.getServiceProxy('remote');
+    const st = await remoteSvc.getStatus();
+    const token = await remoteSvc.getPairingToken();
+    const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    const detail = await httpRequest(`${st.url}/api/v1/sessions/cid-50`, { headers: auth });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.json.session.numTotalSteps, TOTAL_STEPS);
+    assert.equal(detail.json.events.length, TOTAL_STEPS);
+
+    // Detail already rendered the whole terminal prefix: the first delta poll must resume at 50.
+    const sse = await openSse(`${st.url}/api/v1/stream?t=${token}&sessionId=cid-50`);
+    const first = await sse.waitForEvent((e) => e.event === 'session.delta');
+    assert.equal(first.json.nextOffset, TOTAL_STEPS);
+    assert.equal(first.json.events.length, 0);
+    assert.ok(stepCalls.length >= 1, 'expected GetCascadeTrajectorySteps to be polled');
+    assert.equal(stepCalls[0].stepOffset, TOTAL_STEPS, 'first delta poll must not re-pull history from 0');
+
+    // A brand-new step still streams through on the next poll.
+    liveStep = {
+      stepIndex: TOTAL_STEPS,
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_GENERATING',
+      plannerResponse: { response: 'streaming-token' }
+    };
+    const streamed = await sse.waitForEvent((e) => e.event === 'session.delta' && e.json?.events?.length > 0, 3000);
+    assert.equal(streamed.json.events[0].seq, TOTAL_STEPS);
+    assert.equal(streamed.json.events[0].status, 'generating');
+
+    sse.close();
+    await harness.unloadPlugin('agy-daddy.remote');
+    harness.assertCleanDispose('agy-daddy.remote');
+  } finally {
+    await harness.cleanup();
+  }
+});

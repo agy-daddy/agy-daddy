@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { Composer } from './chat/Composer';
 import { StepCard } from './chat/StepCard';
@@ -7,7 +7,14 @@ import { VirtualChatList } from './chat/VirtualChatList';
 import DiffViewer from './lazy/DiffViewer';
 import PtyTerminal from './lazy/PtyTerminal';
 import { extractTokenAndScrubUrl } from './store/token';
-import { normalizeModels, resolveUnifiedModelName, sanitizePresets } from './store/useRemoteStore';
+import {
+  mergeEvents,
+  normalizeModels,
+  RemoteStoreController,
+  remoteStore,
+  resolveUnifiedModelName,
+  sanitizePresets
+} from './store/useRemoteStore';
 import type { ComposerPreset, SessionEvent, SessionEventKind } from './types';
 
 describe('Token extraction & scrub', () => {
@@ -160,6 +167,12 @@ describe('Lazy modules: DiffViewer & PtyTerminal', () => {
 });
 
 describe('App end-to-end bootstrap & approval flow', () => {
+  afterEach(() => {
+    remoteStore.logoutToken();
+    remoteStore.destroy();
+    vi.unstubAllGlobals();
+  });
+
   it('renders bootstrap session, topbar attention badge, and floating allow action', async () => {
     window.history.replaceState(null, '', '/?t=test-tok');
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -443,5 +456,617 @@ describe('Regression suite (P01-P07)', () => {
     expect(sendBtn).toBeInTheDocument();
     expect(sendBtn).toBeDisabled();
     expect(sendBtn.textContent).toBe('入队');
+  });
+});
+
+class MockEventSource {
+  public static instances: MockEventSource[] = [];
+  public url: string;
+  public onopen: (() => void) | null = null;
+  public onerror: (() => void) | null = null;
+  private listeners = new Map<string, Array<(ev: MessageEvent) => void>>();
+  public closed = false;
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+    queueMicrotask(() => {
+      if (!this.closed && this.onopen) {
+        this.onopen();
+      }
+    });
+  }
+
+  public addEventListener(type: string, fn: (ev: MessageEvent) => void): void {
+    const list = this.listeners.get(type) || [];
+    list.push(fn);
+    this.listeners.set(type, list);
+  }
+
+  public emit(type: string, data: unknown, lastEventId = ''): void {
+    const list = this.listeners.get(type) || [];
+    const ev = { data: JSON.stringify(data), lastEventId } as MessageEvent;
+    for (const fn of list) fn(ev);
+  }
+
+  public close(): void {
+    this.closed = true;
+  }
+}
+
+function createAppSessionFetchMock(
+  sessionId: string,
+  opts?: {
+    onSendMessage?: (body: Record<string, unknown>) => Promise<{
+      ok: boolean;
+      status?: number;
+      body: Record<string, unknown>;
+    }>;
+  }
+) {
+  let getSessionCalls = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method || 'GET').toUpperCase();
+
+    if (url.includes('/api/v1/bootstrap')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ok: true,
+            channel: 'lan',
+            permissionLevel: 'L1',
+            writeEnabled: true,
+            models: [{ id: 'g25', shortName: 'G2.5' }],
+            defaultModelId: 'g25',
+            workspaces: ['/repo'],
+            voiceSupported: false
+          })
+      };
+    }
+
+    if (url.includes(`/api/v1/sessions/${sessionId}/messages`) && method === 'POST') {
+      const parsedBody = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+      if (opts?.onSendMessage) {
+        const custom = await opts.onSendMessage(parsedBody);
+        return {
+          ok: custom.ok,
+          status: custom.status ?? (custom.ok ? 200 : 500),
+          text: async () => JSON.stringify(custom.body)
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ ok: true })
+      };
+    }
+
+    if (url.includes(`/api/v1/sessions/${sessionId}/queue`)) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ ok: true, cascadeId: sessionId, queue: [] })
+      };
+    }
+
+    if (url.includes(`/api/v1/sessions/${sessionId}`)) {
+      getSessionCalls++;
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ok: true,
+            session: { cascadeId: sessionId, status: 'CASCADE_RUN_STATUS_IDLE', numTotalSteps: 1 },
+            events: [
+              {
+                seq: 0,
+                kind: 'user',
+                status: 'done',
+                rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+                payload: { text: 'initial prompt' }
+              }
+            ]
+          })
+      };
+    }
+
+    if (url.includes('/api/v1/sessions')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ok: true,
+            sessions: [
+              {
+                cascadeId: sessionId,
+                title: `Session ${sessionId}`,
+                summary: '',
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                needsAttention: false,
+                stepCount: 1,
+                lastModifiedTime: null,
+                workspaceUri: '/repo',
+                branchName: 'main'
+              }
+            ]
+          })
+      };
+    }
+
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, files: [] }) };
+  });
+
+  return { fetchMock, getSessionCalls: () => getSessionCalls };
+}
+
+describe('Optimistic UI: mergeEvents, StepCard & App send lifecycle', () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    remoteStore.logoutToken();
+    remoteStore.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  it('sorts real events (>=0) ascending before negative optimistic events in creation order', () => {
+    const prev: SessionEvent[] = [
+      {
+        seq: 0,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'first real' }
+      },
+      {
+        seq: -1,
+        kind: 'user',
+        status: 'pending',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'opt 1', clientTempId: 't1', optimistic: true }
+      }
+    ];
+    const incoming: SessionEvent[] = [
+      {
+        seq: -2,
+        kind: 'user',
+        status: 'pending',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'opt 2', clientTempId: 't2', optimistic: true }
+      },
+      {
+        seq: 1,
+        kind: 'thinking_and_text',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        payload: { response: 'reply' }
+      }
+    ];
+
+    const merged = mergeEvents(prev, incoming);
+    expect(merged.map((e) => e.seq)).toEqual([0, 1, -1, -2]);
+  });
+
+  it('reconciles optimistic user events by normalized text first, then FIFO, ignoring existing seqs', () => {
+    const prev: SessionEvent[] = [
+      {
+        seq: 0,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'earlier' }
+      },
+      {
+        seq: -1,
+        kind: 'user',
+        status: 'pending',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'first msg', clientTempId: 't1', optimistic: true }
+      },
+      {
+        seq: -2,
+        kind: 'user',
+        status: 'pending',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'second   msg', clientTempId: 't2', optimistic: true }
+      }
+    ];
+
+    // Updating existing seq 0 must NOT consume pending optimistic events
+    const afterExistingUpdate = mergeEvents(prev, [
+      {
+        seq: 0,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'earlier' }
+      }
+    ]);
+    expect(afterExistingUpdate.map((e) => e.seq)).toEqual([0, -1, -2]);
+
+    // New seq 2 matching normalized text of seq -2 removes seq -2 and keeps seq -1
+    const afterTextMatch = mergeEvents(afterExistingUpdate, [
+      {
+        seq: 2,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'second msg' }
+      }
+    ]);
+    expect(afterTextMatch.map((e) => e.seq)).toEqual([0, 2, -1]);
+
+    // New seq 3 with different text falls back to FIFO and removes seq -1
+    const afterFifo = mergeEvents(afterTextMatch, [
+      {
+        seq: 3,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'rewritten prompt' }
+      }
+    ]);
+    expect(afterFifo.map((e) => e.seq)).toEqual([0, 2, 3]);
+  });
+
+  it('renders optimistic user StepCard as user bubble with sending badge instead of pending approval card', () => {
+    const optimisticEv: SessionEvent = {
+      seq: -1,
+      kind: 'user',
+      status: 'pending',
+      rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+      payload: {
+        text: '优化远程响应速度',
+        clientTempId: 'opt_1',
+        optimistic: true
+      }
+    };
+
+    const { rerender } = render(<StepCard event={optimisticEv} />);
+    const card = screen.getByTestId('step-card--1');
+    expect(card).toHaveAttribute('data-kind', 'user');
+    expect(card).toHaveAttribute('data-optimistic', 'true');
+    expect(screen.queryByTestId('inline-approval--1')).toBeNull();
+    expect(screen.getByText('发送中…')).toBeInTheDocument();
+    expect(screen.getByText('优化远程响应速度')).toBeInTheDocument();
+
+    const realEv: SessionEvent = {
+      seq: 4,
+      kind: 'user',
+      status: 'done',
+      rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+      payload: { text: '优化远程响应速度' }
+    };
+    rerender(<StepCard event={realEv} />);
+    const realCard = screen.getByTestId('step-card-4');
+    expect(realCard).not.toHaveAttribute('data-optimistic');
+    expect(screen.queryByText('发送中…')).toBeNull();
+  });
+
+  it('renders optimistic user bubble immediately before delayed sendMessage resolves, then reconciles on SSE delta without reloading detail', async () => {
+    window.history.replaceState(null, '', '/?t=tok-opt-1');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+
+    let resolveSend!: (val: { ok: boolean; body: Record<string, unknown> }) => void;
+    const { fetchMock, getSessionCalls } = createAppSessionFetchMock('s-opt-1', {
+      onSendMessage: () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true, body: { ok: true } }), 300);
+          resolveSend = resolve;
+        })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await screen.findByText('initial prompt');
+    await waitFor(() => {
+      expect(MockEventSource.instances.length).toBeGreaterThan(0);
+    });
+    const detailCallsBeforeSend = getSessionCalls();
+
+    const textarea = screen.getByTestId('composer-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'hello optimistic' } });
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+
+    // Immediately before the 300ms Promise resolves: input is cleared, bubble is visible, no floating approval card
+    expect(textarea.value).toBe('');
+    const optCard = await screen.findByTestId('step-card--1');
+    expect(optCard).toHaveTextContent('hello optimistic');
+    expect(optCard).toHaveTextContent('发送中…');
+    expect(screen.queryByTestId('pending-floating-card')).toBeNull();
+
+    // Resolve delayed sendMessage
+    await act(async () => {
+      resolveSend({ ok: true, body: { ok: true } });
+    });
+
+    // Connected SSE must NOT trigger redundant loadSessionDetail
+    expect(getSessionCalls()).toBe(detailCallsBeforeSend);
+
+    // Emit real user step via SSE session.delta -> only 1 user message remains for the new message
+    await act(async () => {
+      MockEventSource.instances[0].emit('session.delta', {
+        cascadeId: 's-opt-1',
+        status: 'CASCADE_RUN_STATUS_RUNNING',
+        totalSteps: 2,
+        events: [
+          {
+            seq: 1,
+            kind: 'user',
+            status: 'done',
+            rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+            payload: { text: 'hello optimistic' }
+          }
+        ]
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('step-card--1')).toBeNull();
+      expect(screen.getByTestId('step-card-1')).toHaveTextContent('hello optimistic');
+    });
+    expect(screen.getAllByText('hello optimistic')).toHaveLength(1);
+    expect(screen.queryByText('发送中…')).toBeNull();
+  });
+
+  it('removes optimistic bubble and shows only queue card when backend returns queued: true', async () => {
+    window.history.replaceState(null, '', '/?t=tok-opt-2');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+
+    let resolveSend!: (val: { ok: boolean; body: Record<string, unknown> }) => void;
+    const { fetchMock } = createAppSessionFetchMock('s-opt-2', {
+      onSendMessage: () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    await screen.findByText('initial prompt');
+
+    const textarea = screen.getByTestId('composer-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'queued task' } });
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+
+    const optBubble = await screen.findByText('queued task');
+    const optCard = optBubble.closest('[data-optimistic="true"]');
+    expect(optCard).not.toBeNull();
+    expect(optCard?.getAttribute('data-testid')).toMatch(/^step-card--\d+$/);
+
+    await act(async () => {
+      resolveSend({
+        ok: true,
+        body: {
+          ok: true,
+          queued: true,
+          queue: [
+            {
+              id: 'q-srv-1',
+              sessionId: 's-opt-2',
+              text: 'queued task',
+              mode: 'chat',
+              dispatchMode: 'queue',
+              status: 'queued',
+              createdAt: Date.now()
+            }
+          ]
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-optimistic="true"]')).toBeNull();
+      expect(screen.getByTestId('queued-msg-q-srv-1')).toHaveTextContent('queued task');
+    });
+    expect(screen.getAllByText('queued task')).toHaveLength(1);
+  });
+
+  it('rolls back optimistic bubble and restores draft on sendMessage rejection without overwriting new typing', async () => {
+    window.history.replaceState(null, '', '/?t=tok-opt-3');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+
+    let rejectCount = 0;
+    let triggerReject!: () => void;
+    const { fetchMock } = createAppSessionFetchMock('s-opt-3', {
+      onSendMessage: () =>
+        new Promise((resolve) => {
+          rejectCount++;
+          triggerReject = () =>
+            resolve({ ok: false, status: 500, body: { ok: false, error: 'NETWORK_FAIL' } });
+        })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    await screen.findByText('initial prompt');
+
+    const textarea = screen.getByTestId('composer-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'draft to restore' } });
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+
+    const optText = await screen.findByText('draft to restore');
+    expect(optText.closest('[data-optimistic="true"]')).not.toBeNull();
+    expect(textarea.value).toBe('');
+
+    await act(async () => {
+      triggerReject();
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-optimistic="true"]')).toBeNull();
+      expect(textarea.value).toBe('draft to restore');
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('发送失败');
+
+    // Second attempt: user starts typing new text before failure -> must NOT overwrite new text
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+    expect(await screen.findByText('发送中…')).toBeInTheDocument();
+    fireEvent.input(textarea, { target: { value: 'newer user input' } });
+
+    await act(async () => {
+      triggerReject();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('发送中…')).toBeNull();
+    });
+    expect(rejectCount).toBe(2);
+    expect(textarea.value).toBe('newer user input');
+  });
+
+  it('skips redundant loadSessionDetail when SSE is connected for send/steer/retry/flush and falls back when disconnected', async () => {
+    window.history.replaceState(null, '', '/?t=tok-ctrl-1&session=s-ctrl');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+
+    let getSessionCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || 'GET').toUpperCase();
+      if (url.includes('/api/v1/bootstrap')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              channel: 'lan',
+              permissionLevel: 'L1',
+              writeEnabled: true,
+              models: [{ id: 'g25', shortName: 'G2.5' }],
+              defaultModelId: 'g25',
+              workspaces: ['/repo']
+            })
+        };
+      }
+      if (url.includes('/api/v1/sessions/s-ctrl/queue/') && url.includes('/steer')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, queue: [] }) };
+      }
+      if (url.includes('/api/v1/sessions/s-ctrl/queue')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, queue: [] }) };
+      }
+      if (url.includes('/api/v1/sessions/s-ctrl/messages') && method === 'POST') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      }
+      if (url.includes('/api/v1/sessions/s-ctrl')) {
+        getSessionCalls++;
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: { cascadeId: 's-ctrl', status: 'CASCADE_RUN_STATUS_IDLE', numTotalSteps: 1 },
+              events: [
+                {
+                  seq: 0,
+                  kind: 'user',
+                  status: 'done',
+                  rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  payload: { text: 'synced from fallback' }
+                }
+              ]
+            })
+        };
+      }
+      if (url.includes('/api/v1/sessions')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              sessions: [
+                {
+                  cascadeId: 's-ctrl',
+                  title: 'Ctrl Session',
+                  summary: '',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  stepCount: 1,
+                  lastModifiedTime: null,
+                  workspaceUri: '/repo',
+                  branchName: 'main'
+                }
+              ]
+            })
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const store = new RemoteStoreController();
+    await store.init();
+    await waitFor(() => expect(store.getState().sseStatus).toBe('connected'));
+
+    const baselineGets = getSessionCalls;
+
+    // 1. sendMessage with connected SSE: no loadSessionDetail
+    store.setComposerText('msg one');
+    await store.sendMessage();
+    expect(getSessionCalls).toBe(baselineGets);
+    expect(store.getState().events.some((e) => e.seq === -1 && e.payload?.optimistic === true)).toBe(true);
+
+    // 2. steerQueuedMessage (server) with connected SSE: no loadSessionDetail
+    store.getState().queue.push({
+      id: 'q-srv-steer',
+      queueId: 'q-srv-steer',
+      sessionId: 's-ctrl',
+      text: 'steer me',
+      mode: 'chat',
+      dispatchMode: 'queue',
+      createdAt: Date.now(),
+      status: 'queued',
+      source: 'server'
+    });
+    await store.steerQueuedMessage('q-srv-steer');
+    expect(getSessionCalls).toBe(baselineGets);
+
+    // 3. retryQueuedMessage with connected SSE: no loadSessionDetail
+    store.getState().queue.push({
+      id: 'q-retry-1',
+      sessionId: 's-ctrl',
+      text: 'retry me',
+      mode: 'chat',
+      dispatchMode: 'queue',
+      createdAt: Date.now(),
+      status: 'failed',
+      source: 'local'
+    });
+    await store.retryQueuedMessage('q-retry-1');
+    expect(getSessionCalls).toBe(baselineGets);
+
+    // 4. flushPendingQueue with connected SSE: no loadSessionDetail
+    store.getState().queue.push({
+      id: 'q-flush-1',
+      sessionId: 's-ctrl',
+      text: 'flush me',
+      mode: 'chat',
+      dispatchMode: 'queue',
+      createdAt: Date.now(),
+      status: 'queued',
+      source: 'local'
+    });
+    await store.flushPendingQueue();
+    expect(getSessionCalls).toBe(baselineGets);
+
+    // 5. When SSE is disconnected, sendMessage triggers non-blocking fallback loadSessionDetail
+    MockEventSource.instances[0]?.onerror?.();
+    await waitFor(() => expect(store.getState().sseStatus).toBe('disconnected'));
+
+    store.setComposerText('offline sse fallback');
+    await store.sendMessage();
+    await waitFor(() => expect(getSessionCalls).toBe(baselineGets + 1));
+    store.destroy();
   });
 });

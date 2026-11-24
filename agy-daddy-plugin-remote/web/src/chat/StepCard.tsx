@@ -279,6 +279,7 @@ function StepCardInner({
 
   const p = event.payload || {};
   const isUser = event.kind === 'user';
+  const isOptimistic = isUser && p.optimistic === true;
   const isPending = event.status === 'pending';
   const isGenerating = event.status === 'generating';
   const isRunning = event.status === 'running' || isGenerating;
@@ -582,7 +583,7 @@ function StepCardInner({
   }
 
   // Pending authorization card (command / code_action / file_view / tool_generic / etc.)
-  if (isPending && event.kind !== 'ask_question') {
+  if (isPending && !isUser && event.kind !== 'ask_question') {
     const info = getPendingSummaryLines(event);
     return (
       <article
@@ -939,6 +940,7 @@ function StepCardInner({
       className={[
         styles.card,
         isUser ? styles.cardUser : '',
+        isOptimistic ? styles.cardOptimistic : '',
         isGenerating ? styles.cardGenerating : '',
         isError ? styles.cardError : ''
       ]
@@ -947,6 +949,7 @@ function StepCardInner({
       data-testid={`step-card-${event.seq}`}
       data-kind={event.kind}
       data-status={event.status}
+      data-optimistic={isOptimistic ? 'true' : undefined}
     >
       <header className={styles.header}>
         <div className={styles.headerLeft}>
@@ -961,15 +964,19 @@ function StepCardInner({
           >
             {KIND_LABELS[event.kind] || event.kind}
           </span>
-          <span className={styles.seq}>#{event.seq}</span>
+          {!isOptimistic && <span className={styles.seq}>#{event.seq}</span>}
           {event.title && event.kind !== 'thinking_and_text' && event.kind !== 'user' && (
             <span className={styles.title}>{event.title}</span>
           )}
         </div>
-        {(isRunning || isError) && (
-          <span className={`${styles.status} ${statusCls}`}>
-            {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
-          </span>
+        {isOptimistic ? (
+          <span className={`${styles.status} ${styles.statusOptimistic}`}>发送中…</span>
+        ) : (
+          (isRunning || isError) && (
+            <span className={`${styles.status} ${statusCls}`}>
+              {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
+            </span>
+          )
         )}
       </header>
       <div className={styles.body}>{renderStandardBody()}</div>

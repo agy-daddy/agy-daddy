@@ -12,8 +12,148 @@
       "max": 65535,
       "default": 18767,
       "label": {
-        "en": "Local Listen Port (127.0.0.1)",
-        "zh-CN": "本地监听端口 (127.0.0.1)"
+        "en": "Listen Port",
+        "zh-CN": "监听端口"
+      },
+      "description": {
+        "en": "TCP port shared by all access channels.",
+        "zh-CN": "所有访问通道共用的 TCP 端口。"
+      }
+    },
+    {
+      "key": "bindHost",
+      "type": "enum",
+      "default": "auto",
+      "options": [
+        {
+          "value": "auto",
+          "label": { "en": "Auto (follow enabled channels)", "zh-CN": "自动（跟随已启用通道）" }
+        },
+        {
+          "value": "loopback",
+          "label": { "en": "Force 127.0.0.1", "zh-CN": "强制 127.0.0.1" }
+        },
+        {
+          "value": "lan",
+          "label": { "en": "Force 0.0.0.0 (all interfaces)", "zh-CN": "强制 0.0.0.0（所有网卡）" }
+        }
+      ],
+      "label": {
+        "en": "Listen Address",
+        "zh-CN": "监听地址"
+      },
+      "description": {
+        "en": "Auto binds 127.0.0.1 and only widens to 0.0.0.0 when a non-loopback channel is enabled. Non-loopback binding is refused unless at least one such channel is on.",
+        "zh-CN": "自动模式默认绑定 127.0.0.1，仅当启用非回环通道时才扩展到 0.0.0.0；未启用任何非回环通道时拒绝非回环绑定。"
+      }
+    },
+    {
+      "key": "loopback",
+      "type": "boolean",
+      "default": true,
+      "label": {
+        "en": "Loopback Channel (127.0.0.1)",
+        "zh-CN": "本机回环通道 (127.0.0.1)"
+      },
+      "description": {
+        "en": "Default channel. Keeps the original full read/write console on this machine.",
+        "zh-CN": "默认通道，保留本机原有全读写工作台能力。"
+      }
+    },
+    {
+      "key": "lan",
+      "type": "boolean",
+      "default": false,
+      "label": {
+        "en": "LAN Channel (Wi-Fi)",
+        "zh-CN": "局域网通道 (Wi-Fi)"
+      },
+      "description": {
+        "en": "Bind all interfaces so phones/tablets on the same network can open the console. Still requires the pairing token.",
+        "zh-CN": "监听所有网卡，同一 Wi-Fi 下的手机/平板可打开工作台；仍需配对 Token。"
+      }
+    },
+    {
+      "key": "tailscale",
+      "type": "boolean",
+      "default": false,
+      "label": {
+        "en": "Tailscale Channel",
+        "zh-CN": "Tailscale 通道"
+      },
+      "description": {
+        "en": "Detect Tailscale 100.64.0.0/10 and *.ts.net addresses and expose a channel entry for them.",
+        "zh-CN": "识别 Tailscale 100.64.0.0/10 与 *.ts.net 地址，并提供对应通道入口。"
+      }
+    },
+    {
+      "key": "bonjour",
+      "type": "boolean",
+      "default": false,
+      "label": {
+        "en": "Bonjour Channel (.local)",
+        "zh-CN": "Bonjour 通道 (.local)"
+      },
+      "description": {
+        "en": "Advertise a <hostname>.local entry for zero-configuration LAN access.",
+        "zh-CN": "提供 <主机名>.local 入口，局域网内免 IP 访问。"
+      }
+    },
+    {
+      "key": "cloudflare",
+      "type": "boolean",
+      "default": false,
+      "label": {
+        "en": "Cloudflare Tunnel Channel",
+        "zh-CN": "Cloudflare Tunnel 通道"
+      },
+      "description": {
+        "en": "Accept Cloudflare Tunnel traffic (cf-ray / cf-connecting-ip). The tunnel itself is established by cloudflared pointing at 127.0.0.1:<port>; writes on this channel always need a second confirmation.",
+        "zh-CN": "接受 Cloudflare Tunnel 流量（cf-ray / cf-connecting-ip）。隧道由 cloudflared 指向 127.0.0.1:<端口> 建立；该通道写操作始终需要二次确认。"
+      }
+    },
+    {
+      "key": "tunnelHostname",
+      "type": "string",
+      "default": "",
+      "label": {
+        "en": "Tunnel Public Hostname",
+        "zh-CN": "隧道公网域名"
+      },
+      "placeholder": {
+        "en": "https://ag.example.com",
+        "zh-CN": "https://ag.example.com"
+      },
+      "description": {
+        "en": "Optional HTTPS hostname of the named tunnel; used to display the entry URL and to classify tunnel traffic.",
+        "zh-CN": "可选，命名隧道的 HTTPS 域名；用于展示入口 URL 并识别隧道流量。"
+      }
+    },
+    {
+      "key": "remotePermissionLevel",
+      "type": "enum",
+      "default": "L0",
+      "options": [
+        {
+          "value": "L0",
+          "label": { "en": "L0 · Read-only", "zh-CN": "L0 · 只读" }
+        },
+        {
+          "value": "L1",
+          "label": { "en": "L1 · Chat & sessions", "zh-CN": "L1 · 对话与会话" }
+        },
+        {
+          "value": "L2",
+          "label": { "en": "L2 · Full workspace & host admin", "zh-CN": "L2 · 工作区与宿主管理" }
+        }
+      ],
+      "label": {
+        "en": "Non-loopback Permission Level",
+        "zh-CN": "非回环通道权限级别"
+      },
+      "description": {
+        "en": "Applies to lan/tailscale/bonjour/cloudflare only; loopback always stays full read/write. L0 = read + stream, L1 = + sessions/chat, L2 = + file write, Git, plugin and host settings.",
+        "zh-CN": "仅作用于 lan/tailscale/bonjour/cloudflare，本机回环始终全读写。L0 = 只读 + 流式；L1 = 增加会话与对话；L2 = 增加文件写入、Git、插件与宿主设置。"
       }
     },
     {

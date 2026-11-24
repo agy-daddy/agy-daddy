@@ -815,9 +815,17 @@ test('settings.schema.json removes redundant locale field while keeping core web
   );
   const keys = schema.fields.map((f) => f.key);
   assert.equal(keys.includes('locale'), false);
-  assert.deepEqual(keys, ['port', 'theme', 'colorTheme', 'drawerSpeed', 'allowedRoots', 'autoOpenBrowser']);
-  const portField = schema.fields.find((f) => f.key === 'port');
-  assert.equal(portField.default, 18767);
+  assert.deepEqual(keys, [
+    'port', 'bindHost', 'loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare',
+    'tunnelHostname', 'remotePermissionLevel', 'theme', 'colorTheme', 'drawerSpeed',
+    'allowedRoots', 'autoOpenBrowser'
+  ]);
+  const byKey = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
+  assert.equal(byKey.port.default, 18767);
+  assert.equal(byKey.bindHost.default, 'auto');
+  assert.equal(byKey.loopback.default, true);
+  assert.equal(byKey.lan.default, false);
+  assert.equal(byKey.remotePermissionLevel.default, 'L0');
 });
 
 test('Artifact previewers: BUILTIN_ARTIFACT_PREVIEWERS, getArtifactPreviewers plugin discovery, and renderPluginArtifactPreview', async () => {

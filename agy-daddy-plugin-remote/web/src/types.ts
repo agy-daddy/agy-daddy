@@ -321,6 +321,13 @@ export type SessionEventStatus =
   | 'error'
   | 'canceled';
 
+export interface OptimisticUserPayload extends Record<string, unknown> {
+  text: string;
+  images?: Array<{ dataUrl: string; mime: string }>;
+  clientTempId: string;
+  optimistic: true;
+}
+
 export interface SessionEvent<TPayload extends Record<string, unknown> = Record<string, unknown>> {
   seq: number;
   kind: SessionEventKind;

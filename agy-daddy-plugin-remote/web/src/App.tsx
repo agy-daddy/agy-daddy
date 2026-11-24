@@ -87,7 +87,10 @@ function AppInner() {
   );
 
   const pendingEvent = useMemo(
-    () => s.events.find((ev) => ev.status === 'pending') || null,
+    () =>
+      s.events.find(
+        (ev) => ev.status === 'pending' && ev.kind !== 'user' && ev.payload?.optimistic !== true
+      ) || null,
     [s.events]
   );
 

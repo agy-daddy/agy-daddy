@@ -17,6 +17,13 @@
   border-color: var(--ag-border);
 }
 
+.cardOptimistic {
+  opacity: 0.72;
+  transition:
+    opacity 160ms var(--ag-ease-out, ease-out),
+    border-color 160ms var(--ag-ease-out, ease-out);
+}
+
 .cardGenerating {
   border-color: var(--ag-accent-border, var(--ag-border));
 }
@@ -127,6 +134,11 @@
 .statusError {
   background: var(--ag-danger-soft);
   color: var(--ag-danger);
+}
+
+.statusOptimistic {
+  background: var(--ag-control);
+  color: var(--ag-muted);
 }
 
 /* Thinking disclosure pill */

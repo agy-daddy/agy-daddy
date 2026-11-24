@@ -479,6 +479,7 @@ test('D5: staticDir hosting with SPA fallback and JSON 404 for unknown /api/v1/*
   fs.mkdirSync(path.join(tmpStatic, 'assets'), { recursive: true });
   fs.writeFileSync(path.join(tmpStatic, 'index.html'), '<!doctype html><html><body>SPA SHELL</body></html>', 'utf8');
   fs.writeFileSync(path.join(tmpStatic, 'assets', 'app.js'), 'console.log("agy-web");', 'utf8');
+  fs.writeFileSync(path.join(tmpStatic, 'assets', 'app-abc123.js'), 'console.log("agy-web-hashed");', 'utf8');
 
   const pairingToken = 'static-token-111';
   const srv = createWebServer({
@@ -506,6 +507,12 @@ test('D5: staticDir hosting with SPA fallback and JSON 404 for unknown /api/v1/*
     assert.equal(assetRes.status, 200);
     assert.match(String(assetRes.headers['content-type']), /javascript/);
     assert.match(assetRes.text, /agy-web/);
+    assert.equal(assetRes.headers['cache-control'], 'public, max-age=31536000, immutable');
+
+    const hashedAssetRes = await httpRequest(`${baseUrl}/assets/app-abc123.js`);
+    assert.equal(hashedAssetRes.status, 200);
+    assert.equal(hashedAssetRes.headers['cache-control'], 'public, max-age=31536000, immutable');
+    assert.equal(spaRoot.headers['cache-control'], 'no-store');
 
     const unknownApi = await httpRequest(`${baseUrl}/api/v1/not-exist`, {
       headers: { Authorization: `Bearer ${pairingToken}` }

@@ -3,8 +3,27 @@
   "version": "1.0.0",
   "description": "Agy-Daddy cumulative token usage, 52-week heatmap, API cost ledger, and subscription plan plugin",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-usage"
+  },
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "src/",
+    "locales/",
+    "native/",
+    "baseline.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

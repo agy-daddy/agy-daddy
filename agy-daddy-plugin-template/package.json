@@ -3,8 +3,24 @@
   "version": "1.0.0",
   "description": "Official Agy-Daddy starter template for third-party isolated-world plugins",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-template"
+  },
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "src/",
+    "locales/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

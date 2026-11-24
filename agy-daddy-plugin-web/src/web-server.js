@@ -1383,11 +1383,14 @@ class WebServer {
 
     const ext = path.extname(targetFile).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const relFromRoot = path.relative(realRoot, targetFile).split(path.sep).join('/');
+    const isImmutableAsset = relFromRoot.startsWith('assets/');
     const content = fs.readFileSync(targetFile);
     res.writeHead(200, {
       'Content-Type': contentType,
       'Content-Length': String(content.length),
-      ...SECURITY_HEADERS
+      ...SECURITY_HEADERS,
+      'Cache-Control': isImmutableAsset ? 'public, max-age=31536000, immutable' : 'no-store'
     });
     if (method === 'HEAD') {
       res.end();

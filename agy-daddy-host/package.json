@@ -19,8 +19,24 @@
     ".": "./src/index.js",
     "./sdk": "./sdk/index.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "sdk/",
+    "data/",
+    "dist/host-renderer.js",
+    "assets/",
+    "templates/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build:renderer": "node scripts/build-renderer.js",
+    "prepublishOnly": "npm run build:renderer",
     "pretest": "node scripts/build-renderer.js",
     "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
   },

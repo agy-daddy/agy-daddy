@@ -7,13 +7,67 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
+    name: Build, Gates & Monorepo Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
         with:
           node-version: '22.x'
-      - name: Run full monorepo build, gates, and tests
+
+      - name: Run full monorepo build, 8 static/registry gates, and tests
         run: npm run verify
+
+      - name: Analyze bundle sizes and npm tarball contents
+        run: |
+          {
+            echo "## Bundle & Tarball Analysis"
+            echo '```text'
+            npm run analyze
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  web-ui-checks:
+    name: Web UI (${{ matrix.workdir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workdir:
+          - agy-daddy-plugin-remote/web
+          - agy-daddy-plugin-web/web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x with npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: ${{ matrix.workdir }}/package-lock.json
+
+      - name: Install frontend devDependencies
+        working-directory: ${{ matrix.workdir }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.workdir }}
+        run: npm run typecheck
+
+      - name: Run frontend unit tests
+        working-directory: ${{ matrix.workdir }}
+        run: npm test
+
+      - name: Build production web bundle
+        working-directory: ${{ matrix.workdir }}
+        run: npm run build

@@ -13,19 +13,22 @@ const ENV_MATRIX = Object.freeze({
     env: 'development',
     distTag: 'dev',
     provenance: false,
-    requireAuth: false
+    requireAuth: false,
+    authMode: 'local'
   }),
   staging: Object.freeze({
     env: 'staging',
     distTag: 'next',
     provenance: false,
-    requireAuth: true
+    requireAuth: true,
+    authMode: 'oidc'
   }),
   production: Object.freeze({
     env: 'production',
     distTag: 'latest',
-    provenance: true,
-    requireAuth: true
+    provenance: false,
+    requireAuth: true,
+    authMode: 'oidc'
   })
 });
 
@@ -76,6 +79,7 @@ function resolveEnvironmentConfig(envName = process.env.RELEASE_ENV || 'staging'
     distTag,
     provenance,
     requireAuth: base.requireAuth,
+    authMode: base.authMode,
     npmRegistryUrl
   };
 }
@@ -308,6 +312,8 @@ function publishRelease({
   envConfig,
   dryRun = true,
   provenance = envConfig.provenance,
+  interactive = false,
+  otp = null,
   skipVerify = false,
   execFn = runCommand
 }) {
@@ -328,8 +334,12 @@ function publishRelease({
   }
 
   const results = [];
-  for (const item of targets) {
+  for (let idx = 0; idx < targets.length; idx++) {
+    const item = targets[idx];
     if (!dryRun && isVersionPublished(item.name, item.version, envConfig.npmRegistryUrl, execFn)) {
+      if (interactive) {
+        console.error(`[publish] (${idx + 1}/${targets.length}) ${item.name}@${item.version} already published, skipping`);
+      }
       results.push({
         name: item.name,
         version: item.version,
@@ -341,11 +351,26 @@ function publishRelease({
 
     const args = ['publish', '--access', 'public', '--tag', envConfig.distTag, '--registry', envConfig.npmRegistryUrl];
     if (provenance) args.push('--provenance');
+    if (otp) args.push('--otp', String(otp));
     if (dryRun) args.push('--dry-run');
 
-    const res = execFn('npm', args, { cwd: item.dir });
+    if (interactive || !dryRun) {
+      console.error(`[publish] (${idx + 1}/${targets.length}) ${item.name}@${item.version} -> ${dryRun ? 'dry-run' : envConfig.distTag}`);
+    }
+
+    let res;
+    if (interactive && execFn === runCommand) {
+      const child = spawnSync('npm', args, {
+        cwd: item.dir,
+        stdio: 'inherit',
+        shell: process.platform === 'win32'
+      });
+      res = { status: child.status ?? 1, stdout: '', stderr: '' };
+    } else {
+      res = execFn('npm', args, { cwd: item.dir });
+    }
     if (res.status !== 0) {
-      throw new Error(`npm publish failed for ${item.name}@${item.version}: ${res.stderr || res.stdout}`);
+      throw new Error(`npm publish failed for ${item.name}@${item.version}: ${res.stderr || res.stdout || `exit=${res.status}`}`);
     }
     results.push({
       name: item.name,
@@ -535,6 +560,8 @@ function parseCliArgs(argv) {
     dryRun: true,
     execute: false,
     skipVerify: false,
+    interactive: false,
+    otp: null,
     provenance: undefined,
     toVersion: null,
     deprecateVersion: null,
@@ -555,10 +582,12 @@ function parseCliArgs(argv) {
     else if (arg === '--to-version') opts.toVersion = next();
     else if (arg === '--deprecate-version') opts.deprecateVersion = next();
     else if (arg === '--out-dir') opts.outDir = next();
+    else if (arg === '--otp') opts.otp = next();
     else if (arg === '--retries') opts.retries = Number(next());
     else if (arg === '--retry-delay-ms') opts.retryDelayMs = Number(next());
     else if (arg === '--dry-run') { opts.dryRun = true; opts.execute = false; }
     else if (arg === '--execute') { opts.dryRun = false; opts.execute = true; }
+    else if (arg === '--interactive') opts.interactive = true;
     else if (arg === '--skip-verify') opts.skipVerify = true;
     else if (arg === '--provenance') opts.provenance = true;
     else if (arg === '--no-provenance') opts.provenance = false;
@@ -576,8 +605,10 @@ Options:
   --target <all|tag|pkg[,pkg...]>          Target packages or tag e.g. v1.0.0 / plugin-quota@1.0.0
   --dry-run                                Preview commands without mutating npm (default)
   --execute                                Execute actual npm publish / rollback mutations
+  --interactive                            Inherit stdio for interactive local 2FA / WebAuthn prompts
+  --otp <code>                             Pass one-time password to npm publish
   --skip-verify                            Skip npm run verify during pack/publish
-  --provenance / --no-provenance           Override npm provenance flag
+  --provenance / --no-provenance           Override npm provenance flag (OIDC adds provenance automatically)
   --mode <local|npm>                       Healthcheck mode (default: local)
   --retries <n>                            Healthcheck retry count for npm propagation
   --retry-delay-ms <ms>                    Delay between healthcheck retries
@@ -641,6 +672,8 @@ async function main(argv = process.argv.slice(2)) {
       envConfig,
       dryRun: opts.dryRun,
       provenance: opts.provenance === undefined ? envConfig.provenance : opts.provenance,
+      interactive: opts.interactive,
+      otp: opts.otp,
       skipVerify: opts.skipVerify
     });
     console.log(JSON.stringify({ ok: true, ...res }, null, 2));

@@ -15,7 +15,8 @@ const {
   publishRelease,
   checkNpmHealth,
   buildRollbackPlan,
-  executeRollback
+  executeRollback,
+  parseCliArgs
 } = require('../release');
 
 test('parseReleaseTag resolves coordinated root tags and package-scoped tags', () => {
@@ -53,10 +54,12 @@ test('resolveEnvironmentConfig isolates dev / next / latest channels and allows 
   const stgCfg = resolveEnvironmentConfig('staging');
   assert.equal(stgCfg.distTag, 'next');
   assert.equal(stgCfg.provenance, false);
+  assert.equal(stgCfg.authMode, 'oidc');
 
   const prodCfg = resolveEnvironmentConfig('production');
   assert.equal(prodCfg.distTag, 'latest');
-  assert.equal(prodCfg.provenance, true);
+  assert.equal(prodCfg.provenance, false);
+  assert.equal(prodCfg.authMode, 'oidc');
 
   const customCfg = resolveEnvironmentConfig('staging', {
     npmRegistryUrl: 'http://127.0.0.1:4873/',
@@ -108,7 +111,46 @@ test('publishRelease dry-run emits public access & dist-tag commands without mut
     'latest',
     '--registry',
     'https://registry.npmjs.org',
+    '--dry-run'
+  ]);
+});
+
+test('parseCliArgs and publishRelease support --interactive, --otp, and explicit --provenance', () => {
+  const parsed = parseCliArgs(['publish', '--env', 'production', '--execute', '--interactive', '--otp', '123456', '--provenance']);
+  assert.equal(parsed.cmd, 'publish');
+  assert.equal(parsed.opts.dryRun, false);
+  assert.equal(parsed.opts.interactive, true);
+  assert.equal(parsed.opts.otp, '123456');
+  assert.equal(parsed.opts.provenance, true);
+
+  const { targets } = resolveTargets('host', ROOT_DIR);
+  const envConfig = resolveEnvironmentConfig('production');
+  const calls = [];
+  const res = publishRelease({
+    rootDir: ROOT_DIR,
+    targets,
+    envConfig,
+    dryRun: true,
+    provenance: parsed.opts.provenance,
+    interactive: parsed.opts.interactive,
+    otp: parsed.opts.otp,
+    execFn: (cmd, args) => {
+      calls.push({ cmd, args });
+      return { status: 0, stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(res.results[0].status, 'dry-run');
+  assert.deepEqual(calls[0].args, [
+    'publish',
+    '--access',
+    'public',
+    '--tag',
+    'latest',
+    '--registry',
+    'https://registry.npmjs.org',
     '--provenance',
+    '--otp',
+    '123456',
     '--dry-run'
   ]);
 });

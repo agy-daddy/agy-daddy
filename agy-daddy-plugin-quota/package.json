@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-quota",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Agy-Daddy Gemini/Claude quota pools, 5h/weekly reset countdown, and popover plugin",
   "license": "MIT",
   "repository": {

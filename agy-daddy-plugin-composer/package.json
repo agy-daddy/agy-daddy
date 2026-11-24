@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-composer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Agy-Daddy composer quick prompts, ghost follow-ups, 240K auto-compact, and Auto-Accept with high-risk guard plugin",
   "license": "MIT",
   "repository": {

@@ -75,7 +75,7 @@ test('validateReleaseConsistency passes on current monorepo packages and catches
   const packages = listPublishablePackages(ROOT_DIR);
   assert.equal(packages.length, 13);
 
-  const okRes = validateReleaseConsistency({ rootDir: ROOT_DIR, packages, expectedVersion: '1.0.0' });
+  const okRes = validateReleaseConsistency({ rootDir: ROOT_DIR, packages, expectedVersion: packages[0].version });
   assert.equal(okRes.ok, true);
   assert.equal(okRes.checked.length, 13);
 
@@ -190,7 +190,9 @@ test('buildRollbackPlan and executeRollback generate dist-tag and deprecate comm
 });
 
 test('checkNpmHealth verifies dist-tag and integrity against local mock registry server', async () => {
-  let activeTagVersion = '1.0.0';
+  const { targets } = resolveTargets('host', ROOT_DIR);
+  const hostVersion = targets[0].version;
+  let activeTagVersion = hostVersion;
   const server = http.createServer((req, res) => {
     if (req.url === '/%40agy-daddy%2Fhost' || req.url === '/@agy-daddy%2Fhost') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -198,7 +200,7 @@ test('checkNpmHealth verifies dist-tag and integrity against local mock registry
         name: '@agy-daddy/host',
         'dist-tags': { latest: activeTagVersion },
         versions: {
-          '1.0.0': { dist: { integrity: 'sha512-mockintegrity==' } }
+          [hostVersion]: { dist: { integrity: 'sha512-mockintegrity==' } }
         }
       }));
       return;
@@ -212,7 +214,6 @@ test('checkNpmHealth verifies dist-tag and integrity against local mock registry
   const baseUrl = `http://127.0.0.1:${addr.port}`;
 
   try {
-    const { targets } = resolveTargets('host', ROOT_DIR);
     const envConfig = resolveEnvironmentConfig('production', { npmRegistryUrl: baseUrl });
 
     const okHealth = await checkNpmHealth({

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "agy-daddy.context",
   "publisher": "agy-daddy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "displayName": {
     "zh-CN": "上下文与实时速度",

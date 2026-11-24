@@ -12,6 +12,7 @@ const { spawnSync } = require('node:child_process');
 const { AgyDaddyDaemon } = require('../src/core/daemon');
 const { safeWriteJsonSync } = require('../src/core/storage');
 const { createMockDocument } = require('../sdk/mock-harness');
+const { version: hostPackageVersion } = require('../package.json');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 
@@ -510,6 +511,7 @@ test('CdpInjector 全员 Isolated World 端到端（真实 dist/host-renderer.js
 
     // 1. 验证真实 dist/host-renderer.js 正确消费 Boot Options 且不泄露全局 Token / 内部通道
     assert.ok(mainCtx.__AGYDaddyHost);
+    assert.equal(mainCtx.__AGYDaddyHost.version, hostPackageVersion);
     assert.equal(mainCtx.__AGY_DADDY_BOOT_OPTIONS__, undefined);
     assert.equal(mainCtx.__AGYDaddyHost.xworldChannelName, undefined);
     assert.equal(mainCtx.__AGYDaddyHost.bridgeToken, undefined);

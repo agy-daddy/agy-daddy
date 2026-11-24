@@ -9,6 +9,7 @@ const { loadAnchorsRegistry, resolveAnchorSelectors, checkAnchorHealth, checkPlu
 const { KNOWN_ANCHORS } = require('../src/contracts/constants');
 const { createMockHostHarness, createMockDocument } = require('../sdk/mock-harness');
 const { createHostRuntime } = require('../src/renderer/host-runtime');
+const { version: hostPackageVersion } = require('../package.json');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 
@@ -83,6 +84,7 @@ test('UI 主题色系一致性、去插件化静态门禁与渲染层产物编�
   }
   const bundle = fs.readFileSync(uiFiles[3], 'utf8');
   assert.doesNotThrow(() => new vm.Script(bundle, { filename: 'host-renderer.js' }));
+  assert.ok(bundle.includes(`const __AGY_HOST_VERSION__ = ${JSON.stringify(hostPackageVersion)};`));
   assert.equal(/#a78bfa|#7c3aed/i.test(bundle), false, 'host-renderer.js should not contain purple theme hex colors');
   assert.match(bundle, /data-agy-nav-active/);
   assert.match(bundle, /--sidebar-secondary/);

@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 3 输入框增强与安全自动化插件：快捷指令�
 
 - **npm 包名**：`@agy-daddy/plugin-composer`
 - **Layer 层级**：Layer 3（输入辅助与自动化守卫层）
-- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`rpc:read`、`rpc:write`、`bridge:route`、`native:install` 权限）
 - **适用场景**：常用 Prompt 一键输入、下一步动作智能推荐、提示词专业优化及执行安全把关。
 
 ---
@@ -60,6 +60,12 @@ agy-daddy plugin install npm:@agy-daddy/plugin-composer
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:read`、`dom:write`、`rpc:read`、`rpc:write`、`bridge:route`、`native:install`
+- **Requires Anchors**：
+  - `composer.root`：输入框根容器锚点
+  - `composer.editor`：输入框编辑区域锚点（用于快捷输入与幽灵提示注入）
+  - `composer.sendButton`：发送按钮锚点（用于自动确认与流式发送联动）
+  - `chat.actionButtons`：对话操作区动作按钮锚点
 - **Services (provides)**：
   - `composer`（版本 `1.0.0`，realm: `page-isolated`）
   - `composer-node`（版本 `1.0.0`，realm: `node`）
@@ -73,6 +79,8 @@ agy-daddy plugin install npm:@agy-daddy/plugin-composer
   - `composer.compact`：发送 /compact 压缩指令
   - `composer.listFrequentPrompts`：读取历史高频快捷指令列表
   - `composer.summarizeFrequentPrompts`：手动总结高频手动发送词
+- **Native Extension (contributes.native)**：
+  - Rules 规则注入：`./native/fast-io-AGENTS.md`（向会话注入高效输入与高危拦截规范）
 
 ---
 

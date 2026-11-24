@@ -73,6 +73,9 @@ agy-daddy plugin install npm:@agy-daddy/plugin-remote
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:write`、`rpc:read`、`rpc:write`、`bridge:route`、`fs:brain-read`、`fs:user-files`、`net:listen`、`process:spawn`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载远程访问扫码胶囊）
 - **Services (provides)**：
   - `remote`（版本 `1.0.0`，realm: `node`）
 - **Consumes Services**：

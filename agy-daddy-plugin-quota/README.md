@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 3 额度监测插件：Gemini / Claude-3P / Argon / Carbo
 
 - **npm 包名**：`@agy-daddy/plugin-quota`
 - **Layer 层级**：Layer 3（配额与模型状态监控层）
-- **信任等级**：官方 `T0`（声明 `dom:write`、`rpc:read` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:write`、`rpc:read`、`bridge:route`、`native:install` 权限）
 - **适用场景**：多模型配额实时剩余比例监测、用尽告警与倒计时提醒。
 
 ---
@@ -54,6 +54,9 @@ agy-daddy plugin install npm:@agy-daddy/plugin-quota
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:write`、`rpc:read`、`bridge:route`、`native:install`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载配额监测胶囊）
 - **Services (provides)**：
   - `quota`（版本 `1.0.0`，realm: `node`）
 - **Consumes Services**：
@@ -63,6 +66,10 @@ agy-daddy plugin install npm:@agy-daddy/plugin-quota
 - **Topbar Units & Popovers (contributes)**：
   - Topbar Unit: `quota`（order: `30`）
   - Topbar Popover: `quota-panel`（anchorId: `quota`）
+- **Remote Panels (contributes["remote.panels"])**：
+  - `quota`（绑定服务 `quota`，为移动端 PWA 远程面板提供多模型配额比例快照）
+- **Native Extension (contributes.native)**：
+  - MCP 服务器配置：`./native/mcp.json`（向宿主注入模型额度监控与余量查询 MCP 工具）
 
 ---
 

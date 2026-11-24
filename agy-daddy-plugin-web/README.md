@@ -57,6 +57,7 @@ agy-daddy plugin install npm:@agy-daddy/plugin-web
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`rpc:read`、`rpc:write`、`net:listen`、`fs:user-files`、`fs:brain-read`、`host:control`
 - **Services (provides)**：
   - `web-harness`（版本 `1.0.0`，realm: `node`）
 - **Consumes Services**：

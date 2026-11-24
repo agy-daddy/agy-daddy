@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 2 对话栏增强插件：右侧悬浮导航栏、思考�
 
 - **npm 包名**：`@agy-daddy/plugin-chat-nav`
 - **Layer 层级**：Layer 2（对话交互与导出层）
-- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`fs:read`、`fs:write` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`rpc:read`、`bridge:route`、`process:spawn`、`fs:brain-read`、`fs:user-files` 权限）
 - **适用场景**：长会话快速顶底定位、思考块批量展开、代码产物内联直改、对话全文检索及归档导出。
 
 ---
@@ -60,6 +60,11 @@ agy-daddy plugin install npm:@agy-daddy/plugin-chat-nav
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:read`、`dom:write`、`rpc:read`、`bridge:route`、`process:spawn`、`fs:brain-read`、`fs:user-files`
+- **Requires Anchors**：
+  - `chat.scrollViewport`：对话滚动视口锚点（用于精准顶底滚动与视口定位）
+  - `chat.messageList`：消息列表容器锚点（用于检索高亮与消息遍历）
+  - `chat.thinkingTrigger`：思考块切换按钮锚点（用于思考块展开/折叠状态监听与锁定）
 - **Services (provides)**：
   - `chat-nav`（版本 `1.0.0`，realm: `page-isolated`）
   - `chat-nav-node`（版本 `1.0.0`，realm: `node`）

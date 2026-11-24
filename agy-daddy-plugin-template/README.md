@@ -58,6 +58,9 @@ agy-daddy plugin link .
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:write`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载示例状态徽章）
 - **Services (provides)**：
   - `hello`（版本 `1.0.0`，realm: `node`）
 - **States (provides)**：
@@ -69,8 +72,6 @@ agy-daddy plugin link .
 - **Topbar Units & Popovers (contributes)**：
   - Topbar Unit: `hello-badge`（order: `90`）
   - Topbar Popover: `hello-popover`（anchorId: `hello-badge`）
-- **Requires Anchors**：
-  - `topbar.rightCluster`
 
 ---
 

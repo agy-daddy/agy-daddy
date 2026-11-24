@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 2 用量与账单插件：顶栏 Token 统计胶囊、历
 
 - **npm 包名**：`@agy-daddy/plugin-usage`
 - **Layer 层级**：Layer 2（用量与成本核算层）
-- **信任等级**：官方 `T0`（声明 `dom:write`、`fs:brain-read` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:write`、`rpc:read`、`bridge:route`、`fs:brain-read`、`native:install` 权限）
 - **适用场景**：多周期 Token 用量监控、跨会话热力图呈现、IDE 与 CLI 用量合并核算及订阅成本回本分析。
 
 ---
@@ -60,6 +60,9 @@ agy-daddy plugin install npm:@agy-daddy/plugin-usage
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:write`、`rpc:read`、`bridge:route`、`fs:brain-read`、`native:install`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载用量统计胶囊）
 - **Services (provides)**：
   - `usage`（版本 `1.0.0`，realm: `node`）
   - `subscription`（版本 `1.0.0`，realm: `node`）
@@ -70,6 +73,10 @@ agy-daddy plugin install npm:@agy-daddy/plugin-usage
 - **Topbar Units & Popovers (contributes)**：
   - Topbar Unit: `tokens`（order: `20`）
   - Topbar Popover: `usage-panel`（anchorId: `tokens`）
+- **Remote Panels (contributes["remote.panels"])**：
+  - `usage`（绑定服务 `usage`，为移动端 PWA 远程面板提供 Token 用量汇总）
+- **Native Extension (contributes.native)**：
+  - MCP 服务器配置：`./native/mcp.json`（向宿主注入用量统计与订阅分析 MCP 工具）
 
 ---
 

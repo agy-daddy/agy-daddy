@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 1 终端与多路复用器启动插件：顶栏 CLI 胶�
 
 - **npm 包名**：`@agy-daddy/plugin-cli`
 - **Layer 层级**：Layer 1（接入与工作区层）
-- **信任等级**：官方 `T0`（声明 `dom:write`、`process:spawn`、`fs:read`、`fs:write` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:write`、`bridge:route`、`process:spawn`、`fs:brain-read`、`rpc:read` 权限）
 - **适用场景**：一键从当前会话工作区启动独立终端 CLI（Terminal、iTerm2、Ghostty、Warp、Rex、WezTerm、tmux、Windows Terminal、PowerShell 等）。
 
 ---
@@ -61,6 +61,9 @@ agy-daddy plugin install npm:@agy-daddy/plugin-cli
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:write`、`bridge:route`、`process:spawn`、`fs:brain-read`、`rpc:read`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载 CLI 启动胶囊）
 - **Services (provides)**：
   - `cli`（版本 `1.0.0`，realm: `node`）
 - **Consumes Services**：

@@ -4,7 +4,7 @@ Agy-Daddy 官方 Layer 2 上下文监测插件：上下文环、审计面板、�
 
 - **npm 包名**：`@agy-daddy/plugin-context`
 - **Layer 层级**：Layer 2（会话洞察与监控层）
-- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`fs:brain-read` 权限）
+- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`rpc:read`、`fs:brain-read`、`bridge:route`、`native:install` 权限）
 - **适用场景**：实时监测对话 Token 上下文大小、预警 240K/328K 提示缓存断崖，以及输入框生成速度与附件审计。
 
 ---
@@ -60,6 +60,10 @@ agy-daddy plugin install npm:@agy-daddy/plugin-context
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:read`、`dom:write`、`rpc:read`、`fs:brain-read`、`bridge:route`、`native:install`
+- **Requires Anchors**：
+  - `topbar.rightCluster`：顶栏右侧集群锚点（用于挂载顶栏上下文环）
+  - `composer.root`：输入框根容器锚点（用于挂载输入框脉冲胶囊）
 - **Services (provides)**：
   - `context`（版本 `1.0.0`，realm: `node`）
   - `context-ui`（版本 `1.0.0`，realm: `page-isolated`）
@@ -75,6 +79,11 @@ agy-daddy plugin install npm:@agy-daddy/plugin-context
 - **Topbar Units & Popovers (contributes)**：
   - Topbar Unit: `ring`（order: `10`）
   - Topbar Popover: `context-panel`（anchorId: `ring`）
+- **Remote Panels (contributes["remote.panels"])**：
+  - `context`（绑定服务 `context`，为移动端 PWA 远程面板提供上下文快照）
+- **Native Extension (contributes.native)**：
+  - MCP 服务器配置：`./native/mcp.json`（向宿主注入上下文治理 MCP 工具）
+  - Skills 技能目录：`./native/skills`（注入 context-governance 技能包）
 
 ---
 

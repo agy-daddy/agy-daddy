@@ -61,6 +61,7 @@ agy-daddy plugin install npm:@agy-daddy/plugin-proxy
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`bridge:route`、`net:listen`、`net:outbound:*`、`host:launch-args`
 - **Services (provides)**：
   - `proxy`（版本 `1.0.0`，realm: `node`）
 - **Events (provides)**：

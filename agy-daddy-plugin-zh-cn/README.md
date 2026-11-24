@@ -32,8 +32,8 @@ agy-daddy plugin install --official
 agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 ```
 
-### 3. 宿主设置中心与顶栏交互
-安装后自动激活（`onStartup`）。可在顶栏点击语言地球图标呼出 10 语言选择浮窗（Popover）即切即生效，或在设置中心「客户端多语言」面板精细调节。
+### 3. 宿主设置中心与交互
+安装后自动激活（`onStartup`）。可在 Agy-Daddy 设置中心「客户端多语言」面板中切换语言并精细调节显示偏好，或通过命令面板执行 `zh-cn.toggle-lang` / `zh-cn.set-lang` 快速切换界面显示语言，即切即生效，无需重启客户端。
 
 ---
 
@@ -56,6 +56,9 @@ agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 
 严格依据 `agy-plugin.json` 声明：
 
+- **Permissions**：`dom:read`、`dom:write`、`net:outbound:translate.googleapis.com`
+- **Requires Anchors**：
+  - `sidebar.conversationRows`：侧边栏会话行锚点（用于会话标题本地化翻译）
 - **Services (provides)**：
   - `zh-cn`（版本 `1.0.0`，realm: `node`）
 - **States (provides)**：
@@ -63,15 +66,13 @@ agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 - **Commands (contributes)**：
   - `zh-cn.toggle-lang`：切换当前语言 / English 原文
   - `zh-cn.set-lang`：切换界面显示语言
-- **Requires Anchors**：
-  - `sidebar.conversationRows`
 
 ---
 
 ## 使用示例与本地测试
 
 ### 使用示例
-点击顶栏多语言地球图标，从浮窗选择「繁體中文」或「日本語」，整界面文案将在毫秒级完成无缝切换；若需临时对比英文原词，执行快捷命令 `zh-cn.toggle-lang` 即可在当前语言与 English 之间一键往返。
+在 Agy-Daddy 设置中心选择「繁體中文」或「日本語」，整界面文案将在毫秒级完成无缝切换；若需临时对比英文原词，执行快捷命令 `zh-cn.toggle-lang` 即可在当前语言与 English 之间一键往返。
 
 ### 本地测试
 在插件目录下执行自动化单元测试：

@@ -87,3 +87,7 @@
 #agy-popover-browser-occluder[hidden] {
   display: none !important;
 }
+
+:root[data-agy-aux-compact="true"] [data-side-panel-strip="true"] {
+  padding-right: var(--agy-aux-strip-pr, 116px) !important;
+}

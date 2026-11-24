@@ -163,10 +163,11 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
 #agy-qcap-toast {
   position: sticky;
   right: 0;
-  z-index: 2;
+  z-index: 6;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  max-width: min(360px, 75%);
   height: 23px;
   padding: 0 9px;
   border-radius: 999px;
@@ -174,13 +175,20 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
   color: var(--ag-text-secondary, #52525b);
   background: var(--ag-bg-panel, var(--background, #18181b));
   border: 1px solid var(--ag-border-card, rgba(113, 113, 122, 0.24));
+  box-shadow: -8px 0 12px -4px var(--ag-bg-panel, var(--background, #18181b));
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  box-sizing: border-box;
 }
 
 #agy-qcap-toast[data-tone="error"] {
   color: var(--ag-ring-danger, #ef4444);
-  border-color: rgba(239, 68, 68, 0.45);
-  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.55);
+  background: var(--ag-bg-panel, var(--background, #18181b));
+  background-image: linear-gradient(rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.14));
+  font-weight: 500;
 }
 
 #agy-qcap-toast[hidden] {
@@ -344,8 +352,72 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
 
 #agy-prompt-opt-wrap button[hidden],
 #agy-prompt-opt-btn[hidden],
-#agy-prompt-undo-btn[hidden] {
+#agy-prompt-undo-btn[hidden],
+#agy-prompt-opt-status[hidden],
+#agy-composer-float-toast[hidden] {
   display: none !important;
+}
+
+#agy-prompt-opt-btn[data-error="true"] {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: var(--ag-ring-danger, #ef4444);
+}
+
+#agy-prompt-opt-status {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(400px, calc(100% - 44px));
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ag-text-secondary, #a1a1aa);
+  background: var(--ag-bg-panel, var(--background, #18181b));
+  border: 1px solid var(--ag-border-card, rgba(113, 113, 122, 0.28));
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+#agy-prompt-opt-status[data-tone="error"] {
+  color: var(--ag-ring-danger, #ef4444);
+  border-color: rgba(239, 68, 68, 0.55);
+  background: var(--ag-bg-panel, var(--background, #18181b));
+  background-image: linear-gradient(rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.14));
+  font-weight: 500;
+}
+
+#agy-composer-float-toast {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(420px, calc(100% - 16px));
+  height: 26px;
+  padding: 0 10px;
+  margin: 0 0 4px auto;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ag-text-secondary, #a1a1aa);
+  background: var(--ag-bg-panel, var(--background, #18181b));
+  border: 1px solid var(--ag-border-card, rgba(113, 113, 122, 0.28));
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+#agy-composer-float-toast[data-tone="error"] {
+  color: var(--ag-ring-danger, #ef4444);
+  border-color: rgba(239, 68, 68, 0.55);
+  background: var(--ag-bg-panel, var(--background, #18181b));
+  background-image: linear-gradient(rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.14));
+  font-weight: 500;
 }
 
 #agy-prompt-opt-wrap svg {

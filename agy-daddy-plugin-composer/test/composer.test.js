@@ -1833,3 +1833,130 @@ test('回归：无 paste 处理器时多行优化结果走逐行单行插入 + �
     await harness.cleanup();
   }
 });
+
+test('回归：提示词优化失败时气泡不被感知提示遮挡、按钮旁内联报错、重渲染保留、支持关闭快捷栏与纯快捷键浮动提示', async () => {
+  let failKind = 'http429';
+  const harness = createMockHostHarness({
+    onRpc(method) {
+      if (method === 'GetUserStatus') {
+        return {
+          userStatus: {
+            cascadeModelConfigData: {
+              clientModelConfigs: [
+                { modelId: 'gemini-2.5-flash-low', label: 'Flash Low', modelOrAlias: { model: 'FLASH_LOW' }, quotaInfo: { remainingFraction: 1 } }
+              ]
+            }
+          }
+        };
+      }
+      if (method === 'GetModelResponse') {
+        if (failKind === 'timeout') {
+          throw new Error('ROUTE_TIMEOUT');
+        }
+        throw new Error('HTTP 429 rate limited');
+      }
+      return { ok: true };
+    }
+  });
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    let composerApi = null;
+    let emitContext = null;
+    await harness.rendererHost.mountPlugin('test.opt.error.feedback', {
+      mount(ctx) {
+        composerApi = ctx.services.get('composer');
+        emitContext = (snap) => ctx.state.set('state:context.snapshot@1', snap);
+      }
+    });
+
+    const doc = harness.mockDoc;
+    const editor = doc.querySelector('[contenteditable="true"]');
+
+    // 1. 验证样式 z-index 层级与 DOM 顺序：#agy-qcap-toast 必须在 #agy-next-step-ghost 之后
+    const styleEl = doc.head.querySelector('[data-agy-style="agy-daddy.composer"]');
+    assert.ok(styleEl);
+    assert.match(styleEl.textContent, /#agy-qcap-toast\s*\{[\s\S]*?z-index:\s*6;/);
+    assert.match(styleEl.textContent, /#agy-prompt-opt-status\[data-tone="error"\]/);
+    assert.match(styleEl.textContent, /#agy-composer-float-toast\[data-tone="error"\]/);
+
+    const quickBar = doc.getElementById('agy-quick-capsule-bar');
+    const quickChildren = Array.from(quickBar.children).map((el) => el.id);
+    assert.ok(quickChildren.indexOf('agy-next-step-ghost') >= 0);
+    assert.ok(quickChildren.indexOf('agy-qcap-toast') > quickChildren.indexOf('agy-next-step-ghost'), 'toast 必须排在 ghost 之后避免被 sticky 遮挡');
+
+    // 2. 优化失败：按钮旁 #agy-prompt-opt-status 与 #agy-qcap-toast 均可见报错，按钮标记 data-error="true"
+    editor.textContent = '帮我优化这段提示词';
+    doc.dispatchEvent({ type: 'input', target: editor });
+    doc.getElementById('agy-prompt-opt-btn').click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    const optBtn = doc.getElementById('agy-prompt-opt-btn');
+    const optStatus = doc.getElementById('agy-prompt-opt-status');
+    const qcapToast = doc.getElementById('agy-qcap-toast');
+    assert.equal(optBtn.getAttribute('data-error'), 'true');
+    assert.equal(optStatus.hidden, false);
+    assert.equal(optStatus.getAttribute('data-tone'), 'error');
+    assert.match(optStatus.textContent, /优化失败：HTTP 429/);
+    assert.match(optStatus.getAttribute('title') || '', /Flash Low: HTTP 429/);
+    assert.equal(qcapToast.hidden, false);
+    assert.equal(qcapToast.getAttribute('data-tone'), 'error');
+    assert.match(qcapToast.textContent, /优化失败：HTTP 429/);
+
+    // 3. 快捷栏触发重渲染后，进行中的错误提示应保留不被清空
+    emitContext({ used: 250000, max: 1000000 });
+    await new Promise((r) => setTimeout(r, 20));
+    const qcapToastAfterRerender = doc.getElementById('agy-qcap-toast');
+    assert.equal(qcapToastAfterRerender.hidden, false);
+    assert.equal(qcapToastAfterRerender.getAttribute('data-tone'), 'error');
+    assert.match(qcapToastAfterRerender.textContent, /429/);
+
+    // 点击按钮旁状态胶囊可一键关闭报错状态
+    optStatus.click();
+    assert.equal(optStatus.hidden, true);
+    assert.equal(qcapToastAfterRerender.hidden, true);
+    assert.equal(optBtn.getAttribute('data-error'), null);
+
+    // 4. 关闭快捷栏（showQuickBar: false）时，失败仍通过 #agy-prompt-opt-status 可见
+    await composerApi.updateSettings({ showQuickBar: false });
+    assert.equal(doc.getElementById('agy-quick-capsule-bar'), null);
+    doc.getElementById('agy-prompt-opt-btn').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(optStatus.hidden, false);
+    assert.equal(optStatus.getAttribute('data-tone'), 'error');
+    assert.match(optStatus.textContent, /429/);
+
+    // 5. 同时关闭快捷栏与优化按钮（纯快捷键模式）且发生超时：兜底渲染 #agy-composer-float-toast 中文超时提示
+    await composerApi.updateSettings({ showQuickBar: false, showPromptOptimizer: false });
+    assert.equal(doc.getElementById('agy-prompt-opt-wrap'), null);
+    failKind = 'timeout';
+    doc.dispatchEvent({
+      type: 'keydown',
+      key: 'O',
+      code: 'KeyO',
+      altKey: true,
+      shiftKey: true,
+      target: editor,
+      preventDefault() {},
+      stopPropagation() {}
+    });
+    await new Promise((r) => setTimeout(r, 40));
+
+    const floatToast = doc.getElementById('agy-composer-float-toast');
+    assert.ok(floatToast, '纯快捷键模式失败应渲染 #agy-composer-float-toast');
+    assert.equal(floatToast.hidden, false);
+    assert.equal(floatToast.getAttribute('data-tone'), 'error');
+    assert.match(floatToast.textContent, /提示词优化超时/);
+
+    await harness.rendererHost.disposePlugin('test.opt.error.feedback');
+    await harness.unloadPlugin('agy-daddy.composer');
+    assert.equal(doc.getElementById('agy-composer-float-toast'), null);
+    assert.equal(doc.getElementById('agy-prompt-opt-status'), null);
+    harness.assertCleanDispose('agy-daddy.composer');
+  } finally {
+    await harness.cleanup();
+  }
+});

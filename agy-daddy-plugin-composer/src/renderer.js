@@ -112,10 +112,13 @@ async function mount(ctx, options = {}) {
   let ghostTextSpan = null;
   let ghostCycleBtn = null;
   let optWrapEl = null;
+  let optStatusEl = null;
   let optBtnEl = null;
   let undoBtnEl = null;
   let toastEl = null;
+  let floatToastEl = null;
   let toastTimer = null;
+  let activeToastState = null;
   let latestContextSnap = null;
   let ghostCandidates = getGhostSuggestions('');
   let ghostIndex = 0;
@@ -155,14 +158,21 @@ async function mount(ctx, options = {}) {
   function teardownPromptOptimizer() {
     if (optWrapEl?.remove) optWrapEl.remove();
     optWrapEl = null;
+    optStatusEl = null;
     optBtnEl = null;
     undoBtnEl = null;
   }
 
+  function removeFloatToast() {
+    if (floatToastEl?.remove) floatToastEl.remove();
+    floatToastEl = null;
+  }
+
   function teardownQuickBar() {
-    if (toastTimer) {
+    if (isDisposed && toastTimer) {
       clearTimeout(toastTimer);
       toastTimer = null;
+      activeToastState = null;
     }
     clearOwnBarNodes();
     if (typeof revokeQuickActionsSurface === 'function') {
@@ -675,31 +685,138 @@ async function mount(ctx, options = {}) {
     }
   }
 
+  function formatPromptOptError(rawErr, res = null) {
+    const raw = String(rawErr || '').trim();
+    let message = '';
+    if (!raw) {
+      message = '提示词优化失败，请重试';
+    } else if (/ROUTE_TIMEOUT|\bETIMEDOUT\b|timeout/i.test(raw)) {
+      const attemptSuffix = (raw.match(/（已尝试\s*\d+\s*个模型）/) || [])[0] || '';
+      message = `提示词优化超时，请稍后重试${attemptSuffix}`;
+    } else if (/Bridge unavailable|Failed to fetch|ECONNREFUSED|NetworkError/i.test(raw)) {
+      message = '底座桥接服务不可用，请确认 Agy-Daddy 已运行';
+    } else if (/(?:失败|超时|先输入|无需|未能|不可用|错误)/.test(raw)) {
+      message = raw;
+    } else {
+      message = `优化失败：${raw}`;
+    }
+    const detail = String(res?.detail || '').trim();
+    const title = detail && detail !== message ? `${message}\n${detail}` : message;
+    return { message, title };
+  }
+
+  function applyToastElementState(el, stateObj) {
+    if (!el) return;
+    const msg = stateObj && typeof stateObj.message === 'string' ? stateObj.message.trim() : '';
+    if (!msg) {
+      el.textContent = '';
+      el.hidden = true;
+      el.setAttribute?.('hidden', 'true');
+      el.removeAttribute?.('data-tone');
+      el.removeAttribute?.('title');
+      return;
+    }
+    el.textContent = msg;
+    el.hidden = false;
+    el.removeAttribute?.('hidden');
+    if (el.style) el.style.display = '';
+    if (stateObj.tone) el.setAttribute?.('data-tone', stateObj.tone);
+    else el.removeAttribute?.('data-tone');
+    el.setAttribute?.('title', String(stateObj.title || msg));
+  }
+
+  function ensureFloatToastEl() {
+    if (!doc?.createElement) return null;
+    const rootEl = resolveComposerRoot();
+    const mountParent = rootEl?.parentElement || doc.body || null;
+    if (!mountParent) return null;
+    if (!floatToastEl) {
+      floatToastEl = doc.createElement('div');
+      floatToastEl.id = 'agy-composer-float-toast';
+      floatToastEl.setAttribute?.('role', 'status');
+      floatToastEl.setAttribute?.('aria-live', 'polite');
+      floatToastEl.hidden = true;
+      floatToastEl.setAttribute?.('hidden', 'true');
+      floatToastEl.addEventListener('mousedown', (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+      });
+      floatToastEl.addEventListener('click', () => {
+        showQuickToast('');
+      });
+    }
+    const kids = Array.from(mountParent.children || []);
+    const fIdx = kids.indexOf(floatToastEl);
+    const rIdx = rootEl ? kids.indexOf(rootEl) : -1;
+    const needMove = floatToastEl.parentElement !== mountParent || (rootEl && rIdx >= 0 && fIdx !== rIdx - 1);
+    if (needMove) {
+      if (rootEl && rootEl.parentElement === mountParent && typeof mountParent.insertBefore === 'function') {
+        mountParent.insertBefore(floatToastEl, rootEl);
+      } else {
+        mountParent.appendChild?.(floatToastEl);
+      }
+    }
+    return floatToastEl;
+  }
+
   function showQuickToast(message, opts = {}) {
-    if (!toastEl) return;
     if (toastTimer) {
       clearTimeout(toastTimer);
       toastTimer = null;
     }
     const msg = String(message || '').trim();
     if (!msg) {
-      toastEl.textContent = '';
-      toastEl.hidden = true;
-      toastEl.setAttribute?.('hidden', 'true');
-      toastEl.removeAttribute?.('data-tone');
+      activeToastState = null;
+      applyToastElementState(toastEl, null);
+      applyToastElementState(optStatusEl, null);
+      removeFloatToast();
+      optBtnEl?.removeAttribute?.('data-error');
       return;
     }
-    toastEl.textContent = msg;
-    toastEl.hidden = false;
-    toastEl.removeAttribute?.('hidden');
-    if (toastEl.style) toastEl.style.display = '';
-    if (opts.tone) toastEl.setAttribute?.('data-tone', opts.tone);
-    else toastEl.removeAttribute?.('data-tone');
+    const durationMs = Number(opts.durationMs) > 0
+      ? Number(opts.durationMs)
+      : (opts.tone === 'error' ? 5000 : 2800);
+    const stateObj = {
+      message: msg,
+      tone: opts.tone || '',
+      title: String(opts.title || msg),
+      target: opts.target || 'quick',
+      expiresAt: opts.persistent ? Infinity : (Date.now() + durationMs)
+    };
+    activeToastState = stateObj;
+
+    let shownInQuick = false;
+    let shownInOpt = false;
+    if (toastEl) {
+      applyToastElementState(toastEl, stateObj);
+      shownInQuick = true;
+    }
+    if (stateObj.target === 'optimizer' || stateObj.tone === 'error') {
+      if (optStatusEl) {
+        applyToastElementState(optStatusEl, stateObj);
+        shownInOpt = true;
+      }
+      if (optBtnEl) {
+        if (stateObj.tone === 'error') optBtnEl.setAttribute?.('data-error', 'true');
+        else optBtnEl.removeAttribute?.('data-error');
+      }
+    } else {
+      applyToastElementState(optStatusEl, null);
+      optBtnEl?.removeAttribute?.('data-error');
+    }
+
+    if (!shownInQuick && !shownInOpt) {
+      const fEl = ensureFloatToastEl();
+      applyToastElementState(fEl, stateObj);
+    } else {
+      removeFloatToast();
+    }
+
     if (!opts.persistent) {
       toastTimer = setTimeout(() => {
         toastTimer = null;
         showQuickToast('');
-      }, Number(opts.durationMs) > 0 ? Number(opts.durationMs) : 2800);
+      }, durationMs);
     }
   }
 
@@ -1107,12 +1224,17 @@ async function mount(ctx, options = {}) {
     const editor = getComposerEditor();
     const raw = getComposerText(editor).trim();
     if (!raw) {
-      showQuickToast('先输入提示词草稿，再点击优化');
+      showQuickToast('先输入提示词草稿，再点击优化', {
+        tone: 'error',
+        durationMs: 3200,
+        target: 'optimizer'
+      });
       syncPromptOptimizerUI();
       return { ok: false, error: 'EMPTY_PROMPT' };
     }
 
     promptOptLoading = true;
+    optBtnEl?.removeAttribute?.('data-error');
     showQuickToast('');
     syncPromptOptimizerUI();
 
@@ -1134,11 +1256,21 @@ async function mount(ctx, options = {}) {
       }
 
       if (!optimized || !editor) {
-        const errMsg = String(res?.message || res?.error || '提示词优化失败，请重试');
+        const rawErr = res?.message
+          || res?.error
+          || (typeof ctx.bridge?.post !== 'function' && options.allowLocalFallback !== true
+            ? 'Bridge unavailable'
+            : (!editor ? '未检测到对话输入框，请重试' : '提示词优化失败，请重试'));
+        const formatted = formatPromptOptError(rawErr, res);
         promptOptLoading = false;
         syncPromptOptimizerUI();
-        showQuickToast(errMsg, { tone: 'error', durationMs: 4200 });
-        return { ok: false, error: errMsg, detail: res?.detail || '' };
+        showQuickToast(formatted.message, {
+          tone: 'error',
+          durationMs: 5000,
+          title: formatted.title,
+          target: 'optimizer'
+        });
+        return { ok: false, error: formatted.message, detail: res?.detail || '' };
       }
 
       const applied = await replaceComposerTextAsync(editor, optimized, { preferPaste: true });
@@ -1149,20 +1281,25 @@ async function mount(ctx, options = {}) {
       if (!applied && !doesEditorMatchTarget(editor, optimized)) {
         syncPromptOptimizerUI();
         const errMsg = '优化结果写入输入框失败，请重试';
-        showQuickToast(errMsg, { tone: 'error', durationMs: 4200 });
+        showQuickToast(errMsg, { tone: 'error', durationMs: 5000, target: 'optimizer' });
         return { ok: false, error: 'EDITOR_WRITE_FAILED', message: errMsg };
       }
       promptOptUndoState = { original: raw, optimized: actualFilled || optimized };
       syncPromptOptimizerUI();
-      showQuickToast('已优化，可点击撤回恢复原草稿');
+      showQuickToast('已优化，可点击撤回恢复原草稿', { target: 'optimizer' });
       return { ok: true, original: raw, optimized: actualFilled || optimized, model: res?.model || res?.candidate || '' };
     } catch (err) {
       if (isDisposed) return { ok: false, error: 'DISPOSED' };
       promptOptLoading = false;
       syncPromptOptimizerUI();
-      const errMsg = String(err?.message || '提示词优化失败');
-      showQuickToast(errMsg, { tone: 'error', durationMs: 4200 });
-      return { ok: false, error: errMsg };
+      const formatted = formatPromptOptError(err?.message || '提示词优化失败');
+      showQuickToast(formatted.message, {
+        tone: 'error',
+        durationMs: 5000,
+        title: formatted.title,
+        target: 'optimizer'
+      });
+      return { ok: false, error: formatted.message };
     }
   }
 
@@ -1173,13 +1310,13 @@ async function mount(ctx, options = {}) {
     const editor = getComposerEditor();
     if (!editor) {
       syncPromptOptimizerUI();
-      showQuickToast('已恢复原始草稿');
+      showQuickToast('已恢复原始草稿', { target: 'optimizer' });
       return true;
     }
     if (typeof doc?.execCommand !== 'function') {
       fillComposerText(editor, orig);
       syncPromptOptimizerUI();
-      showQuickToast('已恢复原始草稿');
+      showQuickToast('已恢复原始草稿', { target: 'optimizer' });
       return true;
     }
     promptOptLoading = true;
@@ -1188,7 +1325,7 @@ async function mount(ctx, options = {}) {
       if (isDisposed) return;
       promptOptLoading = false;
       syncPromptOptimizerUI();
-      showQuickToast('已恢复原始草稿');
+      showQuickToast('已恢复原始草稿', { target: 'optimizer' });
     });
   }
 
@@ -1254,6 +1391,22 @@ async function mount(ctx, options = {}) {
       optWrapEl.id = 'agy-prompt-opt-wrap';
       optWrapEl.setAttribute?.('data-position', 'above-send');
 
+      optStatusEl = doc.createElement('span');
+      optStatusEl.id = 'agy-prompt-opt-status';
+      optStatusEl.setAttribute?.('role', 'status');
+      optStatusEl.setAttribute?.('aria-live', 'polite');
+      optStatusEl.hidden = true;
+      optStatusEl.setAttribute?.('hidden', 'true');
+      optStatusEl.addEventListener('mousedown', (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+      });
+      optStatusEl.addEventListener('click', (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+        showQuickToast('');
+      });
+
       optBtnEl = doc.createElement('button');
       optBtnEl.type = 'button';
       optBtnEl.id = 'agy-prompt-opt-btn';
@@ -1285,6 +1438,7 @@ async function mount(ctx, options = {}) {
         undoPromptOptimization();
       });
 
+      optWrapEl.appendChild(optStatusEl);
       optWrapEl.appendChild(optBtnEl);
       optWrapEl.appendChild(undoBtnEl);
     }
@@ -1317,6 +1471,11 @@ async function mount(ctx, options = {}) {
         }
       }
     } catch {}
+
+    if (activeToastState && Date.now() < activeToastState.expiresAt && (activeToastState.target === 'optimizer' || activeToastState.tone === 'error')) {
+      applyToastElementState(optStatusEl, activeToastState);
+      if (activeToastState.tone === 'error') optBtnEl?.setAttribute?.('data-error', 'true');
+    }
 
     syncPromptOptimizerUI();
     return true;
@@ -1507,12 +1666,6 @@ async function mount(ctx, options = {}) {
       appendOwnNode(btn);
     }
 
-    toastEl = doc.createElement('span');
-    toastEl.id = 'agy-qcap-toast';
-    toastEl.hidden = true;
-    toastEl.setAttribute?.('hidden', 'true');
-    appendOwnNode(toastEl);
-
     // 最右侧感知提示胶囊（感知提示 + 8字建议 + Tab / → 快捷键提示 + ↑/↓ 切换）
     if (settings.ghostSuggest) {
       ghostEl = doc.createElement('span');
@@ -1565,6 +1718,24 @@ async function mount(ctx, options = {}) {
       ghostEl.appendChild(ghostCycleBtn);
       renderGhostPill();
       appendOwnNode(ghostEl);
+    }
+
+    toastEl = doc.createElement('span');
+    toastEl.id = 'agy-qcap-toast';
+    toastEl.setAttribute?.('role', 'status');
+    toastEl.setAttribute?.('aria-live', 'polite');
+    toastEl.hidden = true;
+    toastEl.setAttribute?.('hidden', 'true');
+    toastEl.addEventListener('mousedown', (e) => {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+    });
+    toastEl.addEventListener('click', () => {
+      showQuickToast('');
+    });
+    appendOwnNode(toastEl);
+    if (activeToastState && Date.now() < activeToastState.expiresAt) {
+      applyToastElementState(toastEl, activeToastState);
     }
 
     syncPromptOptimizerUI();
@@ -1665,6 +1836,7 @@ async function mount(ctx, options = {}) {
     if (promptOptUndoState && cur !== promptOptUndoState.optimized) {
       promptOptUndoState = null;
     }
+    optBtnEl?.removeAttribute?.('data-error');
     syncPromptOptimizerUI();
   };
 
@@ -1832,6 +2004,12 @@ async function mount(ctx, options = {}) {
         clearTimeout(mutDebounceTimer);
         mutDebounceTimer = null;
       }
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+        toastTimer = null;
+      }
+      activeToastState = null;
+      removeFloatToast();
       if (domHealObserver) {
         try { domHealObserver.disconnect(); } catch {}
         domHealObserver = null;

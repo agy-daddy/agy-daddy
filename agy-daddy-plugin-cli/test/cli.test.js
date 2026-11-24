@@ -531,7 +531,7 @@ test('工作区路径规范化与多信号探测（RPC + 点击时 DOM 采集 + 
         workspaceHints: { activeConversationTitle: 'Alpha Feature' }
       }]);
       assert.equal(customDefaultLaunch.cwd, dirA);
-      assert.match(customDefaultLaunch.plan.args.join(' '), new RegExp(`cd '${dirA.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' && agy --mode auto`));
+      assert.match(customDefaultLaunch.plan.args.join(' ').replace(/\\\\/g, '\\'), new RegExp(`cd '${dirA.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' && agy --mode auto`));
 
       // 验证 /workspace 路由实时返回当前探测结果
       const loadedMeta = harness.pluginRegistry?.get?.('agy-daddy.cli');

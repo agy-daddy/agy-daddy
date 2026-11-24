@@ -52,6 +52,7 @@ if (require.main === module) {
   const routeHandlers = new Map();
   const serviceMethods = new Map();
   const commandHandlers = new Map();
+  const trayHandlers = new Map();
   const eventHandlers = new Map();
   const stateHandlers = new Map();
   const settingsListeners = new Set();
@@ -60,6 +61,7 @@ if (require.main === module) {
   let pluginMod = null;
   let pluginId = '';
   let currentSettings = {};
+  let hostProxyRef = null;
 
   function sendParent(msg) {
     if (typeof process.send === 'function') {
@@ -127,6 +129,22 @@ if (require.main === module) {
         sendParent({ type: 'command-reply', reqId: msg.reqId, result: result === undefined ? null : result });
       } catch (err) {
         sendParent({ type: 'command-reply', reqId: msg.reqId, error: err?.message || String(err) });
+      }
+      return;
+    }
+
+    if (msg.type === 'tray-click') {
+      const fn = trayHandlers.get(msg.itemId);
+      try {
+        if (typeof fn !== 'function') throw new Error(`Tray handler not found in worker: ${msg.itemId}`);
+        const ctx = {
+          ...(msg.ctx || {}),
+          update: (patch) => hostProxyRef?.tray?.updateMenuItem(msg.itemId, patch)
+        };
+        const result = await fn(ctx);
+        sendParent({ type: 'tray-click-reply', reqId: msg.reqId, result: result === undefined ? null : result });
+      } catch (err) {
+        sendParent({ type: 'tray-click-reply', reqId: msg.reqId, error: err?.message || String(err) });
       }
       return;
     }
@@ -280,8 +298,52 @@ if (require.main === module) {
           execute(commandId, args = []) {
             return callParent('executeCommand', { commandId, args: Array.isArray(args) ? args : [] });
           }
-        }
+        },
+        tray: (() => {
+          const serializeTrayObj = (obj, fallbackId = '') => {
+            if (!obj || typeof obj !== 'object') return obj;
+            const out = { ...obj };
+            const itemId = typeof out.id === 'string' && out.id.trim() ? out.id.trim() : fallbackId;
+            if (typeof out.onClick === 'function') {
+              if (itemId) trayHandlers.set(itemId, out.onClick);
+              out.hasOnClick = true;
+              delete out.onClick;
+            }
+            if (Array.isArray(out.submenu)) {
+              out.submenu = out.submenu.map((sub) => serializeTrayObj(sub));
+            }
+            return out;
+          };
+          return {
+            async registerMenuItem(def) {
+              if (!def || typeof def !== 'object' || typeof def.id !== 'string' || !def.id.trim()) {
+                throw new Error('Tray menu item id must be a non-empty string');
+              }
+              const localId = def.id.trim();
+              const payloadDef = serializeTrayObj(def, localId);
+              const res = await callParent('registerTrayMenuItem', { def: payloadDef });
+              return {
+                id: res?.id || localId,
+                fullId: res?.fullId || `${pluginId}:${localId}`,
+                update: (patch) => hostProxy.tray.updateMenuItem(localId, patch),
+                dispose: () => hostProxy.tray.unregisterMenuItem(localId)
+              };
+            },
+            updateMenuItem(itemId, patch) {
+              const payloadPatch = serializeTrayObj(patch, itemId);
+              return callParent('updateTrayMenuItem', { itemId, patch: payloadPatch });
+            },
+            unregisterMenuItem(itemId) {
+              trayHandlers.delete(itemId);
+              return callParent('unregisterTrayMenuItem', { itemId });
+            },
+            listMenuItems() {
+              return callParent('listTrayMenuItems', {});
+            }
+          };
+        })()
       };
+      hostProxyRef = hostProxy;
 
       try {
         const entryFile = path.resolve(msg.pluginDir, msg.mainPath);

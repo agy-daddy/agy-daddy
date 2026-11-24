@@ -15,7 +15,8 @@
     maxVisibleUnits: 6,
     showTopbarEntry: true,
     injectNativeSettings: true,
-    autoSyncNativeOnInstall: true
+    autoSyncNativeOnInstall: true,
+    hideTrayIcon: false
   };
 
   const SETTINGS_SEGMENTS = [
@@ -50,6 +51,8 @@
     plus: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     star: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
     download: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    alertTriangle: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    play: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>',
     menu: '<svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
     settings: '<svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>'
   };
@@ -525,6 +528,9 @@
     const resolvedAutoSyncNativeOnInstall = typeof incomingHostSettings.autoSyncNativeOnInstall === 'boolean'
       ? incomingHostSettings.autoSyncNativeOnInstall
       : DEFAULT_HOST_SETTINGS.autoSyncNativeOnInstall;
+    const resolvedHideTrayIcon = typeof incomingHostSettings.hideTrayIcon === 'boolean'
+      ? incomingHostSettings.hideTrayIcon
+      : DEFAULT_HOST_SETTINGS.hideTrayIcon;
 
     const state = {
       disposed: false,
@@ -540,7 +546,8 @@
         maxVisibleUnits: resolvedMaxVisible,
         showTopbarEntry: resolvedShowTopbarEntry,
         injectNativeSettings: resolvedInjectNativeSettings,
-        autoSyncNativeOnInstall: resolvedAutoSyncNativeOnInstall
+        autoSyncNativeOnInstall: resolvedAutoSyncNativeOnInstall,
+        hideTrayIcon: resolvedHideTrayIcon
       },
       locale: mergedOpts.locale || 'zh-CN',
       antigravityVersion: mergedOpts.antigravityVersion || '2.33.0',
@@ -548,6 +555,7 @@
       bridgePort: Number(mergedOpts.bridgePort || 0),
       activeSettingsTab: 'plugins',
       selectedPluginId: null,
+      focusPluginDiagnostics: null,
       marketplaceOpen: false,
       diagnosticsExpanded: false,
       settingsSearchQuery: '',
@@ -568,6 +576,7 @@
       managePendingPerm: null,
       manageConfirmUninstallId: null,
       managePendingNativeUninstall: null,
+      repairPathDrafts: new Map(),     // pluginId -> custom local path input
       diagnosticsExportInfo: null,
       pluginMeta: new Map(),           // pluginId -> normalized meta
       fieldErrors: new Map(),          // `${pluginId}:${fieldKey}` -> string
@@ -605,6 +614,7 @@
       topbarSuppressedPlugins: new Set(), // 显式声明当前无可用顶栏单元的插件（如已切至底部输入框）
       auxSidebarExpanded: false,       // 右侧辅助边栏是否处于展开态
       crashCounts: new Map(),          // pluginId -> number[]
+      rendererErrors: new Map(),       // pluginId -> { message, at }
       metrics: new Map(),              // pluginId -> { mountMs, observerMs, timersCount, crashes }
       xworldNonce: mergedOpts.xworldNonce || (String(Math.random()).slice(2) + Date.now().toString(36))
     };
@@ -690,7 +700,10 @@
         repo: rawMeta.repo !== undefined ? String(rawMeta.repo || '') : (prev.repo || ''),
         npmPackage: rawMeta.npmPackage !== undefined ? String(rawMeta.npmPackage || '') : (prev.npmPackage || ''),
         marketStats: isPlainObject(rawMeta.marketStats) ? { ...rawMeta.marketStats } : (prev.marketStats || null),
-        health: rawMeta.health !== undefined ? rawMeta.health : (prev.health || null)
+        health: rawMeta.health !== undefined ? rawMeta.health : (prev.health || null),
+        installHealth: rawMeta.installHealth !== undefined
+          ? (isPlainObject(rawMeta.installHealth) ? { ...rawMeta.installHealth } : null)
+          : (prev.installHealth || null)
       };
       if (isPlainObject(rawMeta.marketStats)) {
         state.marketStats.set(id, { ...rawMeta.marketStats });
@@ -734,6 +747,9 @@
     let overflowTitleEl = null;
     let overflowListEl = null;
     let settingsBtnEl = null;
+    let pluginAlertBtnEl = null;
+    let pluginAlertPopoverEl = null;
+    let pluginAlertListEl = null;
     let modalBackdropEl = null;
     let modalDialogEl = null;
     let modalSettingsRootEl = null;
@@ -867,6 +883,88 @@
       });
       syncTopbarEntryVisibility();
       barEl.appendChild(settingsBtnEl);
+
+      pluginAlertBtnEl = doc.createElement('button');
+      pluginAlertBtnEl.id = 'agy-plugin-alert-btn';
+      pluginAlertBtnEl.type = 'button';
+      pluginAlertBtnEl.className = 'ag-unit ag-plugin-alert-btn';
+      pluginAlertBtnEl.setAttribute('aria-haspopup', 'dialog');
+      pluginAlertBtnEl.setAttribute('aria-expanded', 'false');
+      setHidden(pluginAlertBtnEl, true);
+      pluginAlertBtnEl.addEventListener('click', () => {
+        if (overflowMenuEl && !overflowMenuEl.hidden) {
+          toggleOverflowMenu(false);
+        }
+        const issues = getUnusablePlugins();
+        if (issues.length === 0) {
+          renderPluginAlertCapsule();
+          return;
+        }
+        if (issues.length === 1) {
+          closeAllPopovers('__settings__');
+          void openSettings({ tab: 'plugins', pluginId: issues[0].id, focusDiagnostics: true });
+          return;
+        }
+        togglePluginAlertPopover();
+      });
+      barEl.appendChild(pluginAlertBtnEl);
+
+      pluginAlertPopoverEl = doc.createElement('section');
+      pluginAlertPopoverEl.id = 'agy-plugin-alert-popover';
+      pluginAlertPopoverEl.className = 'ag-panel ag-plugin-alert-popover';
+      setHidden(pluginAlertPopoverEl, true);
+      const alHead = doc.createElement('div');
+      alHead.className = 'ag-panel-head';
+      const alTitleWrap = doc.createElement('div');
+      alTitleWrap.className = 'ag-panel-title-wrap';
+      const alTitle = doc.createElement('span');
+      alTitle.className = 'ag-panel-title';
+      alTitle.textContent = '插件异常通知';
+      alTitleWrap.appendChild(alTitle);
+      const alActions = doc.createElement('div');
+      alActions.className = 'ag-panel-actions';
+      const alClose = doc.createElement('button');
+      alClose.type = 'button';
+      alClose.id = 'agy-plugin-alert-close';
+      alClose.className = 'ag-icon-btn ag-popover-close-btn';
+      alClose.setAttribute('aria-label', '关闭');
+      alClose.setAttribute('title', '关闭');
+      alClose.appendChild(createIconEl('close'));
+      alClose.addEventListener('click', () => togglePluginAlertPopover(false));
+      alActions.appendChild(alClose);
+      alHead.appendChild(alTitleWrap);
+      alHead.appendChild(alActions);
+      pluginAlertPopoverEl.appendChild(alHead);
+
+      pluginAlertListEl = doc.createElement('div');
+      pluginAlertListEl.id = 'agy-plugin-alert-list';
+      pluginAlertListEl.className = 'ag-plugin-alert-list';
+      pluginAlertPopoverEl.appendChild(pluginAlertListEl);
+
+      const alFoot = doc.createElement('div');
+      alFoot.className = 'ag-plugin-alert-footer';
+      const alActivateAllBtn = doc.createElement('button');
+      alActivateAllBtn.type = 'button';
+      alActivateAllBtn.id = 'agy-alert-activate-all-btn';
+      alActivateAllBtn.className = 'ag-btn ag-btn-primary';
+      alActivateAllBtn.textContent = '全部重试激活';
+      alActivateAllBtn.addEventListener('click', () => {
+        togglePluginAlertPopover(false);
+        void activateAllInactiveFromUi();
+      });
+      const alOpenDiagBtn = doc.createElement('button');
+      alOpenDiagBtn.type = 'button';
+      alOpenDiagBtn.id = 'agy-alert-open-diag-btn';
+      alOpenDiagBtn.className = 'ag-btn';
+      alOpenDiagBtn.textContent = '运行诊断';
+      alOpenDiagBtn.addEventListener('click', () => {
+        togglePluginAlertPopover(false);
+        void openSettings({ tab: 'diagnostics' });
+      });
+      alFoot.appendChild(alActivateAllBtn);
+      alFoot.appendChild(alOpenDiagBtn);
+      pluginAlertPopoverEl.appendChild(alFoot);
+      shadow.appendChild(pluginAlertPopoverEl);
 
       overflowMenuEl = doc.createElement('section');
       overflowMenuEl.id = 'agy-topbar-overflow-menu';
@@ -1041,6 +1139,12 @@
       if (patch.injectNativeSettings !== undefined) {
         state.hostSettings.injectNativeSettings = Boolean(patch.injectNativeSettings);
       }
+      if (patch.autoSyncNativeOnInstall !== undefined) {
+        state.hostSettings.autoSyncNativeOnInstall = Boolean(patch.autoSyncNativeOnInstall);
+      }
+      if (patch.hideTrayIcon !== undefined) {
+        state.hostSettings.hideTrayIcon = Boolean(patch.hideTrayIcon);
+      }
 
       if (!hasBridgeAvailable()) {
         return { ok: true, localOnly: true, values: getHostSettingsSnapshot() };
@@ -1065,7 +1169,9 @@
         topbarOrder: [...(state.hostSettings.topbarOrder || [])],
         maxVisibleUnits: state.hostSettings.maxVisibleUnits,
         showTopbarEntry: state.hostSettings.showTopbarEntry !== false,
-        injectNativeSettings: state.hostSettings.injectNativeSettings !== false
+        injectNativeSettings: state.hostSettings.injectNativeSettings !== false,
+        autoSyncNativeOnInstall: state.hostSettings.autoSyncNativeOnInstall !== false,
+        hideTrayIcon: state.hostSettings.hideTrayIcon === true
       };
     }
 
@@ -1624,6 +1730,9 @@
       if (overflowMenuEl && !overflowMenuEl.hidden) {
         return { el: overflowMenuEl, fullViewport: false };
       }
+      if (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden) {
+        return { el: pluginAlertPopoverEl, fullViewport: false };
+      }
       for (const p of state.popovers.values()) {
         if (p?.node && !p.node.hidden) {
           return { el: p.node, fullViewport: false };
@@ -1749,6 +1858,7 @@
       hostEl?.setAttribute?.('data-under-dialog', open ? 'true' : 'false');
       if (open && state.settingsMode !== 'modal') {
         const hasPopoverOpen = (overflowMenuEl && !overflowMenuEl.hidden)
+          || (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden)
           || Array.from(state.popovers.values()).some((p) => p?.node && !p.node.hidden);
         if (hasPopoverOpen) {
           closeAllPopovers('__settings__');
@@ -1759,6 +1869,7 @@
     function updateElevationAttr() {
       const anyOpen = state.settingsMode === 'modal'
         || (overflowMenuEl && !overflowMenuEl.hidden)
+        || (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden)
         || Array.from(state.popovers.values()).some((p) => p.node && !p.node.hidden);
       hostEl?.setAttribute?.('data-elevated', anyOpen ? 'true' : 'false');
       syncBrowserOccluder(true);
@@ -1976,8 +2087,28 @@
       return open;
     }
 
+    function togglePluginAlertPopover(force) {
+      if (!pluginAlertPopoverEl) return false;
+      const open = typeof force === 'boolean' ? force : Boolean(pluginAlertPopoverEl.hidden);
+      if (open) {
+        renderPluginAlertCapsule();
+        closeAllPopovers('__plugin_alert__');
+        positionPopoverNearAnchor(pluginAlertPopoverEl, null, null, pluginAlertBtnEl);
+        setHidden(pluginAlertPopoverEl, false);
+        pluginAlertBtnEl?.setAttribute?.('data-active', 'true');
+        pluginAlertBtnEl?.setAttribute?.('aria-expanded', 'true');
+      } else {
+        setHidden(pluginAlertPopoverEl, true);
+        pluginAlertBtnEl?.setAttribute?.('data-active', 'false');
+        pluginAlertBtnEl?.setAttribute?.('aria-expanded', 'false');
+      }
+      updateElevationAttr();
+      return open;
+    }
+
     function renderUnits() {
       if (!barEl) return;
+      const unusableIssues = renderPluginAlertCapsule();
       const ordered = getOrderedUnits();
       const auxCompact = Boolean(state.auxSidebarExpanded && ordered.length > 0);
       hostEl?.setAttribute?.('data-aux-collapsed', auxCompact ? 'true' : 'false');
@@ -1999,7 +2130,7 @@
         overflowUnits = [...pinned.slice(maxVis), ...unpinned];
       }
 
-      const anchorRef = overflowBtnEl || settingsBtnEl;
+      const anchorRef = overflowBtnEl || settingsBtnEl || pluginAlertBtnEl;
       for (const u of visibleUnits) {
         u.inOverflow = false;
         if (!u.node) continue;
@@ -2011,6 +2142,9 @@
       }
 
       if (overflowListEl) {
+        if (auxCompact && pluginAlertBtnEl && unusableIssues.length > 0) {
+          overflowListEl.appendChild?.(pluginAlertBtnEl);
+        }
         for (const u of overflowUnits) {
           u.inOverflow = true;
           if (!u.node) continue;
@@ -2024,9 +2158,19 @@
           setHidden(settingsBtnEl, false);
         } else {
           if (settingsBtnEl.parentElement !== barEl) {
-            barEl.appendChild?.(settingsBtnEl);
+            if (pluginAlertBtnEl && pluginAlertBtnEl.parentElement === barEl && typeof barEl.insertBefore === 'function') {
+              barEl.insertBefore(settingsBtnEl, pluginAlertBtnEl);
+            } else {
+              barEl.appendChild?.(settingsBtnEl);
+            }
           }
           syncTopbarEntryVisibility();
+        }
+      }
+
+      if (pluginAlertBtnEl && (!auxCompact || unusableIssues.length === 0)) {
+        if (pluginAlertBtnEl.parentElement !== barEl) {
+          barEl.appendChild?.(pluginAlertBtnEl);
         }
       }
 
@@ -2040,7 +2184,12 @@
           overflowBtnEl.setAttribute('aria-label', compactTitle);
           overflowBtnEl.setAttribute('aria-expanded', overflowMenuEl && !overflowMenuEl.hidden ? 'true' : 'false');
           clearElement(overflowBtnEl);
-          const riskLevel = computeHighestUnitRisk(overflowUnits);
+          let riskLevel = computeHighestUnitRisk(overflowUnits);
+          if (unusableIssues.some((i) => i.tone === 'danger')) {
+            riskLevel = 'danger';
+          } else if (unusableIssues.length > 0 && !riskLevel) {
+            riskLevel = 'warn';
+          }
           if (riskLevel && doc?.createElement) {
             const riskDot = doc.createElement('span');
             riskDot.className = 'ag-unit-dot';
@@ -2092,7 +2241,8 @@
 
       const hasVisibleBarItem = visibleUnits.length > 0
         || Boolean(overflowBtnEl && !overflowBtnEl.hidden)
-        || Boolean(!auxCompact && settingsBtnEl && !settingsBtnEl.hidden);
+        || Boolean(!auxCompact && settingsBtnEl && !settingsBtnEl.hidden)
+        || Boolean(!auxCompact && pluginAlertBtnEl && !pluginAlertBtnEl.hidden);
       setHidden(barEl, !hasVisibleBarItem);
 
       syncOverflowPopoverOpenAttr();
@@ -2299,6 +2449,11 @@
         setHidden(overflowMenuEl, true);
         overflowBtnEl?.setAttribute?.('data-active', 'false');
         overflowBtnEl?.setAttribute?.('aria-expanded', 'false');
+      }
+      if (exceptKey !== '__plugin_alert__' && pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden) {
+        setHidden(pluginAlertPopoverEl, true);
+        pluginAlertBtnEl?.setAttribute?.('data-active', 'false');
+        pluginAlertBtnEl?.setAttribute?.('aria-expanded', 'false');
       }
       if (exceptKey !== '__settings__' && state.settingsMode === 'modal') {
         setHidden(modalBackdropEl, true);
@@ -3330,12 +3485,16 @@
       const arr = (state.crashCounts.get(pluginId) || []).filter((t) => now - t <= 60000);
       arr.push(now);
       state.crashCounts.set(pluginId, arr);
+      const errMsg = err?.message || String(err || '未知渲染错误');
+      state.rendererErrors.set(pluginId, { message: errMsg, at: now });
       const metric = getMetric(pluginId);
       metric.crashes = arr.length;
       if (arr.length >= 3) {
         void disposePlugin(pluginId);
       }
-      return { crashes: arr.length, circuitOpen: arr.length >= 3, error: err?.message || String(err) };
+      renderPluginAlertCapsule();
+      renderUnits();
+      return { crashes: arr.length, circuitOpen: arr.length >= 3, error: errMsg };
     }
 
     function formatCompactCount(val) {
@@ -3382,6 +3541,9 @@
           if (isPlainObject(p?.marketStats) && p.id) {
             state.marketStats.set(p.id, { ...p.marketStats });
           }
+          if (p?.id && p.active && !p.health?.lastError && !p.health?.circuitOpen) {
+            state.rendererErrors.delete(p.id);
+          }
           upsertPluginMeta(p);
         }
       }
@@ -3393,6 +3555,8 @@
           }
         }
       }
+      renderPluginAlertCapsule();
+      renderUnits();
     }
 
     function getCombinedPlugins() {
@@ -3481,6 +3645,324 @@
         });
       }
       return list.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    function getPluginDiagnosticIssue(p) {
+      if (!p || !p.id) return null;
+      const installHealth = isPlainObject(p.installHealth) ? p.installHealth : null;
+      const isMissingPath = Boolean(
+        (installHealth && installHealth.status !== 'ok') ||
+        p.health?.lastErrorCode === 'INSTALL_PATH_MISSING'
+      );
+      if (p.enabled === false && !isMissingPath) return null;
+
+      const metric = getMetric(p.id);
+      const crashes = Math.max(metric.crashes, Number(p.health?.crashesInWindow || 0));
+      const circuitOpen = crashes >= 3 || Boolean(p.health?.circuitOpen);
+      const localRenderErr = state.rendererErrors.get(p.id);
+      const remoteStage = p.health?.lastErrorStage || null;
+      const isRendererErr = Boolean(localRenderErr || (remoteStage === 'renderer' && p.health?.lastError));
+      const isInactive = p.active === false;
+
+      if (!isMissingPath && !isInactive && !circuitOpen && !isRendererErr) {
+        return null;
+      }
+
+      const displayName = pickLocaleText(p.displayName, p.id);
+      const repairCandidates = Array.isArray(installHealth?.repairCandidates) ? installHealth.repairCandidates : [];
+      const bestRepair = repairCandidates[0] || null;
+
+      if (isMissingPath) {
+        const isBrokenLink = installHealth?.status === 'broken_symlink';
+        const rawError = isBrokenLink && installHealth?.symlinkTarget
+          ? `软链目标已丢失：${installHealth.symlinkTarget}`
+          : (p.health?.lastError || '插件安装目录已不存在（可能已被删除或移动）');
+        const suggestion = bestRepair
+          ? `检测到可用恢复源（${bestRepair.label}：${bestRepair.target}），可点击「一键修复」恢复路径并激活，也可手动指定本地目录或移除该失效记录。`
+          : '未找到原目录（常见于删除 Git worktree 或移动本地插件目录），请重新指定本地目录或移除该失效记录。';
+        return {
+          id: p.id,
+          displayName,
+          statusKind: 'path_missing',
+          statusLabel: isBrokenLink ? '路径失效' : '文件丢失',
+          tone: 'danger',
+          error: rawError,
+          errorCode: 'INSTALL_PATH_MISSING',
+          errorStage: 'load',
+          suggestion,
+          crashes,
+          circuitOpen: false,
+          isMissingPath: true,
+          installHealth,
+          repairCandidates,
+          bestRepair,
+          plugin: p
+        };
+      }
+
+      const rawError = localRenderErr?.message
+        || p.health?.lastError
+        || (circuitOpen
+          ? `插件连续异常 ${crashes} 次，已触发熔断保护`
+          : '插件已启用但当前未激活（可能未完成启动加载或依赖未就绪）');
+      const errorCode = p.health?.lastErrorCode || (circuitOpen ? 'CIRCUIT_OPEN' : (isRendererErr ? 'RENDERER_MOUNT_FAILED' : 'NOT_ACTIVE'));
+      const errorStage = localRenderErr ? 'renderer' : (remoteStage || 'activate');
+      const suggestion = p.health?.lastErrorSuggestion || (
+        circuitOpen
+          ? '请排查下方错误信息后点击「解除熔断并激活」重试。'
+          : (isRendererErr
+              ? '页面渲染层挂载异常，请检查宿主页面状态后点击「立即激活」或「重新载入」重试。'
+              : '可点击「立即激活」尝试重新加载该插件，并检查下方错误信息。')
+      );
+
+      let statusKind = 'inactive';
+      let statusLabel = '未激活';
+      let tone = 'warn';
+      if (circuitOpen) {
+        statusKind = 'circuit';
+        statusLabel = '已熔断';
+        tone = 'danger';
+      } else if (isRendererErr) {
+        statusKind = 'renderer_error';
+        statusLabel = '注入失败';
+        tone = isInactive ? 'danger' : 'warn';
+      } else if (p.health?.lastError) {
+        statusKind = 'activate_failed';
+        statusLabel = '未激活';
+        tone = 'danger';
+      }
+
+      return {
+        id: p.id,
+        displayName,
+        statusKind,
+        statusLabel,
+        tone,
+        error: rawError,
+        errorCode,
+        errorStage,
+        suggestion,
+        crashes,
+        circuitOpen,
+        isMissingPath: false,
+        installHealth,
+        repairCandidates: [],
+        bestRepair: null,
+        plugin: p
+      };
+    }
+
+    function getUnusablePlugins() {
+      const issues = [];
+      for (const p of getCombinedPlugins()) {
+        const issue = getPluginDiagnosticIssue(p);
+        if (issue) issues.push(issue);
+      }
+      return issues;
+    }
+
+    function renderPluginAlertCapsule() {
+      const issues = getUnusablePlugins();
+      if (!pluginAlertBtnEl) {
+        if (issues.length > 0 && doc && typeof doc.createElement === 'function' && !state.disposed) {
+          ensureDomShell();
+        } else {
+          return issues;
+        }
+      }
+      if (!pluginAlertBtnEl) return issues;
+
+      if (issues.length === 0) {
+        setHidden(pluginAlertBtnEl, true);
+        pluginAlertBtnEl.removeAttribute?.('data-tone');
+        pluginAlertBtnEl.removeAttribute?.('data-issue-count');
+        pluginAlertBtnEl.removeAttribute?.('title');
+        pluginAlertBtnEl.removeAttribute?.('aria-label');
+        if (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden) {
+          setHidden(pluginAlertPopoverEl, true);
+          pluginAlertBtnEl.setAttribute?.('data-active', 'false');
+          pluginAlertBtnEl.setAttribute?.('aria-expanded', 'false');
+        }
+        return issues;
+      }
+
+      const hasDanger = issues.some((i) => i.tone === 'danger');
+      setHidden(pluginAlertBtnEl, false);
+      pluginAlertBtnEl.setAttribute('data-tone', hasDanger ? 'danger' : 'warn');
+      pluginAlertBtnEl.setAttribute('data-issue-count', String(issues.length));
+
+      const namesSummary = issues.slice(0, 3).map((i) => `${i.displayName}(${i.statusLabel})`).join('、');
+      const tipText = `${namesSummary}${issues.length > 3 ? ` 等 ${issues.length} 个插件` : ''}不能使用，点击进入插件诊断解决`;
+      pluginAlertBtnEl.setAttribute('title', tipText);
+      pluginAlertBtnEl.setAttribute('aria-label', tipText);
+
+      clearElement(pluginAlertBtnEl);
+      const iconWrap = doc.createElement('span');
+      iconWrap.className = 'ag-unit-icon';
+      iconWrap.appendChild(createIconEl('alertTriangle'));
+      pluginAlertBtnEl.appendChild(iconWrap);
+      const lbl = doc.createElement('span');
+      lbl.className = 'ag-plugin-alert-text';
+      lbl.textContent = issues.length === 1 ? '1 插件异常' : `${issues.length} 插件异常`;
+      pluginAlertBtnEl.appendChild(lbl);
+
+      if (pluginAlertListEl) {
+        clearElement(pluginAlertListEl);
+        for (const issue of issues) {
+          const rowBtn = doc.createElement('button');
+          rowBtn.type = 'button';
+          rowBtn.className = 'ag-plugin-alert-item';
+          rowBtn.setAttribute('data-alert-plugin-id', issue.id);
+
+          const rowMain = doc.createElement('div');
+          rowMain.className = 'ag-plugin-alert-item-main';
+          const head = doc.createElement('div');
+          head.className = 'ag-plugin-alert-item-head';
+          const nameEl = doc.createElement('span');
+          nameEl.className = 'ag-plugin-alert-item-name';
+          nameEl.textContent = issue.displayName;
+          const chip = doc.createElement('span');
+          chip.className = 'ag-chip';
+          chip.setAttribute('data-tone', issue.tone);
+          chip.textContent = issue.statusLabel;
+          head.appendChild(nameEl);
+          head.appendChild(chip);
+          const errEl = doc.createElement('div');
+          errEl.className = 'ag-plugin-alert-item-err';
+          errEl.textContent = issue.error;
+          rowMain.appendChild(head);
+          rowMain.appendChild(errEl);
+
+          rowBtn.appendChild(rowMain);
+          rowBtn.appendChild(createIconEl('chevronRight'));
+          rowBtn.addEventListener('click', () => {
+            togglePluginAlertPopover(false);
+            void openSettings({ tab: 'plugins', pluginId: issue.id, focusDiagnostics: true });
+          });
+          pluginAlertListEl.appendChild(rowBtn);
+        }
+      }
+      return issues;
+    }
+
+    function activatePluginFromUi(pluginId, opts = {}) {
+      if (!pluginId) return;
+      state.manageConfirmUninstallId = null;
+      state.managePendingNativeUninstall = null;
+      void runManageAction(pluginId, `正在激活 ${pluginId}...`, async () => {
+        const res = await hostBridgePost('/host/plugins/activate', {
+          pluginId,
+          resetCircuit: opts.resetCircuit !== false,
+          enableIfDisabled: opts.enableIfDisabled !== false
+        });
+        if (state.disposed) return;
+        api.reEnablePlugin(pluginId);
+        state.rendererErrors.delete(pluginId);
+        applyManagePayload(res);
+        if (res?.ok && res?.active) {
+          state.manageToast = { tone: 'info', spinning: false, text: `已激活 ${pluginId}` };
+        } else {
+          state.manageToast = {
+            tone: 'error',
+            spinning: false,
+            text: `激活 ${pluginId} 失败：${res?.error || res?.health?.lastError || '未知错误'}`
+          };
+        }
+      });
+    }
+
+    function activateAllInactiveFromUi() {
+      void runManageAction('__activate_all__', '正在尝试激活异常/未激活插件...', async () => {
+        const res = await hostBridgePost('/host/plugins/activate', {
+          all: true,
+          resetCircuit: true
+        });
+        if (state.disposed) return;
+        if (Array.isArray(res?.activated)) {
+          for (const id of res.activated) {
+            api.reEnablePlugin(id);
+            state.rendererErrors.delete(id);
+          }
+        }
+        applyManagePayload(res);
+        const okCount = Array.isArray(res?.activated) ? res.activated.length : 0;
+        const failCount = Array.isArray(res?.failed) ? res.failed.length : 0;
+        if (failCount === 0 && okCount > 0) {
+          state.manageToast = { tone: 'info', spinning: false, text: `已激活 ${okCount} 个插件` };
+        } else if (failCount > 0) {
+          state.manageToast = {
+            tone: 'warn',
+            spinning: false,
+            text: `已激活 ${okCount} 个插件，仍有 ${failCount} 个无法激活，请查看诊断`
+          };
+        } else {
+          state.manageToast = { tone: 'info', spinning: false, text: '当前所有已启用插件均已激活' };
+        }
+      });
+    }
+
+    function repairPluginFromUi(pluginId, repairOpts = {}) {
+      if (!pluginId) return;
+      state.manageConfirmUninstallId = null;
+      state.managePendingNativeUninstall = null;
+      void runManageAction(pluginId, `正在修复 ${pluginId} 安装路径...`, async () => {
+        const res = await hostBridgePost('/host/plugins/repair', {
+          pluginId,
+          mode: repairOpts.mode || 'auto',
+          ...(repairOpts.spec ? { spec: repairOpts.spec } : {}),
+          ...(repairOpts.localPath ? { localPath: repairOpts.localPath } : {}),
+          copy: Boolean(repairOpts.copy)
+        });
+        if (state.disposed) return;
+        if (res?.ok && res?.active) {
+          api.reEnablePlugin(pluginId);
+          state.rendererErrors.delete(pluginId);
+          state.repairPathDrafts.delete(pluginId);
+        }
+        applyManagePayload(res);
+        if (res?.ok && res?.active) {
+          state.manageToast = { tone: 'info', spinning: false, text: `已修复路径并激活 ${pluginId}` };
+        } else if (res?.repaired) {
+          state.manageToast = {
+            tone: 'warn',
+            spinning: false,
+            text: `已修复 ${pluginId} 路径，但激活失败：${res?.error || '请查看下方诊断'}`
+          };
+        } else {
+          state.manageToast = {
+            tone: 'error',
+            spinning: false,
+            text: `修复 ${pluginId} 失败：${res?.error || '未找到可用目录'}`
+          };
+        }
+      });
+    }
+
+    function removeBrokenPluginFromUi(pluginId) {
+      if (!pluginId) return;
+      if (state.manageConfirmUninstallId !== pluginId) {
+        state.manageConfirmUninstallId = pluginId;
+        state.manageToast = { tone: 'warn', spinning: false, text: `再次点击「确认移除?」将清理失效插件记录 ${pluginId}` };
+        renderSettingsBody();
+        return;
+      }
+      state.manageConfirmUninstallId = null;
+      state.managePendingNativeUninstall = null;
+      void runManageAction(pluginId, `正在移除失效记录 ${pluginId}...`, async () => {
+        const res = await hostBridgePost('/host/plugins/uninstall', {
+          pluginId,
+          confirmNativeDelete: true
+        });
+        if (state.disposed) return;
+        state.rendererErrors.delete(pluginId);
+        state.repairPathDrafts.delete(pluginId);
+        applyManagePayload(res);
+        if (state.selectedPluginId === pluginId) {
+          state.selectedPluginId = null;
+          state.focusPluginDiagnostics = null;
+        }
+        state.manageToast = { tone: 'info', spinning: false, text: `已移除失效插件记录 ${pluginId}` };
+      });
     }
 
     async function fetchMarketplaceStats(forceRefresh = false) {
@@ -4524,9 +5006,26 @@
       }
 
       const enabledCount = allItems.filter((p) => p.enabled !== false).length;
-      let refreshListBtn = null;
+      const unusableList = allItems.filter((p) => Boolean(getPluginDiagnosticIssue(p)));
+      const activatableList = unusableList.filter((p) => !getPluginDiagnosticIssue(p)?.isMissingPath);
+      let listHeaderActions = null;
       if (hasBridge) {
-        refreshListBtn = doc.createElement('button');
+        listHeaderActions = doc.createElement('div');
+        listHeaderActions.className = 'ag-plugin-actions';
+        if (activatableList.length > 0) {
+          const actAllBtn = doc.createElement('button');
+          actAllBtn.type = 'button';
+          actAllBtn.id = 'agy-manage-activate-all-btn';
+          actAllBtn.className = 'ag-btn ag-btn-primary';
+          actAllBtn.disabled = Boolean(state.manageLoading || state.manageBusyId);
+          actAllBtn.appendChild(createIconEl('play'));
+          const actAllLbl = doc.createElement('span');
+          actAllLbl.textContent = `一键激活 (${activatableList.length})`;
+          actAllBtn.appendChild(actAllLbl);
+          actAllBtn.addEventListener('click', () => { activateAllInactiveFromUi(); });
+          listHeaderActions.appendChild(actAllBtn);
+        }
+        const refreshListBtn = doc.createElement('button');
         refreshListBtn.type = 'button';
         refreshListBtn.id = 'agy-manage-refresh-btn';
         refreshListBtn.className = 'ag-btn';
@@ -4536,14 +5035,15 @@
         rLbl.textContent = '刷新';
         refreshListBtn.appendChild(rLbl);
         refreshListBtn.addEventListener('click', () => { void fetchManagePlugins(); });
+        listHeaderActions.appendChild(refreshListBtn);
       }
 
       const installedSection = createSectionBlock(
         queryLower ? '匹配插件' : '已安装插件',
         queryLower
           ? `找到 ${filtered.length} / ${allItems.length} 个匹配项`
-          : `共 ${allItems.length} 个插件，${enabledCount} 个已启用。点击条目查看详细配置。`,
-        refreshListBtn
+          : `共 ${allItems.length} 个插件，${enabledCount} 个已启用${unusableList.length > 0 ? `，${unusableList.length} 个异常/未激活` : ''}。点击条目查看详细配置。`,
+        listHeaderActions
       );
 
       const card = doc.createElement('div');
@@ -4568,6 +5068,7 @@
 
         const openDetail = () => {
           state.selectedPluginId = p.id;
+          state.focusPluginDiagnostics = null;
           state.manageConfirmUninstallId = null;
           state.managePendingNativeUninstall = null;
           renderSettingsBody();
@@ -4608,23 +5109,32 @@
           nChip.textContent = '原生扩展';
           info.appendChild(nChip);
         }
-        if (p.enabled === false) {
+        const issue = getPluginDiagnosticIssue(p);
+        if (issue?.isMissingPath) {
+          const missChip = doc.createElement('span');
+          missChip.className = 'ag-chip';
+          missChip.setAttribute('data-tone', 'danger');
+          missChip.textContent = issue.statusLabel;
+          info.appendChild(missChip);
+        } else if (p.enabled === false) {
           const offChip = doc.createElement('span');
           offChip.className = 'ag-chip';
           offChip.textContent = '已停用';
           info.appendChild(offChip);
-        } else if (p.active === false) {
+        } else if (issue) {
           const warnChip = doc.createElement('span');
           warnChip.className = 'ag-chip';
-          warnChip.setAttribute('data-tone', 'warn');
-          warnChip.textContent = '未激活';
+          warnChip.setAttribute('data-tone', issue.tone);
+          warnChip.textContent = issue.statusLabel;
           info.appendChild(warnChip);
         }
         mainArea.appendChild(info);
 
         const meta = doc.createElement('div');
-        meta.className = 'ag-plugin-meta';
-        meta.textContent = p.description || p.id;
+        meta.className = issue?.isMissingPath ? 'ag-plugin-meta ag-plugin-meta-danger' : 'ag-plugin-meta';
+        meta.textContent = issue?.isMissingPath
+          ? issue.error
+          : (p.description || p.id);
         mainArea.appendChild(meta);
 
         if (matchedFields.length > 0) {
@@ -4668,6 +5178,63 @@
           actions.appendChild(pinBtn);
         }
 
+        if (issue?.isMissingPath && hasBridge) {
+          if (issue.bestRepair) {
+            const repBtn = doc.createElement('button');
+            repBtn.type = 'button';
+            repBtn.className = 'ag-btn ag-btn-primary';
+            repBtn.setAttribute('data-plugin-list-repair', p.id);
+            repBtn.setAttribute('title', `${issue.bestRepair.label}：${issue.bestRepair.target}`);
+            repBtn.disabled = Boolean(state.manageBusyId);
+            repBtn.textContent = '一键修复';
+            repBtn.addEventListener('click', (ev) => {
+              ev?.stopPropagation?.();
+              repairPluginFromUi(p.id, { mode: 'auto' });
+            });
+            actions.appendChild(repBtn);
+          } else {
+            const inspRepBtn = doc.createElement('button');
+            inspRepBtn.type = 'button';
+            inspRepBtn.className = 'ag-btn';
+            inspRepBtn.setAttribute('data-plugin-list-inspect-repair', p.id);
+            inspRepBtn.disabled = Boolean(state.manageBusyId);
+            inspRepBtn.textContent = '修复路径';
+            inspRepBtn.addEventListener('click', (ev) => {
+              ev?.stopPropagation?.();
+              state.selectedPluginId = p.id;
+              state.focusPluginDiagnostics = p.id;
+              state.manageConfirmUninstallId = null;
+              state.managePendingNativeUninstall = null;
+              renderSettingsBody();
+            });
+            actions.appendChild(inspRepBtn);
+          }
+          const rmConfirming = state.manageConfirmUninstallId === p.id;
+          const rmBtn = doc.createElement('button');
+          rmBtn.type = 'button';
+          rmBtn.className = 'ag-btn ag-btn-danger';
+          rmBtn.setAttribute('data-plugin-list-remove-broken', p.id);
+          rmBtn.disabled = Boolean(state.manageBusyId);
+          rmBtn.textContent = rmConfirming ? '确认移除?' : '移除';
+          rmBtn.addEventListener('click', (ev) => {
+            ev?.stopPropagation?.();
+            removeBrokenPluginFromUi(p.id);
+          });
+          actions.appendChild(rmBtn);
+        } else if (issue && hasBridge) {
+          const actBtn = doc.createElement('button');
+          actBtn.type = 'button';
+          actBtn.className = 'ag-btn ag-btn-primary';
+          actBtn.setAttribute('data-plugin-list-activate', p.id);
+          actBtn.disabled = Boolean(state.manageBusyId);
+          actBtn.textContent = issue.circuitOpen ? '解除并激活' : '激活';
+          actBtn.addEventListener('click', (ev) => {
+            ev?.stopPropagation?.();
+            activatePluginFromUi(p.id, { resetCircuit: true });
+          });
+          actions.appendChild(actBtn);
+        }
+
         const toggleWrap = doc.createElement('label');
         toggleWrap.className = 'ag-toggle-label';
         toggleWrap.setAttribute('title', p.enabled !== false ? '点击停用插件' : '点击启用插件');
@@ -4684,7 +5251,15 @@
           void runManageAction(p.id, `正在${want ? '启用' : '停用'} ${p.id}...`, async () => {
             const res = await hostBridgePost('/host/plugins/toggle', { pluginId: p.id, enabled: want });
             applyManagePayload(res);
-            state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
+            if (want && (res?.activationError || res?.reload?.active === false)) {
+              state.manageToast = {
+                tone: 'warn',
+                spinning: false,
+                text: `已启用 ${p.id}，但尚未激活：${res?.activationError || res?.reload?.error || '请进入详情诊断'}`
+              };
+            } else {
+              state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
+            }
           });
         });
         toggleWrap.appendChild(toggleInput);
@@ -4736,6 +5311,8 @@
         sourceKind: 'memory'
       };
 
+      const issue = getPluginDiagnosticIssue(p);
+
       // 1. 详情页头部：轻量返回 + Antigravity 风格页头 + 生命周期操作
       const heroWrap = doc.createElement('div');
       heroWrap.className = 'ag-sv-detail-hero';
@@ -4754,6 +5331,7 @@
       backBtn.appendChild(backLbl);
       backBtn.addEventListener('click', () => {
         state.selectedPluginId = null;
+        state.focusPluginDiagnostics = null;
         state.manageConfirmUninstallId = null;
         state.managePendingNativeUninstall = null;
         state.openComboboxKey = null;
@@ -4801,6 +5379,38 @@
       const rightCtrl = doc.createElement('div');
       rightCtrl.className = 'ag-sv-detail-toolbar';
       if (hasBridge) {
+        if (issue?.isMissingPath) {
+          if (issue.bestRepair) {
+            const repBtn = doc.createElement('button');
+            repBtn.type = 'button';
+            repBtn.className = 'ag-btn ag-btn-primary';
+            repBtn.setAttribute('data-plugin-repair', p.id);
+            repBtn.disabled = Boolean(state.manageBusyId);
+            repBtn.appendChild(createIconEl('play'));
+            const repLbl = doc.createElement('span');
+            repLbl.textContent = '一键修复';
+            repBtn.appendChild(repLbl);
+            repBtn.addEventListener('click', () => {
+              repairPluginFromUi(p.id, { mode: 'auto' });
+            });
+            rightCtrl.appendChild(repBtn);
+          }
+        } else if (p.enabled !== false && (!p.active || issue)) {
+          const actBtn = doc.createElement('button');
+          actBtn.type = 'button';
+          actBtn.className = 'ag-btn ag-btn-primary';
+          actBtn.setAttribute('data-plugin-activate', p.id);
+          actBtn.disabled = Boolean(state.manageBusyId);
+          actBtn.appendChild(createIconEl('play'));
+          const actLbl = doc.createElement('span');
+          actLbl.textContent = issue?.circuitOpen ? '解除熔断并激活' : '立即激活';
+          actBtn.appendChild(actLbl);
+          actBtn.addEventListener('click', () => {
+            activatePluginFromUi(p.id, { resetCircuit: true });
+          });
+          rightCtrl.appendChild(actBtn);
+        }
+
         const reloadBtn = doc.createElement('button');
         reloadBtn.type = 'button';
         reloadBtn.className = 'ag-btn';
@@ -5004,9 +5614,49 @@
       enableTitle.textContent = '启用插件';
       const enableDesc = doc.createElement('span');
       enableDesc.className = 'ag-sv-row-desc';
-      enableDesc.textContent = p.enabled === false ? '当前已停用，开启后立即热加载' : (p.active ? '当前运行中，停用后将卸载页面注入与服务' : '已启用但尚未激活');
+      if (issue?.isMissingPath) {
+        enableDesc.textContent = '插件目录或软链目标已丢失，修复路径后即可自动激活';
+      } else if (p.enabled === false) {
+        enableDesc.textContent = '当前已停用，开启后立即热加载';
+      } else if (issue) {
+        enableDesc.textContent = issue.circuitOpen
+          ? '已触发熔断保护，请查看下方诊断并点击「解除熔断并激活」'
+          : (issue.statusKind === 'renderer_error'
+              ? '后端已启动但页面注入异常，可点击右侧「立即激活」重试'
+              : '已启用但尚未激活，可点击右侧「立即激活」或查看下方插件诊断');
+      } else {
+        enableDesc.textContent = '当前运行中，停用后将卸载页面注入与服务';
+      }
       enableInfo.appendChild(enableTitle);
       enableInfo.appendChild(enableDesc);
+
+      const enableActions = doc.createElement('div');
+      enableActions.className = 'ag-plugin-actions';
+      if (hasBridge && issue?.isMissingPath && issue.bestRepair) {
+        const inlineRepBtn = doc.createElement('button');
+        inlineRepBtn.type = 'button';
+        inlineRepBtn.id = 'agy-detail-repair-btn';
+        inlineRepBtn.className = 'ag-btn ag-btn-primary';
+        inlineRepBtn.setAttribute('data-plugin-repair', p.id);
+        inlineRepBtn.disabled = Boolean(state.manageBusyId);
+        inlineRepBtn.textContent = '一键修复';
+        inlineRepBtn.addEventListener('click', () => {
+          repairPluginFromUi(p.id, { mode: 'auto' });
+        });
+        enableActions.appendChild(inlineRepBtn);
+      } else if (hasBridge && p.enabled !== false && (!p.active || issue)) {
+        const inlineActBtn = doc.createElement('button');
+        inlineActBtn.type = 'button';
+        inlineActBtn.id = 'agy-detail-activate-btn';
+        inlineActBtn.className = 'ag-btn ag-btn-primary';
+        inlineActBtn.setAttribute('data-plugin-activate', p.id);
+        inlineActBtn.disabled = Boolean(state.manageBusyId);
+        inlineActBtn.textContent = issue?.circuitOpen ? '解除熔断并激活' : '立即激活';
+        inlineActBtn.addEventListener('click', () => {
+          activatePluginFromUi(p.id, { resetCircuit: true });
+        });
+        enableActions.appendChild(inlineActBtn);
+      }
 
       const toggleWrap = doc.createElement('label');
       toggleWrap.className = 'ag-toggle-label';
@@ -5022,12 +5672,21 @@
         void runManageAction(p.id, `正在${want ? '启用' : '停用'} ${p.id}...`, async () => {
           const res = await hostBridgePost('/host/plugins/toggle', { pluginId: p.id, enabled: want });
           applyManagePayload(res);
-          state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
+          if (want && (res?.activationError || res?.reload?.active === false)) {
+            state.manageToast = {
+              tone: 'warn',
+              spinning: false,
+              text: `已启用 ${p.id}，但尚未激活：${res?.activationError || res?.reload?.error || '请查看下方诊断'}`
+            };
+          } else {
+            state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
+          }
         });
       });
       toggleWrap.appendChild(toggleInput);
+      enableActions.appendChild(toggleWrap);
       enableRow.appendChild(enableInfo);
-      enableRow.appendChild(toggleWrap);
+      enableRow.appendChild(enableActions);
       statusCard.appendChild(enableRow);
 
       if (p.hasTopbarUnits) {
@@ -5106,6 +5765,214 @@
 
       statusSection.appendChild(statusCard);
       body.appendChild(statusSection);
+
+      // 2.2 插件诊断（针对当前插件的激活异常、熔断、注入故障与修复入口）
+      const diagFocused = state.focusPluginDiagnostics === p.id;
+      const diagSection = createSectionBlock(
+        '插件诊断',
+        issue
+          ? '检测到该插件当前异常，请查看具体原因并尝试激活或修复。'
+          : '查看当前插件激活链路、运行世界与熔断健康度。'
+      );
+      diagSection.id = 'agy-plugin-diagnostics-section';
+      const diagCard = doc.createElement('div');
+      diagCard.id = 'agy-plugin-diagnostics-card';
+      diagCard.className = 'settings-card-box';
+      diagCard.setAttribute('data-diag-status', issue ? issue.tone : 'ok');
+      diagCard.setAttribute('data-diag-focused', diagFocused ? 'true' : 'false');
+
+      const diagStatusRow = doc.createElement('div');
+      diagStatusRow.className = 'settings-pref-row';
+      const diagStatusInfo = doc.createElement('div');
+      diagStatusInfo.className = 'ag-sv-row-info';
+      const diagStatusTitle = doc.createElement('span');
+      diagStatusTitle.className = 'ag-sv-row-title';
+      diagStatusTitle.textContent = issue ? '当前诊断结论' : '插件运行正常';
+      const diagStatusDesc = doc.createElement('span');
+      diagStatusDesc.className = 'ag-sv-row-desc';
+      if (issue) {
+        const stageLabel = issue.errorStage === 'renderer'
+          ? '页面注入阶段'
+          : (issue.errorStage === 'load' ? '清单加载阶段' : '插件激活阶段');
+        diagStatusDesc.textContent = `${stageLabel} · 错误码 ${issue.errorCode} · 窗口崩溃次数 ${crashes}`;
+      } else {
+        diagStatusDesc.textContent = p.enabled === false
+          ? '插件当前处于已停用状态；如需使用请打开上方「启用插件」开关。'
+          : `世界=${p.world || 'isolated'} · 隔离=${p.nodeIsolation || 'in-process'} · mount=${metric.mountMs}ms · crashes=${crashes}`;
+      }
+      diagStatusInfo.appendChild(diagStatusTitle);
+      diagStatusInfo.appendChild(diagStatusDesc);
+
+      const diagStatusChip = doc.createElement('span');
+      diagStatusChip.className = 'ag-chip';
+      diagStatusChip.setAttribute('data-tone', issue ? issue.tone : (p.enabled === false ? 'muted' : 'accent'));
+      diagStatusChip.textContent = issue ? issue.statusLabel : (p.enabled === false ? '已停用' : '健康');
+      diagStatusRow.appendChild(diagStatusInfo);
+      diagStatusRow.appendChild(diagStatusChip);
+      diagCard.appendChild(diagStatusRow);
+
+      if (issue) {
+        const errBox = doc.createElement('div');
+        errBox.id = 'agy-plugin-diag-error';
+        errBox.className = 'ag-diag-error-box';
+        errBox.textContent = issue.error;
+        diagCard.appendChild(errBox);
+
+        const sugEl = doc.createElement('div');
+        sugEl.id = 'agy-plugin-diag-suggestion';
+        sugEl.className = 'ag-diag-suggestion';
+        sugEl.textContent = `修复建议：${issue.suggestion}`;
+        diagCard.appendChild(sugEl);
+
+        const diagActRow = doc.createElement('div');
+        diagActRow.className = 'settings-pref-row';
+        const diagActInfo = doc.createElement('div');
+        diagActInfo.className = 'ag-sv-row-info';
+        const diagActTitle = doc.createElement('span');
+        diagActTitle.className = 'ag-sv-row-title';
+        diagActTitle.textContent = '恢复与排查操作';
+        const diagActDesc = doc.createElement('span');
+        diagActDesc.className = 'ag-sv-row-desc';
+        diagActDesc.textContent = '修正配置或环境后，可立即重新激活或导出脱敏诊断包定位问题。';
+        diagActInfo.appendChild(diagActTitle);
+        diagActInfo.appendChild(diagActDesc);
+
+        const diagActBtns = doc.createElement('div');
+        diagActBtns.className = 'ag-plugin-actions';
+        if (hasBridge) {
+          if (issue.isMissingPath) {
+            if (issue.bestRepair) {
+              const bestBtn = doc.createElement('button');
+              bestBtn.type = 'button';
+              bestBtn.className = 'ag-btn ag-btn-primary';
+              bestBtn.setAttribute('data-diag-repair', p.id);
+              bestBtn.setAttribute('title', issue.bestRepair.target || '');
+              bestBtn.disabled = Boolean(state.manageBusyId);
+              bestBtn.textContent = `一键修复（${issue.bestRepair.label}）`;
+              bestBtn.addEventListener('click', () => {
+                repairPluginFromUi(p.id, {
+                  mode: issue.bestRepair.kind === 'rollback' ? 'rollback' : 'relink',
+                  spec: issue.bestRepair.spec
+                });
+              });
+              diagActBtns.appendChild(bestBtn);
+            }
+            for (const cand of issue.repairCandidates.slice(1, 3)) {
+              const altBtn = doc.createElement('button');
+              altBtn.type = 'button';
+              altBtn.className = 'ag-btn';
+              altBtn.setAttribute('data-diag-repair-spec', cand.spec);
+              altBtn.setAttribute('title', cand.target || '');
+              altBtn.disabled = Boolean(state.manageBusyId);
+              altBtn.textContent = cand.label;
+              altBtn.addEventListener('click', () => {
+                repairPluginFromUi(p.id, {
+                  mode: cand.kind === 'rollback' ? 'rollback' : 'relink',
+                  spec: cand.spec
+                });
+              });
+              diagActBtns.appendChild(altBtn);
+            }
+            const rmConfirming = state.manageConfirmUninstallId === p.id;
+            const rmBrokenBtn = doc.createElement('button');
+            rmBrokenBtn.type = 'button';
+            rmBrokenBtn.className = 'ag-btn ag-btn-danger';
+            rmBrokenBtn.setAttribute('data-diag-remove-broken', p.id);
+            rmBrokenBtn.disabled = Boolean(state.manageBusyId);
+            rmBrokenBtn.textContent = rmConfirming ? '确认移除?' : '移除失效记录';
+            rmBrokenBtn.addEventListener('click', () => {
+              removeBrokenPluginFromUi(p.id);
+            });
+            diagActBtns.appendChild(rmBrokenBtn);
+          } else {
+            const fixActBtn = doc.createElement('button');
+            fixActBtn.type = 'button';
+            fixActBtn.className = 'ag-btn ag-btn-primary';
+            fixActBtn.setAttribute('data-diag-activate', p.id);
+            fixActBtn.disabled = Boolean(state.manageBusyId);
+            fixActBtn.textContent = issue.circuitOpen ? '解除熔断并激活' : '立即激活';
+            fixActBtn.addEventListener('click', () => {
+              activatePluginFromUi(p.id, { resetCircuit: true });
+            });
+            diagActBtns.appendChild(fixActBtn);
+          }
+
+          const diagExpBtn = doc.createElement('button');
+          diagExpBtn.type = 'button';
+          diagExpBtn.className = 'ag-btn';
+          diagExpBtn.setAttribute('data-diag-export-plugin', p.id);
+          diagExpBtn.disabled = Boolean(state.manageBusyId);
+          diagExpBtn.textContent = '导出诊断包';
+          diagExpBtn.addEventListener('click', () => {
+            void runManageAction('__diag_export__', '正在生成脱敏诊断包...', async () => {
+              const res = await hostBridgePost('/host/diagnostics/export', {});
+              const outPath = res?.path || 'agy-daddy-diagnostic-bundle.json';
+              state.diagnosticsExportInfo = { path: outPath, timestamp: Date.now() };
+              state.manageToast = { tone: 'info', spinning: false, text: `已导出脱敏诊断包：${outPath}` };
+            });
+          });
+          diagActBtns.appendChild(diagExpBtn);
+        } else {
+          const resetLocalBtn = doc.createElement('button');
+          resetLocalBtn.type = 'button';
+          resetLocalBtn.className = 'ag-btn';
+          resetLocalBtn.setAttribute('data-diag-reset-local', p.id);
+          resetLocalBtn.textContent = '重置本地故障计数';
+          resetLocalBtn.addEventListener('click', () => {
+            api.reEnablePlugin(p.id);
+            state.manageToast = { tone: 'info', spinning: false, text: `已重置 ${p.id} 本地故障计数` };
+            renderSettingsBody();
+          });
+          diagActBtns.appendChild(resetLocalBtn);
+        }
+        diagActRow.appendChild(diagActInfo);
+        diagActRow.appendChild(diagActBtns);
+        diagCard.appendChild(diagActRow);
+
+        if (issue.isMissingPath && hasBridge) {
+          const relinkRow = doc.createElement('div');
+          relinkRow.className = 'ag-diag-repair-row';
+          const pathInput = doc.createElement('input');
+          pathInput.type = 'text';
+          pathInput.id = 'agy-plugin-repair-path-input';
+          pathInput.className = 'settings-input';
+          pathInput.placeholder = issue.bestRepair?.target
+            ? `输入新目录路径（如 ${issue.bestRepair.target}）`
+            : '输入插件新目录绝对路径（或 github:/npm: 来源）';
+          pathInput.setAttribute('aria-label', '修复插件目录路径');
+          pathInput.value = state.repairPathDrafts.get(p.id) || '';
+          pathInput.addEventListener('input', () => {
+            state.repairPathDrafts.set(p.id, pathInput.value);
+          });
+          pathInput.addEventListener('change', () => {
+            state.repairPathDrafts.set(p.id, pathInput.value);
+          });
+          const relinkBtn = doc.createElement('button');
+          relinkBtn.type = 'button';
+          relinkBtn.className = 'ag-btn';
+          relinkBtn.setAttribute('data-diag-relink', p.id);
+          relinkBtn.disabled = Boolean(state.manageBusyId);
+          relinkBtn.textContent = '重新链接';
+          relinkBtn.addEventListener('click', () => {
+            const rawPath = String(pathInput.value || state.repairPathDrafts.get(p.id) || '').trim();
+            if (!rawPath) {
+              state.manageToast = { tone: 'warn', spinning: false, text: '请先输入有效的本地插件目录路径' };
+              renderSettingsBody();
+              return;
+            }
+            repairPluginFromUi(p.id, { mode: 'relink', localPath: rawPath });
+          });
+          relinkRow.appendChild(pathInput);
+          relinkRow.appendChild(relinkBtn);
+          diagCard.appendChild(relinkRow);
+        }
+      }
+
+      diagSection.appendChild(diagCard);
+      body.appendChild(diagSection);
+      if (diagFocused && typeof diagSection.scrollIntoView === 'function') {
+        try { diagSection.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
+      }
 
       // 2.5 原生扩展注入控制区（按需开关 Rules / Skills / MCP Server / Hooks + Rules 备份撤回）
       if (p.hasNative || p.nativeInfo?.hasNative) {
@@ -8527,6 +9394,38 @@
       topbarEntryRow.appendChild(topbarEntryToggleWrap);
       entryCard.appendChild(topbarEntryRow);
 
+      const hideTrayRow = doc.createElement('div');
+      hideTrayRow.className = 'settings-pref-row';
+      const hideTrayInfo = doc.createElement('div');
+      hideTrayInfo.className = 'ag-sv-row-info';
+      const hideTrayLbl = doc.createElement('span');
+      hideTrayLbl.className = 'ag-sv-row-title';
+      hideTrayLbl.textContent = '隐藏通知栏图标';
+      const hideTrayDesc = doc.createElement('span');
+      hideTrayDesc.className = 'ag-sv-row-desc';
+      hideTrayDesc.textContent = '隐藏系统通知栏（托盘）常驻图标，后台守护进程与插件功能继续正常运行';
+      hideTrayInfo.appendChild(hideTrayLbl);
+      hideTrayInfo.appendChild(hideTrayDesc);
+
+      const hideTrayToggleWrap = doc.createElement('label');
+      hideTrayToggleWrap.className = 'ag-toggle-label';
+      const hideTrayInput = doc.createElement('input');
+      hideTrayInput.type = 'checkbox';
+      hideTrayInput.id = 'agy-hide-tray-icon';
+      hideTrayInput.checked = state.hostSettings.hideTrayIcon === true;
+      hideTrayInput.setAttribute('data-host-setting', 'hideTrayIcon');
+      hideTrayInput.setAttribute('aria-label', '隐藏通知栏图标');
+      hideTrayInput.addEventListener('change', () => {
+        const nextVal = Boolean(hideTrayInput.checked);
+        state.hostSettings.hideTrayIcon = nextVal;
+        void persistHostSettings({ hideTrayIcon: nextVal });
+        renderSettingsBody();
+      });
+      hideTrayToggleWrap.appendChild(hideTrayInput);
+      hideTrayRow.appendChild(hideTrayInfo);
+      hideTrayRow.appendChild(hideTrayToggleWrap);
+      entryCard.appendChild(hideTrayRow);
+
       const nativeRow = doc.createElement('div');
       nativeRow.className = 'settings-pref-row';
       const nativeInfo = doc.createElement('div');
@@ -8794,11 +9693,13 @@
         : results;
 
       let circuitOpenCount = 0;
+      let inactiveEnabledCount = 0;
       for (const id of knownIds) {
         const metric = getMetric(id);
         const meta = state.pluginMeta.get(id);
         const crashes = Math.max(metric.crashes, Number(meta?.health?.crashesInWindow || 0));
         if (crashes >= 3 || Boolean(meta?.health?.circuitOpen)) circuitOpenCount++;
+        if (meta && meta.enabled !== false && meta.active === false) inactiveEnabledCount++;
       }
 
       const diagSection = createSectionBlock(
@@ -8812,6 +9713,7 @@
       const isExpanded = Boolean(
         state.diagnosticsExpanded
         || circuitOpenCount > 0
+        || inactiveEnabledCount > 0
         || (queryLower && (visibleIds.length > 0 || visibleAnchors.length > 0))
       );
 
@@ -8829,7 +9731,11 @@
       if (state.diagnosticsExportInfo?.path) {
         sDesc.textContent = `已挂载 ${state.pluginInstances.size}/${knownIds.length} · 锚点 ${matchedCount}/${results.length} 命中 · 最近导出：${state.diagnosticsExportInfo.path}`;
       } else {
-        sDesc.textContent = `已挂载 ${state.pluginInstances.size}/${knownIds.length} · 锚点 ${matchedCount}/${results.length} 命中${circuitOpenCount > 0 ? ` · ${circuitOpenCount} 个已熔断` : ''}`;
+        const extraStatus = [
+          inactiveEnabledCount > 0 ? `${inactiveEnabledCount} 个未激活` : '',
+          circuitOpenCount > 0 ? `${circuitOpenCount} 个已熔断` : ''
+        ].filter(Boolean).join(' · ');
+        sDesc.textContent = `已挂载 ${state.pluginInstances.size}/${knownIds.length} · 锚点 ${matchedCount}/${results.length} 命中${extraStatus ? ` · ${extraStatus}` : ''}`;
       }
       sInfo.appendChild(sTitle);
       sInfo.appendChild(sDesc);
@@ -9016,6 +9922,17 @@
           const meta = state.pluginMeta.get(id);
           const crashes = Math.max(metric.crashes, Number(meta?.health?.crashesInWindow || 0));
           const circuitOpen = crashes >= 3 || Boolean(meta?.health?.circuitOpen);
+          const isMissingPath = Boolean(
+            (meta?.installHealth && meta.installHealth.status !== 'ok') ||
+            meta?.health?.lastErrorCode === 'INSTALL_PATH_MISSING'
+          );
+          const isDisabled = meta?.enabled === false;
+          const isInactive = !isDisabled && meta?.active === false;
+          const localRenderErr = state.rendererErrors.get(id);
+          const errText = localRenderErr?.message || meta?.health?.lastError || '';
+          const bestRepair = Array.isArray(meta?.installHealth?.repairCandidates)
+            ? meta.installHealth.repairCandidates[0]
+            : null;
 
           const row = doc.createElement('div');
           row.className = 'settings-pref-row';
@@ -9028,24 +9945,85 @@
           nameLine.textContent = pickLocaleText(meta?.displayName, id);
           const textSpan = doc.createElement('span');
           textSpan.className = 'ag-sv-row-desc';
-          textSpan.textContent = `${id} · mount=${metric.mountMs}ms · obs=${metric.observerMs || 0}ms · timers=${metric.timersCount} · crashes=${crashes}`;
+          textSpan.textContent = `${id} · mount=${metric.mountMs}ms · obs=${metric.observerMs || 0}ms · timers=${metric.timersCount} · crashes=${crashes}${errText ? ` · ${errText}` : ''}`;
           info.appendChild(nameLine);
           info.appendChild(textSpan);
           row.appendChild(info);
 
           const right = doc.createElement('div');
           right.className = 'ag-plugin-actions';
-          if (circuitOpen) {
+          if (isMissingPath) {
+            const missChip = doc.createElement('span');
+            missChip.className = 'ag-chip';
+            missChip.setAttribute('data-tone', 'danger');
+            missChip.textContent = meta?.installHealth?.status === 'broken_symlink' ? '路径失效' : '文件丢失';
+            right.appendChild(missChip);
+          } else if (circuitOpen) {
             const chip = doc.createElement('span');
             chip.className = 'ag-chip';
             chip.setAttribute('data-tone', 'danger');
             chip.textContent = '已熔断';
             right.appendChild(chip);
+          } else if (isDisabled) {
+            const offChip = doc.createElement('span');
+            offChip.className = 'ag-chip';
+            offChip.textContent = '已停用';
+            right.appendChild(offChip);
+          } else if (isInactive) {
+            const warnChip = doc.createElement('span');
+            warnChip.className = 'ag-chip';
+            warnChip.setAttribute('data-tone', errText ? 'danger' : 'warn');
+            warnChip.textContent = '未激活';
+            right.appendChild(warnChip);
+          } else if (localRenderErr || (meta?.health?.lastErrorStage === 'renderer' && errText)) {
+            const renChip = doc.createElement('span');
+            renChip.className = 'ag-chip';
+            renChip.setAttribute('data-tone', 'warn');
+            renChip.textContent = '注入失败';
+            right.appendChild(renChip);
           } else {
             const okChip = doc.createElement('span');
             okChip.className = 'ag-chip';
             okChip.textContent = state.pluginInstances.has(id) ? '正常' : '未挂载';
             right.appendChild(okChip);
+          }
+          if (isMissingPath && bestRepair && hasBridge) {
+            const repBtn = doc.createElement('button');
+            repBtn.type = 'button';
+            repBtn.className = 'ag-btn ag-btn-primary';
+            repBtn.setAttribute('data-diag-row-repair', id);
+            repBtn.disabled = Boolean(state.manageBusyId);
+            repBtn.textContent = '一键修复';
+            repBtn.addEventListener('click', () => {
+              repairPluginFromUi(id, { mode: 'auto' });
+            });
+            right.appendChild(repBtn);
+          } else if ((isInactive || localRenderErr || (meta?.health?.lastErrorStage === 'renderer' && errText)) && !isMissingPath && hasBridge) {
+            const actBtn = doc.createElement('button');
+            actBtn.type = 'button';
+            actBtn.className = 'ag-btn ag-btn-primary';
+            actBtn.setAttribute('data-diag-row-activate', id);
+            actBtn.disabled = Boolean(state.manageBusyId);
+            actBtn.textContent = '激活';
+            actBtn.addEventListener('click', () => {
+              activatePluginFromUi(id, { resetCircuit: true });
+            });
+            right.appendChild(actBtn);
+          }
+          if (isMissingPath || circuitOpen || isInactive || errText) {
+            const inspBtn = doc.createElement('button');
+            inspBtn.type = 'button';
+            inspBtn.className = 'ag-btn';
+            inspBtn.setAttribute('data-diag-row-inspect', id);
+            inspBtn.textContent = '诊断';
+            inspBtn.addEventListener('click', () => {
+              state.activeSettingsTab = 'plugins';
+              state.marketplaceOpen = false;
+              state.selectedPluginId = id;
+              state.focusPluginDiagnostics = id;
+              renderSettingsBody();
+            });
+            right.appendChild(inspBtn);
           }
           if (crashes > 0 || circuitOpen) {
             const resetBtn = doc.createElement('button');
@@ -9209,10 +10187,14 @@
         if (opts.pluginId && (!explicitTab || explicitTab === 'plugins')) {
           state.activeSettingsTab = 'plugins';
           state.selectedPluginId = String(opts.pluginId);
+          state.focusPluginDiagnostics = opts.focusDiagnostics ? String(opts.pluginId) : null;
           state.marketplaceOpen = false;
         } else if (!opts.pluginId) {
           state.selectedPluginId = null;
+          state.focusPluginDiagnostics = null;
         }
+      } else {
+        state.focusPluginDiagnostics = null;
       }
       state.manageConfirmUninstallId = null;
 
@@ -10108,6 +11090,7 @@
 
     async function mountPlugin(pluginId, pluginObj, pluginOptions = {}) {
       ensureDomShell();
+      state.rendererErrors.delete(pluginId);
       if (state.pluginInstances.has(pluginId)) {
         await disposePlugin(pluginId);
       }
@@ -10119,6 +11102,8 @@
         }
         getMetric(pluginId).mountMs = Date.now() - t0;
         state.pluginInstances.set(pluginId, { pluginObj, ctx });
+        renderPluginAlertCapsule();
+        renderUnits();
         return { ok: true };
       } catch (err) {
         const health = recordPluginRuntimeError(pluginId, err);
@@ -10326,6 +11311,7 @@
         }
       }
       const hasOpenPopover = (overflowMenuEl && !overflowMenuEl.hidden)
+        || (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden)
         || Array.from(state.popovers.values()).some((p) => p.node && !p.node.hidden);
       if (!hasOpenPopover || !hostEl) return;
       const path = typeof ev?.composedPath === 'function' ? ev.composedPath() : null;
@@ -10371,6 +11357,8 @@
           if (Number(hs.maxVisibleUnits) >= 1) state.hostSettings.maxVisibleUnits = Math.floor(Number(hs.maxVisibleUnits));
           if (typeof hs.showTopbarEntry === 'boolean') state.hostSettings.showTopbarEntry = hs.showTopbarEntry;
           if (typeof hs.injectNativeSettings === 'boolean') state.hostSettings.injectNativeSettings = hs.injectNativeSettings;
+          if (typeof hs.autoSyncNativeOnInstall === 'boolean') state.hostSettings.autoSyncNativeOnInstall = hs.autoSyncNativeOnInstall;
+          if (typeof hs.hideTrayIcon === 'boolean') state.hostSettings.hideTrayIcon = hs.hideTrayIcon;
           syncTopbarEntryVisibility();
           syncNativeSettingsIntegration();
           renderUnits();
@@ -10378,6 +11366,8 @@
         }
         if (nextOpts.pluginMeta) {
           ingestPluginMetaMap(nextOpts.pluginMeta);
+          renderPluginAlertCapsule();
+          renderUnits();
         }
         if (nextOpts.themeMode || nextOpts.heatPreset) {
           if (nextOpts.themeMode) { state.themeMode = nextOpts.themeMode; state.hostSettings.themeMode = nextOpts.themeMode; }
@@ -10440,9 +11430,41 @@
       },
       reEnablePlugin(pluginId) {
         state.crashCounts.delete(pluginId);
+        state.rendererErrors.delete(pluginId);
         const m = getMetric(pluginId);
         m.crashes = 0;
+        renderPluginAlertCapsule();
+        renderUnits();
         return { ok: true, pluginId };
+      },
+      syncPluginStates(metaInput) {
+        if (metaInput) {
+          ingestPluginMetaMap(metaInput);
+        }
+        if (isPlainObject(metaInput)) {
+          for (const [id, meta] of Object.entries(metaInput)) {
+            if (meta?.active && !meta?.health?.lastError && !meta?.health?.circuitOpen) {
+              state.rendererErrors.delete(id);
+            }
+          }
+          if (state.managePlugins.length > 0) {
+            const byId = new Map(state.managePlugins.map((p) => [p.id, p]));
+            for (const [id] of Object.entries(metaInput)) {
+              const latest = state.pluginMeta.get(id);
+              if (latest) {
+                const prev = byId.get(id) || {};
+                byId.set(id, { ...prev, ...latest });
+              }
+            }
+            state.managePlugins = Array.from(byId.values());
+          }
+        }
+        renderPluginAlertCapsule();
+        renderUnits();
+        if (state.settingsMode !== 'closed') {
+          renderSettingsBody();
+        }
+        return { ok: true, unusableCount: getUnusablePlugins().length };
       },
       async dispose() {
         if (state.disposed) return;
@@ -10452,6 +11474,7 @@
         state.pendingFlipReorder = null;
         for (const tid of hostRetryTimers) clearTimeout(tid);
         hostRetryTimers.clear();
+        state.rendererErrors.clear();
         teardownNativeSettingsMount();
         for (const id of Array.from(state.pluginInstances.keys())) {
           await disposePlugin(id);
@@ -10526,6 +11549,12 @@
 
     if (win) {
       win.__AGYDaddyHost = api;
+    }
+
+    if (getUnusablePlugins().length > 0 && doc && typeof doc.createElement === 'function') {
+      ensureDomShell();
+      renderPluginAlertCapsule();
+      renderUnits();
     }
 
     if (isPlainObject(mergedOpts.initialView) && mergedOpts.initialView.open) {

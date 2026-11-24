@@ -16,5 +16,8 @@ module.exports = {
   installer: require('./core/installer'),
   marketplaceStats: require('./core/marketplace-stats'),
   doctor: require('./core/doctor'),
-  daemon: require('./core/daemon')
+  daemon: require('./core/daemon'),
+  lifecycle: require('./core/lifecycle'),
+  trayManager: require('./core/tray-manager'),
+  launcher: require('./core/launcher')
 };

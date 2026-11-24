@@ -15,6 +15,14 @@ const { createMockDocument } = require('../sdk/mock-harness');
 const { loadAnchorsRegistry } = require('../src/core/anchors');
 const { readInstalledIndex } = require('../src/core/installer');
 
+async function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 async function postHost(port, hostToken, route, body = {}) {
   const resp = await fetch(`http://127.0.0.1:${port}${route}`, {
     method: 'POST',
@@ -130,6 +138,7 @@ async function createLocalCdpHarness() {
     async cleanup() {
       mainCtx.__clearTimers();
       for (const ctx of isoContexts.values()) ctx.__clearTimers();
+      httpServer.closeAllConnections?.();
       await new Promise((r) => httpServer.close(r));
     }
   };
@@ -269,7 +278,7 @@ module.exports = { mount, dispose };
       uiHost.toggleSettingsPanel(true);
       const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
       assert.ok(shadow.querySelector('#agy-tab-plugins'));
-      await new Promise((r) => setTimeout(r, 50));
+      await waitFor(() => Boolean(shadow.querySelector('[data-plugin-toggle="third.demo"]')));
 
       const card = shadow.querySelector('#agy-manage-settings-card');
       assert.ok(card);
@@ -286,7 +295,7 @@ module.exports = { mount, dispose };
       unBtn.click();
       assert.equal(shadow.querySelector('[data-plugin-uninstall="third.demo"]').textContent, '确认卸载?');
       shadow.querySelector('[data-plugin-uninstall="third.demo"]').click();
-      await new Promise((r) => setTimeout(r, 80));
+      await waitFor(() => !daemon.activePlugins.has('third.demo') && Boolean(shadow.querySelector('[data-catalog-install="third.demo"]')));
 
       assert.equal(daemon.activePlugins.has('third.demo'), false);
       assert.equal(readInstalledIndex({ stateDir }).plugins['third.demo'], undefined);
@@ -296,12 +305,12 @@ module.exports = { mount, dispose };
       const inp = shadow.querySelector('#agy-plugin-install-input');
       inp.value = `local:${demoDir}`;
       shadow.querySelector('#agy-plugin-install-btn').click();
-      await new Promise((r) => setTimeout(r, 60));
+      await waitFor(() => Boolean(shadow.querySelector('#agy-perm-confirm-btn')));
 
       const permConfirmBtn = shadow.querySelector('#agy-perm-confirm-btn');
       assert.ok(permConfirmBtn, 'Expected permission confirmation UI');
       permConfirmBtn.click();
-      await new Promise((r) => setTimeout(r, 100));
+      await waitFor(() => daemon.activePlugins.has('third.demo') && Boolean(shadow.querySelector('[data-plugin-toggle="third.demo"]')));
 
       assert.equal(daemon.activePlugins.has('third.demo'), true);
       assert.ok(shadow.querySelector('[data-plugin-toggle="third.demo"]'));
@@ -403,7 +412,7 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
     try {
       uiHost.toggleSettingsPanel(true);
       const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
-      await new Promise((r) => setTimeout(r, 60));
+      await waitFor(() => Boolean(shadow.querySelector('[data-plugin-detail="agy-daddy.nativedemo"]')));
 
       const detailBtn = shadow.querySelector('[data-plugin-detail="agy-daddy.nativedemo"]');
       assert.ok(detailBtn);
@@ -418,7 +427,7 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
       // 关闭 skills 注入开关
       skillsToggle.checked = false;
       skillsToggle.dispatchEvent({ type: 'change' });
-      await new Promise((r) => setTimeout(r, 80));
+      await waitFor(() => !fs.existsSync(path.join(targetNativeDir, 'skills')) && shadow.querySelector('[data-native-toggle="agy-daddy.nativedemo:skills"]')?.checked === false);
       assert.equal(fs.existsSync(path.join(targetNativeDir, 'skills')), false);
       assert.equal(shadow.querySelector('[data-native-toggle="agy-daddy.nativedemo:skills"]').checked, false);
 
@@ -427,7 +436,7 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
       assert.ok(rbRulesBtn);
       assert.equal(rbRulesBtn.disabled, false);
       rbRulesBtn.click();
-      await new Promise((r) => setTimeout(r, 80));
+      await waitFor(() => fs.readFileSync(existingRulePath, 'utf8') === '# User Original Rule\n');
       assert.equal(fs.readFileSync(existingRulePath, 'utf8'), '# User Original Rule\n');
 
       // 3. 点击卸载必须弹出原生扩展删除确认框，取消不删除，确认后才卸载并删除原生目录
@@ -442,7 +451,7 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
 
       shadow.querySelector('[data-plugin-uninstall="agy-daddy.nativedemo"]').click();
       shadow.querySelector('#agy-native-uninstall-confirm-btn').click();
-      await new Promise((r) => setTimeout(r, 100));
+      await waitFor(() => readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'] === undefined && !fs.existsSync(targetNativeDir));
 
       assert.equal(readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'], undefined);
       assert.equal(fs.existsSync(targetNativeDir), false);

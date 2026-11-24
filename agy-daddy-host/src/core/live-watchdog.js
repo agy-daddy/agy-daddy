@@ -32,6 +32,7 @@ function createLiveWatchdog(daemon, options = {}) {
 
   let initialized = false;
   let initialBarePid = null;
+  let lastSeenCdpPort = null;
   const warnedBarePids = new Set();
   const relaunchAttemptedPids = new Set();
   const failedTargets = new Map();
@@ -55,18 +56,14 @@ function createLiveWatchdog(daemon, options = {}) {
     return { initialBarePid };
   }
 
-  async function syncTargets(resolved = {}) {
+  async function syncTargets(resolved = {}, syncOpts = {}) {
     const port = resolved?.port ? Number(resolved.port) : null;
     const targets = Array.isArray(resolved?.targets) ? resolved.targets : [];
     if (port && daemon?.injector) {
       daemon.injector.lastCdpPort = port;
     }
 
-    const plugins = Array.from(daemon?.activePlugins?.values ? daemon.activePlugins.values() : []);
-    let injectedCount = 0;
-    let pluginsInjected = 0;
-    const errors = [];
-
+    const newTargets = [];
     for (const target of targets) {
       const targetId = target?.id || target?.webSocketDebuggerUrl;
       if (!targetId) continue;
@@ -79,7 +76,37 @@ function createLiveWatchdog(daemon, options = {}) {
       ) {
         continue;
       }
+      newTargets.push({ target, targetId });
+    }
 
+    if (newTargets.length > 0 && typeof daemon?.ensureEnabledPluginsActivated === 'function') {
+      const isFreshAppStart = Boolean(syncOpts.freshAppStart)
+        || (daemon?.injector?.sessions?.size || 0) === 0
+        || Boolean(port && lastSeenCdpPort && port !== lastSeenCdpPort);
+      try {
+        const actRes = await daemon.ensureEnabledPluginsActivated({
+          resetCircuit: isFreshAppStart,
+          retryTransient: true
+        });
+        if (actRes?.activated?.length > 0) {
+          log(`✅ Antigravity 启动时补激活 ${actRes.activated.length} 个插件 (${actRes.activated.join(', ')})`);
+        }
+        if (actRes?.failed?.length > 0) {
+          warn(`⚠️ Antigravity 启动后仍有 ${actRes.failed.length} 个插件未能激活 (${actRes.failed.map((f) => f.id).join(', ')})，顶栏右侧将展示异常通知`);
+        }
+      } catch {}
+    }
+
+    if (port) {
+      lastSeenCdpPort = port;
+    }
+
+    const plugins = Array.from(daemon?.activePlugins?.values ? daemon.activePlugins.values() : []);
+    let injectedCount = 0;
+    let pluginsInjected = 0;
+    const errors = [];
+
+    for (const { target, targetId } of newTargets) {
       try {
         const res = await daemon.injector.attachTarget(target, plugins);
         failedTargets.delete(targetId);
@@ -147,6 +174,7 @@ function createLiveWatchdog(daemon, options = {}) {
 
       if (!hostProc.running) {
         initialBarePid = null;
+        lastSeenCdpPort = null;
         if (daemon?.injector?.sessions?.size > 0) {
           await daemon.injector.disposeAll().catch(() => {});
           log('ℹ️ 检测到 Antigravity 已退出，已清理旧注入会话，等待重新启动...');
@@ -196,7 +224,7 @@ function createLiveWatchdog(daemon, options = {}) {
         });
 
         if (res?.ok && Array.isArray(res.targets) && res.targets.length > 0) {
-          const syncRes = await syncTargets({ port: res.port, targets: res.targets });
+          const syncRes = await syncTargets({ port: res.port, targets: res.targets }, { freshAppStart: true });
           return { action: 'relaunched-and-injected', res, syncRes };
         }
         if (res?.reason === 'COOLDOWN_ACTIVE') {

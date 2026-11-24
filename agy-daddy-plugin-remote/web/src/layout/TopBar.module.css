@@ -1,0 +1,216 @@
+.topbar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: calc(env(safe-area-inset-top, 0px) + 5px) 10px 7px;
+  border-bottom: 1px solid var(--ag-border-sub);
+  background: var(--ag-surface-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--ag-highlight-top);
+  flex-shrink: 0;
+  z-index: 20;
+}
+
+.rowPrimary {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.iconBtn {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-control);
+  color: var(--ag-fg);
+  box-shadow: var(--ag-highlight-btn), var(--ag-shadow-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 14px;
+  transition:
+    transform 120ms var(--ag-ease-out),
+    background-color 140ms var(--ag-ease-out);
+}
+
+.iconBtn::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.iconBtn:hover {
+  background: var(--ag-control-hover);
+}
+
+.iconBtn:active {
+  transform: translateY(1px) scale(0.96);
+}
+
+.badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+}
+
+.titleBtn {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: var(--ag-r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  transition: background-color 140ms var(--ag-ease-out);
+}
+
+.titleBtn:hover {
+  background: var(--ag-control);
+}
+
+.titleText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ag-fg);
+}
+
+.rowTelemetry {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.capsules {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.capsule {
+  position: relative;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--ag-r-pill);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-card);
+  box-shadow: var(--ag-highlight-top), var(--ag-shadow-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  color: var(--ag-fg);
+  white-space: nowrap;
+  transition:
+    transform 120ms var(--ag-ease-out),
+    background-color 140ms var(--ag-ease-out),
+    border-color 140ms var(--ag-ease-out);
+}
+
+.capsule::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+
+.capsule:hover {
+  background: var(--ag-elevated);
+}
+
+.capsule:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+.capsule[data-expanded="1"] {
+  border-color: var(--ag-accent-border);
+  background: var(--ag-accent-soft);
+}
+
+.capsule[data-risk="warn"],
+.capsule[data-tone="warn"] {
+  border-color: var(--ag-warn-border);
+  background: var(--ag-warn-soft);
+  color: var(--ag-warn);
+}
+
+.capsule[data-risk="critical"],
+.capsule[data-tone="danger"] {
+  border-color: var(--ag-danger-border);
+  background: var(--ag-danger-soft);
+  color: var(--ag-danger);
+}
+
+.ringSvg {
+  flex-shrink: 0;
+}
+
+.capVal {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.capSub {
+  color: var(--ag-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.quotaPair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.quotaPair[data-tone="warn"] {
+  color: var(--ag-warn);
+}
+
+.quotaPair[data-tone="danger"] {
+  color: var(--ag-danger);
+}
+
+.quotaKey {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ag-muted);
+}
+
+.quotaPair[data-tone="warn"] .quotaKey,
+.quotaPair[data-tone="danger"] .quotaKey {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.quotaSep {
+  width: 1px;
+  height: 10px;
+  background: var(--ag-border);
+  margin: 0 1px;
+}
+
+@supports (corner-shape: superellipse(1.25)) {
+  .capsule {
+    corner-shape: round;
+  }
+}

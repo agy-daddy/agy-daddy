@@ -1,6 +1,6 @@
 # @agy-daddy/plugin-remote
 
-Agy-Daddy 独立手机远程控制台插件（Layer 4）：
+Agy-Daddy 独立远程访问插件（Layer 4）：
 
 - **安全默认值**：仅监听 `127.0.0.1`（`lan: false`, `tailscale: false`, `cloudflare: false`），且远程写入默认关闭（`allowRemoteWrite: false`），未启用前 `POST /api/action` 一律返回 `403 REMOTE_WRITE_DISABLED`。
 - **令牌校验与轮换**：`GET /api/snapshot` 与 `POST /api/action` 使用 `crypto.timingSafeEqual` 进行定常时间 Token 校验，支持一键轮换并立即作废旧令牌。

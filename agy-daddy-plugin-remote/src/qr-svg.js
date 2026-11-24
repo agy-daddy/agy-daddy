@@ -269,8 +269,8 @@ function generateQrMatrix(text) {
 function generateQrSvg(text, options = {}) {
   const { size, modules } = generateQrMatrix(text);
   const margin = Number.isInteger(options.margin) ? options.margin : 2;
-  const fg = String(options.fg || '#a78bfa');
-  const bg = String(options.bg || '#0f172a');
+  const fg = String(options.fg || '#0a0a0c');
+  const bg = String(options.bg || '#ffffff');
   const dim = size + margin * 2;
   const paths = [];
   for (let y = 0; y < size; y++) {

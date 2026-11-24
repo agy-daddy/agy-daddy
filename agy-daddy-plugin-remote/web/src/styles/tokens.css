@@ -1,0 +1,178 @@
+:root {
+  color-scheme: dark;
+
+  /* Surface hierarchy (Dark) */
+  --ag-bg: #0c0c0e;
+  --ag-surface: #131316;
+  --ag-surface-glass: rgba(19, 19, 22, 0.86);
+  --ag-card: #18181c;
+  --ag-elevated: #1f1f25;
+  --ag-subcard: rgba(255, 255, 255, 0.045);
+
+  /* Text hierarchy (WCAG AA+) */
+  --ag-fg: #f4f4f5;
+  --ag-secondary: #a8a8b3;
+  --ag-muted: #7f7f8c;
+
+  /* Hairlines & interactive fills */
+  --ag-border: rgba(255, 255, 255, 0.11);
+  --ag-border-sub: rgba(255, 255, 255, 0.068);
+  --ag-control: rgba(255, 255, 255, 0.075);
+  --ag-control-hover: rgba(255, 255, 255, 0.13);
+  --ag-primary-bg: #f4f4f5;
+  --ag-primary-fg: #0c0c0e;
+  --ag-ring: rgba(96, 165, 250, 0.55);
+
+  /* Semantic accents & status tints */
+  --ag-accent: #60a5fa;
+  --ag-accent-soft: rgba(96, 165, 250, 0.15);
+  --ag-accent-border: rgba(96, 165, 250, 0.34);
+
+  --ag-ok: #22c55e;
+  --ag-ok-soft: rgba(34, 197, 94, 0.14);
+  --ag-ok-border: rgba(34, 197, 94, 0.32);
+
+  --ag-warn: #fbbf24;
+  --ag-warn-soft: rgba(251, 191, 36, 0.14);
+  --ag-warn-border: rgba(251, 191, 36, 0.34);
+
+  --ag-danger: #f87171;
+  --ag-danger-soft: rgba(248, 113, 113, 0.15);
+  --ag-danger-border: rgba(248, 113, 113, 0.36);
+
+  --ag-diff-add-bg: rgba(34, 197, 94, 0.13);
+  --ag-diff-add-fg: #86efac;
+  --ag-diff-del-bg: rgba(239, 68, 68, 0.13);
+  --ag-diff-del-fg: #fca5a5;
+
+  /* Depth, highlights & backdrop */
+  --ag-backdrop: rgba(0, 0, 0, 0.58);
+  --ag-scrim-soft: rgba(0, 0, 0, 0.3);
+  --ag-highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --ag-highlight-btn: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+  --ag-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.36), 0 2px 6px -1px rgba(0, 0, 0, 0.28);
+  --ag-shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.45), 0 12px 28px -6px rgba(0, 0, 0, 0.54);
+  --ag-shadow-lg: 0 10px 26px -4px rgba(0, 0, 0, 0.58), 0 22px 48px -10px rgba(0, 0, 0, 0.68);
+  --ag-shadow: var(--ag-shadow-md);
+
+  /* Concentric rounded corner scale (r = R - p, 4px rhythm) */
+  --ag-r-xs: 6px;
+  --ag-r-sm: 10px;
+  --ag-r-md: 14px;
+  --ag-r-lg: 20px;
+  --ag-r-xl: 24px;
+  --ag-r-pill: 999px;
+
+  /* Typography & motion */
+  --ag-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --ag-font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  --ag-ease-drawer: cubic-bezier(0.22, 1, 0.36, 1);
+  --ag-ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --ag-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-appearance="light"] {
+  color-scheme: light;
+  --ag-bg: #f4f4f6;
+  --ag-surface: #ffffff;
+  --ag-surface-glass: rgba(255, 255, 255, 0.88);
+  --ag-card: #ffffff;
+  --ag-elevated: #ffffff;
+  --ag-subcard: rgba(15, 23, 42, 0.036);
+
+  --ag-fg: #111114;
+  --ag-secondary: #484852;
+  --ag-muted: #6e6e7a;
+
+  --ag-border: rgba(15, 23, 42, 0.105);
+  --ag-border-sub: rgba(15, 23, 42, 0.062);
+  --ag-control: rgba(15, 23, 42, 0.052);
+  --ag-control-hover: rgba(15, 23, 42, 0.09);
+  --ag-primary-bg: #18181b;
+  --ag-primary-fg: #ffffff;
+  --ag-ring: rgba(37, 99, 235, 0.4);
+
+  --ag-accent: #2563eb;
+  --ag-accent-soft: rgba(37, 99, 235, 0.1);
+  --ag-accent-border: rgba(37, 99, 235, 0.26);
+
+  --ag-ok: #16a34a;
+  --ag-ok-soft: rgba(22, 163, 74, 0.11);
+  --ag-ok-border: rgba(22, 163, 74, 0.28);
+
+  --ag-warn: #d97706;
+  --ag-warn-soft: rgba(217, 119, 6, 0.12);
+  --ag-warn-border: rgba(217, 119, 6, 0.3);
+
+  --ag-danger: #dc2626;
+  --ag-danger-soft: rgba(220, 38, 38, 0.1);
+  --ag-danger-border: rgba(220, 38, 38, 0.28);
+
+  --ag-diff-add-bg: rgba(22, 163, 74, 0.12);
+  --ag-diff-add-fg: #166534;
+  --ag-diff-del-bg: rgba(220, 38, 38, 0.11);
+  --ag-diff-del-fg: #991b1b;
+
+  --ag-backdrop: rgba(15, 23, 42, 0.34);
+  --ag-scrim-soft: rgba(15, 23, 42, 0.15);
+  --ag-highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  --ag-highlight-btn: inset 0 1px 0 rgba(255, 255, 255, 0.88), inset 0 -1px 0 rgba(15, 23, 42, 0.06);
+  --ag-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 5px -1px rgba(15, 23, 42, 0.05);
+  --ag-shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.09), 0 12px 28px -6px rgba(15, 23, 42, 0.11);
+  --ag-shadow-lg: 0 10px 26px -4px rgba(15, 23, 42, 0.13), 0 22px 46px -10px rgba(15, 23, 42, 0.17);
+  --ag-shadow: var(--ag-shadow-md);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-appearance="auto"] {
+    color-scheme: light;
+    --ag-bg: #f4f4f6;
+    --ag-surface: #ffffff;
+    --ag-surface-glass: rgba(255, 255, 255, 0.88);
+    --ag-card: #ffffff;
+    --ag-elevated: #ffffff;
+    --ag-subcard: rgba(15, 23, 42, 0.036);
+
+    --ag-fg: #111114;
+    --ag-secondary: #484852;
+    --ag-muted: #6e6e7a;
+
+    --ag-border: rgba(15, 23, 42, 0.105);
+    --ag-border-sub: rgba(15, 23, 42, 0.062);
+    --ag-control: rgba(15, 23, 42, 0.052);
+    --ag-control-hover: rgba(15, 23, 42, 0.09);
+    --ag-primary-bg: #18181b;
+    --ag-primary-fg: #ffffff;
+    --ag-ring: rgba(37, 99, 235, 0.4);
+
+    --ag-accent: #2563eb;
+    --ag-accent-soft: rgba(37, 99, 235, 0.1);
+    --ag-accent-border: rgba(37, 99, 235, 0.26);
+
+    --ag-ok: #16a34a;
+    --ag-ok-soft: rgba(22, 163, 74, 0.11);
+    --ag-ok-border: rgba(22, 163, 74, 0.28);
+
+    --ag-warn: #d97706;
+    --ag-warn-soft: rgba(217, 119, 6, 0.12);
+    --ag-warn-border: rgba(217, 119, 6, 0.3);
+
+    --ag-danger: #dc2626;
+    --ag-danger-soft: rgba(220, 38, 38, 0.1);
+    --ag-danger-border: rgba(220, 38, 38, 0.28);
+
+    --ag-diff-add-bg: rgba(22, 163, 74, 0.12);
+    --ag-diff-add-fg: #166534;
+    --ag-diff-del-bg: rgba(220, 38, 38, 0.11);
+    --ag-diff-del-fg: #991b1b;
+
+    --ag-backdrop: rgba(15, 23, 42, 0.34);
+  --ag-scrim-soft: rgba(15, 23, 42, 0.15);
+    --ag-highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.94);
+    --ag-highlight-btn: inset 0 1px 0 rgba(255, 255, 255, 0.88), inset 0 -1px 0 rgba(15, 23, 42, 0.06);
+    --ag-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 5px -1px rgba(15, 23, 42, 0.05);
+    --ag-shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.09), 0 12px 28px -6px rgba(15, 23, 42, 0.11);
+    --ag-shadow-lg: 0 10px 26px -4px rgba(15, 23, 42, 0.13), 0 22px 46px -10px rgba(15, 23, 42, 0.17);
+    --ag-shadow: var(--ag-shadow-md);
+  }
+}

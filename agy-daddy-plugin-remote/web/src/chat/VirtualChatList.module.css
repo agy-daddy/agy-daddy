@@ -1,0 +1,182 @@
+.scroller {
+  position: relative;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 11px 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.content {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.jumpBottom {
+  position: sticky;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: var(--ag-r-pill, 999px);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--ag-highlight-btn, none), var(--ag-shadow-md, var(--ag-shadow));
+  z-index: 5;
+  transition: transform 140ms var(--ag-ease-out, ease-out);
+}
+
+.jumpBottom:active {
+  transform: translateX(-50%) scale(0.96);
+}
+
+/* Queued messages section at bottom of chat stream */
+.queueSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.queuedCard {
+  border-radius: var(--ag-r-md, 14px);
+  border: 1px dashed var(--ag-accent-border, var(--ag-border));
+  background: var(--ag-elevated, var(--ag-card));
+  box-shadow: var(--ag-highlight-top, none), var(--ag-shadow-sm, none);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.queuedCardFailed {
+  border-style: solid;
+  border-color: var(--ag-danger-border, rgba(239, 68, 68, 0.36));
+}
+
+.queuedHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.queuedHeadLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.queuedBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--ag-r-pill, 999px);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.queuedBadgeWaiting {
+  background: var(--ag-warn-soft);
+  color: var(--ag-warn);
+}
+
+.queuedBadgeSending {
+  background: var(--ag-accent-soft, var(--ag-control));
+  color: var(--ag-accent, var(--ag-fg));
+}
+
+.queuedBadgeFailed {
+  background: var(--ag-danger-soft);
+  color: var(--ag-danger);
+}
+
+.modeTag {
+  padding: 2px 7px;
+  border-radius: var(--ag-r-pill, 999px);
+  background: var(--ag-accent-soft, var(--ag-control));
+  color: var(--ag-accent, var(--ag-fg));
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.queuedText {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ag-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.queuedError {
+  font-size: 11.5px;
+  color: var(--ag-danger);
+  background: var(--ag-danger-soft);
+  padding: 5px 8px;
+  border-radius: var(--ag-r-xs, 6px);
+}
+
+.queuedActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.qBtn {
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: var(--ag-r-sm, 10px);
+  background: var(--ag-control);
+  color: var(--ag-fg);
+  border: 1px solid var(--ag-border-sub);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    transform 120ms var(--ag-ease-out, ease-out);
+}
+
+.qBtn:hover:not(:disabled) {
+  background: var(--ag-control-hover);
+}
+
+.qBtn:active:not(:disabled) {
+  transform: scale(0.97) translateY(1px);
+}
+
+.qBtnPrimary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  border-color: transparent;
+  box-shadow: var(--ag-highlight-btn, none);
+}
+
+.qBtnPrimary:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--ag-primary-bg);
+}
+
+.qBtnDanger {
+  color: var(--ag-danger);
+  background: var(--ag-danger-soft);
+  border-color: var(--ag-danger-border, transparent);
+}
+
+@supports (corner-shape: superellipse(1.25)) {
+  .queuedCard,
+  .qBtn {
+    corner-shape: superellipse(1.25);
+  }
+}

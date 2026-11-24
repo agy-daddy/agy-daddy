@@ -1,51 +1,270 @@
 {
-  "title": { "zh-CN": "手机远程控制台设置", "en": "Mobile Remote Console" },
+  "title": { "zh-CN": "远程访问设置", "en": "Remote Access Settings" },
   "fields": [
+    {
+      "key": "permissionLevel",
+      "type": "enum",
+      "default": "L0",
+      "group": { "zh-CN": "安全与控制权限", "en": "Security & Permissions" },
+      "options": [
+        { "value": "L0", "label": { "zh-CN": "L0 只读监控（默认）", "en": "L0 Read-Only (Default)" } },
+        { "value": "L1", "label": { "zh-CN": "L1 对话与审批", "en": "L1 Chat & Approvals" } },
+        { "value": "L2", "label": { "zh-CN": "L2 工作区写 · Git · PTY 终端", "en": "L2 Workspace Write · Git · PTY" } }
+      ],
+      "label": { "zh-CN": "远程权限级别", "en": "Remote Permission Level" },
+      "description": { "zh-CN": "L0 只读监控；L1 允许发消息、排队插话与审批；L2 解锁文件写、Git 提交推送与交互式 PTY 终端（仅限宿主机本地开启）", "en": "L0 read-only; L1 enables chat, queue/steer, and approvals; L2 unlocks file writes, Git, and PTY terminal (host-only)" }
+    },
     {
       "key": "allowRemoteWrite",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "允许远程写操作（默认关闭，仅只读快照）", "en": "Allow remote write actions (default OFF, read-only)" }
+      "group": { "zh-CN": "安全与控制权限", "en": "Security & Permissions" },
+      "label": { "zh-CN": "允许远程写操作", "en": "Allow remote write actions" },
+      "description": { "zh-CN": "向后兼容开关：与 L1/L2 权限联动（关闭对应 L0 只读，开启对应 L1 对话与审批）", "en": "Backwards-compatible toggle synced with permissionLevel (OFF = L0, ON = L1+)" }
+    },
+    {
+      "key": "allowedRoots",
+      "type": "list",
+      "default": [],
+      "group": { "zh-CN": "安全与控制权限", "en": "Security & Permissions" },
+      "placeholder": "/Users/you/Projects/my-app",
+      "browse": {
+        "command": "remote.browse-allowed-root",
+        "label": { "zh-CN": "浏览", "en": "Browse" }
+      },
+      "label": { "zh-CN": "允许访问的工作区根目录白名单", "en": "Allowed Workspace Root Directories" },
+      "description": { "zh-CN": "限制手机端文件读写、Git 与 PTY 终端仅可访问以下本地目录；可点击「浏览」可视化选择文件夹添加，或手动输入路径（留空则仅读取已发现会话的工作区）", "en": "Restricts remote FS, Git, and PTY access to these workspace root directories. Click Browse to pick folders or enter paths manually." }
+    },
+    {
+      "key": "orchestratorCarbonThinking",
+      "type": "enum",
+      "default": "high",
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "options": [
+        { "value": "low", "label": { "zh-CN": "Low · 快速响应", "en": "Low" } },
+        { "value": "medium", "label": { "zh-CN": "Medium · 均衡推理", "en": "Medium" } },
+        { "value": "high", "label": { "zh-CN": "High · 深度推理", "en": "High" } },
+        { "value": "xhigh", "label": { "zh-CN": "XHigh · 超强推理", "en": "XHigh" } }
+      ],
+      "label": { "zh-CN": "Carbon 主控思考等级", "en": "Carbon Master Thinking Level" },
+      "description": { "zh-CN": "编排模型选择 Carbon 主控时独立使用的思考等级", "en": "Independent thinking level for Orchestrator Carbon master" }
+    },
+    {
+      "key": "orchestratorArgonThinking",
+      "type": "enum",
+      "default": "high",
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "options": [
+        { "value": "low", "label": { "zh-CN": "Low · 快速响应", "en": "Low" } },
+        { "value": "medium", "label": { "zh-CN": "Medium · 均衡推理", "en": "Medium" } },
+        { "value": "high", "label": { "zh-CN": "High · 深度推理", "en": "High" } },
+        { "value": "xhigh", "label": { "zh-CN": "XHigh · 超强推理", "en": "XHigh" } }
+      ],
+      "label": { "zh-CN": "Argon 主控思考等级", "en": "Argon Master Thinking Level" },
+      "description": { "zh-CN": "编排模型选择 Argon 主控时独立使用的思考等级", "en": "Independent thinking level for Orchestrator Argon master" }
+    },
+    {
+      "key": "orchestratorNeonThinking",
+      "type": "enum",
+      "default": "high",
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "options": [
+        { "value": "low", "label": { "zh-CN": "Low · 快速响应", "en": "Low" } },
+        { "value": "medium", "label": { "zh-CN": "Medium · 均衡推理", "en": "Medium" } },
+        { "value": "high", "label": { "zh-CN": "High · 深度推理", "en": "High" } },
+        { "value": "xhigh", "label": { "zh-CN": "XHigh · 超强推理", "en": "XHigh" } }
+      ],
+      "label": { "zh-CN": "Neon 主控思考等级", "en": "Neon Master Thinking Level" },
+      "description": { "zh-CN": "编排模型选择 Neon 主控时独立使用的思考等级", "en": "Independent thinking level for Orchestrator Neon master" }
+    },
+    {
+      "key": "orchestratorOpusThinking",
+      "type": "enum",
+      "default": "high",
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "options": [
+        { "value": "low", "label": { "zh-CN": "Low · 快速响应", "en": "Low" } },
+        { "value": "medium", "label": { "zh-CN": "Medium · 均衡推理", "en": "Medium" } },
+        { "value": "high", "label": { "zh-CN": "High · 深度推理", "en": "High" } },
+        { "value": "xhigh", "label": { "zh-CN": "XHigh · 超强推理", "en": "XHigh" } }
+      ],
+      "label": { "zh-CN": "Opus 5.5 主控思考等级", "en": "Opus 5.5 Master Thinking Level" },
+      "description": { "zh-CN": "编排模型选择 Opus 5.5 主控时独立使用的思考等级", "en": "Independent thinking level for Orchestrator Opus 5.5 master" }
+    },
+    {
+      "key": "modelSortMode",
+      "type": "enum",
+      "default": "custom",
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "options": [
+        { "value": "custom", "label": { "zh-CN": "自定义排序", "en": "Custom Order" } },
+        { "value": "name_asc", "label": { "zh-CN": "名称 A → Z", "en": "Name A → Z" } },
+        { "value": "name_desc", "label": { "zh-CN": "名称 Z → A", "en": "Name Z → A" } },
+        { "value": "provider", "label": { "zh-CN": "按厂商分组", "en": "By Provider" } },
+        { "value": "frequency", "label": { "zh-CN": "按使用频率", "en": "By Frequency" } }
+      ],
+      "label": { "zh-CN": "模型默认排序方式", "en": "Model Sort Mode" },
+      "description": { "zh-CN": "控制手机端与设置列表中的模型排序规则", "en": "Controls how available models are sorted" }
+    },
+    {
+      "key": "modelFilterOrder",
+      "type": "list",
+      "default": [],
+      "group": { "zh-CN": "模型编排与显示", "en": "Model Orchestration & Display" },
+      "label": { "zh-CN": "模型过滤与排序", "en": "Model Filter & Sort" },
+      "description": { "zh-CN": "按名称或厂商筛选模型、控制手机端可见性，并支持按规则排序或上移/下移自定义顺序", "en": "Filter models by name or provider, toggle visibility, and sort or reorder them" },
+      "itemEditor": {
+        "kind": "catalog-filter-sort",
+        "itemsCommand": "remote.list-models",
+        "sortModeKey": "modelSortMode",
+        "filterDimensions": [
+          { "id": "all", "label": { "zh-CN": "全部", "en": "All" } },
+          { "id": "gemini", "label": { "zh-CN": "Gemini", "en": "Gemini" } },
+          { "id": "claude", "label": { "zh-CN": "Claude", "en": "Claude" } },
+          { "id": "openai", "label": { "zh-CN": "OpenAI", "en": "OpenAI" } },
+          { "id": "orchestrator", "label": { "zh-CN": "编排模型", "en": "Orchestrator" } },
+          { "id": "visible", "label": { "zh-CN": "仅已启用", "en": "Visible" } },
+          { "id": "hidden", "label": { "zh-CN": "仅已隐藏", "en": "Hidden" } }
+        ],
+        "sortOptions": [
+          { "value": "custom", "label": { "zh-CN": "自定义排序", "en": "Custom Order" } },
+          { "value": "name_asc", "label": { "zh-CN": "名称 A → Z", "en": "Name A → Z" } },
+          { "value": "name_desc", "label": { "zh-CN": "名称 Z → A", "en": "Name Z → A" } },
+          { "value": "provider", "label": { "zh-CN": "按厂商分组", "en": "By Provider" } },
+          { "value": "frequency", "label": { "zh-CN": "按使用频率", "en": "By Frequency" } }
+        ]
+      }
     },
     {
       "key": "loopback",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "开启本机回环监听 (127.0.0.1)", "en": "Enable loopback listener (127.0.0.1)" }
+      "group": { "zh-CN": "本地与局域网通道", "en": "Local & LAN Channels" },
+      "label": { "zh-CN": "本机回环监听 (127.0.0.1)", "en": "Loopback listener (127.0.0.1)" },
+      "description": { "zh-CN": "为本机浏览器调试或 SSH 端口转发提供轻量服务入口", "en": "Expose local PWA console on 127.0.0.1 for debugging or SSH forwarding" }
     },
     {
       "key": "lan",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "暴露局域网访问通道（默认关闭）", "en": "Expose LAN access channel (default OFF)" }
+      "group": { "zh-CN": "本地与局域网通道", "en": "Local & LAN Channels" },
+      "label": { "zh-CN": "局域网访问通道", "en": "LAN access channel" },
+      "description": { "zh-CN": "同一 Wi-Fi 下手机可直接扫码访问，仅对持令牌设备开放", "en": "Allow phones on the same Wi-Fi to connect using the pairing token" }
     },
     {
       "key": "tailscale",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "启用 Tailscale 组网探测（默认关闭）", "en": "Enable Tailscale channel detection (default OFF)" }
+      "group": { "zh-CN": "本地与局域网通道", "en": "Local & LAN Channels" },
+      "label": { "zh-CN": "Tailscale 组网探测", "en": "Tailscale channel detection" },
+      "description": { "zh-CN": "自动探测本机 Tailscale 虚拟网卡 IP 并生成加密私网链接", "en": "Detect local Tailscale interface address and publish private URL" }
     },
     {
       "key": "bonjour",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "启用 Bonjour (.local) 局域网发现（默认关闭）", "en": "Enable Bonjour (.local) discovery (default OFF)" }
+      "group": { "zh-CN": "本地与局域网通道", "en": "Local & LAN Channels" },
+      "label": { "zh-CN": "Bonjour (.local) 发现", "en": "Bonjour (.local) discovery" },
+      "description": { "zh-CN": "在局域网内广播 mDNS 服务名，无需记住 IP 地址", "en": "Broadcast mDNS hostname on LAN for zero-IP access" }
     },
     {
       "key": "cloudflare",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "启用 Cloudflare Tunnel 公网穿透（默认关闭）", "en": "Enable Cloudflare Tunnel (default OFF)" }
+      "group": { "zh-CN": "公网穿透", "en": "Public Tunnel" },
+      "label": { "zh-CN": "Cloudflare Tunnel 公网穿透", "en": "Cloudflare Tunnel" },
+      "description": { "zh-CN": "通过 cloudflared 建立 HTTPS 隧道以支持移动网络远程访问", "en": "Establish an HTTPS tunnel via cloudflared for cellular access" },
+      "probe": {
+        "command": "remote.check-cloudflared",
+        "runOnOpen": true,
+        "onlyWhenTruthy": true,
+        "buttonLabel": { "zh-CN": "重新检测", "en": "Re-check" }
+      }
     },
     {
       "key": "tunnelMode",
       "type": "enum",
       "default": "quick",
+      "group": { "zh-CN": "公网穿透", "en": "Public Tunnel" },
       "options": [
-        { "value": "quick", "label": { "zh-CN": "临时免登录隧道 (Quick)", "en": "Quick Tunnel" } },
-        { "value": "named", "label": { "zh-CN": "固定域名 Token 隧道 (Named)", "en": "Named Tunnel (Token)" } }
+        { "value": "quick", "label": { "zh-CN": "临时隧道 (Quick)", "en": "Quick Tunnel" } },
+        { "value": "named", "label": { "zh-CN": "固定域名 (Named)", "en": "Named Tunnel" } }
       ],
-      "label": { "zh-CN": "Cloudflare 隧道模式", "en": "Cloudflare Tunnel Mode" }
+      "label": { "zh-CN": "Cloudflare 隧道模式", "en": "Cloudflare Tunnel mode" },
+      "description": { "zh-CN": "Quick 模式免账号即时生成随机域名；Named 模式使用自定义固定域名", "en": "Quick assigns an ephemeral URL; Named binds a persistent custom domain" }
+    },
+    {
+      "key": "tunnelHostname",
+      "type": "string",
+      "default": "",
+      "group": { "zh-CN": "公网穿透", "en": "Public Tunnel" },
+      "placeholder": "https://ag.example.com",
+      "visibleWhen": { "key": "tunnelMode", "equals": "named" },
+      "label": { "zh-CN": "固定隧道域名 (Public Hostname)", "en": "Named Tunnel Hostname" },
+      "description": { "zh-CN": "在 Cloudflare Zero Trust 中绑定的自有 HTTPS 域名（如 https://ag.example.com）", "en": "Custom HTTPS domain bound to your Cloudflare Named Tunnel" }
+    },
+    {
+      "key": "tunnelToken",
+      "type": "string",
+      "default": "",
+      "secret": true,
+      "writeOnly": true,
+      "group": { "zh-CN": "公网穿透", "en": "Public Tunnel" },
+      "placeholder": "eyJhIjoi... 或粘贴 cloudflared service install <token>",
+      "visibleWhen": { "key": "tunnelMode", "equals": "named" },
+      "label": { "zh-CN": "Cloudflare Tunnel Token", "en": "Cloudflare Tunnel Token" },
+      "description": { "zh-CN": "仅写保存，保存后不再回显明文；粘贴 Connector Token 或完整 cloudflared service install 命令，自动提取并校验", "en": "Write-only secret (never echoed after saving); paste Connector Token or full cloudflared install command" },
+      "guide": {
+        "tone": "info",
+        "title": { "zh-CN": "固定域名隧道配置指引", "en": "Named Tunnel Setup Guide" },
+        "steps": [
+          {
+            "zh-CN": "前往 Cloudflare 控制台 → 零信任 (Zero Trust) → 网络 (Networks) → 联网隧道 (Tunnels)，创建或打开一条 Cloudflared 隧道。",
+            "en": "Open Cloudflare Console → Zero Trust → Networks → Tunnels, and create or open a Cloudflared tunnel."
+          },
+          {
+            "zh-CN": "在「连接器 / 安装」页复制 Connector Token（或整行 cloudflared service install 命令），粘贴到上方 Token 输入框并点击「保存」。",
+            "en": "Copy the Connector Token (or full cloudflared service install command), paste it into the Token field above, and click Save."
+          },
+          {
+            "zh-CN": "切到隧道的「已发布应用程序路由 (Public Hostname)」页签添加域名路由：选择自有域名与子域名（如 ag.example.com），服务类型选 HTTP，URL 填 127.0.0.1:18765。",
+            "en": "Open the Public Hostname tab, add your custom domain/subdomain (e.g. ag.example.com), set Service Type to HTTP, and URL to 127.0.0.1:18765."
+          },
+          {
+            "zh-CN": "回到上方「固定隧道域名」填入完整 HTTPS 地址（如 https://ag.example.com），最后开启「Cloudflare Tunnel 公网穿透」。",
+            "en": "Enter the full https:// domain above in Named Tunnel Hostname, then turn on Cloudflare Tunnel."
+          }
+        ],
+        "commands": [
+          {
+            "label": { "zh-CN": "Public Hostname 本地服务地址（Type 选 HTTP）", "en": "Public Hostname Local Service URL (Type: HTTP)" },
+            "command": "127.0.0.1:18765"
+          }
+        ],
+        "links": [
+          {
+            "label": { "zh-CN": "前往 Cloudflare 控制台 · 零信任 → 联网隧道", "en": "Open Cloudflare Zero Trust → Tunnels" },
+            "url": "https://one.dash.cloudflare.com/?to=/:account/networks/tunnels"
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "rotate-token",
+      "command": "remote.rotate-token",
+      "label": { "zh-CN": "轮换远程配对令牌", "en": "Rotate Pairing Token" }
+    },
+    {
+      "id": "status",
+      "command": "remote.status",
+      "label": { "zh-CN": "查看远程通道状态", "en": "Check Remote Status" }
+    },
+    {
+      "id": "kick-devices",
+      "command": "remote.kick-devices",
+      "label": { "zh-CN": "踢出全部设备", "en": "Disconnect All Devices" }
     }
   ]
 }

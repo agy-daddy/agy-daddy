@@ -2,7 +2,11 @@
   "unit.label": "远程",
   "unit.readonly": "只读",
   "unit.writable": "可写",
-  "panel.title": "手机远程控制台",
+  "unit.l0": "L0 只读",
+  "unit.l1": "L1 对话",
+  "unit.l2": "L2 工作区",
+  "panel.title": "远程访问",
+  "panel.permissionLevel": "权限级别",
   "panel.rotateToken": "轮换配对令牌",
   "panel.empty": "正在等待远程服务启动..."
 }

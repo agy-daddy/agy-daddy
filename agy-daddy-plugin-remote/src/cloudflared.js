@@ -48,6 +48,7 @@ class CloudflaredManager {
   constructor(options = {}) {
     this.spawnFn = options.spawn || spawn;
     this.detectFn = options.detect || detectCloudflaredBinary;
+    this.onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
     this.child = null;
     this.state = {
       active: false,
@@ -56,6 +57,11 @@ class CloudflaredManager {
       pid: null,
       error: null
     };
+  }
+
+  _notify() {
+    if (!this.onStateChange) return;
+    try { this.onStateChange(this.getState()); } catch {}
   }
 
   getState() {
@@ -93,16 +99,23 @@ class CloudflaredManager {
 
     child.stderr?.on('data', (d) => {
       const url = parseQuickTunnelUrl(d);
-      if (url) this.state.publicUrl = url;
+      if (url && url !== this.state.publicUrl) {
+        this.state.publicUrl = url;
+        this._notify();
+      }
     });
     child.stdout?.on('data', (d) => {
       const url = parseQuickTunnelUrl(d);
-      if (url) this.state.publicUrl = url;
+      if (url && url !== this.state.publicUrl) {
+        this.state.publicUrl = url;
+        this._notify();
+      }
     });
     child.once('exit', () => {
       this.state.active = false;
       this.state.pid = null;
       this.child = null;
+      this._notify();
     });
     return { ok: true, ...this.state };
   }
@@ -133,6 +146,7 @@ class CloudflaredManager {
       this.state.active = false;
       this.state.pid = null;
       this.child = null;
+      this._notify();
     });
     return { ok: true, ...this.state };
   }

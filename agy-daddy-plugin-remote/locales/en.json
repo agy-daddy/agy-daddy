@@ -2,7 +2,11 @@
   "unit.label": "Remote",
   "unit.readonly": "Read-only",
   "unit.writable": "Writable",
-  "panel.title": "Mobile Remote Console",
+  "unit.l0": "L0 Read-Only",
+  "unit.l1": "L1 Chat",
+  "unit.l2": "L2 Workspace",
+  "panel.title": "Remote Access",
+  "panel.permissionLevel": "Permission Level",
   "panel.rotateToken": "Rotate Token",
   "panel.empty": "Waiting for remote server..."
 }

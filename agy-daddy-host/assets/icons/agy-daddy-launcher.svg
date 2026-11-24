@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgGrad" x1="0.15" y1="0.05" x2="0.85" y2="0.95">
+      <stop offset="0%" stop-color="#22222a"/>
+      <stop offset="100%" stop-color="#0e0e12"/>
+    </linearGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="46%" r="42%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.42"/>
+      <stop offset="55%" stop-color="#6366f1" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#0e0e12" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="chevGrad" x1="0.5" y1="0.2" x2="0.5" y2="0.8">
+      <stop offset="0%" stop-color="#fafafa"/>
+      <stop offset="100%" stop-color="#d4d4d8"/>
+    </linearGradient>
+    <linearGradient id="orbitGrad" x1="0" y1="0.5" x2="1" y2="0.5">
+      <stop offset="0%" stop-color="#818cf8" stop-opacity="0.65"/>
+      <stop offset="50%" stop-color="#a5b4fc" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#c4b5fd" stop-opacity="0.85"/>
+    </linearGradient>
+  </defs>
+  <rect x="76" y="76" width="872" height="872" rx="200" fill="url(#bgGrad)" stroke="#ffffff" stroke-opacity="0.16" stroke-width="6"/>
+  <rect x="76" y="76" width="872" height="872" rx="200" fill="url(#coreGlow)"/>
+  <ellipse cx="512" cy="574" rx="318" ry="118" transform="rotate(-19.5 512 574)" fill="none" stroke="url(#orbitGrad)" stroke-width="24"/>
+  <polygon points="512,215 778,788 655,788 512,460 369,788 246,788" fill="url(#chevGrad)"/>
+  <polygon points="512,542 614,716 553,686 512,788 471,686 410,716" fill="#8b5cf6" fill-opacity="0.92"/>
+  <circle cx="788" cy="460" r="34" fill="#f4f4f8"/>
+</svg>

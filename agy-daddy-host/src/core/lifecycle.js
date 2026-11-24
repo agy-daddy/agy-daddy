@@ -7,6 +7,38 @@ const { spawnSync } = require('child_process');
 const { resolveRuntime } = require('./runtime-resolver');
 const { getStateDir, isTestMode } = require('./paths');
 const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
+const {
+  ensureMacTrayAppBundle,
+  resolveDefaultMacApplicationsDir,
+  registerMacAppBundle
+} = require('./tray-manager');
+
+const LAUNCHER_APP_NAME = 'Agy-Daddy Launcher';
+const LAUNCHER_MAC_BUNDLE_NAME = 'Agy-Daddy Launcher.app';
+const LAUNCHER_BUNDLE_ID = 'dev.agy-daddy.launcher';
+const LAUNCHER_ICON_NAME = 'AgyDaddyLauncher';
+const LAUNCHER_ASSETS_DIR = path.resolve(__dirname, '..', '..', 'assets', 'icons');
+
+function getLauncherIconPaths(assetsDir = LAUNCHER_ASSETS_DIR) {
+  const dir = path.resolve(assetsDir);
+  return {
+    dir,
+    icns: path.join(dir, `${LAUNCHER_ICON_NAME}.icns`),
+    ico: path.join(dir, 'agy-daddy-launcher.ico'),
+    trayIco: path.join(dir, 'tray-icon.ico'),
+    png16: path.join(dir, 'icon-16.png'),
+    png32: path.join(dir, 'icon-32.png'),
+    png64: path.join(dir, 'icon-64.png'),
+    png128: path.join(dir, 'icon-128.png'),
+    png256: path.join(dir, 'icon-256.png'),
+    png512: path.join(dir, 'icon-512.png'),
+    png1024: path.join(dir, 'icon-1024.png'),
+    trayTemplate1x: path.join(dir, 'tray-template-18.png'),
+    trayTemplate2x: path.join(dir, 'tray-template-36.png'),
+    svg: path.join(dir, 'agy-daddy-launcher.svg'),
+    traySvg: path.join(dir, 'tray-icon-template.svg')
+  };
+}
 
 function sanitizeUserLabel(user) {
   return String(user || os.userInfo().username || 'user').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -87,16 +119,40 @@ ${envXml}
 
 function generateWindowsLauncherBat(options = {}) {
   const antigravityExe = options.antigravityExe || '%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe';
-  const binPath = options.binPath || path.resolve(__dirname, '..', 'src', 'cli.js');
+  const binPath = options.binPath || path.resolve(__dirname, '..', 'cli.js');
   const proxyUrl = options.proxyUrl || '';
+  const mode = options.mode === 'live' ? 'live' : 'launcher';
+  const launchFlags = mode === 'launcher' && options.launchApp ? ' --launch-app' : '';
   const lines = [
     '@echo off',
+    `title ${LAUNCHER_APP_NAME}`,
+    `rem ${LAUNCHER_APP_NAME} (${LAUNCHER_BUNDLE_ID})`,
     'set ELECTRON_RUN_AS_NODE=1',
-    proxyUrl ? `set HTTP_PROXY=${proxyUrl}\nset HTTPS_PROXY=${proxyUrl}` : 'rem no proxy override',
-    `start "" "${antigravityExe}" --remote-debugging-port=0`,
-    `"${antigravityExe}" "${binPath}" live`
+    proxyUrl ? `set HTTP_PROXY=${proxyUrl}\r\nset HTTPS_PROXY=${proxyUrl}` : 'rem no proxy override',
+    mode === 'live'
+      ? `start "" "${antigravityExe}" --remote-debugging-port=0`
+      : `rem Antigravity enhanced launch command: "${antigravityExe}" --remote-debugging-port=0`,
+    `start "" /B "${antigravityExe}" "${binPath}" ${mode}${launchFlags}`
   ];
   return lines.join('\r\n') + '\r\n';
+}
+
+function generateLinuxDesktopEntry(options = {}) {
+  const binCli = options.binCli || path.resolve(__dirname, '..', '..', 'bin', 'agy-daddy');
+  const iconPath = options.iconPath || getLauncherIconPaths(options.assetsDir).png256;
+  const execArgs = options.launchApp ? 'launcher --launch-app' : 'launcher';
+  return `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=${LAUNCHER_APP_NAME}
+GenericName=Antigravity Enhanced Launcher
+Comment=System tray launcher and CDP plugin host for Antigravity
+Exec="${binCli}" ${execArgs}
+Icon=${iconPath}
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=agy-daddy-launcher
+`;
 }
 
 function generateLinuxSystemdUnit(options = {}) {
@@ -205,39 +261,211 @@ function removeAutoStart(options = {}) {
 
 function installMacLauncherApp(options = {}) {
   assertSafeTargetDir(options.targetDir, 'installMacLauncherApp');
-  const targetDir = path.resolve(options.targetDir || path.join(os.homedir(), 'Applications'));
-  const appName = options.appName || 'Agy-Daddy 增强启动器.app';
+  const defaultAppsDir = resolveDefaultMacApplicationsDir() || path.join(os.homedir(), 'Applications');
+  const targetDir = path.resolve(options.targetDir || defaultAppsDir);
+  const appName = options.appName || LAUNCHER_MAC_BUNDLE_NAME;
   const appDir = path.join(targetDir, appName);
-  const macOsDir = path.join(appDir, 'Contents', 'MacOS');
-  const infoPath = path.join(appDir, 'Contents', 'Info.plist');
+  const contentsDir = path.join(appDir, 'Contents');
+  const macOsDir = path.join(contentsDir, 'MacOS');
+  const resourcesDir = path.join(contentsDir, 'Resources');
+  const infoPath = path.join(contentsDir, 'Info.plist');
   const binPath = path.join(macOsDir, 'launch');
+  const helperAppPath = appDir;
+  const helperPath = path.join(macOsDir, 'AgyDaddyTray');
+  const iconPaths = getLauncherIconPaths(options.assetsDir);
+  const iconDestPath = path.join(resourcesDir, `${LAUNCHER_ICON_NAME}.icns`);
 
   const binCli = path.resolve(__dirname, '..', '..', 'bin', 'agy-daddy');
+  const launchFlag = options.launchApp ? ' --launch-app' : '';
   const script = `#!/usr/bin/env zsh
 set -euo pipefail
-open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0
-("${binCli}" live >/dev/null 2>&1 || true) &
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\${PATH:-}"
+APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+export AGY_DADDY_TRAY_APP="$APP_BUNDLE"
+LOG_DIR="$HOME/Library/Logs/agy-daddy"
+mkdir -p "$LOG_DIR"
+exec "${binCli}" launcher${launchFlag} >>"$LOG_DIR/launcher.log" 2>&1
 `;
+  const lsUiElementXml = options.dockIcon === true
+    ? ''
+    : '\n  <key>LSUIElement</key><true/>';
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleExecutable</key><string>launch</string>
-  <key>CFBundleIdentifier</key><string>dev.agy-daddy.launcher</string>
-  <key>CFBundleName</key><string>Agy-Daddy Launcher</string>
+  <key>CFBundleExecutable</key><string>AgyDaddyTray</string>
+  <key>CFBundleIdentifier</key><string>${escapeXml(LAUNCHER_BUNDLE_ID)}</string>
+  <key>CFBundleName</key><string>${escapeXml(LAUNCHER_APP_NAME)}</string>
+  <key>CFBundleDisplayName</key><string>${escapeXml(LAUNCHER_APP_NAME)}</string>
+  <key>CFBundleIconFile</key><string>${escapeXml(LAUNCHER_ICON_NAME)}</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>${lsUiElementXml}
 </dict>
 </plist>
 `;
 
   if (options.dryRun) {
-    return { ok: true, dryRun: true, appDir, infoPath, binPath };
+    return {
+      ok: true,
+      dryRun: true,
+      platform: 'darwin',
+      appName,
+      displayName: LAUNCHER_APP_NAME,
+      bundleId: LAUNCHER_BUNDLE_ID,
+      appDir,
+      infoPath,
+      binPath,
+      resourcesDir,
+      helperAppPath,
+      helperPath,
+      iconPath: iconDestPath
+    };
   }
   fs.mkdirSync(macOsDir, { recursive: true });
+  fs.mkdirSync(resourcesDir, { recursive: true });
+
+  const legacyHashMarker = path.join(contentsDir, '.swift-hash');
+  try { if (fs.existsSync(legacyHashMarker)) fs.unlinkSync(legacyHashMarker); } catch {}
+  const legacyHelpersDir = path.join(contentsDir, 'Helpers');
+  const legacyHelperApp = path.join(legacyHelpersDir, 'Agy-Daddy Tray.app');
+  if (fs.existsSync(legacyHelperApp)) {
+    registerMacAppBundle(legacyHelperApp, '-u');
+    try { fs.rmSync(legacyHelperApp, { recursive: true, force: true }); } catch {}
+  }
+  try {
+    if (fs.existsSync(legacyHelpersDir) && fs.readdirSync(legacyHelpersDir).length === 0) {
+      fs.rmdirSync(legacyHelpersDir);
+    }
+  } catch {}
+
   fs.writeFileSync(infoPath, plist, 'utf8');
   fs.writeFileSync(binPath, script, 'utf8');
   fs.chmodSync(binPath, 0o755);
-  return { ok: true, appDir, infoPath, binPath };
+
+  const copiedIcons = [];
+  for (const [src, destName] of [
+    [iconPaths.icns, `${LAUNCHER_ICON_NAME}.icns`],
+    [iconPaths.trayTemplate1x, 'tray-template-18.png'],
+    [iconPaths.trayTemplate2x, 'tray-template-36.png']
+  ]) {
+    if (fs.existsSync(src)) {
+      const dest = path.join(resourcesDir, destName);
+      fs.copyFileSync(src, dest);
+      copiedIcons.push(dest);
+    }
+  }
+
+  let helperCompiled = false;
+  if (!isTestMode() && process.platform === 'darwin') {
+    const built = ensureMacTrayAppBundle({
+      bundlePathOverride: appDir,
+      assetsDir: options.assetsDir,
+      dockIcon: options.dockIcon,
+      stateDir: options.stateDir
+    });
+    helperCompiled = Boolean(built?.ok && fs.existsSync(built.exePath));
+
+    if (!options.targetDir && targetDir === '/Applications') {
+      const legacyHomeApp = path.join(os.homedir(), 'Applications', appName);
+      if (legacyHomeApp !== appDir && fs.existsSync(legacyHomeApp)) {
+        registerMacAppBundle(legacyHomeApp, '-u');
+        try { fs.rmSync(legacyHomeApp, { recursive: true, force: true }); } catch {}
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    platform: 'darwin',
+    appName,
+    displayName: LAUNCHER_APP_NAME,
+    bundleId: LAUNCHER_BUNDLE_ID,
+    appDir,
+    infoPath,
+    binPath,
+    resourcesDir,
+    helperAppPath,
+    helperPath,
+    helperCompiled,
+    iconPath: iconDestPath,
+    copiedIcons
+  };
+}
+
+function installLauncherApp(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === 'darwin') {
+    return installMacLauncherApp(options);
+  }
+  assertSafeTargetDir(options.targetDir, 'installLauncherApp');
+  const iconPaths = getLauncherIconPaths(options.assetsDir);
+  if (platform === 'win32') {
+    const targetDir = path.resolve(options.targetDir || path.join(os.homedir(), 'Desktop'));
+    const batPath = path.join(targetDir, `${LAUNCHER_APP_NAME}.bat`);
+    const icoDestPath = path.join(targetDir, 'agy-daddy-launcher.ico');
+    const batContent = generateWindowsLauncherBat({ ...options, mode: options.mode || 'launcher' });
+    if (options.dryRun) {
+      return {
+        ok: true,
+        dryRun: true,
+        platform: 'win32',
+        appName: `${LAUNCHER_APP_NAME}.bat`,
+        displayName: LAUNCHER_APP_NAME,
+        bundleId: LAUNCHER_BUNDLE_ID,
+        filePath: batPath,
+        iconPath: icoDestPath
+      };
+    }
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(batPath, batContent, 'utf8');
+    if (fs.existsSync(iconPaths.ico)) {
+      fs.copyFileSync(iconPaths.ico, icoDestPath);
+    }
+    return {
+      ok: true,
+      platform: 'win32',
+      appName: `${LAUNCHER_APP_NAME}.bat`,
+      displayName: LAUNCHER_APP_NAME,
+      bundleId: LAUNCHER_BUNDLE_ID,
+      filePath: batPath,
+      iconPath: icoDestPath
+    };
+  }
+
+  const targetDir = path.resolve(options.targetDir || path.join(os.homedir(), '.local', 'share', 'applications'));
+  const desktopPath = path.join(targetDir, 'agy-daddy-launcher.desktop');
+  const pngDestPath = path.join(targetDir, 'agy-daddy-launcher.png');
+  const desktopContent = generateLinuxDesktopEntry({ ...options, iconPath: pngDestPath });
+  if (options.dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      platform: 'linux',
+      appName: 'agy-daddy-launcher.desktop',
+      displayName: LAUNCHER_APP_NAME,
+      bundleId: LAUNCHER_BUNDLE_ID,
+      filePath: desktopPath,
+      iconPath: pngDestPath
+    };
+  }
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(desktopPath, desktopContent, 'utf8');
+  fs.chmodSync(desktopPath, 0o755);
+  if (fs.existsSync(iconPaths.png256)) {
+    fs.copyFileSync(iconPaths.png256, pngDestPath);
+  }
+  return {
+    ok: true,
+    platform: 'linux',
+    appName: 'agy-daddy-launcher.desktop',
+    displayName: LAUNCHER_APP_NAME,
+    bundleId: LAUNCHER_BUNDLE_ID,
+    filePath: desktopPath,
+    iconPath: pngDestPath
+  };
 }
 
 function detectInsideAntigravitySession(env = process.env) {
@@ -485,13 +713,21 @@ function checkAndPullGitUpdate(repoDir, options = {}) {
 }
 
 module.exports = {
+  LAUNCHER_APP_NAME,
+  LAUNCHER_MAC_BUNDLE_NAME,
+  LAUNCHER_BUNDLE_ID,
+  LAUNCHER_ICON_NAME,
+  LAUNCHER_ASSETS_DIR,
+  getLauncherIconPaths,
   getLaunchAgentLabel,
   generateMacLaunchAgentPlist,
   generateWindowsLauncherBat,
   generateLinuxSystemdUnit,
+  generateLinuxDesktopEntry,
   installAutoStart,
   removeAutoStart,
   installMacLauncherApp,
+  installLauncherApp,
   detectInsideAntigravitySession,
   planAntigravityRestart,
   findMacAntigravityApp,

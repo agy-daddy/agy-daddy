@@ -1872,11 +1872,24 @@ test('外观设置：右上角 Agy-Daddy 入口显隐与注入原生设置面板
     assert.ok(mountEl);
     const nativeShadow = mountEl.shadowRoot;
     const topbarEntryToggle = nativeShadow.querySelector('#agy-show-topbar-entry');
+    const hideTrayToggle = nativeShadow.querySelector('#agy-hide-tray-icon');
     const injectNativeToggle = nativeShadow.querySelector('#agy-inject-native-settings');
     assert.ok(topbarEntryToggle);
+    assert.ok(hideTrayToggle);
     assert.ok(injectNativeToggle);
     assert.equal(topbarEntryToggle.checked, true);
+    assert.equal(hideTrayToggle.checked, false);
     assert.equal(injectNativeToggle.checked, true);
+
+    // 1.5 开启隐藏通知栏图标 -> 状态同步并持久化，再关闭恢复
+    hideTrayToggle.checked = true;
+    hideTrayToggle.dispatchEvent({ type: 'change', target: hideTrayToggle });
+    assert.equal(host.getHostSettings().hideTrayIcon, true);
+    const hideTrayToggleAfter = doc.querySelector('#agy-native-settings-mount').shadowRoot.querySelector('#agy-hide-tray-icon');
+    assert.equal(hideTrayToggleAfter.checked, true);
+    hideTrayToggleAfter.checked = false;
+    hideTrayToggleAfter.dispatchEvent({ type: 'change', target: hideTrayToggleAfter });
+    assert.equal(host.getHostSettings().hideTrayIcon, false);
 
     // 2. 关闭右上角 Agy-Daddy 入口 -> #agy-btn-settings 隐藏并持久化
     topbarEntryToggle.checked = false;
@@ -1923,6 +1936,8 @@ test('外观设置：右上角 Agy-Daddy 入口显隐与注入原生设置面板
     await new Promise((r) => setTimeout(r, 20));
     const hsCalls = calls.filter((c) => c.path === '/host/host-settings');
     assert.ok(hsCalls.some((c) => c.body?.values?.showTopbarEntry === false));
+    assert.ok(hsCalls.some((c) => c.body?.values?.hideTrayIcon === true));
+    assert.ok(hsCalls.some((c) => c.body?.values?.hideTrayIcon === false));
     assert.ok(hsCalls.some((c) => c.body?.values?.injectNativeSettings === false));
     assert.ok(hsCalls.some((c) => c.body?.values?.showTopbarEntry === true));
     assert.ok(hsCalls.some((c) => c.body?.values?.injectNativeSettings === true));

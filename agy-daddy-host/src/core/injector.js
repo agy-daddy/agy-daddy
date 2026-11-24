@@ -1205,6 +1205,8 @@ class CdpInjector extends EventEmitter {
     this.getHostSettingsOption = options.getHostSettings || null;
     this.getPluginMetaMapOption = options.getPluginMetaMap || null;
     this.getPluginSettingsOption = options.getPluginSettings || null;
+    this.onPluginInjectError = typeof options.onPluginInjectError === 'function' ? options.onPluginInjectError : null;
+    this.onPluginInjectSuccess = typeof options.onPluginInjectSuccess === 'function' ? options.onPluginInjectSuccess : null;
     this.sessions = new Map();
     this.lastActivePlugins = [];
     this.lastCdpPort = null;
@@ -1294,6 +1296,38 @@ class CdpInjector extends EventEmitter {
     return { ok: true, notified };
   }
 
+  async syncPluginMeta(pluginMetaMap = null, targetSession = null) {
+    const meta = pluginMetaMap || this.getPluginMetaMap();
+    const expr = `globalThis.__AGYDaddyHost && typeof globalThis.__AGYDaddyHost.syncPluginStates === 'function' ? globalThis.__AGYDaddyHost.syncPluginStates(${JSON.stringify(meta)}) : false`;
+    const list = targetSession ? [targetSession] : Array.from(this.sessions.values());
+    let notified = 0;
+    for (const session of list) {
+      if (!session || session.closed || !session.client?.ws) continue;
+      try {
+        await session.client.evaluate(expr);
+        notified++;
+      } catch {}
+    }
+    return { ok: true, notified };
+  }
+
+  async openSettingsPanel(opts = {}) {
+    let openedCount = 0;
+    const payload = {
+      tab: typeof opts?.tab === 'string' && opts.tab.trim() ? opts.tab.trim() : 'plugins',
+      ...(typeof opts?.pluginId === 'string' && opts.pluginId.trim() ? { pluginId: opts.pluginId.trim() } : {})
+    };
+    const expr = `globalThis.__AGYDaddyHost && typeof globalThis.__AGYDaddyHost.openSettings === 'function' ? globalThis.__AGYDaddyHost.openSettings(${JSON.stringify(payload)}) : false`;
+    for (const session of this.sessions.values()) {
+      if (session.closed || !session.client?.ws) continue;
+      try {
+        const res = await session.client.evaluate(expr);
+        if (res !== false) openedCount++;
+      } catch {}
+    }
+    return { ok: true, openedCount };
+  }
+
   async injectPluginIntoSession(session, activeEntry) {
     if (!activeEntry?.manifest?.renderer) {
       return { ok: true, skipped: true };
@@ -1334,6 +1368,12 @@ class CdpInjector extends EventEmitter {
         contextId,
         version: activeEntry.manifest.version
       });
+      if (evalRes && evalRes.ok === false && evalRes.error) {
+        const mountErr = new Error(evalRes.error);
+        this.onPluginInjectError?.(activeEntry.id, mountErr, session.targetId);
+      } else {
+        this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
+      }
       return { ok: true, world: 'isolated', contextId, evalRes };
     }
 
@@ -1346,6 +1386,12 @@ class CdpInjector extends EventEmitter {
       contextId: null,
       version: activeEntry.manifest.version
     });
+    if (evalRes && evalRes.ok === false && evalRes.error) {
+      const mountErr = new Error(evalRes.error);
+      this.onPluginInjectError?.(activeEntry.id, mountErr, session.targetId);
+    } else {
+      this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
+    }
     return { ok: true, world: 'main', evalRes };
   }
 
@@ -1388,8 +1434,12 @@ class CdpInjector extends EventEmitter {
           const res = await this.injectPluginIntoSession(session, entry);
           if (!res.skipped) pluginsInjected++;
         } catch (err) {
+          this.onPluginInjectError?.(entry.id, err, session.targetId);
           errors.push({ pluginId: entry.id, error: err?.message || String(err) });
         }
+      }
+      if (errors.length > 0) {
+        await this.syncPluginMeta(null, session).catch(() => {});
       }
       this.emit('reinjected', {
         targetId: session.targetId,
@@ -1472,8 +1522,12 @@ class CdpInjector extends EventEmitter {
           const res = await this.injectPluginIntoSession(session, entry);
           if (!res.skipped) pluginsInjected++;
         } catch (err) {
+          this.onPluginInjectError?.(entry.id, err, session.targetId);
           errors.push({ pluginId: entry.id, error: err?.message || String(err) });
         }
+      }
+      if (errors.length > 0) {
+        await this.syncPluginMeta(null, session).catch(() => {});
       }
       session.readyForNavEvents = true;
       if (Array.isArray(activePlugins) && activePlugins.length > 0) {
@@ -1592,6 +1646,7 @@ class CdpInjector extends EventEmitter {
         }
         sessionsUpdated++;
       } catch (err) {
+        this.onPluginInjectError?.(pluginId, err, session.targetId);
         errors.push({ targetId: session.targetId, error: err?.message || String(err) });
       }
     }
@@ -1632,9 +1687,13 @@ class CdpInjector extends EventEmitter {
             }
           } catch (err) {
             const msg = err?.message || String(err);
+            this.onPluginInjectError?.(entry.id, err, session.targetId);
             sessionErrors.push({ pluginId: entry.id, error: msg });
             errors.push({ targetId: session.targetId, pluginId: entry.id, error: msg });
           }
+        }
+        if (sessionErrors.length > 0) {
+          await this.syncPluginMeta(null, session).catch(() => {});
         }
         sessionsUpdated++;
         this.emit('reinjected', {

@@ -22,6 +22,7 @@ const { createHostRuntime } = require('../src/renderer/host-runtime');
 const { createScopedNetFetch } = require('../src/core/plugin-worker');
 const { bundlePluginRendererSource, buildIsolatedWorldPluginScript } = require('../src/core/injector');
 const { DEFAULT_HOST_SETTINGS, normalizeHostSettings, createScopedHostControl } = require('../src/core/daemon');
+const { TrayManager, MemoryTrayBackend } = require('../src/core/tray-manager');
 
 function matchSimpleSelector(el, sel) {
   if (!el || !sel) return false;
@@ -310,6 +311,13 @@ function createMockHostHarness(options = {}) {
   const pluginSchemas = new Map();
   const settingsListeners = new Map();
   const commands = new Map();
+  const trayManager = new TrayManager({
+    bus,
+    stateDir,
+    appName: 'Agy-Daddy Launcher',
+    backend: new MemoryTrayBackend(),
+    executeCommand: (cmdId, args, opts) => executeCommand(cmdId, args, opts)
+  });
 
   const rendererHost = createHostRuntime({
     document: mockDoc,
@@ -588,8 +596,18 @@ function createMockHostHarness(options = {}) {
         commands: {
           register: (commandId, handler) => registerCommand(manifest.id, commandId, handler),
           execute: (commandId, args = []) => executeCommand(commandId, args)
-        }
+        },
+        tray: trayManager.createScopedApi(manifest.id, {
+          pluginDir,
+          executeCommand: (cmdId, args, opts) => executeCommand(cmdId, args, opts)
+        })
       };
+      if (Array.isArray(manifest.contributes?.['tray.menu'])) {
+        trayManager.registerManifestContributions(manifest.id, manifest, {
+          pluginDir,
+          executeCommand: (cmdId, args, opts) => executeCommand(cmdId, args, opts)
+        });
+      }
       if (typeof nodeMod?.activate === 'function') {
         await nodeMod.activate(hostApi);
       }
@@ -667,6 +685,7 @@ function createMockHostHarness(options = {}) {
     for (const [cmdId, cmdRec] of Array.from(commands.entries())) {
       if (cmdRec.pluginId === pluginId) commands.delete(cmdId);
     }
+    trayManager.unregisterPluginItems(pluginId);
     settingsListeners.delete(pluginId);
   }
 
@@ -678,6 +697,8 @@ function createMockHostHarness(options = {}) {
     let cmdLeft = 0;
     for (const rec of commands.values()) if (rec.pluginId === pluginId) cmdLeft++;
     assert.equal(cmdLeft, 0, `Plugin ${pluginId} leaked ${cmdLeft} commands`);
+    const trayLeft = trayManager.listPluginMenuItems(pluginId).length;
+    assert.equal(trayLeft, 0, `Plugin ${pluginId} leaked ${trayLeft} tray menu items`);
     const uiStats = rendererHost.getPluginUsageStats(pluginId);
     assert.deepEqual(
       uiStats,
@@ -690,6 +711,7 @@ function createMockHostHarness(options = {}) {
     for (const id of Array.from(activePlugins.keys())) {
       await unloadPlugin(id);
     }
+    await trayManager.dispose();
     await rendererHost.dispose();
     await bridge.stop();
     try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch {}
@@ -700,6 +722,7 @@ function createMockHostHarness(options = {}) {
     stateDir,
     bus,
     bridge,
+    trayManager,
     rpcCalls,
     mockDoc,
     mockMainWin,

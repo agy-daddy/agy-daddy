@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const vm = require('vm');
 
 const rootDir = path.resolve(__dirname, '..');
@@ -28,8 +29,26 @@ function buildHostRenderer() {
   new vm.Script(bundle, { filename: 'host-renderer.js' });
 
   fs.mkdirSync(distDir, { recursive: true });
-  fs.writeFileSync(outFile, bundle, 'utf8');
-  return { outFile, bytes: Buffer.byteLength(bundle, 'utf8') };
+  const bytes = Buffer.byteLength(bundle, 'utf8');
+  if (fs.existsSync(outFile)) {
+    try {
+      if (fs.readFileSync(outFile, 'utf8') === bundle) {
+        return { outFile, bytes, unchanged: true };
+      }
+    } catch {}
+  }
+
+  const tmpFile = path.join(distDir, `.host-renderer.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmpFile, bundle, 'utf8');
+    fs.renameSync(tmpFile, outFile);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    } catch {}
+    throw err;
+  }
+  return { outFile, bytes, unchanged: false };
 }
 
 if (require.main === module) {

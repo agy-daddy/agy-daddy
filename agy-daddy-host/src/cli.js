@@ -28,15 +28,17 @@ const {
   installAutoStart,
   removeAutoStart,
   installMacLauncherApp,
+  installLauncherApp,
   planAntigravityRestart,
   relaunchAntigravityWithCdp,
   checkAndPullGitUpdate
 } = require('./core/lifecycle');
 const { createLiveWatchdog } = require('./core/live-watchdog');
+const { createLauncherController, readLauncherLock } = require('./core/launcher');
 const { auditUpstreamsAndBaselines } = require('./core/upstreams');
 
 const BOOLEAN_FLAGS = new Set([
-  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native'
+  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native', 'tray', 'launch-app', 'dock-icon', 'no-takeover'
 ]);
 
 function openBrowserUrl(url) {
@@ -110,21 +112,27 @@ function parseBoolFlagValue(raw) {
   throw new Error(`Invalid boolean flag value: ${String(raw)}`);
 }
 
-function stopRunningDaemon(stateDir = getStateDir()) {
-  const lockPath = path.join(stateDir, 'daemon.lock');
-  const lock = safeReadJsonSync(lockPath, null, { quarantineCorrupt: false }).data;
-  const pid = Number(lock?.pid);
+function stopProcessByPid(pid, timeoutMs = 2500) {
   if (!pid || !isPidAlive(pid)) {
     return { ok: true, stopped: false, reason: 'not running' };
   }
-  process.kill(pid, 'SIGTERM');
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {}
   const waitBuf = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + timeoutMs;
   while (isPidAlive(pid) && Date.now() < deadline) {
     Atomics.wait(waitBuf, 0, 0, 50);
   }
   const exited = !isPidAlive(pid);
   return { ok: true, stopped: true, pid, exited };
+}
+
+function stopRunningDaemon(stateDir = getStateDir()) {
+  const lockPath = path.join(stateDir, 'daemon.lock');
+  const lock = safeReadJsonSync(lockPath, null, { quarantineCorrupt: false }).data;
+  const pid = Number(lock?.pid);
+  return stopProcessByPid(pid, 2000);
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -219,11 +227,84 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (cmd === 'install-launcher') {
-    const res = installMacLauncherApp({
+    const res = installLauncherApp({
       dryRun: Boolean(flags['dry-run']),
-      targetDir: typeof flags.dir === 'string' ? flags.dir : undefined
+      targetDir: typeof flags.dir === 'string' ? flags.dir : undefined,
+      platform: typeof flags.platform === 'string' ? flags.platform : undefined,
+      dockIcon: Boolean(flags['dock-icon']),
+      launchApp: Boolean(flags['launch-app'])
     });
     console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+
+  if (cmd === 'launcher') {
+    const stateDir = getStateDir();
+    if (!flags.once) {
+      const existingLauncher = readLauncherLock(stateDir);
+      if (existingLauncher.running && existingLauncher.pid && existingLauncher.pid !== process.pid) {
+        if (!flags.replace) {
+          const info = {
+            ok: true,
+            alreadyRunning: true,
+            hasTray: true,
+            pid: existingLauncher.pid,
+            port: existingLauncher.lock?.port || null
+          };
+          if (flags.json) {
+            console.log(JSON.stringify(info, null, 2));
+          } else {
+            console.log(`✅ Agy-Daddy Launcher 已在通知栏运行中 (PID ${info.pid})`);
+          }
+          return;
+        }
+        const stopLauncherRes = stopProcessByPid(existingLauncher.pid, 2500);
+        if (stopLauncherRes.stopped && !stopLauncherRes.exited) {
+          throw new Error(`停止旧 Agy-Daddy Launcher (PID ${stopLauncherRes.pid}) 超时，请先退出后再试`);
+        }
+      }
+    }
+
+    if (flags.replace || (!flags['no-takeover'] && !flags.once)) {
+      const daemonLockPath = path.join(stateDir, 'daemon.lock');
+      const daemonLock = safeReadJsonSync(daemonLockPath, null, { quarantineCorrupt: false }).data;
+      const daemonPid = Number(daemonLock?.pid);
+      if (daemonPid && daemonPid !== process.pid && isPidAlive(daemonPid)) {
+        if (!flags.json && !flags.replace) {
+          console.log(`🔄 检测到后台无托盘守护进程 (PID ${daemonPid})，正在平滑接管至 Agy-Daddy Launcher 托盘模式...`);
+        }
+        const stopRes = stopRunningDaemon(stateDir);
+        if (stopRes.stopped && !stopRes.exited) {
+          throw new Error(`停止旧守护进程 (PID ${stopRes.pid}) 超时，请先手动停止后再试`);
+        }
+      }
+    }
+
+    const controller = createLauncherController({
+      stateDir,
+      skipInject: Boolean(flags['skip-inject']),
+      autoRelaunch: !flags['no-auto-relaunch'],
+      launchAppOnStart: Boolean(flags['launch-app']),
+      silent: Boolean(flags.json),
+      json: Boolean(flags.json),
+      headless: Boolean(flags.once || isTestMode()),
+      exitProcess: !flags.once && !isTestMode()
+    });
+    const summary = await controller.start();
+    if (flags.json) {
+      console.log(JSON.stringify(summary, null, 2));
+    } else {
+      console.log(`✅ Agy-Daddy Launcher 已启动 (Bridge :${summary.port}, 插件 ${summary.activePlugins.length} 个, 托盘菜单项 ${summary.trayItems} 个)`);
+    }
+    if (flags.once) {
+      await controller.stop();
+      return;
+    }
+    const shutdown = async () => {
+      await controller.quit();
+    };
+    process.on('SIGTERM', () => { void shutdown(); });
+    process.on('SIGINT', () => { void shutdown(); });
     return;
   }
 
@@ -724,14 +805,15 @@ async function main(argv = process.argv.slice(2)) {
     throw new Error(`Unknown dev subcommand: ${sub}`);
   }
 
-  console.log(`Agy-Daddy Host v1.0.0
+  console.log(`Agy-Daddy Launcher & Host v1.0.0
 
 用法:
   agy-daddy doctor [--json] [--bundle <file>]         运行环境诊断 / 导出脱敏诊断包
   agy-daddy status [--json]                           查看守护进程、CDP 与插件状态
+  agy-daddy launcher [--launch-app] [--once] [--skip-inject] [--replace] [--json]  启动 Agy-Daddy Launcher 系统托盘与守护进程
   agy-daddy live [--once] [--skip-inject] [--no-auto-relaunch] [--replace] [--json]    启动守护进程并执行 CDP 热注入
   agy-daddy stop | restart | auto-on | auto-off       停止、自愈重启与开机自启管理
-  agy-daddy install-launcher [--dir <path>]           生成独立桌面增强启动器
+  agy-daddy install-launcher [--dir <path>]           生成桌面端 Agy-Daddy Launcher 启动器与图标
   agy-daddy remote [--reset-token]                    查看手机远程链接或轮换配对令牌
   agy-daddy web [--port <n>] [--no-open] [--reset-token] 查看或打开 PC Web 工作台链接
   agy-daddy update [--dry-run] | upstreams [--json]   拉取更新与上游基线漂移追踪

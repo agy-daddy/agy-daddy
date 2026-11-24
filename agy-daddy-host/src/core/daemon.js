@@ -19,6 +19,8 @@ const {
   disablePlugin,
   uninstallPlugin,
   rollbackPlugin,
+  inspectPluginInstallHealth,
+  repairPluginInstall,
   updatePluginNativeConfig,
   rollbackPluginNativeRules,
   inspectPluginNativeStatus,
@@ -34,6 +36,7 @@ const {
 const { createScopedNetFetch } = require('./plugin-worker');
 const { runDoctor, exportDiagnosticBundle } = require('./doctor');
 const { MarketplaceStatsService } = require('./marketplace-stats');
+const { TrayManager } = require('./tray-manager');
 
 const WORKER_SCRIPT = path.resolve(__dirname, 'plugin-worker.js');
 
@@ -41,6 +44,8 @@ const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
   '/host/health',
   '/host/plugins',
   '/host/plugins/toggle',
+  '/host/plugins/activate',
+  '/host/plugins/repair',
   '/host/plugins/install',
   '/host/plugins/uninstall',
   '/host/plugins/rollback',
@@ -49,11 +54,59 @@ const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
   '/host/anchors',
   '/host/bus/call',
   '/host/settings',
+  '/host/settings/open',
   '/host/host-settings',
   '/host/commands/run',
   '/host/marketplace/stats',
-  '/host/diagnostics/export'
+  '/host/diagnostics/export',
+  '/host/tray/menu',
+  '/host/tray/invoke'
 ]);
+
+const PERMANENT_ACTIVATION_ERROR_CODES = new Set([
+  'PERMISSION_DENIED',
+  'MANIFEST_INVALID',
+  'INSTALL_PATH_MISSING',
+  'CIRCUIT_OPEN'
+]);
+
+function classifyPluginError(err, stage = 'activate') {
+  const message = String(err?.message || err || '未知错误');
+  const rawCode = typeof err?.code === 'string' ? err.code : '';
+  let code = rawCode || 'ACTIVATE_FAILED';
+  let suggestion = '请根据下方错误详情排查配置或依赖后，点击「立即激活」重试。';
+
+  if (rawCode === 'INSTALL_PATH_MISSING' || /INSTALL_PATH_MISSING|installPath.*missing|ENOENT.*(?:agy-plugin\.json|src)/i.test(message)) {
+    code = 'INSTALL_PATH_MISSING';
+    suggestion = '该插件安装目录或软链目标已不存在（常见于删除 worktree 或移动本地目录）。可在列表或下方诊断区一键修复路径、重新指定目录，或移除该失效记录。';
+  } else if (rawCode === 'MANIFEST_INVALID' || /agy-plugin\.json|Invalid manifest/i.test(message)) {
+    code = 'MANIFEST_INVALID';
+    suggestion = '请检查插件根目录下的 agy-plugin.json 声明是否有效。';
+  } else if (rawCode === 'PERMISSION_DENIED' || /Permission denied/i.test(message)) {
+    code = 'PERMISSION_DENIED';
+    suggestion = '该插件缺少必要权限授权，请重新安装并确认授权或检查信任等级。';
+  } else if (rawCode === 'CIRCUIT_OPEN' || /CIRCUIT_OPEN/.test(message)) {
+    code = 'CIRCUIT_OPEN';
+    suggestion = '插件短时间内多次失败已触发熔断保护，请点击「解除熔断并激活」重试。';
+  } else if (rawCode === 'EADDRINUSE' || /EADDRINUSE|GATEWAY_PORT_OCCUPIED|port.*in use/i.test(message)) {
+    code = 'PORT_IN_USE';
+    suggestion = '插件监听端口已被占用，请在下方配置中修改端口或结束占用进程后重试激活。';
+  } else if (/Worker init timeout|Worker exited|Worker crashed/i.test(message)) {
+    code = /timeout/i.test(message) ? 'WORKER_TIMEOUT' : 'WORKER_CRASHED';
+    suggestion = '插件独立进程启动超时或异常退出，请查看错误详情后尝试重新激活。';
+  } else if (stage === 'renderer') {
+    code = 'RENDERER_INJECT_FAILED';
+    suggestion = '插件后端已运行但页面渲染层注入失败，请点击「重新激活」或「重新载入」重试。';
+  }
+
+  return {
+    code,
+    stage,
+    message,
+    suggestion,
+    at: Date.now()
+  };
+}
 
 function createScopedHostControl(pluginId, permissions, invokeFn) {
   const perms = Array.isArray(permissions) ? permissions : [];
@@ -81,7 +134,8 @@ const DEFAULT_HOST_SETTINGS = Object.freeze({
   maxVisibleUnits: 6,
   showTopbarEntry: true,
   injectNativeSettings: true,
-  autoSyncNativeOnInstall: true
+  autoSyncNativeOnInstall: true,
+  hideTrayIcon: false
 });
 
 const VALID_THEME_MODES = new Set(['auto', 'light', 'dark']);
@@ -175,6 +229,10 @@ function normalizeHostSettings(patch = {}, base = DEFAULT_HOST_SETTINGS) {
     ? Boolean(srcPatch.autoSyncNativeOnInstall)
     : (srcBase.autoSyncNativeOnInstall !== undefined ? Boolean(srcBase.autoSyncNativeOnInstall) : DEFAULT_HOST_SETTINGS.autoSyncNativeOnInstall);
 
+  const hideTrayIcon = srcPatch.hideTrayIcon !== undefined
+    ? Boolean(srcPatch.hideTrayIcon)
+    : (srcBase.hideTrayIcon !== undefined ? Boolean(srcBase.hideTrayIcon) : DEFAULT_HOST_SETTINGS.hideTrayIcon);
+
   return {
     themeMode,
     heatPreset,
@@ -184,7 +242,8 @@ function normalizeHostSettings(patch = {}, base = DEFAULT_HOST_SETTINGS) {
     maxVisibleUnits,
     showTopbarEntry,
     injectNativeSettings,
-    autoSyncNativeOnInstall
+    autoSyncNativeOnInstall,
+    hideTrayIcon
   };
 }
 
@@ -296,16 +355,58 @@ class AgyDaddyDaemon {
       reinjectDebounceMs: options.reinjectDebounceMs,
       getHostSettings: () => this.getHostSettings(),
       getPluginMetaMap: () => this.buildPluginMetaMap(),
-      getPluginSettings: (pluginId) => this.getPluginSettings(pluginId)
+      getPluginSettings: (pluginId) => this.getPluginSettings(pluginId),
+      onPluginInjectError: (pluginId, err) => this.recordPluginDiagnostic(pluginId, err, 'renderer'),
+      onPluginInjectSuccess: (pluginId) => {
+        if (this.pluginErrors.get(pluginId)?.stage === 'renderer') {
+          this.pluginErrors.delete(pluginId);
+        }
+      }
     });
     this.activePlugins = new Map(); // pluginId -> record
     this.commands = new Map();      // commandId -> { pluginId, commandId, handler }
     this.settingsListeners = new Map(); // pluginId -> Set<fn>
     this.crashTracker = new Map();  // pluginId -> number[] timestamps
+    this.pluginErrors = new Map();  // pluginId -> { code, stage, message, suggestion, at }
+    this._liveWorkers = new Set();  // tracks all forked plugin workers including in-flight init
+    this._activatingInactivePromise = null;
     this.crashWindowMs = Number(options.crashWindowMs) > 0 ? Number(options.crashWindowMs) : 60000;
     this.maxCrashes = Number(options.maxCrashes) > 0 ? Number(options.maxCrashes) : 3;
+    this.trayManager = options.trayManager || new TrayManager({
+      bus: this.bus,
+      stateDir: this.stateDir,
+      appName: 'Agy-Daddy Launcher',
+      recordFailure: (pluginId, err) => this.recordPluginFailure(pluginId, err),
+      executeCommand: (cmdId, args, opts) => this.executeCommand(cmdId, args, opts),
+      ...(options.trayOptions || {})
+    });
+    if (typeof this.trayManager.setActionHandlers === 'function') {
+      this.trayManager.setActionHandlers({
+        executeCommand: (cmdId, args, opts) => this.executeCommand(cmdId, args, opts)
+      });
+    }
     this.running = false;
     this.lockAcquired = false;
+  }
+
+  async openPluginSettings(opts = {}) {
+    const targetOpts = {
+      tab: typeof opts?.tab === 'string' && opts.tab.trim() ? opts.tab.trim() : 'plugins',
+      ...(typeof opts?.pluginId === 'string' && opts.pluginId.trim() ? { pluginId: opts.pluginId.trim() } : {})
+    };
+    if (this.injector && typeof this.injector.openSettingsPanel === 'function') {
+      const res = await this.injector.openSettingsPanel(targetOpts).catch(() => ({ ok: false, openedCount: 0 }));
+      if ((res?.openedCount || 0) > 0) {
+        return { ok: true, via: 'cdp', openedCount: res.openedCount };
+      }
+    }
+    const webCfgPath = path.join(this.stateDir, 'plugins-data', 'agy-daddy.web', 'web-config.json');
+    const webCfg = safeReadJsonSync(webCfgPath, null, { quarantineCorrupt: false }).data;
+    if (webCfg && Number.isInteger(webCfg.port) && webCfg.token) {
+      const url = `http://127.0.0.1:${webCfg.port}/?token=${webCfg.token}#plugins`;
+      return { ok: true, via: 'web-url', openedCount: 0, url };
+    }
+    return { ok: false, via: 'none', openedCount: 0, reason: 'NO_ACTIVE_TARGET' };
   }
 
   getHostSettings() {
@@ -314,13 +415,30 @@ class AgyDaddyDaemon {
     return normalizeHostSettings(res.data || {}, DEFAULT_HOST_SETTINGS);
   }
 
-  saveHostSettings(patch = {}) {
+  async syncTrayVisibility(hostSettings = null) {
+    const hs = hostSettings || this.getHostSettings();
+    let res = { ok: true, skipped: true };
+    if (this.trayManager && this.trayManager.managed && typeof this.trayManager.setVisible === 'function') {
+      res = await this.trayManager.setVisible(hs.hideTrayIcon !== true);
+    }
+    if (typeof this.options.onHostSettingsChange === 'function') {
+      try {
+        this.options.onHostSettingsChange(hs);
+      } catch {}
+    }
+    return res;
+  }
+
+  saveHostSettings(patch = {}, opts = {}) {
     const filePath = getHostSettingsPath({ stateDir: this.stateDir });
     const current = this.getHostSettings();
     const next = normalizeHostSettings(patch, current);
     const wr = withFileLockSync(filePath, () => safeWriteJsonSync(filePath, next));
     if (!wr.ok) {
       return { ok: false, error: wr.error || 'Failed to save host settings', values: current };
+    }
+    if (!opts.skipTraySync) {
+      void this.syncTrayVisibility(next).catch(() => {});
     }
     return { ok: true, values: next };
   }
@@ -474,7 +592,18 @@ class AgyDaddyDaemon {
     return result === undefined ? null : result;
   }
 
-  recordPluginFailure(pluginId, err) {
+  recordPluginDiagnostic(pluginId, err, stage = 'activate') {
+    const diag = classifyPluginError(err, stage);
+    this.pluginErrors.set(pluginId, diag);
+    return diag;
+  }
+
+  clearPluginDiagnostic(pluginId) {
+    this.pluginErrors.delete(pluginId);
+  }
+
+  recordPluginFailure(pluginId, err, stage = 'activate') {
+    this.recordPluginDiagnostic(pluginId, err, stage);
     const now = Date.now();
     const list = (this.crashTracker.get(pluginId) || []).filter((ts) => now - ts <= this.crashWindowMs);
     list.push(now);
@@ -494,6 +623,7 @@ class AgyDaddyDaemon {
   resetPluginCircuit(pluginId) {
     const hadRecords = this.crashTracker.has(pluginId);
     this.crashTracker.delete(pluginId);
+    this.pluginErrors.delete(pluginId);
     const active = this.activePlugins.get(pluginId);
     if (active && 'lastError' in active) {
       active.lastError = null;
@@ -505,13 +635,40 @@ class AgyDaddyDaemon {
     const now = Date.now();
     const list = (this.crashTracker.get(pluginId) || []).filter((ts) => now - ts <= this.crashWindowMs);
     const active = this.activePlugins.get(pluginId);
+    const diag = this.pluginErrors.get(pluginId) || null;
     return {
       active: Boolean(active),
       crashesInWindow: list.length,
       circuitOpen: list.length >= this.maxCrashes,
       nodeIsolation: active?.trustPolicy?.nodeIsolation || null,
-      lastError: active?.lastError || null
+      lastError: diag?.message || active?.lastError || null,
+      lastErrorCode: diag?.code || null,
+      lastErrorStage: diag?.stage || null,
+      lastErrorSuggestion: diag?.suggestion || null,
+      lastErrorAt: diag?.at || null
     };
+  }
+
+  updateLiveSessionFile() {
+    try {
+      const livePath = path.join(this.stateDir, '.live-session.json');
+      if (fs.existsSync(livePath)) {
+        const cur = safeReadJsonSync(livePath, null, { quarantineCorrupt: false }).data;
+        if (cur && Number(cur.pid) === process.pid) {
+          safeWriteJsonSync(livePath, {
+            ...cur,
+            activePlugins: Array.from(this.activePlugins.keys())
+          });
+        }
+      }
+    } catch {}
+  }
+
+  async syncPluginMetaToSessions() {
+    if (this.injector && typeof this.injector.syncPluginMeta === 'function') {
+      return await this.injector.syncPluginMeta(this.buildPluginMetaMap()).catch(() => ({ ok: false, notified: 0 }));
+    }
+    return { ok: false, notified: 0 };
   }
 
   buildInProcessHostApi(pluginId, manifest, trustPolicy, record = null) {
@@ -604,7 +761,12 @@ class AgyDaddyDaemon {
         execute(commandId, args = []) {
           return daemon.executeCommand(commandId, args);
         }
-      }
+      },
+      tray: daemon.trayManager.createScopedApi(pluginId, {
+        pluginDir: installPath,
+        recordFailure: (id, err) => daemon.recordPluginFailure(id, err),
+        executeCommand: (cmdId, args, opts) => daemon.executeCommand(cmdId, args, opts)
+      })
     };
   }
 
@@ -614,11 +776,42 @@ class AgyDaddyDaemon {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       env: { ...process.env, AGY_DADDY_WORKER: '1', AGY_DADDY_PLUGIN_ID: pluginId }
     });
+    this._liveWorkers.add(worker);
+    worker.once('exit', () => this._liveWorkers.delete(worker));
 
     const pendingBridge = new Map();
     const pendingService = new Map();
     const pendingCommand = new Map();
+    const pendingTrayClick = new Map();
     let seq = 0;
+
+    const hydrateWorkerTrayDef = (raw) => {
+      if (!raw || typeof raw !== 'object') return raw;
+      const cloned = { ...raw };
+      if (cloned.hasOnClick) {
+        const localItemId = String(cloned.id || '').trim();
+        cloned.onClick = (ctx) => {
+          const reqId = ++seq;
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pendingTrayClick.delete(reqId);
+              reject(new Error(`Worker tray callback timeout: ${localItemId}`));
+            }, 10000);
+            pendingTrayClick.set(reqId, { resolve, reject, timer });
+            worker.send({
+              type: 'tray-click',
+              reqId,
+              itemId: localItemId,
+              ctx: { id: ctx.id, fullId: ctx.fullId, pluginId: ctx.pluginId, checked: ctx.checked }
+            });
+          });
+        };
+      }
+      if (Array.isArray(cloned.submenu)) {
+        cloned.submenu = cloned.submenu.map((sub) => hydrateWorkerTrayDef(sub));
+      }
+      return cloned;
+    };
 
     worker.on('message', async (msg) => {
       if (!msg || typeof msg !== 'object') return;
@@ -644,6 +837,15 @@ class AgyDaddyDaemon {
         const p = pendingCommand.get(msg.reqId);
         if (!p) return;
         pendingCommand.delete(msg.reqId);
+        clearTimeout(p.timer);
+        if (msg.error) p.reject(new Error(msg.error));
+        else p.resolve(msg.result);
+        return;
+      }
+      if (msg.type === 'tray-click-reply') {
+        const p = pendingTrayClick.get(msg.reqId);
+        if (!p) return;
+        pendingTrayClick.delete(msg.reqId);
         clearTimeout(p.timer);
         if (msg.error) p.reject(new Error(msg.error));
         else p.resolve(msg.result);
@@ -753,6 +955,20 @@ class AgyDaddyDaemon {
           } else if (action === 'executeCommand') {
             const res = await this.executeCommand(payload.commandId, payload.args || []);
             reply(res);
+          } else if (action === 'registerTrayMenuItem') {
+            const hydrated = hydrateWorkerTrayDef(payload.def);
+            const handle = this.trayManager.registerPluginMenuItem(pluginId, hydrated, {
+              pluginDir,
+              executeCommand: (cmdId, args, opts) => this.executeCommand(cmdId, args, opts)
+            });
+            reply({ id: handle.id, fullId: handle.fullId });
+          } else if (action === 'updateTrayMenuItem') {
+            const hydratedPatch = hydrateWorkerTrayDef(payload.patch);
+            reply(this.trayManager.updatePluginMenuItem(pluginId, payload.itemId, hydratedPatch));
+          } else if (action === 'unregisterTrayMenuItem') {
+            reply(this.trayManager.unregisterPluginMenuItem(pluginId, payload.itemId));
+          } else if (action === 'listTrayMenuItems') {
+            reply(this.trayManager.listPluginMenuItems(pluginId));
           } else {
             throw new Error(`Unknown worker IPC action: ${action}`);
           }
@@ -765,55 +981,70 @@ class AgyDaddyDaemon {
     const settingsSchema = this.loadPluginSettingsSchema(pluginId, manifest, pluginDir);
     const settingsValues = this.getPluginSettings(pluginId, { manifest, installPath: pluginDir, schema: settingsSchema });
 
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Worker init timeout for ${pluginId}`)), 6000);
-      const onMsg = (m) => {
-        if (m?.type === 'ready') {
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Worker init timeout for ${pluginId}`)), 6000);
+        const onMsg = (m) => {
+          if (m?.type === 'ready') {
+            clearTimeout(timer);
+            worker.off('message', onMsg);
+            worker.off('exit', onExitBeforeReady);
+            resolve();
+          } else if (m?.type === 'init-error') {
+            clearTimeout(timer);
+            worker.off('message', onMsg);
+            worker.off('exit', onExitBeforeReady);
+            reject(new Error(m.error));
+          }
+        };
+        const onExitBeforeReady = (code) => {
           clearTimeout(timer);
           worker.off('message', onMsg);
-          worker.off('exit', onExitBeforeReady);
-          resolve();
-        } else if (m?.type === 'init-error') {
-          clearTimeout(timer);
-          worker.off('message', onMsg);
-          worker.off('exit', onExitBeforeReady);
-          reject(new Error(m.error));
-        }
-      };
-      const onExitBeforeReady = (code) => {
-        clearTimeout(timer);
-        worker.off('message', onMsg);
-        reject(new Error(`Worker exited early with code ${code}`));
-      };
-      worker.on('message', onMsg);
-      worker.once('exit', onExitBeforeReady);
-      worker.send({
-        type: 'init',
-        pluginId,
-        pluginDir,
-        manifest,
-        mainPath: manifest.main,
-        grantedPermissions: trustPolicy.granted,
-        stateDir: this.stateDir,
-        bridgePort: this.bridge.port,
-        pluginToken: bridgeToken,
-        settingsSchema,
-        settingsValues
+          reject(new Error(`Worker exited early with code ${code}`));
+        };
+        worker.on('message', onMsg);
+        worker.once('exit', onExitBeforeReady);
+        worker.send({
+          type: 'init',
+          pluginId,
+          pluginDir,
+          manifest,
+          mainPath: manifest.main,
+          grantedPermissions: trustPolicy.granted,
+          stateDir: this.stateDir,
+          bridgePort: this.bridge.port,
+          pluginToken: bridgeToken,
+          settingsSchema,
+          settingsValues
+        });
       });
-    });
+    } catch (err) {
+      worker._intentionalStop = true;
+      try { worker.kill('SIGKILL'); } catch {}
+      throw err;
+    }
+
+    if (!this.running) {
+      worker._intentionalStop = true;
+      try { worker.kill('SIGKILL'); } catch {}
+      throw new Error('DAEMON_STOPPED');
+    }
 
     worker.on('exit', (code, signal) => {
       for (const [, p] of pendingBridge) { clearTimeout(p.timer); p.reject(new Error('Worker exited')); }
       for (const [, p] of pendingService) { clearTimeout(p.timer); p.reject(new Error('Worker exited')); }
       for (const [, p] of pendingCommand) { clearTimeout(p.timer); p.reject(new Error('Worker exited')); }
+      for (const [, p] of pendingTrayClick) { clearTimeout(p.timer); p.reject(new Error('Worker exited')); }
       pendingBridge.clear();
       pendingService.clear();
       pendingCommand.clear();
+      pendingTrayClick.clear();
       if (this.running && !worker._intentionalStop) {
         this.recordPluginFailure(pluginId, new Error(`Worker crashed (code=${code}, signal=${signal})`));
         this.bus.disposePlugin(pluginId);
         this.bridge.unregisterPluginRoutes(pluginId);
         this.unregisterPluginCommands(pluginId);
+        this.trayManager.unregisterPluginItems(pluginId);
         this.settingsListeners.delete(pluginId);
         this.activePlugins.delete(pluginId);
       }
@@ -822,16 +1053,39 @@ class AgyDaddyDaemon {
     return { worker };
   }
 
-  async activatePlugin(record) {
+  clearPluginRequireCache(installPath) {
+    if (!installPath || !fs.existsSync(installPath)) return;
+    try {
+      const realInstallRoot = fs.realpathSync(installPath);
+      const prefix = realInstallRoot.endsWith(path.sep) ? realInstallRoot : `${realInstallRoot}${path.sep}`;
+      for (const cachedKey of Object.keys(require.cache)) {
+        if (cachedKey === realInstallRoot || cachedKey.startsWith(prefix)) {
+          delete require.cache[cachedKey];
+        }
+      }
+    } catch {}
+  }
+
+  async activatePlugin(record, opts = {}) {
     const manifest = readManifestFromDir(record.installPath);
     const trustPolicy = evaluateTrustPolicy(manifest, record.trustLevel || 'T2', record.grantedPermissions || []);
     if (!trustPolicy.allowed) {
-      throw new Error(`Permission denied for ${manifest.id}: ${trustPolicy.denied.join(', ')}`);
+      const permErr = new Error(`Permission denied for ${manifest.id}: ${trustPolicy.denied.join(', ')}`);
+      permErr.code = 'PERMISSION_DENIED';
+      if (opts.skipFailureRecord === true) {
+        this.recordPluginDiagnostic(manifest.id, permErr, 'activate');
+      } else {
+        this.recordPluginFailure(manifest.id, permErr, 'activate');
+      }
+      throw permErr;
     }
 
     const health = this.getPluginHealth(manifest.id);
     if (health.circuitOpen) {
-      throw new Error(`CIRCUIT_OPEN: ${manifest.id} disabled after ${this.maxCrashes} crashes`);
+      const circErr = new Error(`CIRCUIT_OPEN: ${manifest.id} disabled after ${this.maxCrashes} crashes`);
+      circErr.code = 'CIRCUIT_OPEN';
+      this.recordPluginDiagnostic(manifest.id, circErr, 'activate');
+      throw circErr;
     }
 
     const token = this.bridge.issuePluginToken(manifest.id);
@@ -853,6 +1107,18 @@ class AgyDaddyDaemon {
         }
       }
 
+      if (Array.isArray(manifest.contributes?.['tray.menu'])) {
+        this.trayManager.registerManifestContributions(manifest.id, manifest, {
+          pluginDir: record.installPath,
+          executeCommand: (cmdId, args, opts) => this.executeCommand(cmdId, args, opts)
+        });
+      }
+
+      if (!this.running) {
+        throw new Error('DAEMON_STOPPED');
+      }
+
+      this.pluginErrors.delete(manifest.id);
       const activeEntry = {
         id: manifest.id,
         record,
@@ -865,16 +1131,28 @@ class AgyDaddyDaemon {
       this.activePlugins.set(manifest.id, activeEntry);
       return activeEntry;
     } catch (err) {
-      this.recordPluginFailure(manifest.id, err);
+      if (workerHandle?.worker) {
+        workerHandle.worker._intentionalStop = true;
+        try { workerHandle.worker.kill('SIGKILL'); } catch {}
+      }
+      if (opts.skipFailureRecord === true) {
+        this.recordPluginDiagnostic(manifest.id, err, 'activate');
+      } else {
+        this.recordPluginFailure(manifest.id, err, 'activate');
+      }
       this.bus.disposePlugin(manifest.id);
       this.bridge.unregisterPluginRoutes(manifest.id);
       this.unregisterPluginCommands(manifest.id);
+      this.trayManager.unregisterPluginItems(manifest.id);
       this.settingsListeners.delete(manifest.id);
       throw err;
     }
   }
 
-  async deactivatePlugin(pluginId) {
+  async deactivatePlugin(pluginId, opts = {}) {
+    if (opts.clearDiagnostic === true) {
+      this.pluginErrors.delete(pluginId);
+    }
     const entry = this.activePlugins.get(pluginId);
     if (!entry) return false;
     this.activePlugins.delete(pluginId);
@@ -908,6 +1186,7 @@ class AgyDaddyDaemon {
     this.bus.disposePlugin(pluginId);
     this.bridge.unregisterPluginRoutes(pluginId);
     this.unregisterPluginCommands(pluginId);
+    this.trayManager.unregisterPluginItems(pluginId);
     this.settingsListeners.delete(pluginId);
     return true;
   }
@@ -996,6 +1275,32 @@ class AgyDaddyDaemon {
     return items;
   }
 
+  getWorkspaceRoot() {
+    const hostRoot = path.resolve(__dirname, '..', '..');
+    return this.options.workspaceRoot
+      ? path.resolve(this.options.workspaceRoot)
+      : path.resolve(hostRoot, '..');
+  }
+
+  getPluginInstallHealth(record) {
+    return inspectPluginInstallHealth(record, {
+      ...this.options,
+      workspaceRoot: this.getWorkspaceRoot()
+    });
+  }
+
+  recordMissingInstallDiagnostic(record, fallbackId = 'unknown') {
+    const pid = record?.id || path.basename(String(record?.installPath || fallbackId));
+    const installHealth = this.getPluginInstallHealth({ ...(record || {}), id: pid });
+    const msg = installHealth.status === 'broken_symlink' && installHealth.symlinkTarget
+      ? `INSTALL_PATH_MISSING: 软链目标已丢失 (${installHealth.symlinkTarget})`
+      : `INSTALL_PATH_MISSING: ${record?.installPath || pid}`;
+    const missErr = new Error(msg);
+    missErr.code = 'INSTALL_PATH_MISSING';
+    const diag = this.recordPluginDiagnostic(pid, missErr, 'load');
+    return { pid, diag, installHealth };
+  }
+
   buildPluginMetaMap() {
     const payload = this.buildPluginManagePayload();
     const meta = {};
@@ -1006,6 +1311,10 @@ class AgyDaddyDaemon {
         description: item.description,
         version: item.version,
         trustLevel: item.trustLevel,
+        enabled: item.enabled !== false,
+        active: Boolean(item.active),
+        health: item.health || null,
+        installHealth: item.installHealth || null,
         hasNative: Boolean(item.hasNative),
         nativeInfo: item.nativeInfo || null,
         settingsSchema: item.settingsSchema || null,
@@ -1047,6 +1356,7 @@ class AgyDaddyDaemon {
             nativeConfig: rec.nativeConfig
           })
         : null;
+      const installHealth = this.getPluginInstallHealth(rec);
       byId.set(rec.id, {
         id: rec.id,
         displayName: this.pickLocaleText(manifest?.displayName, rec.id),
@@ -1073,7 +1383,8 @@ class AgyDaddyDaemon {
         settingsSecretState: redacted.secretState,
         commands: Array.isArray(manifest?.contributes?.commands) ? manifest.contributes.commands : [],
         topbarUnits: Array.isArray(manifest?.contributes?.['topbar.units']) ? manifest.contributes['topbar.units'] : [],
-        health: this.getPluginHealth(rec.id)
+        health: this.getPluginHealth(rec.id),
+        installHealth
       });
     }
 
@@ -1117,7 +1428,8 @@ class AgyDaddyDaemon {
         settingsSecretState: redacted.secretState,
         commands: Array.isArray(entry.manifest?.contributes?.commands) ? entry.manifest.contributes.commands : [],
         topbarUnits: Array.isArray(entry.manifest?.contributes?.['topbar.units']) ? entry.manifest.contributes['topbar.units'] : [],
-        health: this.getPluginHealth(id)
+        health: this.getPluginHealth(id),
+        installHealth: { status: 'ok', exists: true, isSymlink: false, symlinkTarget: null, repairCandidates: [] }
       });
     }
 
@@ -1155,8 +1467,85 @@ class AgyDaddyDaemon {
       const updatedRec = nextEnabled
         ? enablePlugin(pluginId, this.options)
         : disablePlugin(pluginId, this.options);
-      const reload = await this.reloadPlugin(pluginId);
-      return { ok: true, plugin: updatedRec, reload, ...this.buildPluginManagePayload() };
+      if (!nextEnabled) {
+        this.clearPluginDiagnostic(pluginId);
+        const reload = await this.reloadPlugin(pluginId);
+        await this.syncPluginMetaToSessions();
+        return { ok: true, plugin: updatedRec, reload, ...this.buildPluginManagePayload() };
+      }
+      const reload = await this.activatePluginById(pluginId, {
+        resetCircuit: true,
+        enableIfDisabled: false
+      });
+      return {
+        ok: true,
+        plugin: updatedRec,
+        reload,
+        ...(reload?.ok === false && reload?.error ? { activationError: reload.error } : {}),
+        ...this.buildPluginManagePayload()
+      };
+    });
+    this.bridge.registerHostRoute('/host/plugins/activate', async (body) => {
+      if (body?.all === true || (!body?.pluginId && body?.all !== false)) {
+        const res = await this.ensureEnabledPluginsActivated({
+          resetCircuit: body?.resetCircuit !== false,
+          injectSessions: true,
+          retryTransient: true
+        });
+        return { ...this.buildPluginManagePayload(), ...res };
+      }
+      const pluginId = String(body?.pluginId || '').trim();
+      if (!pluginId) throw new Error('pluginId is required');
+      const res = await this.activatePluginById(pluginId, {
+        resetCircuit: body?.resetCircuit !== false,
+        enableIfDisabled: body?.enableIfDisabled !== false
+      });
+      return { ...this.buildPluginManagePayload(), ...res };
+    });
+    this.bridge.registerHostRoute('/host/plugins/repair', async (body) => {
+      const pluginId = String(body?.pluginId || '').trim();
+      if (!pluginId) throw new Error('pluginId is required');
+      let repairRes;
+      try {
+        repairRes = await repairPluginInstall(
+          pluginId,
+          {
+            mode: body?.mode,
+            spec: body?.spec,
+            localPath: body?.localPath,
+            copy: Boolean(body?.copy)
+          },
+          {
+            ...this.options,
+            workspaceRoot: this.getWorkspaceRoot()
+          }
+        );
+      } catch (err) {
+        return {
+          ...this.buildPluginManagePayload(),
+          ok: false,
+          pluginId,
+          error: err?.message || String(err)
+        };
+      }
+      if (!repairRes?.ok) {
+        return {
+          ...this.buildPluginManagePayload(),
+          ok: false,
+          pluginId,
+          error: repairRes?.error || 'REPAIR_FAILED'
+        };
+      }
+      const actRes = await this.activatePluginById(pluginId, {
+        resetCircuit: true,
+        enableIfDisabled: false
+      });
+      return {
+        ...this.buildPluginManagePayload(),
+        ...actRes,
+        repaired: true,
+        repair: repairRes
+      };
     });
     this.bridge.registerHostRoute('/host/plugins/install', async (body) => {
       const spec = String(body?.spec || '').trim();
@@ -1260,6 +1649,7 @@ class AgyDaddyDaemon {
       const reload = await this.reloadPlugin(String(body.pluginId), {
         resetCircuit: Boolean(body?.resetCircuit)
       });
+      await this.syncPluginMetaToSessions();
       return { ...reload, ...this.buildPluginManagePayload() };
     });
     this.bridge.registerHostRoute('/host/reload-all', async (body) => {
@@ -1286,7 +1676,11 @@ class AgyDaddyDaemon {
     this.bridge.registerHostRoute('/host/host-settings', async (body) => {
       const action = String(body?.action || 'get').toLowerCase();
       if (action === 'save' || action === 'update') {
-        return this.saveHostSettings(body?.values || body?.patch || {});
+        const res = this.saveHostSettings(body?.values || body?.patch || {}, { skipTraySync: true });
+        if (res?.ok) {
+          await this.syncTrayVisibility(res.values).catch(() => {});
+        }
+        return res;
       }
       return { ok: true, values: this.getHostSettings() };
     });
@@ -1340,6 +1734,28 @@ class AgyDaddyDaemon {
         report: exp.report || exp.bundle
       };
     });
+    this.bridge.registerHostRoute('/host/tray/menu', async () => {
+      const items = this.trayManager.buildMenuModel();
+      return {
+        ok: true,
+        appName: this.trayManager.appName,
+        visible: this.trayManager.visible !== false,
+        started: Boolean(this.trayManager.started),
+        items,
+        errors: this.trayManager.getPluginErrors()
+      };
+    });
+    this.bridge.registerHostRoute('/host/tray/invoke', async (body) => {
+      const itemId = String(body?.itemId || '').trim();
+      if (!itemId) throw new Error('itemId is required');
+      return await this.trayManager.handleMenuClick(itemId);
+    });
+    this.bridge.registerHostRoute('/host/settings/open', async (body) => {
+      return await this.openPluginSettings({
+        tab: body?.tab || 'plugins',
+        pluginId: body?.pluginId
+      });
+    });
 
     // 内置插件系统路由（按插件 Token 鉴权，无需声明 bridge:route 权限）
     this.bridge.registerPluginSystemRoute('/__settings', async (body, meta) => {
@@ -1375,6 +1791,12 @@ class AgyDaddyDaemon {
   }
 
   async injectActiveTargets(opts = {}) {
+    if (opts.skipActivateInactive !== true) {
+      await this.ensureEnabledPluginsActivated({
+        resetCircuit: Boolean(opts.resetCircuitOnLaunch),
+        retryTransient: true
+      }).catch(() => {});
+    }
     const res = await this.injector.injectAllActiveTargets(Array.from(this.activePlugins.values()), opts);
     if (!this.options.origin && opts.lockOrigin === true && Array.isArray(res.results) && res.results.length > 0) {
       for (const r of res.results) {
@@ -1387,7 +1809,224 @@ class AgyDaddyDaemon {
         } catch {}
       }
     }
+    if (Array.isArray(res.errors) && res.errors.length > 0) {
+      await this.syncPluginMetaToSessions();
+    }
     return res;
+  }
+
+  async _activateSortedLoadables(sorted, opts = {}) {
+    const retryTransient = opts.retryTransient !== false;
+    const activated = [];
+    const pass1Failures = [];
+
+    for (const item of sorted) {
+      try {
+        await this.activatePlugin(item.record, { skipFailureRecord: retryTransient });
+        activated.push(item.manifest.id);
+      } catch (err) {
+        const diag = classifyPluginError(err, 'activate');
+        pass1Failures.push({ item, err, diag });
+      }
+    }
+
+    const failed = [];
+    if (!retryTransient) {
+      for (const f of pass1Failures) {
+        failed.push({ id: f.item.manifest.id, error: f.err?.message || String(f.err), code: f.diag.code });
+      }
+      return { activated, failed };
+    }
+
+    const retryList = [];
+    for (const f of pass1Failures) {
+      if (PERMANENT_ACTIVATION_ERROR_CODES.has(f.diag.code)) {
+        this.recordPluginFailure(f.item.manifest.id, f.err, 'activate');
+        failed.push({ id: f.item.manifest.id, error: f.err?.message || String(f.err), code: f.diag.code });
+      } else {
+        retryList.push(f);
+      }
+    }
+
+    if (retryList.length > 0) {
+      const delayMs = Number.isFinite(Number(opts.retryDelayMs))
+        ? Math.max(0, Number(opts.retryDelayMs))
+        : (isTestMode() ? 20 : 250);
+      if (delayMs > 0) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      for (const f of retryList) {
+        this.clearPluginRequireCache(f.item.record.installPath);
+        try {
+          await this.activatePlugin(f.item.record);
+          activated.push(f.item.manifest.id);
+        } catch (err2) {
+          const diag2 = classifyPluginError(err2, 'activate');
+          failed.push({ id: f.item.manifest.id, error: err2?.message || String(err2), code: diag2.code });
+        }
+      }
+    }
+
+    return { activated, failed };
+  }
+
+  async activatePluginById(pluginId, opts = {}) {
+    const existing = this.activePlugins.get(pluginId);
+    const indexRec = readInstalledIndex(this.options).plugins?.[pluginId];
+    const optRec = Array.isArray(this.options.plugins)
+      ? this.options.plugins.find((p) => p && p.id === pluginId)
+      : null;
+    let record = indexRec || existing?.record || optRec;
+    if (!record) {
+      throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+    }
+
+    if (record.enabled === false && opts.enableIfDisabled !== false && indexRec) {
+      record = enablePlugin(pluginId, this.options);
+    }
+
+    const circuitReset = opts.resetCircuit !== false;
+    if (circuitReset) {
+      this.resetPluginCircuit(pluginId);
+    }
+
+    await this.deactivatePlugin(pluginId);
+
+    if (!record.installPath || !fs.existsSync(record.installPath)) {
+      const { diag } = this.recordMissingInstallDiagnostic(record, pluginId);
+      this.updateLiveSessionFile();
+      await this.injector.reloadPlugin(pluginId, null);
+      await this.syncPluginMetaToSessions();
+      return {
+        ok: false,
+        pluginId,
+        active: false,
+        circuitReset,
+        error: diag.message,
+        health: this.getPluginHealth(pluginId)
+      };
+    }
+
+    let entry = null;
+    try {
+      this.clearPluginRequireCache(record.installPath);
+      const manifest = readManifestFromDir(record.installPath);
+      entry = await this.activatePlugin(record);
+    } catch (err) {
+      if (!this.pluginErrors.has(pluginId)) {
+        this.recordPluginDiagnostic(pluginId, err, 'load');
+      }
+      this.updateLiveSessionFile();
+      await this.injector.reloadPlugin(pluginId, null);
+      await this.syncPluginMetaToSessions();
+      return {
+        ok: false,
+        pluginId,
+        active: false,
+        circuitReset,
+        error: err?.message || String(err),
+        health: this.getPluginHealth(pluginId)
+      };
+    }
+
+    this.updateLiveSessionFile();
+    const injectorRes = await this.injector.reloadPlugin(pluginId, entry);
+    if (Array.isArray(injectorRes?.errors) && injectorRes.errors.length > 0) {
+      this.recordPluginDiagnostic(pluginId, new Error(injectorRes.errors[0].error || 'Renderer inject failed'), 'renderer');
+    }
+    await this.syncPluginMetaToSessions();
+    return {
+      ok: injectorRes.ok !== false,
+      pluginId,
+      active: true,
+      circuitReset,
+      injector: injectorRes,
+      health: this.getPluginHealth(pluginId),
+      ...(injectorRes?.errors?.length ? { error: injectorRes.errors[0].error } : {})
+    };
+  }
+
+  async ensureEnabledPluginsActivated(opts = {}) {
+    if (this._activatingInactivePromise) {
+      return this._activatingInactivePromise;
+    }
+
+    const run = (async () => {
+      const rawRecords = Array.isArray(this.options.plugins)
+        ? this.options.plugins
+        : Object.values(readInstalledIndex(this.options).plugins || {});
+      const inactiveEnabled = rawRecords.filter((rec) => rec && rec.id && rec.enabled !== false && !this.activePlugins.has(rec.id));
+      if (inactiveEnabled.length === 0) {
+        return { ok: true, attempted: 0, activated: [], failed: [] };
+      }
+
+      if (opts.resetCircuit === true) {
+        for (const rec of inactiveEnabled) {
+          this.resetPluginCircuit(rec.id);
+        }
+      }
+
+      const loadable = [];
+      const preloadFailed = [];
+      for (const rec of inactiveEnabled) {
+        if (!rec.installPath || !fs.existsSync(rec.installPath)) {
+          const { diag } = this.recordMissingInstallDiagnostic(rec, rec.id);
+          preloadFailed.push({ id: rec.id, error: diag.message, code: 'INSTALL_PATH_MISSING' });
+          continue;
+        }
+        try {
+          this.clearPluginRequireCache(rec.installPath);
+          const manifest = readManifestFromDir(rec.installPath);
+          loadable.push({ record: rec, manifest });
+        } catch (err) {
+          const manErr = new Error(err?.message || String(err));
+          manErr.code = 'MANIFEST_INVALID';
+          this.recordPluginDiagnostic(rec.id, manErr, 'load');
+          preloadFailed.push({ id: rec.id, error: manErr.message, code: 'MANIFEST_INVALID' });
+        }
+      }
+
+      const sorted = sortPluginsByDependency(loadable);
+      const { activated, failed: actFailed } = await this._activateSortedLoadables(sorted, {
+        retryTransient: opts.retryTransient !== false,
+        retryDelayMs: opts.retryDelayMs
+      });
+      const failed = [...preloadFailed, ...actFailed];
+
+      if (activated.length > 0) {
+        this.updateLiveSessionFile();
+        if (opts.injectSessions === true && this.injector) {
+          for (const id of activated) {
+            const entry = this.activePlugins.get(id);
+            if (entry) {
+              await this.injector.reloadPlugin(id, entry).catch((err) => {
+                this.recordPluginDiagnostic(id, err, 'renderer');
+              });
+            }
+          }
+        }
+      }
+
+      if (this.injector?.sessions?.size > 0) {
+        await this.syncPluginMetaToSessions();
+      }
+
+      return {
+        ok: failed.length === 0,
+        attempted: inactiveEnabled.length,
+        activated,
+        failed
+      };
+    })();
+
+    this._activatingInactivePromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this._activatingInactivePromise === run) {
+        this._activatingInactivePromise = null;
+      }
+    }
   }
 
   async reloadPlugin(pluginId, opts = {}) {
@@ -1445,7 +2084,7 @@ class AgyDaddyDaemon {
       : { attempted: false, rebuilt: false };
 
     if (opts.resetCircuit) {
-      for (const id of new Set([...this.activePlugins.keys(), ...this.crashTracker.keys()])) {
+      for (const id of new Set([...this.activePlugins.keys(), ...this.crashTracker.keys(), ...this.pluginErrors.keys()])) {
         this.resetPluginCircuit(id);
       }
     }
@@ -1454,6 +2093,13 @@ class AgyDaddyDaemon {
       ? this.options.plugins.filter((p) => p && p.enabled !== false)
       : Object.values(readInstalledIndex(this.options).plugins || {}).filter((p) => p && p.enabled !== false);
 
+    const enabledIds = new Set(records.map((r) => r.id).filter(Boolean));
+    for (const errId of Array.from(this.pluginErrors.keys())) {
+      if (!enabledIds.has(errId)) {
+        this.pluginErrors.delete(errId);
+      }
+    }
+
     for (const pluginId of Array.from(this.activePlugins.keys()).reverse()) {
       await this.deactivatePlugin(pluginId);
     }
@@ -1461,27 +2107,21 @@ class AgyDaddyDaemon {
     const loadable = [];
     const activationErrors = [];
     for (const rec of records) {
-      if (!rec.installPath || !fs.existsSync(rec.installPath)) continue;
-      try {
-        const realInstallRoot = fs.realpathSync(rec.installPath);
-        const prefix = realInstallRoot.endsWith(path.sep) ? realInstallRoot : `${realInstallRoot}${path.sep}`;
-        for (const cachedKey of Object.keys(require.cache)) {
-          if (cachedKey === realInstallRoot || cachedKey.startsWith(prefix)) {
-            delete require.cache[cachedKey];
-          }
-        }
-      } catch {}
+      if (!rec.installPath || !fs.existsSync(rec.installPath)) {
+        const { pid, diag } = this.recordMissingInstallDiagnostic(rec);
+        activationErrors.push({ id: pid, error: diag.message });
+        continue;
+      }
+      this.clearPluginRequireCache(rec.installPath);
       try {
         const manifest = readManifestFromDir(rec.installPath);
-        if (manifest.main) {
-          try {
-            const mainResolved = require.resolve(path.resolve(rec.installPath, manifest.main));
-            delete require.cache[mainResolved];
-          } catch {}
-        }
         loadable.push({ record: rec, manifest });
       } catch (err) {
-        activationErrors.push({ id: rec.id || path.basename(rec.installPath), error: err?.message || String(err) });
+        const pid = rec.id || path.basename(rec.installPath);
+        const manErr = new Error(err?.message || String(err));
+        manErr.code = 'MANIFEST_INVALID';
+        this.recordPluginDiagnostic(pid, manErr, 'load');
+        activationErrors.push({ id: pid, error: manErr.message });
       }
     }
 
@@ -1496,18 +2136,7 @@ class AgyDaddyDaemon {
       }
     }
 
-    try {
-      const livePath = path.join(this.stateDir, '.live-session.json');
-      if (fs.existsSync(livePath)) {
-        const cur = safeReadJsonSync(livePath, null, { quarantineCorrupt: false }).data;
-        if (cur && Number(cur.pid) === process.pid) {
-          safeWriteJsonSync(livePath, {
-            ...cur,
-            activePlugins: Array.from(this.activePlugins.keys())
-          });
-        }
-      }
-    } catch {}
+    this.updateLiveSessionFile();
 
     let restoreView = null;
     if (opts.restoreView && typeof opts.restoreView === 'object') {
@@ -1639,27 +2268,38 @@ class AgyDaddyDaemon {
       const bridgeInfo = await this.bridge.start(0);
 
       const records = Array.isArray(this.options.plugins)
-        ? this.options.plugins
+        ? this.options.plugins.filter((p) => p && p.enabled !== false)
         : Object.values(readInstalledIndex(this.options).plugins || {}).filter((p) => p && p.enabled !== false);
 
       const loadable = [];
+      const preloadErrors = [];
       for (const rec of records) {
+        if (!rec.installPath || !fs.existsSync(rec.installPath)) {
+          const { pid, diag } = this.recordMissingInstallDiagnostic(rec);
+          preloadErrors.push({ id: pid, error: diag.message });
+          continue;
+        }
         try {
-          if (!rec.installPath || !fs.existsSync(rec.installPath)) continue;
           const manifest = readManifestFromDir(rec.installPath);
           loadable.push({ record: rec, manifest });
-        } catch {}
+        } catch (err) {
+          const pid = rec.id || path.basename(rec.installPath);
+          const manErr = new Error(err?.message || String(err));
+          manErr.code = 'MANIFEST_INVALID';
+          this.recordPluginDiagnostic(pid, manErr, 'load');
+          preloadErrors.push({ id: pid, error: manErr.message });
+        }
       }
 
       const sorted = sortPluginsByDependency(loadable);
-      const activationErrors = [];
-      for (const item of sorted) {
-        try {
-          await this.activatePlugin(item.record);
-        } catch (err) {
-          activationErrors.push({ id: item.manifest.id, error: err?.message || String(err) });
-        }
-      }
+      const { failed: actFailed } = await this._activateSortedLoadables(sorted, {
+        retryTransient: this.options.retryTransientOnStart !== false,
+        retryDelayMs: this.options.startRetryDelayMs
+      });
+      const activationErrors = [
+        ...preloadErrors,
+        ...actFailed.map((f) => ({ id: f.id, error: f.error }))
+      ];
 
       safeWriteJsonSync(path.join(this.stateDir, '.live-session.json'), {
         port: bridgeInfo.port,
@@ -1684,6 +2324,11 @@ class AgyDaddyDaemon {
       await this.deactivatePlugin(pluginId);
     }
     await this.bridge.stop();
+    for (const w of Array.from(this._liveWorkers)) {
+      w._intentionalStop = true;
+      try { w.kill('SIGKILL'); } catch {}
+    }
+    this._liveWorkers.clear();
     try {
       const livePath = path.join(this.stateDir, '.live-session.json');
       if (fs.existsSync(livePath)) {

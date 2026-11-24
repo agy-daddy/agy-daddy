@@ -98,6 +98,7 @@ export interface AgyPluginManifest {
   contributes?: {
     'topbar.units'?: Array<{ id: string; order?: number }>;
     'topbar.popovers'?: Array<{ id: string; anchorId: string }>;
+    'tray.menu'?: TrayMenuItemInput[];
     settings?: { schema: string };
     'remote.panels'?: Array<{ id: string; service: string; title?: string }>;
     commands?: Array<{ id: string; title: string | LocalizedText }>;
@@ -105,6 +106,53 @@ export interface AgyPluginManifest {
     locales?: string;
     native?: { mcp?: string; rules?: string[]; skills?: string[]; hooks?: string };
   };
+}
+
+export type TrayMenuItemPosition = 'top' | 'plugins' | 'bottom' | { before: string } | { after: string };
+
+export interface TrayMenuClickContext {
+  id: string;
+  fullId: string;
+  pluginId: string;
+  checked: boolean;
+  update(patch: Partial<TrayMenuItemInput>): boolean | Promise<boolean>;
+}
+
+export interface TrayMenuItemInput {
+  id: string;
+  label?: string;
+  type?: 'normal' | 'checkbox' | 'separator' | 'submenu';
+  icon?: string;
+  tooltip?: string;
+  enabled?: boolean;
+  checked?: boolean;
+  visible?: boolean;
+  order?: number;
+  weight?: number;
+  position?: TrayMenuItemPosition;
+  command?: string;
+  args?: unknown[];
+  onClick?: (ctx: TrayMenuClickContext) => unknown | Promise<unknown>;
+  submenu?: TrayMenuItemInput[];
+}
+
+export interface TrayMenuItemHandle {
+  id: string;
+  fullId: string;
+  update(patch: Partial<TrayMenuItemInput>): boolean | Promise<boolean>;
+  dispose(): boolean | Promise<boolean>;
+}
+
+export interface TrayMenuSnapshotItem {
+  id: string;
+  fullId: string;
+  pluginId: string;
+  type: 'normal' | 'checkbox' | 'separator' | 'submenu';
+  label: string;
+  enabled: boolean;
+  order: number;
+  position: TrayMenuItemPosition;
+  faulted: boolean;
 }
 
 export interface ServiceCallResult<T = unknown> {
@@ -158,6 +206,12 @@ export interface AgyHostApi {
   commands: {
     register(commandId: string, handler: (...args: unknown[]) => unknown): (() => void) | Promise<() => void>;
     execute<T = unknown>(commandId: string, args?: unknown[]): Promise<T>;
+  };
+  tray: {
+    registerMenuItem(def: TrayMenuItemInput): TrayMenuItemHandle | Promise<TrayMenuItemHandle>;
+    updateMenuItem(itemId: string, patch: Partial<TrayMenuItemInput>): boolean | Promise<boolean>;
+    unregisterMenuItem(itemId: string): boolean | Promise<boolean>;
+    listMenuItems(): TrayMenuSnapshotItem[] | Promise<TrayMenuSnapshotItem[]>;
   };
 }
 

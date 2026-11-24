@@ -122,8 +122,15 @@ test('lifecycle 跨平台自启/桌面启动器、防自杀重启守卫、git �
 
     const launcher = installMacLauncherApp({ targetDir: root });
     assert.equal(launcher.ok, true);
+    assert.equal(launcher.appName, 'Agy-Daddy Launcher.app');
     assert.ok(fs.existsSync(launcher.infoPath));
     assert.ok(fs.existsSync(launcher.binPath));
+    assert.ok(fs.existsSync(launcher.iconPath));
+    const infoPlist = fs.readFileSync(launcher.infoPath, 'utf8');
+    assert.match(infoPlist, /<key>CFBundleDisplayName<\/key><string>Agy-Daddy Launcher<\/string>/);
+    assert.match(infoPlist, /<key>CFBundleIconFile<\/key><string>AgyDaddyLauncher<\/string>/);
+    assert.match(infoPlist, /<key>LSMinimumSystemVersion<\/key><string>14\.0<\/string>/);
+    assert.match(infoPlist, /<key>NSHighResolutionCapable<\/key><true\/>/);
 
     assert.equal(detectInsideAntigravitySession({ ANTIGRAVITY_AGENT: '1' }), true);
     const blocked = planAntigravityRestart({ env: { ANTIGRAVITY_AGENT: '1' } });

@@ -99,20 +99,23 @@ test('彻底移除历史迁移包袱且 host-settings.json 归一化与持久化
       maxVisibleUnits: 4,
       showTopbarEntry: true,
       injectNativeSettings: true,
-      autoSyncNativeOnInstall: true
+      autoSyncNativeOnInstall: true,
+      hideTrayIcon: false
     });
 
     const toggledOff = normalizeHostSettings(
       {
         showTopbarEntry: false,
         injectNativeSettings: false,
-        autoSyncNativeOnInstall: false
+        autoSyncNativeOnInstall: false,
+        hideTrayIcon: true
       },
       merged
     );
     assert.equal(toggledOff.showTopbarEntry, false);
     assert.equal(toggledOff.injectNativeSettings, false);
     assert.equal(toggledOff.autoSyncNativeOnInstall, false);
+    assert.equal(toggledOff.hideTrayIcon, true);
 
     const wr = safeWriteJsonSync(settingsPath, merged);
     assert.equal(wr.ok, true);

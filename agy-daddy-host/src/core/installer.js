@@ -268,8 +268,10 @@ async function fetchNpmTarballToDir(parsed, stagingDir, options = {}) {
 }
 
 function backupForRollback(targetDir, rollbackDir, prevRecord) {
+  if (!fs.existsSync(targetDir)) {
+    return prevRecord?.previousRecord || null;
+  }
   fs.rmSync(rollbackDir, { recursive: true, force: true });
-  if (!fs.existsSync(targetDir)) return null;
   const stat = fs.lstatSync(targetDir);
   if (stat.isSymbolicLink()) {
     const linkTarget = fs.readlinkSync(targetDir);
@@ -344,7 +346,12 @@ async function installPlugin(spec, options = {}) {
     const prevRecord = index.plugins[pluginId] || null;
     const backedUpPrev = backupForRollback(targetDir, rollbackDir, prevRecord);
 
-    if (fs.existsSync(targetDir)) {
+    let targetLstatExists = false;
+    try {
+      fs.lstatSync(targetDir);
+      targetLstatExists = true;
+    } catch {}
+    if (targetLstatExists) {
       fs.rmSync(targetDir, { recursive: true, force: true });
     }
 
@@ -614,6 +621,217 @@ function listInstalledPlugins(options = {}) {
   return Object.values(index.plugins || {});
 }
 
+function inspectPluginInstallHealth(record, options = {}) {
+  if (!record || !record.id) {
+    return { status: 'missing_dir', exists: false, isSymlink: false, symlinkTarget: null, repairCandidates: [] };
+  }
+  const safeId = assertSafePluginId(record.id);
+  const installPath = record.installPath || '';
+  let lstat = null;
+  if (installPath) {
+    try {
+      lstat = fs.lstatSync(installPath);
+    } catch {}
+  }
+  const isSymlink = Boolean(lstat && lstat.isSymbolicLink());
+  let symlinkTarget = null;
+  if (isSymlink) {
+    try {
+      const rawTarget = fs.readlinkSync(installPath);
+      symlinkTarget = path.isAbsolute(rawTarget) ? rawTarget : path.resolve(path.dirname(installPath), rawTarget);
+    } catch {}
+  }
+  const exists = Boolean(installPath && fs.existsSync(installPath));
+  if (exists) {
+    return {
+      status: 'ok',
+      exists: true,
+      isSymlink,
+      symlinkTarget,
+      repairCandidates: []
+    };
+  }
+
+  const status = isSymlink ? 'broken_symlink' : 'missing_dir';
+  const repairCandidates = [];
+  const seenTargets = new Set();
+
+  const addCandidate = (candidate) => {
+    if (!candidate || !candidate.spec) return;
+    const dedupKey = `${candidate.kind === 'registry' ? 'reg' : 'fs'}:${candidate.target || candidate.spec}`;
+    if (seenTargets.has(dedupKey)) return;
+    seenTargets.add(dedupKey);
+    repairCandidates.push(candidate);
+  };
+
+  const pluginsDir = getPluginsDir(options);
+  const rollbackDir = path.join(pluginsDir, '.rollback', `${safeId}.prev`);
+  if (fs.existsSync(rollbackDir)) {
+    const symlinkBakPath = path.join(rollbackDir, '.symlink-backup.json');
+    if (fs.existsSync(symlinkBakPath)) {
+      try {
+        const bak = JSON.parse(fs.readFileSync(symlinkBakPath, 'utf8'));
+        const bakTarget = bak?.linkTarget ? path.resolve(bak.linkTarget) : '';
+        if (bakTarget && fs.existsSync(bakTarget)) {
+          const man = readManifestFromDir(bakTarget);
+          if (man.id === safeId) {
+            addCandidate({
+              kind: 'rollback',
+              label: '恢复上次路径',
+              target: bakTarget,
+              spec: 'rollback'
+            });
+          }
+        }
+      } catch {}
+    } else {
+      try {
+        const man = readManifestFromDir(rollbackDir);
+        if (man.id === safeId) {
+          addCandidate({
+            kind: 'rollback',
+            label: '回滚到上一版本',
+            target: rollbackDir,
+            spec: 'rollback'
+          });
+        }
+      } catch {}
+    }
+  }
+
+  const prevSpec = String(record.previousRecord?.sourceSpec || '').trim();
+  if (prevSpec.startsWith('local:')) {
+    const prevPath = path.resolve(prevSpec.slice('local:'.length).trim());
+    if (prevPath && fs.existsSync(prevPath)) {
+      try {
+        const man = readManifestFromDir(prevPath);
+        if (man.id === safeId) {
+          addCandidate({
+            kind: 'local',
+            label: '切回历史本地目录',
+            target: prevPath,
+            spec: `local:${prevPath}`
+          });
+        }
+      } catch {}
+    }
+  }
+
+  const workspaceRoot = options.workspaceRoot
+    ? path.resolve(options.workspaceRoot)
+    : path.resolve(HOST_ROOT_DIR, '..');
+  if (fs.existsSync(workspaceRoot)) {
+    try {
+      const dirs = fs.readdirSync(workspaceRoot, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && d.name.startsWith('agy-daddy-plugin-') && d.name !== 'agy-daddy-plugin-template');
+      for (const d of dirs) {
+        const candDir = path.join(workspaceRoot, d.name);
+        try {
+          const man = readManifestFromDir(candDir);
+          if (man.id === safeId) {
+            addCandidate({
+              kind: 'workspace',
+              label: '指向当前工作区目录',
+              target: candDir,
+              spec: `local:${candDir}`
+            });
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  try {
+    const reg = loadRegistry(options);
+    const regEntry = (Array.isArray(reg?.plugins) ? reg.plugins : []).find((p) => p && p.id === safeId);
+    if (regEntry) {
+      const regSpec = regEntry.shortName || regEntry.repo || regEntry.npmPackage || regEntry.id;
+      if (regSpec) {
+        addCandidate({
+          kind: 'registry',
+          label: '从官方/市场源重装',
+          target: regEntry.repo || regEntry.npmPackage || regSpec,
+          spec: regSpec
+        });
+      }
+    }
+  } catch {}
+
+  return {
+    status,
+    exists: false,
+    isSymlink,
+    symlinkTarget,
+    repairCandidates
+  };
+}
+
+async function repairPluginInstall(pluginId, repairOpts = {}, options = {}) {
+  const safeId = assertSafePluginId(pluginId);
+  const index = readInstalledIndex(options);
+  const record = index.plugins[safeId];
+  if (!record) {
+    throw new Error(`Plugin not installed: ${safeId}`);
+  }
+
+  const mode = repairOpts.mode ? String(repairOpts.mode) : 'auto';
+  const rawInput = repairOpts.localPath !== undefined
+    ? String(repairOpts.localPath || '').trim()
+    : (repairOpts.spec !== undefined ? String(repairOpts.spec || '').trim() : '');
+
+  if (mode === 'rollback' || rawInput === 'rollback') {
+    const rb = rollbackPlugin(safeId, options);
+    return { ok: true, mode: 'rollback', spec: 'rollback', plugin: rb.plugin };
+  }
+
+  let resolvedSpec = '';
+  if (rawInput) {
+    if (
+      rawInput.startsWith('local:') ||
+      rawInput.startsWith('git:') ||
+      rawInput.startsWith('github:') ||
+      rawInput.startsWith('npm:') ||
+      rawInput.startsWith('https://') ||
+      rawInput.startsWith('http://') ||
+      rawInput.startsWith('git+')
+    ) {
+      resolvedSpec = rawInput;
+    } else if (rawInput.startsWith('/') || rawInput.startsWith('./') || rawInput.startsWith('../') || /^[a-zA-Z]:[\\/]/.test(rawInput)) {
+      resolvedSpec = `local:${path.resolve(rawInput)}`;
+    } else {
+      resolvedSpec = rawInput;
+    }
+  } else {
+    const health = inspectPluginInstallHealth(record, options);
+    const best = Array.isArray(health.repairCandidates) ? health.repairCandidates[0] : null;
+    if (!best) {
+      return {
+        ok: false,
+        error: 'NO_REPAIR_CANDIDATE: 未自动找到可用恢复目录，请手动指定本地目录或移除失效记录'
+      };
+    }
+    if (best.kind === 'rollback') {
+      const rb = rollbackPlugin(safeId, options);
+      return { ok: true, mode: 'rollback', spec: 'rollback', target: best.target, plugin: rb.plugin };
+    }
+    resolvedSpec = best.spec;
+  }
+
+  const inst = await installPlugin(resolvedSpec, {
+    ...options,
+    copy: Boolean(repairOpts.copy),
+    trustLevel: record.trustLevel,
+    grantedPermissions: Array.isArray(record.grantedPermissions) ? record.grantedPermissions : [],
+    enabled: record.enabled !== false
+  });
+  return {
+    ok: true,
+    mode: mode === 'auto' ? 'relink' : mode,
+    spec: resolvedSpec,
+    plugin: inst.plugin
+  };
+}
+
 function sortPluginsByDependency(entries) {
   const byId = new Map();
   const providers = new Map();
@@ -663,6 +881,8 @@ module.exports = {
   enablePlugin: (id, opts) => setPluginEnabled(id, true, opts),
   disablePlugin: (id, opts) => setPluginEnabled(id, false, opts),
   rollbackPlugin,
+  inspectPluginInstallHealth,
+  repairPluginInstall,
   updatePluginNativeConfig,
   rollbackPluginNativeRules,
   inspectPluginNativeStatus,

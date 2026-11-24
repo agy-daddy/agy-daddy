@@ -26,12 +26,13 @@
                  | host.services / host.events    |
    +-------------+-------------+    +-------------+-------------+
    | agy-daddy-plugin-web (PC) |    | agy-daddy-plugin-remote   |
-   | - 强锁 127.0.0.1 本地监听  |    | - 5通道 / Tunnel / 扫码    |
+   | - 多通道: Loopback/LAN/TS  |    | - 5通道 / Tunnel / 扫码    |
+   |   /Bonjour/Cloudflare     |    |                           |
    | - 默认全读写 + Cookie/CSRF |    | - 默认只读 + 动作白名单    |
    | - 提供 web-harness 服务    |    | - Phase 3 可选消费服务     |
    | - 三栏 Dock/Diff/底座管理台|    | - 手机单手监控与轻交互     |
    +-------------^-------------+    +-------------^-------------+
-                 | HTTP + SSE (127.0.0.1)         | HTTPS + SSE (Tunnel)
+                 | HTTP + SSE (多通道监听)        | HTTPS + SSE (Tunnel)
          [PC 浏览器 / PWA 独立窗]              [手机浏览器 / 桌面 PWA]
 ```
 
@@ -39,8 +40,8 @@
 
 | 维度 | `agy-daddy-plugin-web`（PC 桌面替代） | `agy-daddy-plugin-remote`（移动端伴侣，保留既有架构） |
 |---|---|---|
-| **监听地址** | **强制 `127.0.0.1`**（拒绝 `0.0.0.0` / 公网暴露） | 按 5 通道开关控制（默认 `127.0.0.1`，可选 LAN/TS/CF） |
-| **默认权限** | 本地交互全读写（需配对 Cookie + 写接口 CSRF Header） | 默认只读（`allowRemoteWrite: false`），写动作逐一白名单 |
+| **监听地址** | 按通道开关控制：默认仅 `127.0.0.1`，启用 LAN / Tailscale / Bonjour 任一通道时自动绑定 `0.0.0.0`；未启用任何非回环通道时拒绝非回环绑定（`ERR_CHANNEL_NOT_ENABLED`） | 按 5 通道开关控制（默认 `127.0.0.1`，可选 LAN/TS/CF） |
+| **默认权限** | 回环通道全读写；非回环通道按 `remotePermissionLevel` 分级（默认 `L0` 只读，可选 `L1` 对话 / `L2` 全量），写接口仍需 CSRF Header 与配对 Cookie | 默认只读（`allowRemoteWrite: false`），写动作逐一白名单 |
 | **能力范围** | 完整对话、模型切换、文件树/读写、Git Diff、Artifacts、Host 全部 9+ 插件管理与设置中心 | 顶栏监控卡片 +（Phase 3）可选会话追踪与白名单快捷交互 |
 | **包与渲染** | `dependencies: {}`，构建期 Vite + React 18 产出静态 `dist/web/` | 轻量无框架 PWA（`<150KB`），不下载桌面 Diff/编辑器包体 |
 
@@ -65,13 +66,17 @@
 
 ## 3. `/api/v1/*` HTTP + SSE 接口契约
 
-### 3.1 鉴权与安全头
+### 3.1 通道模型、鉴权与安全头
 
-- **Loopback 硬锁**：`WebServer` 构造与启动校验 `host === '127.0.0.1' || host === '::1'`，传入其他绑定地址直接抛出 `ERR_NON_LOOPBACK_FORBIDDEN`。
+- **通道开关**：`settings.schema.json` 提供 `loopback` / `lan` / `tailscale` / `bonjour` / `cloudflare` 五个布尔开关与 `bindHost`（`auto` / `loopback` / `lan`）、`tunnelHostname`、`remotePermissionLevel`。默认仅回环通道，升级安装行为不变。
+- **监听地址推导**：`bindHost: auto` 时，仅在启用 `lan` / `tailscale` / `bonjour` 任一通道才绑定 `0.0.0.0`；`cloudflare` 由 cloudflared 连向 `127.0.0.1:<port>`，不扩宽绑定。未启用非回环通道却要求非回环绑定 → `ERR_CHANNEL_NOT_ENABLED`；绑定非本机网卡地址 → `ERR_BIND_HOST_NOT_LOCAL`；`bindHost: loopback` 与外部通道冲突 → `ERR_BIND_HOST_CONFLICT`。显式传入的 `host` 只被重新校验，不被静默改写。
+- **逐请求通道识别**：`classifyRequestChannel()` 依 `cf-ray` / `cf-connecting-ip` / `*.ts.net` / `*.local` / RFC1918 源地址 / 回环地址归类；未启用通道一律 `403 { ok: false, error: 'CHANNEL_DISABLED', channel, allowedChannels }`，`external` 永不放行。
+- **权限分级**（仅作用于非回环通道）：`L0` 只读（GET/HEAD + SSE）、`L1` 增加会话与对话写、`L2` 增加文件写入、Git、插件与宿主设置；越级返回 `403 { ok: false, error: 'PERMISSION_DENIED', required, current, channel }`。回环通道始终全读写。
+- **Cloudflare 二次确认**：该通道上的写操作另需 `X-Agy-Confirm` 携带 HMAC 令牌（`POST /api/v1/confirm` 或 403 响应体下发），令牌绑定 `${method} ${pathname}`、默认 60s 有效；缺失返回 `403 { ok: false, error: 'CONFIRMATION_REQUIRED', action, confirmToken }`。
 - **Token → Cookie 交换**：
   - 访问 `GET /?token=<pairingToken>` 时使用 `crypto.timingSafeEqual` 校验通过后，下发 `Set-Cookie: agy_web_sid=<sessionSecret>; HttpOnly; SameSite=Strict; Path=/` 并 `302` 重定向至 `/`（剥离 URL 中的敏感 token）。
   - 所有 `/api/v1/*` 需携带有效 Cookie（或 `Authorization: Bearer <pairingToken>` 供 CLI/单测使用）；未鉴权返回 `401 { ok: false, error: 'UNAUTHORIZED' }`。
-- **写操作防 CSRF**：所有 `POST` / `PUT` / `DELETE` 请求（使用 Cookie 鉴权时）必须携带 `X-Agy-Csrf: 1`（或匹配会话 CSRF 值）且不得来自跨域 `Origin`；缺失返回 `403 { ok: false, error: 'CSRF_REQUIRED' }`。
+- **写操作防 CSRF**：所有 `POST` / `PUT` / `DELETE` 请求（使用 Cookie 鉴权时）必须携带 `X-Agy-Csrf: 1` 且 `Origin` 必须与本次请求的 `Host` 同源（回环通道额外保留 loopback Origin 规则）；缺失返回 `403 { ok: false, error: 'CSRF_REQUIRED' }`。
 - **固定安全响应头**：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`、CSP `frame-ancestors 'none'`。
 
 ### 3.2 端点规范表
@@ -79,6 +84,8 @@
 | 端点 | 方法 | 请求体 / 查询参数 | 响应体（200） | 错误码 |
 |---|---|---|---|---|
 | `/api/v1/health` | `GET` | — | `{ ok: true, rpcConnected, hubOrigin, pluginVersion }` | `401` |
+| `/api/v1/web/status` | `GET` | — | `{ ok, running, channel, channels, activeChannels, urls, primaryChannel, primaryUrl, permissionLevel, allowRemoteWrite, bindHost }` | `401`, `403 CHANNEL_DISABLED` |
+| `/api/v1/confirm` | `POST` | `{ action: "POST /api/v1/sessions" }` | `{ ok: true, action, confirmToken, expiresInMs }` | `400 MISSING_ACTION`, `401`, `403 PERMISSION_DENIED` |
 | `/api/v1/sessions` | `GET` | `?limit=50` | `{ ok: true, sessions: SessionSummary[] }` | `401`, `502` |
 | `/api/v1/sessions` | `POST` | `{ title?, workspaceUri? }` | `{ ok: true, cascadeId }`（调用 `StartCascade`） | `401`, `403`, `502` |
 | `/api/v1/sessions/:id` | `GET` | — | `{ ok: true, session: SessionDetail, events: SessionEvent[] }` | `401`, `404`, `502` |

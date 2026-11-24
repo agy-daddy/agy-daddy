@@ -44,11 +44,18 @@
 
 | ID | 目标模块 | 测试行为 | 会令测试失败的生产改动 | 输入与核心断言 | RED 运行命令 |
 |---|---|---|---|---|---|
-| **D1** | `web-server.js` | 强锁仅绑定 `127.0.0.1` / `::1`，拒绝 `0.0.0.0` | 允许 `host: '0.0.0.0'` 启动监听 | 传入 `host: '0.0.0.0'` 构造或 `start()`，断言抛出 `/ERR_NON_LOOPBACK_FORBIDDEN/` | `AGY_DADDY_TEST_MODE=1 node --test agy-daddy-plugin-web/test/web-server.test.js` |
+| **D1** | `web-server.js` | 默认仅回环；非回环绑定须有对应通道，且仅接受本机网卡地址 | 无通道时允许 `host: '0.0.0.0'`，或 `start()` 静默改写显式 `host` | 默认构造绑定 `127.0.0.1` 且 `channels` 仅 `loopback: true`；`host: '0.0.0.0'` 无通道 → `ERR_CHANNEL_NOT_ENABLED`；`host: '203.0.113.9'` → `ERR_BIND_HOST_NOT_LOCAL`；`bindHostMode: 'loopback'` + `lan` → `ERR_BIND_HOST_CONFLICT`；篡改 `srv.host` 后 `start()` 仍拒绝 | `AGY_DADDY_TEST_MODE=1 node --test agy-daddy-plugin-web/test/web-server.test.js` |
 | **D2** | `web-server.js` | 一次性 Token 换 `HttpOnly; SameSite=Strict` Cookie 并剥离 URL token | 保留 URL token 未重定向或 Cookie 缺少 `HttpOnly`/`SameSite=Strict` | 请求 `GET /?token=<valid>` 断言返回 `302`、`Location: /`、`Set-Cookie` 含 `HttpOnly` 与 `SameSite=Strict`；用错 token 返回 `401` | 同上 |
 | **D3** | `web-server.js` | API 鉴权、写请求 CSRF Header 与安全响应头 | 放行无 Cookie 请求或写接口忽略 `X-Agy-Csrf` | 无鉴权 `GET /api/v1/sessions` 返回 `401`；带 Cookie 但缺 `X-Agy-Csrf` 的 `POST /api/v1/sessions` 返回 `403 CSRF_REQUIRED`；带齐 Cookie + `X-Agy-Csrf: 1` 返回 `200` 且响应头含 `X-Content-Type-Options: nosniff` 与 `frame-ancestors 'none'` | 同上 |
 | **D4** | `web-server.js` | SSE 实时推帧与 `Last-Event-ID` 断线重放 | 未按 `id:` 缓存或重连未补发中间事件 | 建立 SSE 连接，服务端广播 `id: 1`, `id: 2` 后断开；客户端带 `Last-Event-ID: 1` 重连，断言立刻收到 `id: 2` 而非重复 `id: 1`；超窗口时收到 `event: session.resync` | 同上 |
 | **D5** | `web-server.js` | 静态托管 `dist/web/` 与 SPA fallback（API 404 不回退 HTML） | `/api/v1/unknown` 错误返回 `index.html` | `GET /settings` 返回 `index.html` (200)；`GET /api/v1/not-exist` 返回 JSON `404` | 同上 |
+| **D11** | `web-server.js` | 未启用通道在鉴权前即被拒绝 | 仅在 `/api/*` 内校验通道，静态入口仍可访问 | 以 `lan` 通道请求（通道集仅 `loopback`）→ `403 CHANNEL_DISABLED` 且 `channel: 'lan'`、`allowedChannels: ['loopback']`；`/` 同样 403；`external` 永不放行 | 同上 |
+| **D12** | `web-server.js` | 非回环通道按 L0/L1/L2 分级放行 | 非回环通道沿用回环的全读写 | `lan` + `L0`：GET 200、SSE 200、POST `403 PERMISSION_DENIED{required:L1}`；升到 `L1` 后会话写 200 而 `fs/write` 仍 `403{required:L2}`；升到 `L2` 后 `fs/write` 200；回环通道在 `L0` 下写仍 200 | 同上 |
+| **D13** | `web-server.js` | Cloudflare 通道写操作需动作绑定的二次确认 | 任意 `X-Agy-Confirm` 值均放行，或令牌不校验动作 | 无确认头 → `403 CONFIRMATION_REQUIRED{action:'POST /api/v1/sessions', confirmToken}`；用另一动作的令牌重放仍 403；用匹配令牌重试 200；`POST /api/v1/confirm` 空 `action` → `400 MISSING_ACTION` | 同上 |
+| **D14** | `web-server.js` | 非回环 Cookie 写入须同源 `Origin`，且保持 `HttpOnly; SameSite=Strict` | 接受跨站 `Origin`，或改用 `SameSite=None` 破坏 http LAN | 令牌换 Cookie 后：`Origin: http://evil.example:18767` → `403 CSRF_REQUIRED`；`Origin` 为其他 LAN 主机 → 403；同源 `Origin` → 200；缺 `X-Agy-Csrf` → 403；`Set-Cookie` 含 `HttpOnly` 与 `SameSite=Strict` 且不含 `SameSite=None` | 同上 |
+| **D15** | `web-server.js` | `GET /api/v1/web/status` 汇总通道、入口 URL 与权限级别 | 缺失通道/URL/权限字段，或忽略 `tunnelHostname` | 断言 `channel`、`permissionLevel`、`allowRemoteWrite`、`bindHost`、`activeChannels`、`urls.loopback`、`urls.cloudflare`（由 `tunnelHostname` 生成）、`primaryChannel` | 同上 |
+| **D16** | `channel-config.js` | 确认令牌 HMAC 绑定单一动作且会过期 | 空 `act` 令牌可跨动作重放，或签名不校验 | 正确动作通过；错误动作、错误密钥、篡改令牌均失败；无动作令牌对具体动作失败；过期令牌失败 | 同上 |
+| **D17** | `web-server.js` | `bindHostMode` 热更新重算地址，且被拒策略不留半更新状态 | 校验失败时已写入新通道/模式 | `bindHostMode: 'lan'` + 仅回环 → 抛 `ERR_CHANNEL_NOT_ENABLED` 且 `channels`/`host`/`bindHostMode` 全部不变；启用 `lan` 后同一调用返回 `rebind: true` 且 `host === '0.0.0.0'` | 同上 |
 
 ---
 

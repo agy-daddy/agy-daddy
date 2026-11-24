@@ -23,6 +23,7 @@ export interface SessionStreamProps {
   emptyTitle?: string;
   emptyDescription?: string;
   onInspectFile?: (filePath: string) => void;
+  onReviewDiff?: (filePath?: string) => void;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
   thinkingExpandOverride?: boolean | null;
   searchQuery?: string;
@@ -65,6 +66,7 @@ export const SessionStream = React.memo(function SessionStream({
   emptyTitle,
   emptyDescription,
   onInspectFile,
+  onReviewDiff,
   scrollContainerRef,
   thinkingExpandOverride = null,
   searchQuery,
@@ -431,11 +433,15 @@ export const SessionStream = React.memo(function SessionStream({
                       thoughtCount={item.thoughtCount}
                       toolCount={item.toolCount}
                       totalThinkingSeconds={item.totalThinkingSeconds}
+                      editCount={item.editCount}
+                      totalAdditions={item.totalAdditions}
+                      totalDeletions={item.totalDeletions}
                       groupExpanded={expandedGroupIds.has(item.id)}
                       expandedSeqs={expandedSeqsByGroup[item.id] ?? EMPTY_SEQ_SET}
                       onToggleGroup={handleToggleGroup}
                       onToggleItem={handleToggleItem}
                       onInspectFile={onInspectFile}
+                      onReviewDiff={onReviewDiff}
                     />
                   ) : (
                     <SessionEventCard
@@ -452,6 +458,7 @@ export const SessionStream = React.memo(function SessionStream({
                       searchRegex={searchRegex}
                       searchCaseSensitive={searchCaseSensitive}
                       onInspectFile={onInspectFile}
+                      onReviewDiff={onReviewDiff}
                     />
                   )}
                 </div>

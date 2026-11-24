@@ -15,6 +15,12 @@ import type {
   UserEventPayload,
   WebSearchPayload,
 } from '../types';
+import {
+  extractCodeActionDiffLines,
+  extractCodeActionDiffStats,
+  extractCodeActionTargetFile,
+} from './codeActionUtils';
+import { MarkdownContent } from './MarkdownContent';
 import styles from './SessionEventCard.module.css';
 
 export interface SessionEventCardProps {
@@ -26,6 +32,7 @@ export interface SessionEventCardProps {
   searchRegex?: boolean;
   searchCaseSensitive?: boolean;
   onInspectFile?: (filePath: string) => void;
+  onReviewDiff?: (filePath?: string) => void;
 }
 
 function escapeRegExp(str: string): string {
@@ -127,20 +134,6 @@ function extractUserText(payload: UserEventPayload): string {
   return '';
 }
 
-function extractNumericStat(
-  stats: Record<string, unknown> | null | undefined,
-  keys: string[],
-): number | null {
-  if (!stats) return null;
-  for (const key of keys) {
-    const val = stats[key];
-    if (typeof val === 'number' && Number.isFinite(val)) {
-      return val;
-    }
-  }
-  return null;
-}
-
 function renderQuestionItem(q: unknown, index: number): React.ReactNode {
   if (typeof q === 'string') {
     return (
@@ -233,6 +226,7 @@ export const SessionEventCard = React.memo(function SessionEventCard({
   searchRegex = false,
   searchCaseSensitive = false,
   onInspectFile,
+  onReviewDiff,
 }: SessionEventCardProps) {
   const { t } = useI18n();
   const [thinkingOpen, setThinkingOpen] = useState<boolean>(() =>
@@ -240,6 +234,7 @@ export const SessionEventCard = React.memo(function SessionEventCard({
       ? thinkingExpandOverride
       : defaultThinkingExpanded,
   );
+  const [copiedMsg, setCopiedMsg] = useState(false);
 
   useEffect(() => {
     if (thinkingExpandOverride !== null && thinkingExpandOverride !== undefined) {
@@ -277,12 +272,181 @@ export const SessionEventCard = React.memo(function SessionEventCard({
   const statusKey = `event.status.${event.status}` as I18nKey;
   const statusLabel = t(statusKey) !== statusKey ? t(statusKey) : event.status;
   const isUser = event.kind === 'user';
+  const isAssistant = event.kind === 'thinking_and_text';
   const isError = event.kind === 'error' || event.status === 'error';
   const isPending = event.status === 'pending';
 
+  const handleCopyPlainText = async (content: string) => {
+    if (!content) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      }
+      setCopiedMsg(true);
+      window.setTimeout(() => setCopiedMsg(false), 1600);
+    } catch {
+      // Ignore clipboard failures
+    }
+  };
+
+  const renderStatusNode = (alwaysVisible = false) => {
+    if (!alwaysVisible && event.status === 'done') {
+      return (
+        <span className={styles.srOnly} data-testid={`event-status-${event.status}`}>
+          {statusLabel}
+        </span>
+      );
+    }
+    return (
+      <span
+        className={`${styles.statusBadge} ${getStatusClass(event.status)}`}
+        data-testid={`event-status-${event.status}`}
+      >
+        {statusLabel}
+      </span>
+    );
+  };
+
+  // Conversational User Bubble (Right-aligned)
+  if (isUser) {
+    const p = event.payload as UserEventPayload;
+    const text = extractUserText(p);
+    const bubbleClasses = [
+      styles.userBubble,
+      isPending ? styles.cardPending : '',
+      isError ? styles.cardError : '',
+      searchMatchState === 'hit' ? styles.cardSearchHit : '',
+      searchMatchState === 'active' ? styles.cardSearchActive : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return (
+      <article
+        className={bubbleClasses}
+        data-testid={`session-event-${event.seq}`}
+        data-event-kind={event.kind}
+        data-event-status={event.status}
+        data-search-hit={searchMatchState || undefined}
+      >
+        <div className={styles.userBody}>
+          {text ? (
+            <MarkdownContent
+              text={text}
+              compact
+              highlightRegex={highlightRegex}
+              markClassName={markClassName}
+              onInspectFile={onInspectFile}
+            />
+          ) : (
+            <div className={styles.prose}>{t('stream.emptyMessage')}</div>
+          )}
+        </div>
+        <footer className={styles.userMeta}>
+          {renderStatusNode(false)}
+          <span className={styles.seqMuted}>#{event.seq}</span>
+          {text && (
+            <button
+              type="button"
+              className={styles.subtleActionBtn}
+              onClick={() => void handleCopyPlainText(text)}
+              title={t('stream.copyMessage')}
+            >
+              {copiedMsg ? t('stream.copiedMessage') : t('stream.copyMessage')}
+            </button>
+          )}
+        </footer>
+      </article>
+    );
+  }
+
+  // Conversational Assistant Turn (Left-aligned clean prose flow)
+  if (isAssistant) {
+    const p = event.payload as PlannerResponsePayload;
+    const thinking = typeof p.thinking === 'string' ? p.thinking : '';
+    const text =
+      (typeof p.modifiedResponse === 'string' && p.modifiedResponse) ||
+      (typeof p.response === 'string' && p.response) ||
+      (typeof p.text === 'string' && p.text) ||
+      '';
+
+    const assistantClasses = [
+      styles.assistantTurn,
+      isPending ? styles.cardPending : '',
+      isError ? styles.cardError : '',
+      searchMatchState === 'hit' ? styles.cardSearchHit : '',
+      searchMatchState === 'active' ? styles.cardSearchActive : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return (
+      <article
+        className={assistantClasses}
+        data-testid={`session-event-${event.seq}`}
+        data-event-kind={event.kind}
+        data-event-status={event.status}
+        data-search-hit={searchMatchState || undefined}
+      >
+        {thinking && (
+          <div className={styles.thinkingInline} data-testid="thinking-block">
+            <button
+              type="button"
+              className={styles.thinkingPill}
+              aria-expanded={thinkingOpen}
+              onClick={() => setThinkingOpen((prev) => !prev)}
+              data-testid="thinking-toggle"
+            >
+              <span className={styles.thinkingChevron}>{thinkingOpen ? '▾' : '▸'}</span>
+              <span>{t('stream.thinkingLabel')}</span>
+              {p.thinkingDuration !== null && p.thinkingDuration !== undefined && (
+                <span className={styles.thinkingDur}>{String(p.thinkingDuration)}</span>
+              )}
+              <span className={styles.thinkingActionHint}>
+                {thinkingOpen ? t('stream.thinkingHide') : t('stream.thinkingShow')}
+              </span>
+            </button>
+            {thinkingOpen && (
+              <pre className={styles.thinkingContent} data-testid="thinking-content">
+                {hl(thinking)}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {text && (
+          <div className={styles.assistantProse}>
+            <MarkdownContent
+              text={text}
+              highlightRegex={highlightRegex}
+              markClassName={markClassName}
+              onInspectFile={onInspectFile}
+            />
+          </div>
+        )}
+
+        <footer className={styles.assistantMeta}>
+          <div className={styles.assistantMetaLeft}>
+            <span className={styles.seqMuted}>#{event.seq}</span>
+            {renderStatusNode(false)}
+          </div>
+          {text && (
+            <button
+              type="button"
+              className={styles.subtleActionBtn}
+              onClick={() => void handleCopyPlainText(text)}
+              title={t('stream.copyMessage')}
+            >
+              {copiedMsg ? t('stream.copiedMessage') : t('stream.copyMessage')}
+            </button>
+          )}
+        </footer>
+      </article>
+    );
+  }
+
   const cardClasses = [
     styles.card,
-    isUser ? styles.cardUser : '',
     isPending ? styles.cardPending : '',
     isError ? styles.cardError : '',
     searchMatchState === 'hit' ? styles.cardSearchHit : '',
@@ -293,8 +457,6 @@ export const SessionEventCard = React.memo(function SessionEventCard({
 
   const kindBadgeClasses = [
     styles.kindBadge,
-    isUser ? styles.kindUser : '',
-    event.kind === 'thinking_and_text' ? styles.kindAssistant : '',
     event.kind === 'error' ? styles.kindError : '',
   ]
     .filter(Boolean)
@@ -302,60 +464,6 @@ export const SessionEventCard = React.memo(function SessionEventCard({
 
   const renderBody = () => {
     switch (event.kind) {
-      case 'user': {
-        const p = event.payload as UserEventPayload;
-        const text = extractUserText(p);
-        return <div className={styles.prose}>{text ? hl(text) : t('stream.emptyMessage')}</div>;
-      }
-
-      case 'thinking_and_text': {
-        const p = event.payload as PlannerResponsePayload;
-        const thinking = typeof p.thinking === 'string' ? p.thinking : '';
-        const text =
-          (typeof p.modifiedResponse === 'string' && p.modifiedResponse) ||
-          (typeof p.response === 'string' && p.response) ||
-          (typeof p.text === 'string' && p.text) ||
-          '';
-        const toolCalls = Array.isArray(p.toolCalls) ? p.toolCalls : [];
-
-        return (
-          <>
-            {thinking && (
-              <div className={styles.thinkingBox} data-testid="thinking-block">
-                <button
-                  type="button"
-                  className={styles.thinkingToggle}
-                  aria-expanded={thinkingOpen}
-                  onClick={() => setThinkingOpen((prev) => !prev)}
-                  data-testid="thinking-toggle"
-                >
-                  <span>
-                    {thinkingOpen ? '▾' : '▸'} {t('stream.thinkingLabel')}
-                    {p.thinkingDuration !== null && p.thinkingDuration !== undefined
-                      ? ` (${p.thinkingDuration})`
-                      : ''}
-                  </span>
-                  <span>{thinkingOpen ? t('stream.thinkingHide') : t('stream.thinkingShow')}</span>
-                </button>
-                {thinkingOpen && (
-                  <pre className={styles.thinkingContent} data-testid="thinking-content">
-                    {hl(thinking)}
-                  </pre>
-                )}
-              </div>
-            )}
-            {text && <div className={styles.prose}>{hl(text)}</div>}
-            {toolCalls.length > 0 && (
-              <div className={styles.metaRow}>
-                <span className={styles.chip}>
-                  {t('stream.toolCallsCount', { count: toolCalls.length })}
-                </span>
-              </div>
-            )}
-          </>
-        );
-      }
-
       case 'command': {
         const p = event.payload as CommandEventPayload;
         const cmd = p.commandLine || p.proposedCommandLine || event.title || '';
@@ -433,12 +541,16 @@ export const SessionEventCard = React.memo(function SessionEventCard({
       case 'code_action': {
         const p = event.payload as CodeActionPayload;
         const spec = p.actionSpec;
-        const targetFile = spec?.targetFile;
-        const additions = extractNumericStat(p.diffStats, ['additions', 'linesAdded', 'added']);
-        const deletions = extractNumericStat(p.diffStats, ['deletions', 'linesRemoved', 'removed']);
+        const targetFile = extractCodeActionTargetFile(p, event.title);
+        const { additions, deletions } = extractCodeActionDiffStats(p);
+        const diffLines = extractCodeActionDiffLines(p);
+        const hasRawDetails = Boolean(spec || p.actionResult || p.diffStats);
+
         return (
           <>
-            {spec?.description && <div className={styles.prose}>{hl(spec.description)}</div>}
+            {spec?.description && (
+              <div className={styles.prose}>{hl(String(spec.description))}</div>
+            )}
             <div className={styles.metaRow}>
               {targetFile &&
                 (onInspectFile ? (
@@ -458,24 +570,64 @@ export const SessionEventCard = React.memo(function SessionEventCard({
               {deletions !== null && (
                 <span className={`${styles.chip} ${styles.chipDel}`}>-{deletions}</span>
               )}
+              {onReviewDiff && (
+                <button
+                  type="button"
+                  className={styles.reviewCtaBtn}
+                  onClick={() => onReviewDiff(targetFile || undefined)}
+                  data-testid={`review-diff-btn-${event.seq}`}
+                >
+                  {t('review.viewInDiff')}
+                </button>
+              )}
             </div>
-            {p.diffStats && additions === null && deletions === null && (
-              <div>
-                <div className={styles.sectionLabel}>{t('stream.diffStats')}</div>
-                <pre className={styles.codeBlock}>{formatJson(p.diffStats)}</pre>
+            {diffLines.length > 0 && (
+              <div className={styles.inlineDiffBox} data-testid={`code-action-diff-${event.seq}`}>
+                {diffLines.map((line, idx) => (
+                  <div
+                    key={idx}
+                    className={`${styles.inlineDiffLine} ${
+                      line.kind === 'add'
+                        ? styles.inlineDiffAdd
+                        : line.kind === 'del'
+                          ? styles.inlineDiffDel
+                          : line.kind === 'hunk'
+                            ? styles.inlineDiffHunk
+                            : ''
+                    }`}
+                  >
+                    <span className={styles.inlineDiffPrefix}>
+                      {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}
+                    </span>
+                    <span className={styles.inlineDiffText}>{line.text || ' '}</span>
+                  </div>
+                ))}
               </div>
             )}
-            {spec && (
-              <div>
-                <div className={styles.sectionLabel}>{t('stream.actionSpec')}</div>
-                <pre className={styles.codeBlock}>{formatJson(spec)}</pre>
-              </div>
-            )}
-            {p.actionResult && (
-              <div>
-                <div className={styles.sectionLabel}>{t('stream.actionResult')}</div>
-                <pre className={styles.codeBlock}>{formatJson(p.actionResult)}</pre>
-              </div>
+            {hasRawDetails && (
+              <details className={styles.rawDetails}>
+                <summary className={styles.rawSummary}>{t('review.rawPayload')}</summary>
+                <div className={styles.rawBody}>
+                  {p.diffStats && additions === null && deletions === null && (
+                    <div>
+                      <div className={styles.sectionLabel}>{t('stream.diffStats')}</div>
+                      <pre className={styles.codeBlock}>{formatJson(p.diffStats)}</pre>
+                    </div>
+                  )}
+                  {spec && (
+                    <div>
+                      <div className={styles.sectionLabel}>{t('stream.actionSpec')}</div>
+                      <pre className={styles.codeBlock}>{formatJson(spec)}</pre>
+                    </div>
+                  )}
+                  {p.actionResult && (
+                    <div>
+                      <div className={styles.sectionLabel}>{t('stream.actionResult')}</div>
+                      <pre className={styles.codeBlock}>{formatJson(p.actionResult)}</pre>
+                    </div>
+                  )}
+                </div>
+              </details>
             )}
           </>
         );
@@ -519,7 +671,15 @@ export const SessionEventCard = React.memo(function SessionEventCard({
                 </span>
               )}
             </div>
-            {p.summary && <div className={styles.prose}>{hl(p.summary)}</div>}
+            {p.summary && (
+              <MarkdownContent
+                text={p.summary}
+                compact
+                highlightRegex={highlightRegex}
+                markClassName={markClassName}
+                onInspectFile={onInspectFile}
+              />
+            )}
             {docs.length > 0 && <div className={styles.subList}>{docs.map(renderWebDoc)}</div>}
           </>
         );
@@ -531,7 +691,15 @@ export const SessionEventCard = React.memo(function SessionEventCard({
         const requests = Array.isArray(p.capturedUserRequests) ? p.capturedUserRequests : [];
         return (
           <>
-            {p.sessionSummary && <div className={styles.prose}>{hl(p.sessionSummary)}</div>}
+            {p.sessionSummary && (
+              <MarkdownContent
+                text={p.sessionSummary}
+                compact
+                highlightRegex={highlightRegex}
+                markClassName={markClassName}
+                onInspectFile={onInspectFile}
+              />
+            )}
             <div className={styles.metaRow}>
               {p.includedStepIndexEnd !== null && p.includedStepIndexEnd !== undefined && (
                 <span className={styles.chip}>
@@ -633,12 +801,7 @@ export const SessionEventCard = React.memo(function SessionEventCard({
             </span>
           )}
         </div>
-        <span
-          className={`${styles.statusBadge} ${getStatusClass(event.status)}`}
-          data-testid={`event-status-${event.status}`}
-        >
-          {statusLabel}
-        </span>
+        {renderStatusNode(event.kind !== 'error')}
       </header>
 
       {isPending && (

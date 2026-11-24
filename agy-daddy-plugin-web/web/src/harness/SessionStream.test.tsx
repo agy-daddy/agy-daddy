@@ -277,6 +277,113 @@ describe('SessionStream & SessionEventCard', () => {
     expect(screen.getByTestId('error-payload')).toHaveTextContent('Upstream RPC timed out');
   });
 
+  it('extracts nested code_action diff lines & targetFile and triggers onReviewDiff CTA', () => {
+    const onReviewDiff = vi.fn();
+    const events: SessionEvent[] = [
+      {
+        seq: 12,
+        kind: 'code_action',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_CODE_ACTION',
+        title: 'Code Action',
+        payload: {
+          actionSpec: {
+            command: {
+              targetFile: '/repo/src/daemon.js',
+            },
+          },
+          actionResult: {
+            result: {
+              diff: {
+                unifiedDiff: {
+                  lines: [
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_UNCHANGED', text: 'const a = 1;' },
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_REMOVED', text: 'const b = 2;' },
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_ADDED', text: 'const b = 3;' },
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_ADDED', text: 'const c = 4;' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    render(<SessionStream events={events} sessionId="cid-diff-cta" onReviewDiff={onReviewDiff} />);
+    const groupToggle = screen.getByTestId('tool-group-toggle-tg-12');
+    expect(groupToggle).toHaveTextContent('1 edit(s)');
+    expect(groupToggle).toHaveTextContent('+2');
+    expect(groupToggle).toHaveTextContent('-1');
+
+    fireEvent.click(groupToggle);
+    expect(screen.getByTestId('tool-item-toggle-12')).toHaveTextContent('Edit …/src/daemon.js');
+    fireEvent.click(screen.getByTestId('tool-item-toggle-12'));
+
+    expect(screen.getByTestId('code-action-diff-12')).toHaveTextContent('const b = 3;');
+    fireEvent.click(screen.getByTestId('review-diff-btn-12'));
+    expect(onReviewDiff).toHaveBeenCalledWith('/repo/src/daemon.js');
+  });
+
+  it('extracts Antigravity 2.34 command.file.absoluteUri and edit.diff.unifiedDiff.lines, and hides done pill on error cards', () => {
+    const onReviewDiff = vi.fn();
+    const events: SessionEvent[] = [
+      {
+        seq: 213,
+        kind: 'code_action',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_CODE_ACTION',
+        title: 'Code Action',
+        payload: {
+          actionSpec: {
+            command: {
+              file: {
+                absoluteUri: 'file:///Volumes/external/Projects/agy-daddy/agy-daddy-host/src/core/launcher.js',
+              },
+            },
+          },
+          actionResult: {
+            edit: {
+              diff: {
+                unifiedDiff: {
+                  lines: [
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_DELETE', text: 'const tray = null;' },
+                    { type: 'UNIFIED_DIFF_LINE_TYPE_INSERT', text: 'const tray = createTray();' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        seq: 434,
+        kind: 'error',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_ERROR_MESSAGE',
+        title: 'Error',
+        payload: { error: { message: 'Model quota exhausted' } },
+      },
+    ];
+
+    render(<SessionStream events={events} onReviewDiff={onReviewDiff} />);
+
+    expect(screen.getByTestId('tool-group-toggle-tg-213')).toHaveTextContent('launcher.js');
+    expect(screen.getByTestId('tool-group-toggle-tg-213')).toHaveTextContent('+1 -1');
+    fireEvent.click(screen.getByTestId('tool-group-toggle-tg-213'));
+
+    expect(screen.getByTestId('tool-item-toggle-213')).toHaveTextContent('launcher.js');
+    fireEvent.click(screen.getByTestId('tool-item-toggle-213'));
+    expect(screen.getByTestId('code-action-diff-213')).toHaveTextContent('const tray = createTray();');
+    fireEvent.click(screen.getByTestId('review-diff-btn-213'));
+    expect(onReviewDiff).toHaveBeenCalledWith('/Volumes/external/Projects/agy-daddy/agy-daddy-host/src/core/launcher.js');
+
+    const errorCard = screen.getByTestId('session-event-434');
+    const doneBadge = errorCard.querySelector('[data-testid="event-status-done"]');
+    expect(doneBadge).not.toBeNull();
+    expect(doneBadge?.className).toContain('srOnly');
+  });
+
   it('implements smart auto-scroll and shows jump-to-latest when scrolled up', () => {
     const initialEvents = makeAllElevenEvents().slice(0, 2);
     const { rerender } = render(<SessionStream events={initialEvents} sessionId="cid-scroll" />);

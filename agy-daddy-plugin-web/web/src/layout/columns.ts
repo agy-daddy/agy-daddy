@@ -1,12 +1,12 @@
 export const SIDEBAR_MIN = 264;
 export const SIDEBAR_MAX = 420;
-export const SIDEBAR_DEFAULT = 280;
+export const SIDEBAR_DEFAULT = 268;
 export const SIDEBAR_COLLAPSED = 56;
 export const SIDEBAR_AUTO_COLLAPSE = 1024;
 export const CENTER_MIN = 400;
 export const RIGHTBAR_MIN = 300;
 export const RIGHTBAR_MAX_RATIO = 0.7;
-export const RIGHTBAR_DEFAULT_RATIO = 0.45;
+export const RIGHTBAR_DEFAULT_RATIO = 0.28;
 
 export interface ColumnInputs {
   viewportWidth: number;

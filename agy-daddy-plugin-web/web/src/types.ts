@@ -98,6 +98,7 @@ export interface ProjectItem {
   sessionCount?: number;
   createdAt?: string;
   updatedAt?: string;
+  lastModifiedTime?: string | null;
   archived?: boolean;
 }
 

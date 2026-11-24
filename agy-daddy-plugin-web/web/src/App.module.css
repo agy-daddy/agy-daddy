@@ -79,8 +79,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-surface);
   flex-shrink: 0;
@@ -90,8 +91,8 @@
 .sessionMeta {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
@@ -105,8 +106,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 120px;
-  max-width: 100%;
+  min-width: 80px;
+  flex: 0 1 auto;
 }
 
 .badge {
@@ -218,4 +219,135 @@
   flex-shrink: 0;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-surface);
+}
+
+.headerReviewBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.headerDiffDelta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.diffAddText {
+  color: var(--diff-add-text);
+  font-family: var(--font-mono);
+}
+
+.diffDelText {
+  color: var(--diff-del-text);
+  font-family: var(--font-mono);
+}
+
+.reviewStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.reviewStripLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.reviewBadge {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.reviewStats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.reviewFileChips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.reviewFileChip {
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.reviewFileChip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.reviewStripRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.reviewOpenBtn {
+  padding: 2px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.reviewOpenBtn:hover {
+  background: var(--accent-soft-hover);
+  border-color: var(--accent-border-hover);
+}
+
+.reviewDismissBtn {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.reviewDismissBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }

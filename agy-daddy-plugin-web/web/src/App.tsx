@@ -3,6 +3,7 @@ import { ApiError, apiClient } from './api/client';
 import { RightDock, type RightDockTab } from './dock';
 import {
   ChatNavDock,
+  collectSessionEditedFiles,
   Composer,
   serializeEventsToHtml,
   serializeEventsToMarkdown,
@@ -324,6 +325,14 @@ export function App() {
   const [rightbarOpen, setRightbarOpen] = useState<boolean>(true);
   const [dockTab, setDockTab] = useState<RightDockTab>('files');
   const [dockRefreshKey, setDockRefreshKey] = useState<number>(0);
+  const [focusedDiffFile, setFocusedDiffFile] = useState<{ path: string; nonce: number } | null>(null);
+  const [focusedFilePath, setFocusedFilePath] = useState<{ path: string; nonce: number } | null>(null);
+  const [gitDiffSummary, setGitDiffSummary] = useState<{
+    isGitRepo: boolean;
+    branch: string;
+    files: Array<{ path: string; additions: number; deletions: number }>;
+  } | null>(null);
+  const [reviewBarDismissedSessionId, setReviewBarDismissedSessionId] = useState<string | null>(null);
 
   const [adminOpen, setAdminOpen] = useState<boolean>(
     () => typeof window !== 'undefined' && window.location.pathname === '/settings',
@@ -922,6 +931,44 @@ export function App() {
     [sessions, activeSessionId],
   );
 
+  const activeWorkspaceRoot = useMemo(() => {
+    const raw =
+      activeSession?.workspaceUri ||
+      activeSession?.gitRootUri ||
+      health?.allowedRoots?.[0] ||
+      defaultSessionPath ||
+      '';
+    if (!raw) return '';
+    return raw.replace(/^file:\/\//i, '').replace(/\/+$/, '');
+  }, [activeSession?.workspaceUri, activeSession?.gitRootUri, health?.allowedRoots, defaultSessionPath]);
+
+  useEffect(() => {
+    setReviewBarDismissedSessionId(null);
+    if (!activeWorkspaceRoot) {
+      setGitDiffSummary(null);
+      return;
+    }
+    const controller = new AbortController();
+    void apiClient
+      .getGitDiff({ root: activeWorkspaceRoot }, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setGitDiffSummary({
+          isGitRepo: Boolean(res.isGitRepo),
+          branch: res.branch || '',
+          files: Array.isArray(res.files) ? res.files : [],
+        });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setGitDiffSummary(null);
+        }
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [activeWorkspaceRoot, activeSessionId, dockRefreshKey]);
+
   const effectiveStatus: SessionRunStatus =
     sessionDetail?.status || activeSession?.status || 'CASCADE_RUN_STATUS_IDLE';
   const isRunning = isRunningStatus(effectiveStatus);
@@ -1106,6 +1153,19 @@ export function App() {
     [refreshProjects, t],
   );
 
+  const handleRenameGroup = useCallback(
+    async (id: string, name: string) => {
+      setBannerError(null);
+      try {
+        await apiClient.updateProjectGroup(id, { name });
+        await refreshProjects();
+      } catch (err) {
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [refreshProjects, t],
+  );
+
   const handleDeleteGroup = useCallback(
     async (id: string) => {
       setBannerError(null);
@@ -1249,10 +1309,68 @@ export function App() {
     void refreshHealth();
   }, [refreshHealth, refreshRemoteStatus, refreshTopbar]);
 
-  const handleInspectFile = useCallback((_filePath: string) => {
+  const handleInspectFile = useCallback((filePath: string) => {
     setRightbarOpen(true);
     setDockTab('files');
+    if (filePath) {
+      setFocusedFilePath((prev) => ({ path: filePath, nonce: (prev?.nonce ?? 0) + 1 }));
+    }
   }, []);
+
+  const handleReviewDiff = useCallback((filePath?: string) => {
+    setRightbarOpen(true);
+    setDockTab('diff');
+    if (filePath) {
+      setFocusedDiffFile((prev) => ({ path: filePath, nonce: (prev?.nonce ?? 0) + 1 }));
+    }
+  }, []);
+
+  const sessionEditedFiles = useMemo(() => collectSessionEditedFiles(events), [events]);
+
+  const reviewFilesSummary = useMemo(() => {
+    if (gitDiffSummary?.isGitRepo && gitDiffSummary.files.length > 0) {
+      let additions = 0;
+      let deletions = 0;
+      const items = gitDiffSummary.files.map((f) => {
+        additions += f.additions || 0;
+        deletions += f.deletions || 0;
+        const parts = f.path.split('/').filter(Boolean);
+        return {
+          path: f.path,
+          basename: parts.length > 0 ? parts[parts.length - 1] : f.path,
+          additions: f.additions || 0,
+          deletions: f.deletions || 0,
+        };
+      });
+      return {
+        source: 'git' as const,
+        count: items.length,
+        additions,
+        deletions,
+        files: items,
+      };
+    }
+    if (sessionEditedFiles.length > 0) {
+      let additions = 0;
+      let deletions = 0;
+      for (const f of sessionEditedFiles) {
+        additions += f.additions;
+        deletions += f.deletions;
+      }
+      return {
+        source: 'session' as const,
+        count: sessionEditedFiles.length,
+        additions,
+        deletions,
+        files: sessionEditedFiles,
+      };
+    }
+    return null;
+  }, [gitDiffSummary, sessionEditedFiles]);
+
+  const showReviewBar =
+    Boolean(reviewFilesSummary && reviewFilesSummary.count > 0) &&
+    reviewBarDismissedSessionId !== (activeSessionId || '__none__');
 
   const workspaceChip = formatWorkspaceChip(activeSession);
   const headerTitle = formatSessionTitle(activeSession, t);
@@ -1380,7 +1498,9 @@ export function App() {
             onDeleteProject={handleDeleteProject}
             onCreateGroup={handleCreateGroup}
             onToggleGroupCollapsed={handleToggleGroupCollapsed}
+            onRenameGroup={handleRenameGroup}
             onDeleteGroup={handleDeleteGroup}
+            onMarkSessionRead={(cid) => markActiveSessionAsRead(cid, undefined, true)}
           />
         }
         sidebarCollapsedContent={
@@ -1447,6 +1567,22 @@ export function App() {
               </div>
 
               <div className={styles.headerActions}>
+                {reviewFilesSummary && reviewFilesSummary.count > 0 && (
+                  <button
+                    type="button"
+                    className={`${styles.headerBtn} ${styles.headerReviewBtn}`}
+                    onClick={() => handleReviewDiff()}
+                    data-testid="session-header-review-btn"
+                  >
+                    <span>{t('review.barTitle', { count: reviewFilesSummary.count })}</span>
+                    {(reviewFilesSummary.additions > 0 || reviewFilesSummary.deletions > 0) && (
+                      <span className={styles.headerDiffDelta}>
+                        <span className={styles.diffAddText}>+{reviewFilesSummary.additions}</span>{' '}
+                        <span className={styles.diffDelText}>-{reviewFilesSummary.deletions}</span>
+                      </span>
+                    )}
+                  </button>
+                )}
                 {activeSessionId && (
                   <button
                     type="button"
@@ -1481,6 +1617,7 @@ export function App() {
                   activeSessionId ? t('session.emptyDescNoSteps') : t('session.emptyDescNoSession')
                 }
                 onInspectFile={handleInspectFile}
+                onReviewDiff={handleReviewDiff}
                 scrollContainerRef={streamScrollRef}
                 thinkingExpandOverride={thinkingExpandOverride}
                 searchQuery={chatSearchState?.open ? chatSearchState.query : undefined}
@@ -1505,6 +1642,56 @@ export function App() {
                 exporting={exportingMarkdown}
               />
             </div>
+
+            {showReviewBar && reviewFilesSummary && (
+              <div className={styles.reviewStrip} data-testid="change-review-bar">
+                <div className={styles.reviewStripLeft}>
+                  <span className={styles.reviewBadge}>
+                    {reviewFilesSummary.source === 'git'
+                      ? t('review.barTitle', { count: reviewFilesSummary.count })
+                      : t('review.sessionEdits', { count: reviewFilesSummary.count })}
+                  </span>
+                  {(reviewFilesSummary.additions > 0 || reviewFilesSummary.deletions > 0) && (
+                    <span className={styles.reviewStats}>
+                      <span className={styles.diffAddText}>+{reviewFilesSummary.additions}</span>
+                      <span className={styles.diffDelText}>-{reviewFilesSummary.deletions}</span>
+                    </span>
+                  )}
+                  <div className={styles.reviewFileChips}>
+                    {reviewFilesSummary.files.slice(0, 3).map((file) => (
+                      <button
+                        key={file.path}
+                        type="button"
+                        className={styles.reviewFileChip}
+                        title={file.path}
+                        onClick={() => handleReviewDiff(file.path)}
+                      >
+                        {file.basename}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className={styles.reviewStripRight}>
+                  <button
+                    type="button"
+                    className={styles.reviewOpenBtn}
+                    onClick={() => handleReviewDiff()}
+                    data-testid="change-review-open-btn"
+                  >
+                    {t('review.openDiff')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.reviewDismissBtn}
+                    onClick={() => setReviewBarDismissedSessionId(activeSessionId || '__none__')}
+                    aria-label={t('review.dismiss')}
+                    title={t('review.dismiss')}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className={styles.composerRegion}>
               <Composer
@@ -1539,6 +1726,9 @@ export function App() {
             activeTab={dockTab}
             onTabChange={setDockTab}
             refreshKey={dockRefreshKey}
+            diffBadgeCount={reviewFilesSummary?.source === 'git' ? reviewFilesSummary.count : 0}
+            focusedDiffFile={focusedDiffFile}
+            focusedFilePath={focusedFilePath}
           />
         }
       />

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { humanizeEnum, useI18n, type I18nKey, type TranslateFn } from '../i18n';
-import type { SessionEvent, SessionEventStatus } from '../types';
+import type { CodeActionPayload, SessionEvent, SessionEventStatus } from '../types';
+import { extractCodeActionTargetFile } from './codeActionUtils';
 import { SessionEventCard } from './SessionEventCard';
 import {
   formatThinkingSeconds,
@@ -21,11 +22,15 @@ export interface ToolCallGroupCardProps {
   thoughtCount?: number;
   toolCount?: number;
   totalThinkingSeconds?: number;
+  editCount?: number;
+  totalAdditions?: number;
+  totalDeletions?: number;
   groupExpanded: boolean;
   expandedSeqs: ReadonlySet<number>;
   onToggleGroup: (groupId: string) => void;
   onToggleItem: (seq: number) => void;
   onInspectFile?: (filePath: string) => void;
+  onReviewDiff?: (filePath?: string) => void;
 }
 
 function summarizeGroupStatus(events: SessionEvent[]): SessionEventStatus | null {
@@ -55,32 +60,26 @@ export const ToolCallGroupCard = React.memo(function ToolCallGroupCard({
   thoughtCount,
   toolCount,
   totalThinkingSeconds,
+  editCount,
+  totalAdditions,
+  totalDeletions,
   groupExpanded,
   expandedSeqs,
   onToggleGroup,
   onToggleItem,
   onInspectFile,
+  onReviewDiff,
 }: ToolCallGroupCardProps) {
   const { t } = useI18n();
 
-  const firstSeq = events[0]?.seq ?? 0;
-  const lastSeq = events[events.length - 1]?.seq ?? firstSeq;
-  const seqRange = events.length === 1 ? `#${firstSeq}` : `#${firstSeq}–#${lastSeq}`;
-
-  const derivedSummary = useMemo(() => {
-    if (
-      thoughtCount !== undefined &&
-      toolCount !== undefined &&
-      totalThinkingSeconds !== undefined
-    ) {
-      return { thoughtCount, toolCount, totalThinkingSeconds };
-    }
-    return summarizeWorkGroup(events);
-  }, [events, thoughtCount, toolCount, totalThinkingSeconds]);
+  const derivedSummary = useMemo(() => summarizeWorkGroup(events), [events]);
 
   const resolvedThoughtCount = thoughtCount ?? derivedSummary.thoughtCount;
   const resolvedToolCount = toolCount ?? derivedSummary.toolCount;
   const resolvedThinkingSeconds = totalThinkingSeconds ?? derivedSummary.totalThinkingSeconds;
+  const resolvedEditCount = editCount ?? derivedSummary.editCount ?? 0;
+  const resolvedAdditions = totalAdditions ?? derivedSummary.totalAdditions ?? 0;
+  const resolvedDeletions = totalDeletions ?? derivedSummary.totalDeletions ?? 0;
 
   const countLabel =
     resolvedThoughtCount > 0 && resolvedToolCount > 0
@@ -132,7 +131,19 @@ export const ToolCallGroupCard = React.memo(function ToolCallGroupCard({
               {durationLabel}
             </span>
           )}
-          <span className={styles.seqRange}>{seqRange}</span>
+          {resolvedEditCount > 0 && (
+            <span className={styles.editSummaryChip}>
+              {t('review.groupEdits', { count: resolvedEditCount })}
+              {(resolvedAdditions > 0 || resolvedDeletions > 0) && (
+                <>
+                  {' '}
+                  <span className={styles.statAdd}>+{resolvedAdditions}</span>
+                  {' '}
+                  <span className={styles.statDel}>-{resolvedDeletions}</span>
+                </>
+              )}
+            </span>
+          )}
           {!groupExpanded && (
             <span className={styles.previewText} title={previewText}>
               {previewText}
@@ -158,6 +169,10 @@ export const ToolCallGroupCard = React.memo(function ToolCallGroupCard({
             const itemExpanded = expandedSeqs.has(ev.seq);
             const statusText = formatEventStatus(ev.status, t);
             const isThought = ev.kind === 'thinking_and_text';
+            const isCodeAction = ev.kind === 'code_action';
+            const editTargetFile = isCodeAction
+              ? extractCodeActionTargetFile(ev.payload as CodeActionPayload, ev.title)
+              : '';
 
             return (
               <div
@@ -166,35 +181,56 @@ export const ToolCallGroupCard = React.memo(function ToolCallGroupCard({
                 data-testid={`tool-item-${ev.seq}`}
                 data-expanded={itemExpanded ? 'true' : 'false'}
               >
-                <button
-                  type="button"
-                  className={styles.briefRow}
-                  aria-expanded={itemExpanded}
-                  onClick={() => onToggleItem(ev.seq)}
-                  data-testid={`tool-item-toggle-${ev.seq}`}
-                >
-                  <div className={styles.briefRowLeft}>
-                    <span className={styles.chevron} aria-hidden="true">
-                      {itemExpanded ? '▾' : '▸'}
-                    </span>
-                    <span className={styles.briefIcon} aria-hidden="true">
-                      {brief.icon}
-                    </span>
-                    <span className={styles.briefSeq}>#{ev.seq}</span>
-                    <span
-                      className={`${styles.briefText} ${isThought ? styles.briefTextThought : ''}`}
-                      title={brief.brief}
+                <div className={styles.briefRowContainer}>
+                  <button
+                    type="button"
+                    className={styles.briefRow}
+                    aria-expanded={itemExpanded}
+                    onClick={() => onToggleItem(ev.seq)}
+                    data-testid={`tool-item-toggle-${ev.seq}`}
+                  >
+                    <div className={styles.briefRowLeft}>
+                      <span className={styles.chevron} aria-hidden="true">
+                        {itemExpanded ? '▾' : '▸'}
+                      </span>
+                      <span className={styles.briefIcon} aria-hidden="true">
+                        {brief.icon}
+                      </span>
+                      <span className={styles.briefSeq}>#{ev.seq}</span>
+                      <span
+                        className={`${styles.briefText} ${isThought ? styles.briefTextThought : ''}`}
+                        title={brief.brief}
+                      >
+                        {brief.brief}
+                      </span>
+                    </div>
+                    <div className={styles.briefRowRight}>
+                      {brief.hint && (
+                        <span className={`${styles.hintChip} ${isCodeAction ? styles.hintChipDiff : ''}`}>
+                          {brief.hint}
+                        </span>
+                      )}
+                      {ev.status !== 'done' && (
+                        <span className={`${styles.statusDot} ${getStatusPillClass(ev.status)}`}>
+                          {statusText}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  {isCodeAction && onReviewDiff && editTargetFile && (
+                    <button
+                      type="button"
+                      className={styles.inlineReviewBtn}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onReviewDiff(editTargetFile);
+                      }}
+                      title={t('review.viewInDiff')}
                     >
-                      {brief.brief}
-                    </span>
-                  </div>
-                  <div className={styles.briefRowRight}>
-                    {brief.hint && <span className={styles.hintChip}>{brief.hint}</span>}
-                    <span className={`${styles.statusDot} ${getStatusPillClass(ev.status)}`}>
-                      {statusText}
-                    </span>
-                  </div>
-                </button>
+                      {t('review.openDiff')}
+                    </button>
+                  )}
+                </div>
 
                 {itemExpanded && (
                   <div
@@ -205,6 +241,7 @@ export const ToolCallGroupCard = React.memo(function ToolCallGroupCard({
                       event={ev}
                       defaultThinkingExpanded={isThought}
                       onInspectFile={onInspectFile}
+                      onReviewDiff={onReviewDiff}
                     />
                   </div>
                 )}

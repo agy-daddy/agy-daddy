@@ -555,6 +555,66 @@ describe('SessionSidebar', () => {
     fireEvent.change(screen.getByTestId('session-search-input'), { target: { value: 'app-empty' } });
     expect(screen.getByTestId('project-item-app-proj-zero')).toBeInTheDocument();
   });
+
+  it('sorts active/running/unread projects first, folds 4+ empty App projects, and supports rename & quick filters', () => {
+    const onUpdateProject = vi.fn();
+    const onRenameGroup = vi.fn();
+
+    const manyProjects: ProjectItem[] = [
+      { id: 'empty-1', name: 'Empty App 1', rootPath: '/ws/e1', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 20 },
+      { id: 'empty-2', name: 'Empty App 2', rootPath: '/ws/e2', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 5 },
+      { id: 'empty-3', name: 'Empty App 3', rootPath: '/ws/e3', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 3 },
+      { id: 'empty-4', name: 'Empty App 4', rootPath: '/ws/e4', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 0 },
+      { id: 'busy-app', name: 'Busy App', rootPath: '/ws/busy', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 4 },
+      { id: 'running-app', name: 'Running App', rootPath: '/ws/run', groupId: null, syncedFromApp: true, source: 'app', sessionCount: 1 },
+    ];
+
+    const sessions: SessionSummary[] = [
+      makeSession({ cascadeId: 's-unread-1', title: 'Unread Session', projectId: 'busy-app', unread: true }),
+      makeSession({ cascadeId: 's-run-1', title: 'Running Session', projectId: 'running-app', isRunning: true, status: 'CASCADE_RUN_STATUS_RUNNING' }),
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={sessions}
+        projects={manyProjects}
+        projectGroups={sampleGroups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onUpdateProject={onUpdateProject}
+        onRenameGroup={onRenameGroup}
+      />,
+    );
+
+    // Running project and Unread project appear before empty projects; 4 empty App projects fold cleanly
+    expect(screen.getByTestId('project-item-running-app')).toBeInTheDocument();
+    expect(screen.getByTestId('project-item-busy-app')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-item-empty-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quiet-projects-toggle')).toHaveTextContent('Other projects (4)');
+
+    fireEvent.click(screen.getByTestId('quiet-projects-toggle'));
+    expect(screen.getByTestId('project-item-empty-1')).toBeInTheDocument();
+
+    // Quick attention filters
+    fireEvent.click(screen.getByTestId('sidebar-filter-running'));
+    expect(screen.getAllByRole('listitem').map((el) => el.getAttribute('data-session-id'))).toEqual(['s-run-1']);
+    fireEvent.click(screen.getByTestId('sidebar-filter-unread'));
+    expect(screen.getAllByRole('listitem').map((el) => el.getAttribute('data-session-id'))).toEqual(['s-unread-1']);
+
+    // Inline project rename
+    fireEvent.click(screen.getByTestId('rename-project-busy-app'));
+    const renameProjInput = screen.getByLabelText('Rename project') as HTMLInputElement;
+    fireEvent.change(renameProjInput, { target: { value: 'Busy Renamed' } });
+    fireEvent.submit(renameProjInput.closest('form')!);
+    expect(onUpdateProject).toHaveBeenCalledWith('busy-app', { name: 'Busy Renamed' });
+
+    // Inline group rename
+    fireEvent.click(screen.getByTestId('rename-group-grp-work'));
+    const renameGroupInput = screen.getByLabelText('Rename group') as HTMLInputElement;
+    fireEvent.change(renameGroupInput, { target: { value: 'Core Work' } });
+    fireEvent.submit(renameGroupInput.closest('form')!);
+    expect(onRenameGroup).toHaveBeenCalledWith('grp-work', 'Core Work');
+  });
 });
 
 describe('ThreeColumnShell bottom-left settings footer', () => {

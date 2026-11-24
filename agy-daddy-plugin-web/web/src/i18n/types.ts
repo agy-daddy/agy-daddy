@@ -176,6 +176,18 @@ export interface I18nMessages {
   'sidebar.settings': string;
   'sidebar.newGroupTooltip': string;
   'sidebar.syncedFromApp': string;
+  'sidebar.filterRunning': string;
+  'sidebar.filterUnread': string;
+  'sidebar.resetFilters': string;
+  'sidebar.otherProjects': string;
+  'sidebar.activeProjects': string;
+  'sidebar.renameProject': string;
+  'sidebar.renameGroup': string;
+  'sidebar.markRead': string;
+  'sidebar.copySessionId': string;
+  'sidebar.copiedId': string;
+  'sidebar.startFirstSession': string;
+  'sidebar.searchPlaceholderCompact': string;
 
   'session.untitled': string;
   'session.untitledWithRepo': string;
@@ -226,6 +238,20 @@ export interface I18nMessages {
   'stream.hiddenEventsShow': string;
   'stream.hiddenEventsHide': string;
   'stream.hiddenBadge': string;
+  'stream.copyMessage': string;
+  'stream.copiedMessage': string;
+
+  'markdown.copy': string;
+  'markdown.copied': string;
+  'markdown.inspectFile': string;
+
+  'review.barTitle': string;
+  'review.sessionEdits': string;
+  'review.openDiff': string;
+  'review.viewInDiff': string;
+  'review.rawPayload': string;
+  'review.groupEdits': string;
+  'review.dismiss': string;
 
   'tools.groupSingle': string;
   'tools.groupPlural': string;

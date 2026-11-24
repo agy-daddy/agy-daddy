@@ -27,7 +27,7 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 | [`agy-daddy-registry/`](../agy-daddy-registry/) | 信任注册表与兼容矩阵 | 插件信任索引（含 SHA-512 清单摘要的 `registry.json`）、标准 `anchors.json`（14 个具名 DOM 锚点）及 Antigravity 各版本 DOM 夹具（`fixtures/antigravity-2.32.json`、`fixtures/antigravity-2.33.json`）。 |
 | [`agy-daddy-.github/`](./) | 组织级治理基础设施 | 社区行为与治理文档、[`CONTRIBUTING_zh.md`](./CONTRIBUTING_zh.md)（[`EN`](./CONTRIBUTING.md)）、[`REVIEW_CHECKLIST_zh.md`](./REVIEW_CHECKLIST_zh.md)（[`EN`](./REVIEW_CHECKLIST.md)）、[`LICENSE_AUDIT_zh.md`](./LICENSE_AUDIT_zh.md)（[`EN`](./LICENSE_AUDIT.md)）、[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)、RFC 模板（`rfcs/0000-template.md`）及可复用 GitHub Actions 工作流。 |
 | [`docs/`](../docs/) | 技术规范文档 | 架构设计及协议规范文档（例如 [`docs/pc-web-harness/`](../docs/pc-web-harness/)）。 |
-| [`scripts/monorepo.js`](../scripts/monorepo.js) | 单仓编排脚本 | 根目录统一构建、7 项静态与注册表门禁校验以及全仓测试编排脚本。 |
+| [`scripts/monorepo.js`](../scripts/monorepo.js) | 单仓编排脚本 | 根目录统一构建、8 项静态/注册表/发布合规门禁校验、产物体积分析以及全仓测试编排脚本。 |
 
 ### 官方插件清单（`T0`）
 
@@ -56,7 +56,72 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 
 ---
 
-## 快速开始与常用命令
+## 通过 npm 安装使用
+
+### 1. 安装底座 CLI
+
+需满足 **Node.js `>= 22.4.0`**：
+
+```sh
+# 全局安装底座 CLI
+npm install -g @agy-daddy/host
+
+# 或使用 npx 直接运行环境诊断
+npx @agy-daddy/host doctor --json
+
+# 升级到最新正式版（latest）或预览通道（next）
+npm install -g @agy-daddy/host@latest
+npm install -g @agy-daddy/host@next
+```
+
+### 2. 从 npm 安装官方插件（`T0`）
+
+安装时会自动下载 tarball 并校验 SHA-512 完整性摘要：
+
+```sh
+# 安装单个插件（以代理网关为例）
+agy-daddy plugin install npm:@agy-daddy/plugin-proxy
+
+# 一键批量安装全部 10 个官方插件
+for pkg in \
+  plugin-proxy \
+  plugin-zh-cn \
+  plugin-cli \
+  plugin-context \
+  plugin-usage \
+  plugin-chat-nav \
+  plugin-quota \
+  plugin-composer \
+  plugin-remote \
+  plugin-web
+do
+  agy-daddy plugin install "npm:@agy-daddy/${pkg}"
+done
+
+# 查看已安装插件及信任/启用状态
+agy-daddy plugin list
+```
+
+### 3. 启动与日常管理命令
+
+```sh
+# 环境健康诊断
+agy-daddy doctor --json
+
+# 启动守护进程并执行 CDP 热注入
+agy-daddy live
+
+# 启动 Agy-Daddy Launcher 系统托盘与守护进程
+agy-daddy launcher
+
+# 生成桌面端启动器 / 开启开机自启
+agy-daddy install-launcher
+agy-daddy auto-on
+```
+
+---
+
+## 本地源码开发与常用命令
 
 除非另有说明，以下命令均在仓库根目录执行：
 
@@ -65,7 +130,7 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 #    若检测到 web/node_modules 存在则同步重新构建插件 Web UI 产物
 npm run build
 
-# 2. 运行全部 7 项静态与注册表门禁：
+# 2. 运行全部 8 项静态、注册表与发布合规门禁：
 #    - 全仓包零第三方运行依赖校验
 #    - 已移除遗留产物检查（legacy-suite / migration.js）
 #    - 清单、world="isolated"、禁止 page:main-world / migrations 与 settings.schema.json 校验
@@ -73,6 +138,7 @@ npm run build
 #    - 纯净底座渲染层解耦与主题门禁
 #    - host/data/anchors.json 与 registry/anchors.json 字节一致校验
 #    - registry SHA-512 摘要与 14 锚点 Antigravity 夹具矩阵校验
+#    - 发布包白名单与 public 配置合规校验（剔除 test/ 与源码目录，底座含 prepublishOnly）
 npm run verify:gates
 
 # 3. 运行全仓所有包的单元测试与契约测试（自动注入 AGY_DADDY_TEST_MODE=1）
@@ -81,10 +147,13 @@ npm test
 # 4. 一键执行完整 CI 等价流水线（build + gates + test）
 npm run verify
 
-# 5. 将本地仓库中的所有官方插件软链至本机运行时目录
+# 5. 分析前端分包与 13 个 npm tarball 体积及文件清单
+npm run analyze
+
+# 6. 将本地仓库中的所有官方插件软链至本机运行时目录
 ./agy-daddy-host/bin/agy-daddy dev link-all
 
-# 6. 运行环境诊断或无头冒烟检查
+# 7. 运行环境诊断或无头冒烟检查
 ./agy-daddy-host/bin/agy-daddy doctor --json
 ./agy-daddy-host/bin/agy-daddy dev smoke
 ```
@@ -114,6 +183,7 @@ npm run verify
 - **社区行为准则**：[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
 - **RFC 提案模板**：[`rfcs/0000-template.md`](./rfcs/0000-template.md)
 - **注册表索引与夹具**：[`agy-daddy-registry/README.md`](../agy-daddy-registry/README.md)
+- **生产发布工程化与 OIDC 发版方案**：[`docs/release-engineering.md`](../docs/release-engineering.md)
 
 ---
 

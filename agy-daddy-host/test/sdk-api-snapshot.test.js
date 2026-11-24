@@ -87,6 +87,7 @@ test('createPluginScaffold 脚手架默认 isolated 且使用 ctx.settings / ctx
     const r = spawnSync('npm', ['test'], {
       cwd: outDir,
       encoding: 'utf8',
+      shell: process.platform === 'win32',
       env: { ...process.env, AGY_DADDY_HOST_DIR: HOST_ROOT, AGY_DADDY_TEST_MODE: '1' }
     });
     assert.equal(r.status, 0, `Scaffolded plugin test failed:\n${r.stdout}\n${r.stderr}`);

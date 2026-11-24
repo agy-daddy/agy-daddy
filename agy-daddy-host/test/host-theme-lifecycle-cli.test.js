@@ -117,7 +117,7 @@ test('lifecycle 跨平台自启/桌面启动器、防自杀重启守卫、git �
     const installed = installAutoStart({ platform: 'darwin', username: 'tester', targetDir: root });
     assert.equal(installed.ok, true);
     assert.ok(fs.existsSync(installed.filePath));
-    const removed = removeAutoStart({ username: 'tester', targetDir: root });
+    const removed = removeAutoStart({ platform: 'darwin', username: 'tester', targetDir: root });
     assert.equal(removed.removed, true);
 
     const launcher = installMacLauncherApp({ targetDir: root });

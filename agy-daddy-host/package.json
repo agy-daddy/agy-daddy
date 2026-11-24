@@ -13,7 +13,7 @@
   },
   "main": "./src/index.js",
   "bin": {
-    "agy-daddy": "./bin/agy-daddy"
+    "agy-daddy": "./bin/agy-daddy.js"
   },
   "exports": {
     ".": "./src/index.js",
@@ -38,7 +38,7 @@
     "build:renderer": "node scripts/build-renderer.js",
     "prepublishOnly": "npm run build:renderer",
     "pretest": "node scripts/build-renderer.js",
-    "test": "AGY_DADDY_TEST_MODE=1 node --test test/*.test.js"
+    "test": "node -e \"const cp=require('node:child_process'),fs=require('node:fs'),p=require('node:path');const files=fs.readdirSync('test').filter(f=>f.endsWith('.test.js')).sort().map(f=>p.join('test',f));process.exit(cp.spawnSync(process.execPath,['--test',...files],{stdio:'inherit',env:{...process.env,AGY_DADDY_TEST_MODE:'1'}}).status??1)\""
   },
   "keywords": [
     "antigravity",

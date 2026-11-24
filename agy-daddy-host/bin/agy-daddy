@@ -61,10 +61,18 @@ pick_and_exec() {
   fi
 
   # 4. 回退至 Antigravity 自带 Electron Helper (ELECTRON_RUN_AS_NODE=1)
+  local linux_antigravity=""
+  linux_antigravity="$(command -v antigravity 2>/dev/null || true)"
   for cand in \
     "/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper" \
-    "$HOME/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper"; do
-    if probe_runtime "$cand" 1; then
+    "$HOME/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper" \
+    "/opt/antigravity/antigravity" \
+    "/opt/Antigravity/antigravity" \
+    "/usr/lib/antigravity/antigravity" \
+    "/usr/share/antigravity/antigravity" \
+    "$HOME/.local/share/antigravity/antigravity" \
+    "$linux_antigravity"; do
+    if [ -n "$cand" ] && probe_runtime "$cand" 1; then
       exec env ELECTRON_RUN_AS_NODE=1 "$cand" "$CLI_JS" "$@"
     fi
   done

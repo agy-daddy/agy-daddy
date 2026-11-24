@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const url = require('node:url');
 const { execFileSync } = require('node:child_process');
 
 const {
@@ -316,11 +317,11 @@ test('C6: dynamic getAllowedRoots(), file:// URI with CJK & spaces, case-insensi
     assert.equal(svc.listTree({ root: path.join(base, 'missing-inside') }).statusCode, 403);
 
     // Dynamically add root (as file:// URI)
-    const baseFileUri = `file://${encodeURI(base)}`;
+    const baseFileUri = url.pathToFileURL(base).href;
     dynamicRoots = [baseFileUri];
 
     // Access via encoded file:// URI with CJK + spaces
-    const cjkFileUri = `file://${encodeURI(cjkSub)}`;
+    const cjkFileUri = url.pathToFileURL(cjkSub).href;
     const treeRes = svc.listTree({ root: cjkFileUri });
     assert.equal(treeRes.ok, true);
     assert.deepEqual(treeRes.entries.map((e) => e.name), ['readme.txt']);

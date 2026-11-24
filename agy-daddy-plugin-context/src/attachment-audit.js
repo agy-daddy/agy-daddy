@@ -16,7 +16,15 @@ const TEXT_EXTENSIONS = new Set([
 function uriToLocalPath(uri) {
   if (!uri || typeof uri !== 'string') return null;
   if (uri.startsWith('inline:')) return null;
-  if (uri.startsWith('file://')) {
+  if (/^file:\/\//i.test(uri)) {
+    if (/^file:\/\/\/?[A-Za-z]:[\\/]/i.test(uri)) {
+      const stripped = uri.replace(/^file:\/\/\/?/i, '');
+      try {
+        return decodeURIComponent(stripped);
+      } catch {
+        return stripped;
+      }
+    }
     try {
       return decodeURIComponent(new URL(uri).pathname);
     } catch {

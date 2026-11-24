@@ -198,6 +198,9 @@ function isForbiddenSystemRoot(realPath) {
   }
 
   const trimmed = realPath.trim();
+  if (trimmed === '/' || /^[A-Za-z]:[\\/]?$/.test(trimmed)) {
+    return true;
+  }
   // Block Windows C:\Windows (and subpaths) case-insensitively on all platforms
   const winSlashed = trimmed.replace(/\\/g, '/');
   if (/^c:\/windows(?:\/|$)/i.test(winSlashed)) {
@@ -222,7 +225,7 @@ function isForbiddenSystemRoot(realPath) {
   const prefixes = getForbiddenPrefixes();
   for (const candidate of candidates) {
     const slashed = candidate.replace(/\\/g, '/');
-    if (slashed === '/') return true;
+    if (slashed === '/' || /^[A-Za-z]:\/?$/.test(slashed)) return true;
     for (const prefix of prefixes) {
       if (isSameOrInside(candidate, prefix, IS_CASE_INSENSITIVE_FS)) {
         return true;

@@ -1,44 +1,122 @@
+English | [简体中文](./agy-daddy-.github/README_zh.md)
+
 # Agy-Daddy Monorepo
 
-Google Antigravity 桌面端的 100% 零改包 CDP 开放插件底座与官方插件生态单仓（Monorepo）。
+A 100% zero-patch Chrome DevTools Protocol (CDP) open plugin host and official plugin ecosystem monorepo for **Google Antigravity Desktop**.
 
-## 仓库结构
+Agy-Daddy extends Antigravity without modifying `app.asar` or application binaries. It combines a thin declarative microkernel host (`@agy-daddy/host`), a sandboxed `isolated`-world plugin ecosystem, a SHA-512 trust registry, and automated static/fixture compatibility gates.
 
-- `agy-daddy-host/`：纯净微内核插件底座（契约校验、CDP/RPC 代理、四域总线、全托管声明式配置与命令引擎、隔离 Worker、安装器与原生设置弹窗融合渲染底座 `@agy-daddy/host`）
-- `agy-daddy-plugin-*/`：全员 `isolated` 隔离世界插件集——官方插件（`proxy`、`zh-cn`、`cli`、`context`、`usage`、`chat-nav`、`quota`、`composer`、`remote`）与插件脚手架模板（`template`），零 `page:main-world` 权限、自有样式注入、基于 `ctx.surfaces` 插槽解耦
-- `agy-daddy-registry/`：插件信任注册表（`registry.json`）、SHA-512 完整性摘要与 Antigravity 版本 14 锚点 DOM 夹具矩阵（含原生设置弹窗锚点）
-- `agy-daddy-.github/`：组织级贡献指南、审查清单、许可证审计与可复用工作流模板（参考 [`CONTRIBUTING.md`](./agy-daddy-.github/CONTRIBUTING.md)、[`REVIEW_CHECKLIST.md`](./agy-daddy-.github/REVIEW_CHECKLIST.md)、[`LICENSE_AUDIT.md`](./agy-daddy-.github/LICENSE_AUDIT.md)）
-- `scripts/monorepo.js`：根目录统一构建、静态解耦/主题/沙箱门禁校验与全仓测试编排脚本
+---
 
-## 环境要求
+## Core Architecture Highlights
 
-- Node.js `>= 22.4.0`（零第三方运行依赖，无需 `npm install`）
+- **100% Zero-Patch CDP Architecture**: Attaches externally via Chrome DevTools Protocol and manages UI injection, RPC proxying, and native host extensions without altering Antigravity installation files.
+- **Thin Declarative Host (`@agy-daddy/host`)**: Decouples plugin logic from host internals through declarative `agy-plugin.json` manifests, `settings.schema.json` (with declarative `actions`), a unified Shadow DOM topbar/popover shell, and native Antigravity settings modal integration (with a `760×560` standalone modal fallback).
+- **Isolated-World Security & Trust Tiers (`T0` / `T1` / `T2`)**: All official plugins run strictly in `world: "isolated"` with zero `page:main-world` privileges, self-contained styles, and cross-world communication over `__agy_xworld_<nonce>`. Community plugins (`T1`) run in isolated Node workers with restricted high-risk permissions, while unverified plugins (`T2`) require explicit per-permission user consent and forbid silent auto-updates.
+- **Four-Realm Bus & 14-Anchor Registry**: Coordinates events, states, and services across four execution realms (`node`, `page-main`, `page-isolated`, `remote-client`) and resolves UI attachment points through 14 named DOM anchors (`anchors.json`) plus `ctx.surfaces` extension slots.
+- **Zero Third-Party Runtime Dependencies**: Every package in the monorepo (`dependencies: {}`) runs purely on built-in Node.js (`>= 22.4.0`) APIs—no root `npm install` is required to build, verify, or run the host and plugins.
 
-## 常用命令
+---
+
+## Repository Structure
+
+| Path | Package / Role | Description |
+|---|---|---|
+| [`agy-daddy-host/`](./agy-daddy-host/) | `@agy-daddy/host` | Thin declarative microkernel host: manifest/schema contracts, CDP/RPC allowlist proxy, four-realm bus, declarative settings/command engine, isolated worker runtime, installer (`local`/`git`/`npm`), `doctor`, Shadow DOM renderer (`dist/host-renderer.js`), SDK (`sdk/`), and scaffold template (`templates/plugin-template/`). |
+| `agy-daddy-plugin-*/` | Official Plugins (`T0`) & Template | 10 `isolated`-world official plugins organized across 4 layers plus the starter template (`agy-daddy-plugin-template/`). See the plugin inventory below. |
+| [`agy-daddy-registry/`](./agy-daddy-registry/) | Trust Registry & Matrix | Trusted plugin index (`registry.json` with SHA-512 manifest digests), canonical `anchors.json` (14 named DOM anchors), and Antigravity version DOM fixtures (`fixtures/antigravity-2.32.json`, `fixtures/antigravity-2.33.json`). |
+| [`agy-daddy-.github/`](./agy-daddy-.github/) | Organization Governance | Community health files, [`CONTRIBUTING.md`](./agy-daddy-.github/CONTRIBUTING.md), [`REVIEW_CHECKLIST.md`](./agy-daddy-.github/REVIEW_CHECKLIST.md), [`LICENSE_AUDIT.md`](./agy-daddy-.github/LICENSE_AUDIT.md), [`CODE_OF_CONDUCT.md`](./agy-daddy-.github/CODE_OF_CONDUCT.md), RFC template (`rfcs/0000-template.md`), reusable GitHub Actions workflows, and Chinese translations (`*_zh.md`). |
+| [`docs/`](./docs/) | Technical Specifications | Architecture specifications and design docs (e.g., [`docs/pc-web-harness/`](./docs/pc-web-harness/)). |
+| [`scripts/monorepo.js`](./scripts/monorepo.js) | Monorepo Orchestrator | Unified build, 7 static/registry verification gates, and full monorepo test runner. |
+
+### Official Plugin Inventory (`T0`)
+
+| Layer | Directory | Package | Responsibility |
+|---|---|---|---|
+| Layer 1 | [`agy-daddy-plugin-proxy/`](./agy-daddy-plugin-proxy/) | `@agy-daddy/plugin-proxy` | Proxy gateway configuration, `NO_PROXY` matching, and CLI proxy environment integration |
+| Layer 1 | [`agy-daddy-plugin-zh-cn/`](./agy-daddy-plugin-zh-cn/) | `@agy-daddy/plugin-zh-cn` | Reversible DOM localization across multiple languages (`zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `pt`, `fr`, `ru`, `it`) |
+| Layer 1 | [`agy-daddy-plugin-cli/`](./agy-daddy-plugin-cli/) | `@agy-daddy/plugin-cli` | Cross-platform terminal launcher, argument escaping, and multiplexer host integration |
+| Layer 2 | [`agy-daddy-plugin-context/`](./agy-daddy-plugin-context/) | `@agy-daddy/plugin-context` | Context window telemetry, pulse capsule, error classification, and attachment auditing |
+| Layer 2 | [`agy-daddy-plugin-usage/`](./agy-daddy-plugin-usage/) | `@agy-daddy/plugin-usage` | Token usage ledger, model pricing tables, and 52-week usage heatmap |
+| Layer 2 | [`agy-daddy-plugin-chat-nav/`](./agy-daddy-plugin-chat-nav/) | `@agy-daddy/plugin-chat-nav` | Floating chat navigation, full-text chat search (`chat.search`), `chat.navButtons` slot, and inline file viewer helpers |
+| Layer 3 | [`agy-daddy-plugin-quota/`](./agy-daddy-plugin-quota/) | `@agy-daddy/plugin-quota` | Model quota pool grouping, proto3 zero-fraction handling, and reset countdown display |
+| Layer 3 | [`agy-daddy-plugin-composer/`](./agy-daddy-plugin-composer/) | `@agy-daddy/plugin-composer` | Composer quick actions (`composer.quickActions`), high-risk command guards, prompt optimization, and Fast-IO native rules |
+| Layer 4 | [`agy-daddy-plugin-remote/`](./agy-daddy-plugin-remote/) | `@agy-daddy/plugin-remote` | Mobile remote PWA server, Cloudflare Tunnel validation, and `remote.panels` / `remote.actions` surfaces |
+| Layer 4 | [`agy-daddy-plugin-web/`](./agy-daddy-plugin-web/) | `@agy-daddy/plugin-web` | Local PC Web Harness and Host Admin console |
+| Starter | [`agy-daddy-plugin-template/`](./agy-daddy-plugin-template/) | `@agy-daddy/plugin-template` | Minimal `isolated`-world plugin scaffold for new contributors |
+
+---
+
+## Prerequisites
+
+- **Node.js `>= 22.4.0`** (with native `WebSocket` and `fetch` support).
+- **Zero runtime dependencies**: No `npm install` is needed at the repository root or in any core package.
+- **Optional frontend UI toolchain**: `agy-daddy-plugin-remote/web` and `agy-daddy-plugin-web/web` ship prebuilt static bundles under `dist/web/index.html`. You only need to run `npm install` inside those `web/` subdirectories if you modify their TypeScript/Preact/React UI source files.
+- **CLI runtime wrapper**: [`./agy-daddy-host/bin/agy-daddy`](./agy-daddy-host/bin/agy-daddy) automatically probes `AGY_DADDY_NODE`, `nvm`/`fnm`/`volta`, `PATH`, or falls back to Antigravity's built-in Electron Helper (`ELECTRON_RUN_AS_NODE=1`).
+
+---
+
+## Quick Start & Common Commands
+
+Run all commands from the repository root unless noted otherwise:
 
 ```sh
-# 1. 构建底座渲染层产物（agy-daddy-host/dist/host-renderer.js）
+# 1. Build the host renderer bundle (agy-daddy-host/dist/host-renderer.js)
+#    and verify/rebuild plugin web UI bundles if web/node_modules is present
 npm run build
 
-# 2. 运行静态门禁（零依赖、全员 isolated、settings.schema 校验、去耦合/紫色主题门禁、14 锚点一致性、registry SHA-512 与矩阵）
+# 2. Run all 7 static & registry gates:
+#    - Zero runtime dependencies across all packages
+#    - Absence of removed legacy artifacts (legacy-suite / migration.js)
+#    - Manifest, world="isolated", no page:main-world / migrations, and settings.schema.json validation
+#    - Purple theme token gate & removed registerSection API scan
+#    - Thin host renderer decoupling & theme gate
+#    - Byte-identical parity between host/data/anchors.json and registry/anchors.json
+#    - Registry SHA-512 manifest verification & 14-anchor Antigravity fixture matrix
 npm run verify:gates
 
-# 3. 运行全仓所有包的单元测试
+# 3. Run unit and contract tests across all packages (sets AGY_DADDY_TEST_MODE=1)
 npm test
 
-# 4. 一键执行 build + gates + test（CI 等价）
+# 4. Run the full CI-equivalent verification pipeline (build + gates + test)
 npm run verify
 
-# 5. 将本地仓库中的所有官方/示例插件软链到本机运行时目录
+# 5. Symlink all local official plugins into the local runtime directory
 ./agy-daddy-host/bin/agy-daddy dev link-all
+
+# 6. Inspect environment diagnostics or run a headless smoke check
+./agy-daddy-host/bin/agy-daddy doctor --json
+./agy-daddy-host/bin/agy-daddy dev smoke
 ```
 
-## Git 协作规范
+---
 
-- **主干分支**：`main` 为受保护分支，禁止直接 push；所有变更通过特性分支发起 Pull Request 并经 CI 通过后 Squash Merge。
-- **分支命名**：`feat/<scope>-<desc>`、`fix/<scope>-<desc>`、`chore/<scope>-<desc>`（如 `feat/proxy-socks5`、`fix/host-cdp-reconnect`）。
-- **提交信息（Conventional Commits）**：`<type>(<scope>): <summary>`
+## Git Collaboration & Release Workflow
+
+- **Protected Main Branch**: `main` is protected; direct pushes are prohibited. All changes must originate from a feature/fix branch via Pull Request and be integrated via **Squash Merge** after CI passes.
+- **Branch Naming**: `<type>/<scope>-<short-desc>` (e.g., `feat/proxy-socks5`, `fix/host-cdp-reconnect`, `docs/i18n-governance`, `chore/registry-sha512`).
+- **Commit Messages ([Conventional Commits](https://www.conventionalcommits.org/))**: `<type>(<scope>): <summary>`
   - `feat(proxy): support socks5 auth`
   - `fix(host): guard reconnect race on target close`
+  - `docs(github): standardize bilingual contributing guide`
   - `chore(registry): refresh manifest sha512`
-- **发布策略**：统一版本演进时使用根 Tag `v1.x.y`；后续插件独立发版时可使用包级 Tag（如 `plugin-quota@1.0.1`）。
+- **Release Tagging**:
+  - Coordinated monorepo releases use root tags: `v1.x.y`
+  - Independent package releases use package-scoped tags: e.g., `plugin-quota@1.0.1`
+
+---
+
+## Governance & Documentation
+
+- **Contributing Guide**: [`agy-daddy-.github/CONTRIBUTING.md`](./agy-daddy-.github/CONTRIBUTING.md) ([简体中文](./agy-daddy-.github/CONTRIBUTING_zh.md))
+- **T1 Plugin Review Checklist**: [`agy-daddy-.github/REVIEW_CHECKLIST.md`](./agy-daddy-.github/REVIEW_CHECKLIST.md) ([简体中文](./agy-daddy-.github/REVIEW_CHECKLIST_zh.md))
+- **License & Upstream Attribution Audit**: [`agy-daddy-.github/LICENSE_AUDIT.md`](./agy-daddy-.github/LICENSE_AUDIT.md) ([简体中文](./agy-daddy-.github/LICENSE_AUDIT_zh.md))
+- **Code of Conduct**: [`agy-daddy-.github/CODE_OF_CONDUCT.md`](./agy-daddy-.github/CODE_OF_CONDUCT.md)
+- **RFC Template**: [`agy-daddy-.github/rfcs/0000-template.md`](./agy-daddy-.github/rfcs/0000-template.md)
+- **Registry Index & Fixtures**: [`agy-daddy-registry/README.md`](./agy-daddy-registry/README.md)
+
+---
+
+## License
+
+This project is licensed under the **MIT License**. Upstream attributions, clean-room exclusions, and per-package notice requirements are documented in [`agy-daddy-.github/LICENSE_AUDIT.md`](./agy-daddy-.github/LICENSE_AUDIT.md).

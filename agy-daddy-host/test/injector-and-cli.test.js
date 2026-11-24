@@ -10,7 +10,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { AgyDaddyDaemon } = require('../src/core/daemon');
-const { PluginDataStore, safeWriteJsonSync } = require('../src/core/storage');
+const { safeWriteJsonSync } = require('../src/core/storage');
 const { createMockDocument } = require('../sdk/mock-harness');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
@@ -148,7 +148,9 @@ function createMockCdpTargetServer(pageUrl = 'https://127.0.0.1:51410/11111111-2
     }
     if (msg.method === 'Page.createIsolatedWorld') {
       const ctxId = nextIsoId++;
-      const { ctx: isoCtx, clearTimers } = createRealEnvShim(mockDoc);
+      const { ctx: isoCtx, clearTimers } = createRealEnvShim(mockDoc, {
+        location: { href: pageUrl }
+      });
       isoCtx.globalThis = isoCtx;
       isoCtx.self = isoCtx;
       realmCleanups.push(clearTimers);
@@ -280,114 +282,204 @@ function createMockCdpTargetServer(pageUrl = 'https://127.0.0.1:51410/11111111-2
   };
 }
 
-test('CdpInjector 端到端：双世界隔离、跨世界 nonce 服务与桥接通信、插件热重载与导航重注', async () => {
+test('CdpInjector 全员 Isolated World 端到端（真实 dist/host-renderer.js）：Boot 元数据、跨世界全能力、热重载与导航重注', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-inj-e2e-'));
   const stateDir = path.join(root, 'state');
   const pluginsDir = path.join(root, 'plugins');
-  const legacySrcDir = path.join(root, 'legacy-src');
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(pluginsDir, { recursive: true });
-  fs.mkdirSync(legacySrcDir, { recursive: true });
 
-  // 1. 构建安全无副作用的假 legacy 源目录（仅启用 meter + enhancer，屏蔽 pulse/hans/remote）
-  fs.writeFileSync(path.join(legacySrcDir, 'meter-core.js'), 'globalThis.__TEST_LEGACY_CORE__ = true;');
-  fs.writeFileSync(path.join(legacySrcDir, 'meter-renderer.js'), 'globalThis.__TEST_LEGACY_RENDERER__ = true;');
-  fs.writeFileSync(path.join(legacySrcDir, 'ag-enhancer-overlay.js'), 'globalThis.__TEST_LEGACY_ENHANCER__ = true;');
-  fs.writeFileSync(path.join(legacySrcDir, 'pulse-capsule-overlay.js'), 'globalThis.__TEST_LEGACY_PULSE__ = true;');
-
-  const legacyStore = new PluginDataStore('agy-daddy.legacy-suite', { stateDir });
-  legacyStore.writeJson('settings.json', {
-    sourceDir: legacySrcDir,
-    disabledModules: ['pulse', 'hans', 'remote']
-  });
-
-  // 2. 准备 T0 主世界插件（注册 unit + 主世界服务 t0svc.ping）
-  const t0Dir = path.join(pluginsDir, 'agy-daddy.t0main');
-  fs.mkdirSync(path.join(t0Dir, 'src'), { recursive: true });
-  safeWriteJsonSync(path.join(t0Dir, 'agy-plugin.json'), {
+  // 1. 准备 Isolated 插件 A（提供 surface + isolated service + Node command）
+  const pluginADir = path.join(pluginsDir, 'agy-daddy.iso-provider');
+  fs.mkdirSync(path.join(pluginADir, 'src'), { recursive: true });
+  safeWriteJsonSync(path.join(pluginADir, 'agy-plugin.json'), {
     schemaVersion: 1,
-    id: 'agy-daddy.t0main',
+    id: 'agy-daddy.iso-provider',
     publisher: 'agy-daddy',
     version: '1.0.0',
-    displayName: 'T0 Main Plugin',
-    engines: { agyDaddy: '^1.0.0' },
-    renderer: './src/renderer.js',
-    world: 'main',
-    permissions: ['dom:write', 'page:main-world']
-  });
-  fs.writeFileSync(path.join(t0Dir, 'src', 'renderer.js'), `
-    let stopUnit = null;
-    let stopSvc = null;
-    module.exports = {
-      mount(ctx) {
-        stopUnit = ctx.topbar.registerUnit({ id: 't0-badge', order: 10, label: 'T0Main' });
-        stopSvc = ctx.services.provide('t0svc', {
-          ping(who) { return { pong: who || 'ok', fromMain: true }; }
-        });
-      },
-      dispose() {
-        if (stopUnit) stopUnit();
-        if (stopSvc) stopSvc();
-      }
-    };
-  `);
-
-  // 3. 准备 T2 隔离世界 + Worker 插件
-  const t2Dir = path.join(pluginsDir, 'third.iso');
-  fs.mkdirSync(path.join(t2Dir, 'src'), { recursive: true });
-  safeWriteJsonSync(path.join(t2Dir, 'agy-plugin.json'), {
-    schemaVersion: 1,
-    id: 'third.iso',
-    publisher: 'third',
-    version: '1.0.0',
-    displayName: 'T2 Isolated Plugin',
+    displayName: 'Iso Provider',
+    description: 'Provides surface and isolated service',
     engines: { agyDaddy: '^1.0.0' },
     main: './src/node.js',
     renderer: './src/renderer.js',
     world: 'isolated',
-    permissions: ['dom:write', 'bridge:route']
+    permissions: ['dom:write'],
+    provides: {
+      surfaces: ['chat.search'],
+      services: { isosvc: { version: '1.0.0', realm: 'page-isolated' } }
+    },
+    contributes: {
+      'topbar.units': [{ id: 'prov-unit', order: 10 }],
+      commands: [{ id: 'provider.echo', title: 'Echo' }],
+      settings: { schema: './settings.schema.json' }
+    }
   });
-  fs.writeFileSync(path.join(t2Dir, 'src', 'node.js'), `
-    let records = [];
+  safeWriteJsonSync(path.join(pluginADir, 'settings.schema.json'), {
+    title: 'Provider Settings',
+    fields: [{ key: 'prefix', type: 'string', default: 'P' }]
+  });
+  fs.writeFileSync(path.join(pluginADir, 'src', 'node.js'), `
+    let stopCmd = null;
     module.exports = {
-      async activate(host) {
-        await host.bridge.registerRoute('/iso-echo', async (body) => {
-          records.push(body);
-          return { ok: true, count: records.length, echoed: body };
-        });
-        await host.bridge.registerRoute('/get-last-echo', async () => ({
-          count: records.length,
-          last: records[records.length - 1] || null
+      activate(host) {
+        stopCmd = host.commands.register('provider.echo', (arg) => ({
+          ok: true,
+          prefix: host.settings.get().prefix,
+          arg
         }));
       },
-      async deactivate() { records = []; }
+      deactivate() { if (stopCmd) stopCmd(); }
     };
   `);
-  function writeIsoRenderer(verTag) {
-    fs.writeFileSync(path.join(t2Dir, 'src', 'renderer.js'), `
-      let stopUnit = null;
-      let stopTimer = null;
+  fs.writeFileSync(path.join(pluginADir, 'src', 'renderer.js'), `
+    let stops = [];
+    module.exports = {
+      async mount(ctx) {
+        const slot = document.createElement('div');
+        slot.id = 'provider-surface-box';
+        document.body.appendChild(slot);
+        stops.push(() => slot.remove());
+        stops.push(ctx.surfaces.provide('chat.search', slot));
+        stops.push(ctx.services.provide('isosvc', {
+          greet(name) { return { hello: name, from: 'isolated-provider' }; }
+        }));
+        stops.push(ctx.topbar.registerUnit({ id: 'prov-unit', order: 10, label: 'Prov' }));
+      },
+      dispose() { for (const f of stops) try { f(); } catch {} stops = []; }
+    };
+  `);
+
+  // 2. 准备 Isolated 插件 B（消费 surface + fallback、styles、unit/popover render、events/state/services/settings/commands/hostDom）
+  const pluginBDir = path.join(pluginsDir, 'third.iso-consumer');
+  fs.mkdirSync(path.join(pluginBDir, 'src'), { recursive: true });
+  safeWriteJsonSync(path.join(pluginBDir, 'agy-plugin.json'), {
+    schemaVersion: 1,
+    id: 'third.iso-consumer',
+    publisher: 'third',
+    version: '1.0.0',
+    displayName: 'Iso Consumer',
+    engines: { agyDaddy: '^1.0.0' },
+    main: './src/node.js',
+    renderer: './src/renderer.js',
+    world: 'isolated',
+    permissions: ['dom:write'],
+    contributes: {
+      'topbar.units': [{ id: 'iso-badge', order: 20 }],
+      settings: { schema: './settings.schema.json' }
+    }
+  });
+  safeWriteJsonSync(path.join(pluginBDir, 'settings.schema.json'), {
+    title: 'Consumer Settings',
+    fields: [{ key: 'tag', type: 'string', default: 'init' }]
+  });
+  fs.writeFileSync(path.join(pluginBDir, 'src', 'node.js'), `
+    let logs = [];
+    module.exports = {
+      async activate(host) {
+        await host.commands.register('consumer.report', (payload) => {
+          if (payload !== undefined) logs.push(payload);
+          return { count: logs.length, last: logs[logs.length - 1] || null, all: logs };
+        });
+      },
+      async deactivate() { logs = []; }
+    };
+  `);
+  function writeConsumerRenderer(verTag) {
+    fs.writeFileSync(path.join(pluginBDir, 'src', 'renderer.js'), `
+      let stops = [];
       module.exports = {
         async mount(ctx) {
-          stopUnit = ctx.topbar.registerUnit({ id: 'iso-badge', order: 20, label: 'Iso${verTag}' });
-          stopTimer = ctx.schedule.every(10000, () => {});
-          const pingRes = await ctx.services.call('t0svc', 'ping', ['from-iso-${verTag}']);
-          const echoRes = await ctx.bridge.post('/iso-echo', {
-            tag: '${verTag}',
-            pingRes: pingRes,
-            hasAppConfig: typeof __APP_CONFIG__ !== 'undefined',
-            hasHostGlobal: typeof __AGYDaddyHost !== 'undefined'
+          const surfaceMounts = [];
+          const receivedEvents = [];
+          const stateUpdates = [];
+          const settingsUpdates = [];
+          let popoverEvents = [];
+          let unitClicked = 0;
+
+          stops.push(ctx.styles.inject('.iso-doc-test{color:#a78bfa;}', { scope: 'document', id: 'doc-css' }));
+          stops.push(ctx.styles.inject('.iso-sh-test{color:#c4b5fd;}', { scope: 'shadow', id: 'sh-css' }));
+
+          stops.push(ctx.topbar.registerUnit({
+            id: 'iso-badge',
+            order: 20,
+            label: 'Iso${verTag}',
+            badge: '1',
+            tone: 'accent',
+            render(node) { node.setAttribute('data-rendered-ver', '${verTag}'); },
+            onClick() { unitClicked++; }
+          }));
+
+          const pop = ctx.topbar.registerPopover({
+            id: 'iso-pop',
+            anchorId: 'iso-badge',
+            title: 'Iso Popover',
+            render(bodyNode) {
+              const p = document.createElement('p');
+              p.textContent = 'body-${verTag}';
+              bodyNode.appendChild(p);
+            },
+            onToggle(open) { popoverEvents.push(open); }
           });
-          await ctx.state.set('state:third.iso.last@1', echoRes);
+          stops.push(() => pop.dispose());
+
+          stops.push(ctx.surfaces.mount('chat.search', (el, meta) => {
+            surfaceMounts.push({ id: el.id || el.className, fallback: meta.fallback });
+            const chip = document.createElement('span');
+            chip.id = 'mounted-in-surface';
+            el.appendChild(chip);
+            return () => chip.remove();
+          }, { fallbackAnchor: 'composer.root' }));
+
+          stops.push(ctx.events.on('demo:ping@1', (p) => receivedEvents.push(p)));
+          stops.push(ctx.state.subscribe('state:demo.counter@1', (v, meta) => stateUpdates.push({ v, version: meta.version })));
+          stops.push(ctx.settings.onChange((vals, keys) => settingsUpdates.push({ vals, keys })));
+
+          await ctx.events.emit('demo:ping@1', { ver: '${verTag}' });
+          await ctx.state.set('state:demo.counter@1', { n: 1 });
+          await ctx.state.set('state:demo.counter@1', { n: 2 });
+          await pop.toggle(true);
+          await ctx.settings.open('appearance');
+          await ctx.settings.open({ tab: 'plugins', pluginId: 'third.iso-consumer' });
+
+          const greetRes = await ctx.services.get('isosvc').greet('${verTag}');
+          const echoCmd = await ctx.commands.execute('provider.echo', ['hi-${verTag}']);
+          const sysSettings = await ctx.bridge.post('/__settings', { action: 'get' });
+          const initCfg = ctx.settings.get();
+          await ctx.topbar.updateUnit('iso-badge', { label: 'Iso${verTag}-Upd' });
+
+          const sessionId = ctx.hostDom.getSessionId();
+          const hasComposer = Boolean(ctx.hostDom.getComposer());
+
+          globalThis.__ISO_INSPECT__ = () => ({
+            surfaceMounts,
+            receivedEvents,
+            stateUpdates,
+            settingsUpdates,
+            popoverEvents,
+            unitClicked,
+            currentSettings: ctx.settings.get()
+          });
+
+          await ctx.bridge.post('/__command', {
+            commandId: 'consumer.report',
+            args: [{
+              ver: '${verTag}',
+              greetRes,
+              echoCmd,
+              sysSettings,
+              initCfg,
+              sessionId,
+              hasComposer,
+              hasAppConfig: typeof __APP_CONFIG__ !== 'undefined',
+              hasHostGlobal: typeof __AGYDaddyHost !== 'undefined'
+            }]
+          });
         },
-        dispose() {
-          if (stopUnit) stopUnit();
-          if (stopTimer) stopTimer();
-        }
+        dispose() { for (const f of stops) try { f(); } catch {} stops = []; }
       };
     `);
   }
-  writeIsoRenderer('V1');
+  writeConsumerRenderer('V1');
 
   const cdpServer = createMockCdpTargetServer();
   const cdpPort = await cdpServer.start();
@@ -399,102 +491,112 @@ test('CdpInjector 端到端：双世界隔离、跨世界 nonce 服务与桥接�
     reinjectDebounceMs: 25,
     cdpOptions: { ports: [cdpPort], allowLsof: false },
     plugins: [
-      { id: 'agy-daddy.t0main', trustLevel: 'T0', installPath: t0Dir, grantedPermissions: ['dom:write', 'page:main-world'], enabled: true },
-      { id: 'third.iso', trustLevel: 'T2', installPath: t2Dir, grantedPermissions: ['dom:write', 'bridge:route'], enabled: true },
-      { id: 'agy-daddy.legacy-suite', trustLevel: 'T0', installPath: path.join(HOST_ROOT, 'plugins', 'legacy-suite'), enabled: true }
+      { id: 'agy-daddy.iso-provider', trustLevel: 'T0', installPath: pluginADir, grantedPermissions: ['dom:write'], enabled: true },
+      { id: 'third.iso-consumer', trustLevel: 'T2', installPath: pluginBDir, grantedPermissions: ['dom:write'], enabled: true }
     ]
   });
 
   try {
+    daemon.saveHostSettings({ themeMode: 'dark', maxVisibleUnits: 5 });
     const started = await daemon.start();
     assert.deepEqual(started.activationErrors, []);
 
     const injRes = await daemon.injectActiveTargets();
     assert.equal(injRes.targetsInjected, 1);
-    assert.equal(injRes.pluginsInjected, 3);
+    assert.equal(injRes.pluginsInjected, 2);
     assert.deepEqual(injRes.errors, []);
 
-    const { mockDoc, mainCtx, isoContexts, localStorage } = cdpServer.getState();
+    const { mockDoc, mainCtx, isoContexts } = cdpServer.getState();
 
-    // 校验不泄露全局 Token / 内部渠道名 / Boot 配置
+    // 1. 验证真实 dist/host-renderer.js 正确消费 Boot Options 且不泄露全局 Token / 内部通道
     assert.ok(mainCtx.__AGYDaddyHost);
     assert.equal(mainCtx.__AGY_DADDY_BOOT_OPTIONS__, undefined);
     assert.equal(mainCtx.__AGYDaddyHost.xworldChannelName, undefined);
     assert.equal(mainCtx.__AGYDaddyHost.bridgeToken, undefined);
     assert.equal(mainCtx.__AGYDaddyHost.hostToken, undefined);
 
-    // 校验主世界 + 隔离世界 Unit 均挂载到 Topbar
+    // 2. 验证两个插件均在独立 Isolated World，且消费端完整跑通全能力
+    assert.equal(isoContexts.size, 2);
+    const report1 = await daemon.executeCommand('consumer.report');
+    assert.equal(report1.count, 1);
+    assert.equal(report1.last.ver, 'V1');
+    assert.deepEqual(report1.last.greetRes, { hello: 'V1', from: 'isolated-provider' });
+    assert.equal(report1.last.echoCmd.ok, true);
+    assert.deepEqual(report1.last.echoCmd.result, { ok: true, prefix: 'P', arg: 'hi-V1' });
+    assert.deepEqual(report1.last.sysSettings, { ok: true, values: { tag: 'init' } });
+    assert.deepEqual(report1.last.initCfg, { tag: 'init' });
+    assert.equal(report1.last.sessionId, '11111111-2222-3333-4444-555555555555');
+    assert.equal(report1.last.hasComposer, true);
+    assert.equal(report1.last.hasAppConfig, false);
+    assert.equal(report1.last.hasHostGlobal, false);
+
+    // 3. 验证真实 ShadowRoot 中 unit.render、updateUnit、popover.render（含 ⚙ 按钮包壳）、styles.inject 与 surface 挂载
     const hostEl = mockDoc.getElementById('agy-daddy-host');
     assert.ok(hostEl);
-    const barEl = hostEl.shadowRoot.querySelector('#agy-topbar-slots');
-    const labels = barEl.children.map((c) => c.textContent);
-    assert.ok(labels.includes('T0Main'));
-    assert.ok(labels.includes('IsoV1'));
-    assert.ok(labels.includes('Legacy'));
+    const unitBtn = hostEl.shadowRoot.querySelector('[data-agy-slot="unit:third.iso-consumer:iso-badge"]');
+    assert.ok(unitBtn);
+    assert.equal(unitBtn.getAttribute('data-rendered-ver'), 'V1');
+    assert.match(unitBtn.textContent, /IsoV1-Upd/);
+    unitBtn.click();
 
-    // 校验 legacy-suite 掩码按预期运行并跳过被禁用的 pulse
-    assert.equal(mainCtx.__TEST_LEGACY_CORE__, true);
-    assert.equal(mainCtx.__TEST_LEGACY_ENHANCER__, true);
-    assert.equal(mainCtx.__TEST_LEGACY_PULSE__, undefined);
-    assert.match(localStorage.getItem('ag_suite_feature_flags'), /"showTopbarRemote":false/);
+    const popBody = hostEl.shadowRoot.querySelector('[data-agy-slot="popover:third.iso-consumer:iso-pop"]');
+    assert.ok(popBody);
+    assert.equal(popBody.textContent, 'body-V1');
+    assert.ok(mockDoc.head.querySelector('[data-agy-style="third.iso-consumer"]'));
+    assert.ok(hostEl.shadowRoot.querySelector('[data-agy-style="third.iso-consumer"]'));
+    assert.ok(mockDoc.getElementById('mounted-in-surface'));
 
-    // 校验隔离世界：无法看到主世界 __APP_CONFIG__，但成功跨世界调 t0svc.ping 且携带私有 Token 调 Worker Bridge
-    assert.equal(isoContexts.size, 1);
-    const t2Token = daemon.bridge.getPluginToken('third.iso');
-    const lastEcho1 = await fetch(`http://127.0.0.1:${started.port}/plugins/third.iso/get-last-echo`, {
-      method: 'POST',
-      headers: { 'X-AGY-Plugin-Token': t2Token },
-      body: '{}'
-    }).then((r) => r.json());
-    assert.equal(lastEcho1.count, 1);
-    assert.equal(lastEcho1.last.tag, 'V1');
-    assert.deepEqual(lastEcho1.last.pingRes, { pong: 'from-iso-V1', fromMain: true });
-    assert.equal(lastEcho1.last.hasAppConfig, false);
-    assert.equal(lastEcho1.last.hasHostGlobal, false);
+    // 4. 验证 Node 端更新配置 -> injector.notifyPluginSettingsChanged (rendererNotified === 1) -> 隔离世界 onChange 实时收到
+    const nodeUpdRes = await daemon.updatePluginSettings('third.iso-consumer', { tag: 'from-node' });
+    assert.equal(nodeUpdRes.ok, true);
+    assert.equal(nodeUpdRes.rendererNotified, 1);
+    const consumerIso = Array.from(isoContexts.values()).find((c) => typeof c.__ISO_INSPECT__ === 'function');
+    const insp1 = JSON.parse(JSON.stringify(consumerIso.__ISO_INSPECT__()));
+    assert.equal(insp1.unitClicked, 1);
+    assert.deepEqual(insp1.popoverEvents, [true, false]);
+    assert.deepEqual(insp1.receivedEvents, [{ ver: 'V1' }]);
+    assert.deepEqual(insp1.stateUpdates.map((x) => x.v.n), [1, 2]);
+    assert.equal(insp1.currentSettings.tag, 'from-node');
+    assert.equal(insp1.settingsUpdates.length, 1);
+    assert.deepEqual(insp1.settingsUpdates[0].keys, ['tag']);
+    assert.equal(insp1.surfaceMounts.some((m) => m.id === 'provider-surface-box' && m.fallback === false), true);
 
-    // 测试单插件热重载，不重复挂载 Unit，旧定时器被清理，新 Worker + 新隔离上下文生效
-    writeIsoRenderer('V2');
-    const reloadRes = await daemon.reloadPlugin('third.iso');
+    // 5. 验证 surface 提供方卸载后消费方自动降级到 fallbackAnchor，提供方热重载回来后自动切回真实 surface
+    const activeSession = Array.from(daemon.injector.sessions.values())[0];
+    await daemon.injector.disposePluginFromSession(activeSession, 'agy-daddy.iso-provider');
+    const inspAfterRevoke = JSON.parse(JSON.stringify(consumerIso.__ISO_INSPECT__()));
+    assert.equal(inspAfterRevoke.surfaceMounts.some((m) => m.fallback === true), true);
+
+    const provReload = await daemon.reloadPlugin('agy-daddy.iso-provider');
+    assert.equal(provReload.ok, true);
+    const inspAfterRestore = JSON.parse(JSON.stringify(consumerIso.__ISO_INSPECT__()));
+    assert.equal(inspAfterRestore.surfaceMounts[inspAfterRestore.surfaceMounts.length - 1].fallback, false);
+
+    // 6. 验证单插件热重载：旧样式/单元清理、新 Token 签发、V2 生效
+    writeConsumerRenderer('V2');
+    const oldToken = daemon.bridge.getPluginToken('third.iso-consumer');
+    const reloadRes = await daemon.reloadPlugin('third.iso-consumer');
     assert.equal(reloadRes.ok, true);
-    assert.equal(reloadRes.injector.sessionsUpdated, 1);
+    assert.notEqual(daemon.bridge.getPluginToken('third.iso-consumer'), oldToken);
+    const reloadedUnit = hostEl.shadowRoot.querySelector('[data-agy-slot="unit:third.iso-consumer:iso-badge"]');
+    assert.ok(reloadedUnit);
+    assert.match(reloadedUnit.textContent, /IsoV2-Upd/);
 
-    const barLabelsAfterReload = barEl.children.map((c) => c.textContent);
-    assert.equal(barLabelsAfterReload.filter((x) => x.startsWith('Iso')).length, 1);
-    assert.ok(barLabelsAfterReload.includes('IsoV2'));
-
-    const t2Token2 = daemon.bridge.getPluginToken('third.iso');
-    assert.notEqual(t2Token2, t2Token);
-    const lastEcho2 = await fetch(`http://127.0.0.1:${started.port}/plugins/third.iso/get-last-echo`, {
-      method: 'POST',
-      headers: { 'X-AGY-Plugin-Token': t2Token2 },
-      body: '{}'
-    }).then((r) => r.json());
-    assert.equal(lastEcho2.last.tag, 'V2');
-
-    // 测试页面导航重建时自动生成全新 xworldNonce 并重注全部插件
+    // 7. 验证导航重建：全新 xworldNonce + 全量重注
     const oldNonce = injRes.results[0].xworldNonce;
     const reinjectedPromise = new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('Reinject timeout')), 3000);
-      daemon.injector.once('reinjected', (ev) => {
-        clearTimeout(t);
-        resolve(ev);
-      });
+      daemon.injector.once('reinjected', (ev) => { clearTimeout(t); resolve(ev); });
     });
     cdpServer.simulateNavigation();
     const reinjected = await reinjectedPromise;
-    assert.equal(reinjected.pluginsInjected, 3);
+    assert.equal(reinjected.pluginsInjected, 2);
     assert.deepEqual(reinjected.errors, []);
     assert.notEqual(reinjected.xworldNonce, oldNonce);
 
-    const navState = cdpServer.getState();
-    assert.equal(navState.mockDoc.getElementById('agy-daddy-host') !== null, true);
-    const navBarLabels = navState.mockDoc.getElementById('agy-daddy-host').shadowRoot.querySelector('#agy-topbar-slots').children.map((c) => c.textContent);
-    assert.ok(navBarLabels.includes('T0Main'));
-    assert.ok(navBarLabels.includes('IsoV2'));
-
-    // 停止守护进程时彻底卸载 DOM 与锁
+    // 8. 停止守护进程彻底卸载 DOM 与锁
     await daemon.stop();
-    assert.equal(navState.mockDoc.getElementById('agy-daddy-host'), null);
+    assert.equal(cdpServer.getState().mockDoc.getElementById('agy-daddy-host'), null);
     assert.equal(fs.existsSync(path.join(stateDir, 'daemon.lock')), false);
   } finally {
     await daemon.stop();
@@ -503,7 +605,7 @@ test('CdpInjector 端到端：双世界隔离、跨世界 nonce 服务与桥接�
   }
 });
 
-test('CLI 端到端烟雾测试：doctor / status / plugin 生命周期 / migrate / live --once', () => {
+test('CLI 端到端烟雾测试：doctor (14 锚点) / status / plugin 生命周期 / 无 migrate / live --once', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cli-smoke-'));
   const stateDir = path.join(root, 'state');
   const pluginsDir = path.join(root, 'plugins');
@@ -529,13 +631,15 @@ test('CLI 端到端烟雾测试：doctor / status / plugin 生命周期 / migrat
     assert.equal(docRes.status, 0, docRes.stderr);
     const docJson = JSON.parse(docRes.stdout);
     assert.equal(docJson.ok, true);
-    assert.equal(docJson.anchors.count, 10);
+    assert.equal(docJson.anchors.count, 14);
+    assert.equal(docJson.legacySuite, undefined);
 
     // 2. status --skip-cdp
     const statusRes = runCli(['status', '--skip-cdp']);
     assert.equal(statusRes.status, 0, statusRes.stderr);
     const statusJson = JSON.parse(statusRes.stdout);
     assert.equal(statusJson.ok, true);
+    assert.equal(statusJson.legacySuite, undefined);
 
     // 3. plugin link / list / disable / enable / uninstall
     const linkRes = runCli(['plugin', 'link', 'templates/plugin-template', '--grant', 'dom:write,bridge:route']);
@@ -559,11 +663,10 @@ test('CLI 端到端烟雾测试：doctor / status / plugin 生命周期 / migrat
     const list2 = JSON.parse(runCli(['plugin', 'list']).stdout);
     assert.equal(list2.plugins.length, 0);
 
-    // 4. migrate --dry-run
-    const migRes = runCli(['migrate', '--dry-run']);
-    assert.equal(migRes.status, 0, migRes.stderr);
-    const migJson = JSON.parse(migRes.stdout);
-    assert.equal(typeof migJson, 'object');
+    // 4. help 不再包含已删除的 migrate 子命令
+    const helpRes = runCli(['--help']);
+    assert.equal(helpRes.status, 0, helpRes.stderr);
+    assert.equal(helpRes.stdout.includes('migrate'), false);
 
     // 5. live --once --skip-inject --json（无残留 daemon.lock）
     const liveRes = runCli(['live', '--once', '--skip-inject', '--json']);
@@ -574,7 +677,196 @@ test('CLI 端到端烟雾测试：doctor / status / plugin 生命周期 / migrat
     assert.equal(liveJson.once, true);
     assert.equal(liveJson.inject.skipped, true);
     assert.equal(fs.existsSync(path.join(stateDir, 'daemon.lock')), false);
+
+    // 6. web --no-open / --port / --reset-token
+    const webDefaultRes = runCli(['web', '--no-open']);
+    assert.equal(webDefaultRes.status, 0, webDefaultRes.stderr);
+    const webDefault = JSON.parse(webDefaultRes.stdout);
+    assert.equal(webDefault.ok, true);
+    assert.equal(webDefault.port, 18767);
+    assert.equal(webDefault.opened, false);
+    assert.equal(webDefault.tokenRotated, false);
+    assert.match(webDefault.url, /^http:\/\/127\.0\.0\.1:18767\/\?token=[a-f0-9]{48}$/);
+    const expectedCfgPath = path.join(stateDir, 'plugins-data', 'agy-daddy.web', 'web-config.json');
+    assert.equal(webDefault.configPath, expectedCfgPath);
+    assert.equal(fs.existsSync(expectedCfgPath), true);
+    const persisted1 = JSON.parse(fs.readFileSync(expectedCfgPath, 'utf8'));
+    assert.equal(persisted1.port, 18767);
+    assert.equal(webDefault.url, `http://127.0.0.1:18767/?token=${persisted1.token}`);
+
+    const webPortRes = runCli(['web', '--port', '19988', '--no-open']);
+    assert.equal(webPortRes.status, 0, webPortRes.stderr);
+    const webPort = JSON.parse(webPortRes.stdout);
+    assert.equal(webPort.port, 19988);
+    assert.equal(webPort.opened, false);
+    assert.equal(webPort.tokenRotated, false);
+    assert.equal(webPort.url, `http://127.0.0.1:19988/?token=${persisted1.token}`);
+    const persisted2 = JSON.parse(fs.readFileSync(expectedCfgPath, 'utf8'));
+    assert.equal(persisted2.port, 19988);
+
+    const webRotateRes = runCli(['web', '--reset-token', '--no-open']);
+    assert.equal(webRotateRes.status, 0, webRotateRes.stderr);
+    const webRotate = JSON.parse(webRotateRes.stdout);
+    assert.equal(webRotate.tokenRotated, true);
+    assert.equal(webRotate.opened, false);
+    assert.equal(webRotate.port, 19988);
+    const persisted3 = JSON.parse(fs.readFileSync(expectedCfgPath, 'utf8'));
+    assert.notEqual(persisted3.token, persisted1.token);
+    assert.equal(webRotate.url, `http://127.0.0.1:19988/?token=${persisted3.token}`);
+
+    const badPortRes = runCli(['web', '--port', '99999', '--no-open']);
+    assert.notEqual(badPortRes.status, 0);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('POST /host/reload-all 与 /host/daemon/restart：全量代码热重载（含 node.js 与 renderer.js）及重启调度', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-reload-all-'));
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+  const pluginDir = path.join(pluginsDir, 'third.hot-demo');
+  fs.mkdirSync(path.join(pluginDir, 'src'), { recursive: true });
+
+  safeWriteJsonSync(path.join(pluginDir, 'agy-plugin.json'), {
+    schemaVersion: 1,
+    id: 'third.hot-demo',
+    publisher: 'third',
+    version: '1.0.0',
+    displayName: 'Hot Demo',
+    engines: { agyDaddy: '^1.0.0' },
+    main: './src/node.js',
+    renderer: './src/renderer.js',
+    world: 'isolated',
+    permissions: ['dom:write'],
+    contributes: {
+      'topbar.units': [{ id: 'hot-unit', order: 10 }]
+    }
+  });
+
+  function writePluginCode(tag) {
+    fs.writeFileSync(path.join(pluginDir, 'src', 'node.js'), `
+      let stopCmd = null;
+      module.exports = {
+        activate(host) {
+          stopCmd = host.commands.register('hot.ping', () => ({ ok: true, ver: '${tag}' }));
+        },
+        deactivate() { if (stopCmd) stopCmd(); }
+      };
+    `);
+    fs.writeFileSync(path.join(pluginDir, 'src', 'renderer.js'), `
+      let stops = [];
+      module.exports = {
+        mount(ctx) {
+          stops.push(ctx.topbar.registerUnit({ id: 'hot-unit', order: 10, label: 'Hot-${tag}' }));
+        },
+        dispose() { for (const f of stops) try { f(); } catch {} stops = []; }
+      };
+    `);
+  }
+  writePluginCode('v1');
+
+  const cdpServer = createMockCdpTargetServer();
+  const cdpPort = await cdpServer.start();
+  let restartCalls = [];
+
+  const daemon = new AgyDaddyDaemon({
+    stateDir,
+    pluginsDir,
+    origin: '*',
+    cdpOptions: { ports: [cdpPort], allowLsof: false },
+    plugins: [
+      { id: 'third.hot-demo', trustLevel: 'T2', installPath: pluginDir, grantedPermissions: ['dom:write'], enabled: true }
+    ],
+    onRestartDaemon: (info) => {
+      restartCalls.push(info.reason);
+    }
+  });
+
+  const daemonNoCb = new AgyDaddyDaemon({
+    stateDir: path.join(root, 'state-nocb'),
+    pluginsDir: path.join(root, 'plugins-nocb'),
+    origin: '*',
+    plugins: []
+  });
+
+  try {
+    const started = await daemon.start();
+    await daemon.injectActiveTargets();
+    assert.deepEqual(await daemon.executeCommand('hot.ping'), { ok: true, ver: 'v1' });
+    const hostElBefore = cdpServer.getState().mockDoc.getElementById('agy-daddy-host');
+    assert.match(hostElBefore.shadowRoot.querySelector('[data-agy-slot="unit:third.hot-demo:hot-unit"]').textContent, /Hot-v1/);
+
+    // 修改磁盘上的 node.js 与 renderer.js
+    writePluginCode('v2');
+
+    const reinjectedPromise = new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('reinjected event timeout')), 3000);
+      daemon.injector.once('reinjected', (ev) => { clearTimeout(t); resolve(ev); });
+    });
+
+    const reloadResp = await fetch(`http://127.0.0.1:${started.port}/host/reload-all`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agy-Host-Token': started.hostToken
+      },
+      body: JSON.stringify({
+        rebuildRenderer: true,
+        restoreView: { open: true, tab: 'plugins', diagnosticsExpanded: true }
+      })
+    }).then((r) => r.json());
+
+    assert.equal(reloadResp.ok, true);
+    assert.equal(reloadResp.reloadedCount, 1);
+    assert.deepEqual(reloadResp.reloadedPlugins, ['third.hot-demo']);
+    assert.equal(reloadResp.injector.sessionsUpdated, 1);
+
+    const reinjectedEv = await reinjectedPromise;
+    assert.equal(reinjectedEv.pluginsInjected, 1);
+
+    // 验证新 node.js 与新 renderer.js 均已生效，且设置页自动恢复
+    assert.deepEqual(await daemon.executeCommand('hot.ping'), { ok: true, ver: 'v2' });
+    const hostElAfter = cdpServer.getState().mockDoc.getElementById('agy-daddy-host');
+    assert.match(hostElAfter.shadowRoot.querySelector('[data-agy-slot="unit:third.hot-demo:hot-unit"]').textContent, /Hot-v2/);
+    await new Promise((r) => setTimeout(r, 40));
+    const { mainCtx } = cdpServer.getState();
+    assert.notEqual(mainCtx.__AGYDaddyHost.getSettingsMode(), 'closed');
+    assert.equal(hostElAfter.shadowRoot.querySelector('#agy-diagnostics-detail-body').hidden, false);
+
+    // 验证 /host/daemon/restart (callback 模式)
+    const restartResp = await fetch(`http://127.0.0.1:${started.port}/host/daemon/restart`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agy-Host-Token': started.hostToken
+      },
+      body: JSON.stringify({ rebuildRenderer: true, reason: 'test-cb' })
+    }).then((r) => r.json());
+    assert.equal(restartResp.ok, true);
+    assert.equal(restartResp.scheduled, true);
+    assert.equal(restartResp.mode, 'callback');
+    await new Promise((r) => setTimeout(r, 180));
+    assert.deepEqual(restartCalls, ['test-cb']);
+
+    // 验证 /host/daemon/restart (test 模式默认 dryRun，不退出进程)
+    const startedNoCb = await daemonNoCb.start();
+    const dryResp = await fetch(`http://127.0.0.1:${startedNoCb.port}/host/daemon/restart`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agy-Host-Token': startedNoCb.hostToken
+      },
+      body: JSON.stringify({ rebuildRenderer: false })
+    }).then((r) => r.json());
+    assert.equal(dryResp.ok, true);
+    assert.equal(dryResp.scheduled, false);
+    assert.equal(dryResp.dryRun, true);
+    assert.equal(dryResp.mode, 'test');
+  } finally {
+    await daemon.stop();
+    await daemonNoCb.stop();
+    await cdpServer.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

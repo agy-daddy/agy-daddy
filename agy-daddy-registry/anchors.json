@@ -48,7 +48,9 @@
             "[data-testid=\"agent-input-box\"] [data-lexical-editor=\"true\"]",
             "[data-testid=\"agent-input-box\"] [contenteditable=\"true\"]",
             "[aria-label=\"Message input\"][contenteditable=\"true\"]",
-            "[aria-label=\"消息输入\"][contenteditable=\"true\"]"
+            "[aria-label=\"消息输入\"][contenteditable=\"true\"]",
+            "[data-lexical-editor=\"true\"]",
+            "[role=\"textbox\"][contenteditable=\"true\"]"
           ]
         }
       ]
@@ -137,6 +139,65 @@
             "[aria-label=\"File Viewer header\"]",
             "[aria-label=\"文件查看器标题栏\"]",
             ".group\\/file-row"
+          ]
+        }
+      ]
+    },
+    "settings.dialog": {
+      "description": "Antigravity 原生设置弹窗根容器",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"settings-dialog\"]",
+            "[role=\"dialog\"]:has([data-testid=\"settings-sidebar\"])",
+            "[role=\"dialog\"][aria-label*=\"Settings\"]",
+            "[role=\"dialog\"][aria-label*=\"设置\"]",
+            "[role=\"dialog\"]"
+          ]
+        }
+      ]
+    },
+    "settings.nav": {
+      "description": "Antigravity 原生设置弹窗左侧导航菜单",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"settings-sidebar\"]",
+            "[data-testid=\"settings-nav\"]",
+            "[role=\"dialog\"] nav",
+            "[role=\"dialog\"] [role=\"tablist\"]",
+            "[role=\"dialog\"] aside"
+          ]
+        }
+      ]
+    },
+    "settings.content": {
+      "description": "Antigravity 原生设置弹窗右侧内容面板",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"settings-content\"]",
+            "[role=\"dialog\"] main",
+            "[role=\"dialog\"] [role=\"tabpanel\"]"
+          ]
+        }
+      ]
+    },
+    "settings.openTrigger": {
+      "description": "Antigravity 客户端打开设置的触发按钮",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "[data-testid=\"settings-button\"]",
+            "[data-testid=\"open-settings-button\"]",
+            "button[aria-label=\"Settings\"]",
+            "button[aria-label=\"Open Settings\"]",
+            "button[aria-label=\"设置\"]",
+            "button[aria-label=\"打开设置\"]"
           ]
         }
       ]

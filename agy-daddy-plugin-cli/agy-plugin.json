@@ -8,6 +8,10 @@
     "zh-CN": "CLI 终端启动器",
     "en": "CLI Terminal Launcher"
   },
+  "description": {
+    "zh-CN": "顶栏 CLI 胶囊与多平台/多复用器（Rex/WezTerm/tmux）终端一键启动",
+    "en": "Topbar CLI capsule and one-click terminal launcher across Rex, WezTerm, tmux, and system shells"
+  },
   "engines": {
     "agyDaddy": "^1.0.0",
     "antigravity": ">=2.32.0"
@@ -31,7 +35,8 @@
     "dom:write",
     "bridge:route",
     "process:spawn",
-    "fs:brain-read"
+    "fs:brain-read",
+    "rpc:read"
   ],
   "contributes": {
     "topbar.units": [{ "id": "cli", "order": 40 }],
@@ -39,9 +44,6 @@
     "commands": [
       { "id": "cli.launch", "title": { "zh-CN": "在新终端启动 CLI", "en": "Launch CLI in terminal" } }
     ],
-    "locales": "./locales",
-    "migrations": [
-      { "from": "AntigravityContextMeter", "files": ["settings.json#cli"] }
-    ]
+    "locales": "./locales"
   }
 }

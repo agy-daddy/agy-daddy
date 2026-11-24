@@ -280,3 +280,279 @@ test('AgyDaddyDaemon 单实例锁、陈旧锁接管、T0同进程+T2独立Worker
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('AgyDaddyDaemon 全托管配置、host-settings、命令引擎、内置系统路由与诊断导出（T0 + T2 Worker 双端对齐）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-daemon-cfg-'));
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  // T0 同进程插件（故意不声明 bridge:route，验证内置 /__settings & /__command 仍可用）
+  const t0Dir = path.join(pluginsDir, 'agy-daddy.t0cfg');
+  fs.mkdirSync(path.join(t0Dir, 'src'), { recursive: true });
+  safeWriteJsonSync(path.join(t0Dir, 'agy-plugin.json'), {
+    schemaVersion: 1,
+    id: 'agy-daddy.t0cfg',
+    publisher: 'agy-daddy',
+    version: '1.0.0',
+    displayName: { 'zh-CN': 'T0 配置插件', en: 'T0 Config' },
+    description: 'T0 managed settings plugin',
+    engines: { agyDaddy: '^1.0.0' },
+    main: './src/node.js',
+    world: 'isolated',
+    permissions: ['dom:write'],
+    contributes: {
+      'topbar.units': [{ id: 't0-unit', order: 10 }],
+      commands: [{ id: 't0cfg.probe', title: 'Probe T0' }],
+      settings: { schema: './settings.schema.json' }
+    }
+  });
+  safeWriteJsonSync(path.join(t0Dir, 'settings.schema.json'), {
+    title: 'T0 Config',
+    fields: [
+      { key: 'enabled', type: 'boolean', default: true },
+      { key: 'port', type: 'number', min: 1024, max: 65535, default: 18766 },
+      { key: 'mode', type: 'enum', options: ['auto', 'direct'], default: 'auto' }
+    ],
+    actions: [
+      { id: 'probe', command: 't0cfg.probe', label: { 'zh-CN': '探测', en: 'Probe' } }
+    ]
+  });
+  fs.writeFileSync(path.join(t0Dir, 'src', 'node.js'), `
+    const changes = [];
+    let stops = [];
+    module.exports = {
+      async activate(host) {
+        stops.push(host.settings.onChange((vals, keys) => {
+          changes.push({ vals, keys });
+        }));
+        stops.push(host.commands.register('t0cfg.probe', (tag = 'ok') => ({
+          ok: true,
+          tag,
+          current: host.settings.get(),
+          changesCount: changes.length,
+          lastKeys: changes.length ? changes[changes.length - 1].keys : []
+        })));
+      },
+      async deactivate() {
+        for (const fn of stops) try { fn(); } catch {}
+        stops = [];
+      }
+    };
+  `);
+
+  // T2 独立 Worker 插件（同样不声明 bridge:route）
+  const t2Dir = path.join(pluginsDir, 'third.wcfg');
+  fs.mkdirSync(path.join(t2Dir, 'src'), { recursive: true });
+  safeWriteJsonSync(path.join(t2Dir, 'agy-plugin.json'), {
+    schemaVersion: 1,
+    id: 'third.wcfg',
+    publisher: 'third',
+    version: '1.0.0',
+    displayName: 'T2 Worker Config',
+    engines: { agyDaddy: '^1.0.0' },
+    main: './src/node.js',
+    world: 'isolated',
+    permissions: ['dom:write'],
+    contributes: {
+      commands: [{ id: 'wcfg.status', title: 'Worker Status' }],
+      settings: { schema: './settings.schema.json' }
+    }
+  });
+  safeWriteJsonSync(path.join(t2Dir, 'settings.schema.json'), {
+    title: 'Worker Config',
+    fields: [
+      { key: 'label', type: 'string', default: 'hello' },
+      { key: 'limit', type: 'number', min: 1, max: 100, default: 10 }
+    ]
+  });
+  fs.writeFileSync(path.join(t2Dir, 'src', 'node.js'), `
+    let changeEvents = [];
+    module.exports = {
+      async activate(host) {
+        host.settings.onChange((vals, keys) => {
+          changeEvents.push({ vals, keys });
+        });
+        await host.commands.register('wcfg.status', async (bump) => {
+          if (typeof bump === 'number') {
+            await host.settings.update({ limit: bump });
+          }
+          return {
+            workerPid: process.pid,
+            settings: host.settings.get(),
+            changeEvents
+          };
+        });
+      },
+      async deactivate() {}
+    };
+  `);
+
+  const rendererNotifies = [];
+  const daemon = new AgyDaddyDaemon({
+    stateDir,
+    pluginsDir,
+    origin: '*',
+    plugins: [
+      { id: 'agy-daddy.t0cfg', trustLevel: 'T0', installPath: t0Dir, grantedPermissions: ['dom:write'], enabled: true },
+      { id: 'third.wcfg', trustLevel: 'T2', installPath: t2Dir, grantedPermissions: ['dom:write'], enabled: true }
+    ]
+  });
+  daemon.injector.notifyPluginSettingsChanged = async (pluginId, values, changedKeys) => {
+    rendererNotifies.push({ pluginId, values, changedKeys });
+    return { ok: true, notified: 1 };
+  };
+
+  try {
+    const started = await daemon.start();
+    assert.deepEqual(started.activationErrors, []);
+    const base = `http://127.0.0.1:${started.port}`;
+    const hostHeaders = { 'Content-Type': 'application/json', 'X-AGY-Host-Token': started.hostToken };
+
+    // 1. /host/host-settings 默认值与增量持久化
+    const hsGet = await fetch(`${base}/host/host-settings`, {
+      method: 'POST', headers: hostHeaders, body: JSON.stringify({ action: 'get' })
+    }).then((r) => r.json());
+    assert.equal(hsGet.ok, true);
+    assert.equal(hsGet.values.themeMode, 'auto');
+    assert.equal(hsGet.values.heatPreset, 'purple');
+    assert.equal(hsGet.values.maxVisibleUnits, 6);
+
+    const hsSave = await fetch(`${base}/host/host-settings`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({
+        action: 'save',
+        values: {
+          themeMode: 'dark',
+          topbarPins: { 'agy-daddy.t0cfg:t0-unit': false },
+          topbarOrder: ['agy-daddy.t0cfg:t0-unit'],
+          maxVisibleUnits: 4
+        }
+      })
+    }).then((r) => r.json());
+    assert.equal(hsSave.ok, true);
+    assert.equal(hsSave.values.themeMode, 'dark');
+    assert.equal(hsSave.values.maxVisibleUnits, 4);
+    assert.equal(hsSave.values.topbarPins['agy-daddy.t0cfg:t0-unit'], false);
+    assert.equal(fs.existsSync(path.join(stateDir, 'host-settings.json')), true);
+
+    // 2. /host/plugins 返回 settingsSchema、settingsValues、commands、topbarUnits
+    const plList = await fetch(`${base}/host/plugins`, {
+      method: 'POST', headers: hostHeaders, body: '{}'
+    }).then((r) => r.json());
+    assert.equal(plList.ok, true);
+    const t0Item = plList.plugins.find((p) => p.id === 'agy-daddy.t0cfg');
+    assert.ok(t0Item);
+    assert.equal(t0Item.settingsSchema.fields.length, 3);
+    assert.equal(t0Item.settingsSchema.actions.length, 1);
+    assert.deepEqual(t0Item.settingsValues, { enabled: true, port: 18766, mode: 'auto' });
+    assert.equal(t0Item.commands.length, 1);
+    assert.equal(t0Item.topbarUnits.length, 1);
+
+    // 3. /host/settings 校验拦截 + 合法更新触发 Node onChange 与 injector 广播
+    const badUpd = await fetch(`${base}/host/settings`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({ pluginId: 'agy-daddy.t0cfg', action: 'update', values: { port: 80 } })
+    }).then((r) => r.json());
+    assert.equal(badUpd.ok, false);
+    assert.ok(badUpd.errors.length >= 1);
+
+    const okUpd = await fetch(`${base}/host/settings`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({ pluginId: 'agy-daddy.t0cfg', action: 'update', values: { port: 19001 } })
+    }).then((r) => r.json());
+    assert.equal(okUpd.ok, true);
+    assert.deepEqual(okUpd.values, { enabled: true, port: 19001, mode: 'auto' });
+    assert.deepEqual(okUpd.changedKeys, ['port']);
+    assert.equal(okUpd.rendererNotified, 1);
+    assert.equal(rendererNotifies.length, 1);
+    assert.equal(rendererNotifies[0].pluginId, 'agy-daddy.t0cfg');
+
+    // 4. /host/commands/run 执行 T0 与 T2 Worker 命令
+    const t0Cmd = await fetch(`${base}/host/commands/run`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({ pluginId: 'agy-daddy.t0cfg', commandId: 't0cfg.probe', args: ['from-host'] })
+    }).then((r) => r.json());
+    assert.equal(t0Cmd.ok, true);
+    assert.equal(t0Cmd.result.tag, 'from-host');
+    assert.equal(t0Cmd.result.current.port, 19001);
+    assert.equal(t0Cmd.result.changesCount, 1);
+    assert.deepEqual(t0Cmd.result.lastKeys, ['port']);
+
+    // 5. 插件内置系统路由 /plugins/:id/__settings 与 /__command（无 bridge:route 权限！）
+    const t2Token = daemon.bridge.getPluginToken('third.wcfg');
+    const t2Headers = { 'Content-Type': 'application/json', 'X-AGY-Plugin-Token': t2Token };
+    const wSysUpd = await fetch(`${base}/plugins/third.wcfg/__settings`, {
+      method: 'POST',
+      headers: t2Headers,
+      body: JSON.stringify({ action: 'update', values: { label: 'updated-via-sys' } })
+    }).then((r) => r.json());
+    assert.equal(wSysUpd.ok, true);
+    assert.deepEqual(wSysUpd.values, { label: 'updated-via-sys', limit: 10 });
+    assert.deepEqual(wSysUpd.changedKeys, ['label']);
+
+    // 短等 Worker 收到 settings-changed IPC 后执行 /__command，并验证 worker 内部调用 host.settings.update
+    await new Promise((r) => setTimeout(r, 40));
+    const wCmd = await fetch(`${base}/plugins/third.wcfg/__command`, {
+      method: 'POST',
+      headers: t2Headers,
+      body: JSON.stringify({ commandId: 'wcfg.status', args: [42] })
+    }).then((r) => r.json());
+    assert.equal(wCmd.ok, true);
+    assert.notEqual(wCmd.result.workerPid, process.pid);
+    assert.deepEqual(wCmd.result.settings, { label: 'updated-via-sys', limit: 42 });
+    assert.ok(wCmd.result.changeEvents.some((e) => e.keys.includes('label')));
+
+    // 6. /host/diagnostics/export 导出脱敏诊断包（复用当前活跃 CDP 快照）
+    daemon.injector.getActiveCdpSnapshot = () => ({ port: 51580, targetsCount: 1 });
+    const diagExp = await fetch(`${base}/host/diagnostics/export`, {
+      method: 'POST', headers: hostHeaders, body: '{}'
+    }).then((r) => r.json());
+    assert.equal(diagExp.ok, true);
+    assert.equal(diagExp.path, path.join(stateDir, 'agy-daddy-diagnostic-bundle.json'));
+    assert.equal(fs.existsSync(diagExp.path), true);
+    assert.equal(diagExp.report.anchors.count, 14);
+    assert.equal(diagExp.report.antigravity.cdpPort, 51580);
+    assert.equal(diagExp.report.antigravity.cdpTargetsCount, 1);
+    assert.equal(fs.readFileSync(diagExp.path, 'utf8').includes(os.homedir()), false);
+
+    // 7. 熔断器触发 -> 默认 /host/reload 被 CIRCUIT_OPEN 拒绝 -> 携带 resetCircuit: true 一键解除熔断并重新激活
+    daemon.recordPluginFailure('agy-daddy.t0cfg', new Error('crash-1'));
+    daemon.recordPluginFailure('agy-daddy.t0cfg', new Error('crash-2'));
+    daemon.recordPluginFailure('agy-daddy.t0cfg', new Error('crash-3'));
+    assert.equal(daemon.getPluginHealth('agy-daddy.t0cfg').circuitOpen, true);
+
+    const blockedReload = await fetch(`${base}/host/reload`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({ pluginId: 'agy-daddy.t0cfg' })
+    });
+    assert.equal(blockedReload.status, 500);
+    const blockedJson = await blockedReload.json();
+    assert.equal(blockedJson.ok, false);
+    assert.match(blockedJson.error, /CIRCUIT_OPEN/);
+
+    const resetReload = await fetch(`${base}/host/reload`, {
+      method: 'POST',
+      headers: hostHeaders,
+      body: JSON.stringify({ pluginId: 'agy-daddy.t0cfg', resetCircuit: true })
+    }).then((r) => r.json());
+    assert.equal(resetReload.ok, true);
+    assert.equal(resetReload.active, true);
+    assert.equal(resetReload.circuitReset, true);
+    assert.equal(daemon.getPluginHealth('agy-daddy.t0cfg').circuitOpen, false);
+    assert.equal(daemon.getPluginHealth('agy-daddy.t0cfg').crashesInWindow, 0);
+
+    // 8. 卸载插件清理命令与监听
+    await daemon.deactivatePlugin('agy-daddy.t0cfg');
+    await assert.rejects(() => daemon.executeCommand('t0cfg.probe'), /COMMAND_NOT_FOUND/);
+  } finally {
+    await daemon.stop();
+    releaseDaemonLock(path.join(stateDir, 'daemon.lock'));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

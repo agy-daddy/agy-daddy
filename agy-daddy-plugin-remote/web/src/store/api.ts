@@ -1,0 +1,406 @@
+import type {
+  ArtifactItem,
+  BootstrapResponse,
+  ChatMode,
+  ComposerPreset,
+  DispatchMode,
+  FsTreeEntry,
+  GitDiffResponse,
+  GitWorktreeInfo,
+  HostProject,
+  OrchestratorMasterKey,
+  OrchestratorThinkingMap,
+  OrchestratorThinkingTier,
+  PinKind,
+  PtySessionInfo,
+  QueuedMessage,
+  SessionDetail,
+  SessionEvent,
+  SessionGroup,
+  SessionPins,
+  SessionSummary,
+  TelemetryPanels
+} from '../types';
+import { getClientId, getDeviceHint } from './token';
+
+export interface ApiError extends Error {
+  status?: number;
+  code?: string;
+  confirmHint?: string;
+}
+
+export type ConfirmCallback = (hint: string) => Promise<boolean>;
+
+let tokenProvider: () => string = () => '';
+let confirmCallback: ConfirmCallback = async () => false;
+let lastConfirmedToken = '';
+
+export function configureApiClient(opts: {
+  getToken: () => string;
+  onConfirmRequired: ConfirmCallback;
+}): void {
+  tokenProvider = opts.getToken;
+  confirmCallback = opts.onConfirmRequired;
+}
+
+export function getLastL2ConfirmToken(): string {
+  return lastConfirmedToken;
+}
+
+async function requestJson<T>(
+  path: string,
+  init: RequestInit & { confirmable?: boolean } = {}
+): Promise<T> {
+  const token = tokenProvider();
+  const headers = new Headers(init.headers || {});
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  headers.set('X-AG-Client-Id', getClientId());
+  headers.set('X-AG-Device-Hint', getDeviceHint());
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const doFetch = async (extraConfirm?: string) => {
+    const reqHeaders = new Headers(headers);
+    if (extraConfirm) {
+      reqHeaders.set('X-Agy-Confirm', extraConfirm);
+    }
+    const res = await fetch(path, { ...init, headers: reqHeaders, cache: 'no-store' });
+    const text = await res.text();
+    let data: Record<string, unknown> = {};
+    try {
+      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+      data = {};
+    }
+    return { res, data };
+  };
+
+  let { res, data } = await doFetch();
+
+  if (
+    res.status === 403 &&
+    data.error === 'CONFIRMATION_REQUIRED' &&
+    init.confirmable !== false
+  ) {
+    const hint =
+      typeof data.confirmHint === 'string' && data.confirmHint
+        ? data.confirmHint
+        : '公网 Cloudflare 通道执行高危写操作需要二次确认';
+    const approved = await confirmCallback(hint);
+    if (approved) {
+      const confirmToken =
+        typeof data.confirmToken === 'string' && data.confirmToken
+          ? data.confirmToken
+          : 'confirmed';
+      lastConfirmedToken = confirmToken;
+      ({ res, data } = await doFetch(confirmToken));
+    }
+  }
+
+  if (!res.ok || data.ok === false) {
+    const err = new Error(
+      typeof data.error === 'string' ? data.error : `HTTP_${res.status}`
+    ) as ApiError;
+    err.status = res.status;
+    err.code = typeof data.error === 'string' ? data.error : `HTTP_${res.status}`;
+    if (typeof data.confirmHint === 'string') {
+      err.confirmHint = data.confirmHint;
+    }
+    throw err;
+  }
+
+  return data as unknown as T;
+}
+
+export const api = {
+  bootstrap: () => requestJson<BootstrapResponse>('/api/v1/bootstrap'),
+
+  snapshotFallback: () =>
+    requestJson<{ ok?: boolean; panels?: TelemetryPanels; channel?: string }>('/api/snapshot'),
+
+  listSessions: (opts?: { limit?: number; includeSubagents?: boolean }) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(opts?.limit ?? 200));
+    if (opts?.includeSubagents) params.set('includeSubagents', 'true');
+    const qs = params.toString();
+    return requestJson<{
+      ok: boolean;
+      rpcConnected?: boolean;
+      offline?: boolean;
+      sessions: SessionSummary[];
+      groups?: SessionGroup[];
+      projects?: HostProject[];
+      pins?: SessionPins;
+    }>(`/api/v1/sessions${qs ? `?${qs}` : ''}`);
+  },
+
+  getSessionOrg: () =>
+    requestJson<{
+      ok: boolean;
+      groups: SessionGroup[];
+      projects: HostProject[];
+      pins: SessionPins;
+    }>('/api/v1/sessions/org'),
+
+  toggleSessionPin: (payload: { type: PinKind; id: string; pinned?: boolean }) =>
+    requestJson<{
+      ok: boolean;
+      type: PinKind;
+      id: string;
+      pinned: boolean;
+      pins: SessionPins;
+    }>('/api/v1/sessions/pin', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  mutateSessionGroups: (
+    payload:
+      | {
+          action?: 'upsert';
+          id?: string;
+          name: string;
+          projectIds?: string[];
+          workspaceUris?: string[];
+          sessionIds?: string[];
+          order?: number;
+        }
+      | { action: 'delete'; id: string }
+      | {
+          action: 'assign';
+          groupId: string | null;
+          projectId?: string;
+          sessionId?: string;
+          workspaceUri?: string;
+        }
+  ) =>
+    requestJson<{
+      ok: boolean;
+      groups: SessionGroup[];
+      pins?: SessionPins;
+    }>('/api/v1/sessions/groups', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  getSession: (id: string) =>
+    requestJson<{ ok: boolean; session: SessionDetail; events: SessionEvent[] }>(
+      `/api/v1/sessions/${encodeURIComponent(id)}`
+    ),
+
+  createSession: (payload: { title?: string; workspaceUri?: string }) =>
+    requestJson<{ ok: boolean; cascadeId: string; session?: SessionSummary }>('/api/v1/sessions', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  sendMessage: (
+    sessionId: string,
+    payload: {
+      text: string;
+      modelId?: string;
+      mode?: ChatMode;
+      images?: Array<{ dataUrl: string; mime: string }>;
+      dispatchMode?: DispatchMode;
+    }
+  ) =>
+    requestJson<{
+      ok: boolean;
+      queued?: boolean;
+      queueId?: string;
+      item?: QueuedMessage;
+      queue?: QueuedMessage[];
+    }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  listSessionQueue: (sessionId: string) =>
+    requestJson<{ ok: boolean; cascadeId: string; queue: QueuedMessage[] }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/queue`
+    ),
+
+  removeQueuedMessage: (sessionId: string, queueId: string) =>
+    requestJson<{
+      ok: boolean;
+      removed?: boolean;
+      cascadeId?: string;
+      queueId?: string;
+      queue?: QueuedMessage[];
+    }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(queueId)}`,
+      {
+        method: 'DELETE'
+      }
+    ),
+
+  steerQueuedMessage: (sessionId: string, queueId: string) =>
+    requestJson<{
+      ok: boolean;
+      steered?: boolean;
+      cascadeId?: string;
+      queueId?: string;
+      queue?: QueuedMessage[];
+    }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(queueId)}/steer`,
+      {
+        method: 'POST',
+        body: '{}'
+      }
+    ),
+
+  cancelSession: (sessionId: string) =>
+    requestJson<{ ok: boolean }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      method: 'POST',
+      body: '{}'
+    }),
+
+  approveStep: (sessionId: string, seq: number, decision: 'allow' | 'deny') =>
+    requestJson<{ ok: boolean; supported?: boolean }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/steps/${seq}/approve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ decision })
+      }
+    ),
+
+  answerStep: (sessionId: string, seq: number, answers: unknown) =>
+    requestJson<{ ok: boolean }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/steps/${seq}/answer`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ answers })
+      }
+    ),
+
+  getPresets: () =>
+    requestJson<{
+      ok: boolean;
+      presets?: ComposerPreset[];
+      quickPrompts?: ComposerPreset[];
+      frequentPrompts?: ComposerPreset[];
+    }>('/api/v1/composer/presets'),
+
+  optimizePrompt: (text: string) =>
+    requestJson<{ ok: boolean; optimizedText?: string; text?: string }>('/api/v1/composer/optimize', {
+      method: 'POST',
+      body: JSON.stringify({ text })
+    }),
+
+  updateOrchestratorThinking: (payload: {
+    master?: OrchestratorMasterKey;
+    thinkingLevel?: OrchestratorThinkingTier;
+    map?: Partial<OrchestratorThinkingMap>;
+  }) =>
+    requestJson<{ ok: boolean; orchestratorThinking: OrchestratorThinkingMap }>(
+      '/api/v1/orchestrator/thinking',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    ),
+
+  getGitDiff: (root: string) =>
+    requestJson<GitDiffResponse>(`/api/v1/git/diff?root=${encodeURIComponent(root)}`),
+
+  getFsTree: (root: string, path = '') =>
+    requestJson<{ ok: boolean; root?: string; path?: string; entries: FsTreeEntry[] }>(
+      `/api/v1/fs/tree?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`
+    ),
+
+  readFsFile: (root: string, path: string) =>
+    requestJson<{ ok: boolean; path: string; size?: number; truncated?: boolean; content: string }>(
+      `/api/v1/fs/read?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`
+    ),
+
+  writeFsFile: (root: string, path: string, content: string) =>
+    requestJson<{ ok: boolean; path: string; bytes?: number }>('/api/v1/fs/write', {
+      method: 'PUT',
+      confirmable: true,
+      body: JSON.stringify({ root, path, content })
+    }),
+
+  getGitWorktrees: (root: string) =>
+    requestJson<{ ok: boolean; worktrees: GitWorktreeInfo[]; current?: string }>(
+      `/api/v1/git/worktrees?root=${encodeURIComponent(root)}`
+    ),
+
+  gitStage: (root: string, paths: string[], unstage = false) =>
+    requestJson<{ ok: boolean }>('/api/v1/git/stage', {
+      method: 'POST',
+      confirmable: true,
+      body: JSON.stringify({ root, paths, unstage })
+    }),
+
+  gitCommit: (root: string, message: string) =>
+    requestJson<{ ok: boolean; hash?: string }>('/api/v1/git/commit', {
+      method: 'POST',
+      confirmable: true,
+      body: JSON.stringify({ root, message })
+    }),
+
+  gitPush: (root: string, remote?: string, branch?: string) =>
+    requestJson<{ ok: boolean }>('/api/v1/git/push', {
+      method: 'POST',
+      confirmable: true,
+      body: JSON.stringify({ root, remote, branch })
+    }),
+
+  gitWorktree: (payload: {
+    root: string;
+    action: 'create' | 'switch' | 'remove';
+    path: string;
+    branch?: string;
+    createBranch?: boolean;
+  }) =>
+    requestJson<{ ok: boolean; worktrees?: GitWorktreeInfo[] }>('/api/v1/git/worktree', {
+      method: 'POST',
+      confirmable: true,
+      body: JSON.stringify(payload)
+    }),
+
+  listArtifacts: (sessionId: string) =>
+    requestJson<{ ok: boolean; sessionId: string; items: ArtifactItem[] }>(
+      `/api/v1/artifacts?sessionId=${encodeURIComponent(sessionId)}`
+    ),
+
+  readArtifact: (sessionId: string, name: string) =>
+    requestJson<{ ok: boolean; name: string; mime?: string; content?: string; dataUrl?: string }>(
+      `/api/v1/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(name)}`
+    ),
+
+  listPtySessions: () =>
+    requestJson<{ ok: boolean; sessions: PtySessionInfo[] }>('/api/v1/pty/sessions'),
+
+  getVapidKey: () =>
+    requestJson<{ ok: boolean; publicKey?: string; vapidPublicKey?: string }>('/api/v1/push/vapid-key'),
+
+  subscribePush: (subscription: PushSubscriptionJSON) =>
+    requestJson<{ ok: boolean }>('/api/v1/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription })
+    }),
+
+  unsubscribePush: (endpoint: string) =>
+    requestJson<{ ok: boolean }>('/api/v1/push/subscribe', {
+      method: 'DELETE',
+      body: JSON.stringify({ endpoint })
+    }),
+
+  testPush: () =>
+    requestJson<{ ok: boolean }>('/api/v1/push/test', {
+      method: 'POST',
+      body: '{}'
+    }),
+
+  pingLatency: async (): Promise<number> => {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const res = await fetch('/api/ping', { cache: 'no-store' });
+    if (!res.ok) throw new Error('PING_FAILED');
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    return Math.max(1, Math.round(t1 - t0));
+  }
+};

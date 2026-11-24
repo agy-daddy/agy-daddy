@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.web",
+  "publisher": "agy-daddy",
+  "version": "1.0.0",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "PC Web 工作台",
+    "en": "PC Web Harness"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "provides": {
+    "services": {
+      "web-harness": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:web.status@1"]
+  },
+  "consumes": {
+    "context": { "version": "^1.0.0", "optional": true },
+    "usage": { "version": "^1.0.0", "optional": true },
+    "quota": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "rpc:read",
+    "rpc:write",
+    "net:listen",
+    "fs:user-files",
+    "fs:brain-read",
+    "host:control"
+  ],
+  "contributes": {
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      {
+        "id": "agy-daddy.web.status",
+        "title": {
+          "zh-CN": "查看 PC Web 工作台状态",
+          "en": "Check PC Web Harness Status"
+        }
+      }
+    ]
+  }
+}

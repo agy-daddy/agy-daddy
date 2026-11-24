@@ -1,0 +1,59 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--ag-backdrop);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 30;
+  animation: agFadeIn 180ms var(--ag-ease-out);
+}
+
+@keyframes agFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  background: var(--ag-surface);
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--ag-shadow-lg), var(--ag-highlight-top);
+  transition: transform 240ms var(--ag-ease-drawer);
+  will-change: transform;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.left {
+  left: 0;
+  width: min(88vw, 348px);
+  border-right: 1px solid var(--ag-border);
+  border-radius: 0 var(--ag-r-xl) var(--ag-r-xl) 0;
+  transform: translateX(-104%);
+}
+
+.leftOpen {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.right {
+  right: 0;
+  width: min(94vw, 440px);
+  border-left: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-xl) 0 0 var(--ag-r-xl);
+  transform: translateX(104%);
+}
+
+.rightOpen {
+  transform: translateX(0);
+  pointer-events: auto;
+}

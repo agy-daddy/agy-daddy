@@ -5,8 +5,12 @@
   "version": "1.0.0",
   "license": "MIT",
   "displayName": {
-    "zh-CN": "配额胶囊与面板",
-    "en": "Quota Capsule & Panel"
+    "zh-CN": "额度监控",
+    "en": "Quota Monitor"
+  },
+  "description": {
+    "zh-CN": "顶栏 Gemini/Claude 配额双池胶囊与 5h/周倒计时详情浮窗",
+    "en": "Topbar Gemini/Claude dual-pool quota capsule and 5h/weekly reset countdown popover"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -14,7 +18,7 @@
   },
   "main": "./src/node.js",
   "renderer": "./src/renderer.js",
-  "world": "main",
+  "world": "isolated",
   "activationEvents": ["onStartup"],
   "requires": {
     "anchors": ["topbar.rightCluster"]
@@ -30,7 +34,6 @@
   },
   "permissions": [
     "dom:write",
-    "page:main-world",
     "rpc:read",
     "bridge:route",
     "native:install"

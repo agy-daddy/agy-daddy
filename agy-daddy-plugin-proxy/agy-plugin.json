@@ -8,12 +8,15 @@
     "zh-CN": "免重启网络代理网关",
     "en": "Hot-Switch Proxy Gateway"
   },
+  "description": {
+    "zh-CN": "本地固定转发网关 (127.0.0.1:18766)，支持免重启热切上游/直连/绕过规则与连通性探测",
+    "en": "Local forwarding gateway (127.0.0.1:18766) with hot-switch upstream/direct rules and layered connectivity probing"
+  },
   "engines": {
     "agyDaddy": "^1.0.0",
     "antigravity": ">=2.32.0"
   },
   "main": "./src/node.js",
-  "renderer": "./src/renderer.js",
   "world": "isolated",
   "activationEvents": ["onStartup"],
   "provides": {
@@ -24,22 +27,17 @@
     "states": ["state:proxy.status@1"]
   },
   "permissions": [
-    "dom:write",
     "bridge:route",
     "net:listen",
     "net:outbound:*",
     "host:launch-args"
   ],
   "contributes": {
-    "topbar.units": [{ "id": "proxy-badge", "order": 85 }],
     "settings": { "schema": "./settings.schema.json" },
     "commands": [
       { "id": "proxy.switch-mode", "title": { "zh-CN": "切换代理模式", "en": "Switch proxy mode" } },
       { "id": "proxy.probe", "title": { "zh-CN": "探测代理连通性", "en": "Probe proxy connectivity" } }
     ],
-    "locales": "./locales",
-    "migrations": [
-      { "from": "AntigravityContextMeter", "files": ["modules.json#proxy", "proxy.json"] }
-    ]
+    "locales": "./locales"
   }
 }

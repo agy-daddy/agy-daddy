@@ -12,6 +12,10 @@
     { "tag": "button", "attrs": { "data-testid": "thinking-collapsible-trigger" } },
     { "tag": "button", "attrs": { "data-testid": "agent-response" } },
     { "tag": "div", "attrs": { "data-testid": "conversation-row-sidebar" } },
-    { "tag": "div", "attrs": { "aria-label": "File Viewer header" } }
+    { "tag": "div", "attrs": { "aria-label": "File Viewer header" } },
+    { "tag": "div", "attrs": { "data-testid": "settings-dialog", "role": "dialog", "aria-label": "Settings" } },
+    { "tag": "nav", "attrs": { "data-testid": "settings-nav", "role": "tablist" } },
+    { "tag": "main", "attrs": { "data-testid": "settings-content", "role": "tabpanel" } },
+    { "tag": "button", "attrs": { "data-testid": "open-settings-button", "aria-label": "Settings" } }
   ]
 }

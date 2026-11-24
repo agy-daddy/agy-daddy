@@ -1,0 +1,142 @@
+.floatBar {
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border-radius: var(--ag-r-md, 14px);
+  border: 1px solid var(--ag-warn-border, var(--ag-warn));
+  background: var(--ag-surface-glass, var(--ag-card));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    var(--ag-highlight-top, none),
+    var(--ag-shadow-md, var(--ag-shadow));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  z-index: 6;
+}
+
+.infoBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: left;
+  padding: 2px 0;
+}
+
+.pulseDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ag-warn);
+  flex-shrink: 0;
+  animation: agBarPulse 1.5s ease-in-out infinite;
+}
+
+.infoText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.headLine {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ag-warn);
+  white-space: nowrap;
+}
+
+.seq {
+  font-family: var(--ag-font-mono);
+  font-size: 10.5px;
+  color: var(--ag-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.roBadge {
+  padding: 0 5px;
+  border-radius: var(--ag-r-pill, 999px);
+  background: var(--ag-control);
+  color: var(--ag-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.preview {
+  font-size: 12px;
+  font-family: var(--ag-font-mono);
+  color: var(--ag-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.compactBtn {
+  min-height: 32px;
+  padding: 0 11px;
+  border-radius: var(--ag-r-sm, 10px);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--ag-highlight-btn, none);
+  transition: transform 120ms var(--ag-ease-out, ease-out), opacity 140ms ease;
+}
+
+.compactBtn:active:not(:disabled) {
+  transform: scale(0.96) translateY(1px);
+}
+
+.allowBtn {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+
+.denyBtn {
+  background: var(--ag-danger-soft);
+  color: var(--ag-danger);
+  border: 1px solid var(--ag-danger-border, rgba(239, 68, 68, 0.34));
+}
+
+@keyframes agBarPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(0.84);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulseDot {
+    animation: none;
+  }
+}
+
+@supports (corner-shape: superellipse(1.25)) {
+  .floatBar,
+  .compactBtn {
+    corner-shape: superellipse(1.25);
+  }
+}

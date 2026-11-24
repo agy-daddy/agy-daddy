@@ -1,7 +1,7 @@
 {
   "name": "@agy-daddy/plugin-zh-cn",
   "version": "1.0.0",
-  "description": "Agy-Daddy reversible Chinese localization and zero-token dictionary/regex translator plugin",
+  "description": "Agy-Daddy reversible 10-language client localization (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en) and zero-token dictionary/regex translator plugin",
   "license": "MIT",
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",

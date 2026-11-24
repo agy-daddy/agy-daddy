@@ -1,4 +1,4 @@
 {
-  "unit.loading": "配额 --",
-  "panel.title": "模型共享池配额与重置倒计时"
+  "unit.loading": "额度 --",
+  "panel.title": "额度监控"
 }

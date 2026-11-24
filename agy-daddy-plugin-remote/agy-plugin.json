@@ -5,8 +5,12 @@
   "version": "1.0.0",
   "license": "MIT",
   "displayName": {
-    "zh-CN": "手机远程控制台",
-    "en": "Mobile Remote Console"
+    "zh-CN": "远程访问",
+    "en": "Remote Access"
+  },
+  "description": {
+    "zh-CN": "18765 手机极速 PWA 服务、四通道/Cloudflare 隧道与顶栏扫码浮窗",
+    "en": "Mobile PWA console on port 18765 with multi-channel/Cloudflare tunnels and topbar QR pairing popover"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -15,7 +19,7 @@
   "main": "./src/node.js",
   "renderer": "./src/renderer.js",
   "remote": "./src/remote-client.js",
-  "world": "main",
+  "world": "isolated",
   "activationEvents": ["onStartup"],
   "requires": {
     "anchors": ["topbar.rightCluster"]
@@ -30,14 +34,17 @@
   "consumes": {
     "context": { "version": "^1.0.0", "optional": true },
     "usage": { "version": "^1.0.0", "optional": true },
-    "quota": { "version": "^1.0.0", "optional": true }
+    "quota": { "version": "^1.0.0", "optional": true },
+    "web-harness": { "version": "^1.0.0", "optional": true },
+    "composer-node": { "version": "^1.0.0", "optional": true }
   },
   "permissions": [
     "dom:write",
-    "page:main-world",
     "rpc:read",
     "rpc:write",
     "bridge:route",
+    "fs:brain-read",
+    "fs:user-files",
     "net:listen",
     "process:spawn"
   ],
@@ -47,11 +54,12 @@
     "settings": { "schema": "./settings.schema.json" },
     "commands": [
       { "id": "remote.rotate-token", "title": { "zh-CN": "轮换远程配对令牌", "en": "Rotate Mobile Pairing Token" } },
-      { "id": "remote.status", "title": { "zh-CN": "查看远程通道状态", "en": "Check Remote Channel Status" } }
+      { "id": "remote.status", "title": { "zh-CN": "查看远程通道状态", "en": "Check Remote Channel Status" } },
+      { "id": "remote.kick-devices", "title": { "zh-CN": "踢出全部已连设备并轮换令牌", "en": "Disconnect All Devices & Rotate Token" } },
+      { "id": "remote.check-cloudflared", "title": { "zh-CN": "检测 cloudflared 安装状态", "en": "Check cloudflared Installation" } },
+      { "id": "remote.browse-allowed-root", "title": { "zh-CN": "浏览并添加允许访问的工作区目录", "en": "Browse Allowed Workspace Root Directory" } },
+      { "id": "remote.list-models", "title": { "zh-CN": "获取可用模型列表", "en": "List Available Models" } }
     ],
-    "locales": "./locales",
-    "migrations": [
-      { "from": "AntigravityContextMeter", "files": ["remote-config.json", "remote-tunnel-state.json"] }
-    ]
+    "locales": "./locales"
   }
 }

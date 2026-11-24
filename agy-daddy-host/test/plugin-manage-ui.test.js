@@ -268,14 +268,19 @@ module.exports = { mount, dispose };
       assert.equal(uiWin.__AGYDaddyHost.hostToken, undefined);
       uiHost.toggleSettingsPanel(true);
       const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
-      shadow.querySelector('#agy-tab-manage').click();
-      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(shadow.querySelector('#agy-tab-plugins'));
+      await new Promise((r) => setTimeout(r, 50));
 
       const card = shadow.querySelector('#agy-manage-settings-card');
       assert.ok(card);
       assert.ok(shadow.querySelector('[data-plugin-toggle="third.demo"]'));
 
-      // 先测试二次确认卸载
+      // 下钻进入 third.demo 二级详情页并测试二次确认卸载
+      const detailBtn = shadow.querySelector('[data-plugin-detail="third.demo"]');
+      assert.ok(detailBtn);
+      detailBtn.click();
+      assert.ok(shadow.querySelector('#agy-detail-back-btn'));
+
       const unBtn = shadow.querySelector('[data-plugin-uninstall="third.demo"]');
       assert.equal(unBtn.textContent, '卸载');
       unBtn.click();
@@ -287,7 +292,7 @@ module.exports = { mount, dispose };
       assert.equal(readInstalledIndex({ stateDir }).plugins['third.demo'], undefined);
       assert.ok(shadow.querySelector('[data-catalog-install="third.demo"]'));
 
-      // 再通过 UI 输入路径触发权限确认卡 -> 点授权并安装装回
+      // 顶部常驻安装条直接输入路径触发权限确认卡 -> 点授权并安装装回
       const inp = shadow.querySelector('#agy-plugin-install-input');
       inp.value = `local:${demoDir}`;
       shadow.querySelector('#agy-plugin-install-btn').click();
@@ -300,6 +305,147 @@ module.exports = { mount, dispose };
 
       assert.equal(daemon.activePlugins.has('third.demo'), true);
       assert.ok(shadow.querySelector('[data-plugin-toggle="third.demo"]'));
+    } finally {
+      await uiHost.dispose();
+    }
+  } finally {
+    await daemon.stop();
+    await cdpHarness.cleanup();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回与卸载提示弹窗确认', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-native-ui-'));
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+  const nativeDir = path.join(root, 'native-plugins');
+  const nativePluginDir = path.join(root, 'native-demo-plugin');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  fs.mkdirSync(nativeDir, { recursive: true });
+  fs.mkdirSync(path.join(nativePluginDir, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(nativePluginDir, 'native', 'skills', 'demo-skill'), { recursive: true });
+
+  fs.writeFileSync(path.join(nativePluginDir, 'agy-plugin.json'), JSON.stringify({
+    schemaVersion: 1,
+    id: 'agy-daddy.nativedemo',
+    publisher: 'agy-daddy',
+    version: '1.0.0',
+    license: 'MIT',
+    displayName: { 'zh-CN': '原生测试插件', en: 'Native Demo' },
+    description: { 'zh-CN': '测试原生注入配置与卸载确认', en: 'Test native config' },
+    engines: { agyDaddy: '^1.0.0', antigravity: '>=2.32.0' },
+    main: './src/node.js',
+    renderer: './src/renderer.js',
+    world: 'isolated',
+    activationEvents: ['onStartup'],
+    permissions: ['dom:write', 'native:install'],
+    contributes: {
+      native: {
+        rules: ['./native/demo-rule.md'],
+        skills: ['./native/skills']
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(nativePluginDir, 'src', 'node.js'), 'exports.activate = () => {};');
+  fs.writeFileSync(path.join(nativePluginDir, 'src', 'renderer.js'), 'exports.mount = () => {};');
+  fs.writeFileSync(path.join(nativePluginDir, 'native', 'demo-rule.md'), '# Plugin Rule v1\n', 'utf8');
+  fs.writeFileSync(path.join(nativePluginDir, 'native', 'skills', 'demo-skill', 'SKILL.md'), '# Demo Skill\n', 'utf8');
+
+  // 预置用户原有规则文件，验证注入前备份 + UI 撤回恢复
+  const targetNativeDir = path.join(nativeDir, 'agy-daddy-nativedemo');
+  const existingRulePath = path.join(targetNativeDir, 'rules', 'demo-rule.md');
+  fs.mkdirSync(path.dirname(existingRulePath), { recursive: true });
+  fs.writeFileSync(existingRulePath, '# User Original Rule\n', 'utf8');
+
+  const cdpHarness = await createLocalCdpHarness();
+  const daemon = new AgyDaddyDaemon({
+    stateDir,
+    pluginsDir,
+    nativePluginsDir: nativeDir,
+    workspaceRoot: path.join(root, 'empty-ws'),
+    cdpPort: cdpHarness.cdpPort,
+    WebSocketImpl: cdpHarness.MockCdpWebSocket,
+    skipSingleInstanceLock: true,
+    skipHeartbeat: true,
+    pluginList: []
+  });
+
+  try {
+    const started = await daemon.start();
+    const instRes = await postHost(started.port, daemon.bridge.hostToken, '/host/plugins/install', {
+      spec: `local:${nativePluginDir}`,
+      trustLevel: 'T0'
+    });
+    assert.equal(instRes.data.ok, true);
+    assert.equal(fs.readFileSync(existingRulePath, 'utf8'), '# Plugin Rule v1\n');
+
+    // 未确认 confirmNativeDelete 时，后端卸载必须拦截且不删除文件
+    const blockedRes = await postHost(started.port, daemon.bridge.hostToken, '/host/plugins/uninstall', {
+      pluginId: 'agy-daddy.nativedemo'
+    });
+    assert.equal(blockedRes.data.ok, false);
+    assert.equal(blockedRes.data.needsNativeUninstallConfirm, true);
+    assert.equal(fs.existsSync(existingRulePath), true);
+
+    const uiDoc = createMockDocument();
+    const uiWin = { location: { href: 'https://127.0.0.1:51410/' } };
+    const uiHost = createHostRuntime({
+      document: uiDoc,
+      window: uiWin,
+      fetch: globalThis.fetch,
+      anchorsRegistry: loadAnchorsRegistry(),
+      bridgePort: started.port,
+      hostToken: daemon.bridge.hostToken
+    });
+
+    try {
+      uiHost.toggleSettingsPanel(true);
+      const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
+      await new Promise((r) => setTimeout(r, 60));
+
+      const detailBtn = shadow.querySelector('[data-plugin-detail="agy-daddy.nativedemo"]');
+      assert.ok(detailBtn);
+      detailBtn.click();
+
+      // 1. 详情页渲染原生扩展注入开关与 Rules 撤回按钮
+      assert.ok(shadow.querySelector('#agy-native-injection-card'));
+      const skillsToggle = shadow.querySelector('[data-native-toggle="agy-daddy.nativedemo:skills"]');
+      assert.ok(skillsToggle);
+      assert.equal(skillsToggle.checked, true);
+
+      // 关闭 skills 注入开关
+      skillsToggle.checked = false;
+      skillsToggle.dispatchEvent({ type: 'change' });
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(fs.existsSync(path.join(targetNativeDir, 'skills')), false);
+      assert.equal(shadow.querySelector('[data-native-toggle="agy-daddy.nativedemo:skills"]').checked, false);
+
+      // 2. 点击「撤回 Rules」恢复用户原始规则文件内容
+      const rbRulesBtn = shadow.querySelector('[data-native-rules-rollback="agy-daddy.nativedemo"]');
+      assert.ok(rbRulesBtn);
+      assert.equal(rbRulesBtn.disabled, false);
+      rbRulesBtn.click();
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(fs.readFileSync(existingRulePath, 'utf8'), '# User Original Rule\n');
+
+      // 3. 点击卸载必须弹出原生扩展删除确认框，取消不删除，确认后才卸载并删除原生目录
+      const unBtn = shadow.querySelector('[data-plugin-uninstall="agy-daddy.nativedemo"]');
+      unBtn.click();
+      assert.ok(shadow.querySelector('#agy-native-uninstall-confirm-box'));
+      assert.equal(fs.existsSync(targetNativeDir), true);
+
+      shadow.querySelector('#agy-native-uninstall-cancel-btn').click();
+      assert.equal(shadow.querySelector('#agy-native-uninstall-confirm-box'), null);
+      assert.equal(fs.existsSync(targetNativeDir), true);
+
+      shadow.querySelector('[data-plugin-uninstall="agy-daddy.nativedemo"]').click();
+      shadow.querySelector('#agy-native-uninstall-confirm-btn').click();
+      await new Promise((r) => setTimeout(r, 100));
+
+      assert.equal(readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'], undefined);
+      assert.equal(fs.existsSync(targetNativeDir), false);
     } finally {
       await uiHost.dispose();
     }

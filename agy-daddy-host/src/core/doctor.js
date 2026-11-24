@@ -10,7 +10,6 @@ const { resolveRuntime } = require('./runtime-resolver');
 const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./cdp');
 const { loadAnchorsRegistry } = require('./anchors');
 const { listInstalledPlugins } = require('./installer');
-const { detectLegacySuite, getMigrationMarkerPath } = require('./migration');
 
 function sanitizeString(raw, homeDir, extraSecrets = []) {
   let s = String(raw);
@@ -65,13 +64,18 @@ async function runDoctor(options = {}) {
   const pluginsDir = getPluginsDir(options);
   const runtime = resolveRuntime(options);
   const hostProc = inspectAntigravityHostProcess(options);
-  const cdp = options.skipCdp
-    ? { port: null, targets: [] }
-    : await resolveActiveCdpTarget({ timeoutMs: 1200, ...options }).catch(() => ({ port: null, targets: [] }));
+  const cdpSnap = options.cdpSnapshot && typeof options.cdpSnapshot === 'object' ? options.cdpSnapshot : null;
+  const hasCdpSnapshot = Boolean(cdpSnap && (cdpSnap.port || Number(cdpSnap.targetsCount) > 0));
+  const cdp = hasCdpSnapshot
+    ? {
+        port: cdpSnap.port ? Number(cdpSnap.port) : null,
+        targetsCount: Number(cdpSnap.targetsCount) || (Array.isArray(cdpSnap.targets) ? cdpSnap.targets.length : 0)
+      }
+    : (options.skipCdp
+        ? { port: null, targets: [] }
+        : await resolveActiveCdpTarget({ timeoutMs: 1200, ...options }).catch(() => ({ port: null, targets: [] })));
   const anchors = loadAnchorsRegistry({ stateDir, anchorsPath: options.anchorsPath });
   const installedPlugins = listInstalledPlugins(options);
-  const legacySuite = detectLegacySuite(options);
-  const migrationMarker = safeReadJsonSync(getMigrationMarkerPath(options), null, { quarantineCorrupt: false });
 
   const daemonLockPath = path.join(stateDir, 'daemon.lock');
   let daemonLock = null;
@@ -93,7 +97,9 @@ async function runDoctor(options = {}) {
     antigravity: {
       hostProcess: hostProc,
       cdpPort: cdp.port || null,
-      cdpTargetsCount: Array.isArray(cdp.targets) ? cdp.targets.length : 0
+      cdpTargetsCount: Number.isFinite(cdp.targetsCount)
+        ? cdp.targetsCount
+        : (Array.isArray(cdp.targets) ? cdp.targets.length : 0)
     },
     anchors: {
       schemaVersion: anchors.schemaVersion || 1,
@@ -114,12 +120,7 @@ async function runDoctor(options = {}) {
     daemon: {
       lockPresent: Boolean(daemonLock),
       lock: daemonLock
-    },
-    migration: {
-      completed: Boolean(migrationMarker.ok && migrationMarker.exists),
-      migratedAt: migrationMarker.data?.migratedAt || null
-    },
-    legacySuite
+    }
   };
 }
 
@@ -127,7 +128,7 @@ async function exportDiagnosticBundle(outputPath, options = {}) {
   const rawReport = await runDoctor(options);
   const sanitized = sanitizeDiagnosticData(rawReport, options);
   const writeRes = safeWriteJsonSync(outputPath, sanitized);
-  return { ...writeRes, bundle: sanitized };
+  return { ...writeRes, path: writeRes.path || path.resolve(outputPath), bundle: sanitized, report: sanitized };
 }
 
 module.exports = {

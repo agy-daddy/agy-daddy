@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "title": {
+    "en": "PC Web Harness Settings",
+    "zh-CN": "PC Web 工作台设置"
+  },
+  "fields": [
+    {
+      "key": "port",
+      "type": "number",
+      "min": 1024,
+      "max": 65535,
+      "default": 18767,
+      "label": {
+        "en": "Local Listen Port (127.0.0.1)",
+        "zh-CN": "本地监听端口 (127.0.0.1)"
+      }
+    },
+    {
+      "key": "theme",
+      "type": "enum",
+      "default": "system",
+      "options": [
+        {
+          "value": "system",
+          "label": { "en": "Follow System", "zh-CN": "跟随系统" }
+        },
+        {
+          "value": "dark",
+          "label": { "en": "Dark", "zh-CN": "暗色模式 (Dark)" }
+        },
+        {
+          "value": "light",
+          "label": { "en": "Light", "zh-CN": "亮色模式 (Light)" }
+        }
+      ],
+      "label": {
+        "en": "Appearance Mode",
+        "zh-CN": "明暗主题模式"
+      }
+    },
+    {
+      "key": "colorTheme",
+      "type": "enum",
+      "default": "monochrome",
+      "options": [
+        {
+          "value": "monochrome",
+          "label": { "en": "Minimal Monochrome (Native)", "zh-CN": "黑白简约（原生默认）" }
+        },
+        {
+          "value": "purple",
+          "label": { "en": "Violet Purple", "zh-CN": "紫罗兰 (Purple)" }
+        },
+        {
+          "value": "blue",
+          "label": { "en": "Cobalt Blue", "zh-CN": "钴蓝 (Blue)" }
+        },
+        {
+          "value": "green",
+          "label": { "en": "Emerald Green", "zh-CN": "翠绿 (Green)" }
+        },
+        {
+          "value": "amber",
+          "label": { "en": "Amber Gold", "zh-CN": "琥珀 (Amber)" }
+        },
+        {
+          "value": "red",
+          "label": { "en": "Crimson Red", "zh-CN": "绯红 (Red)" }
+        }
+      ],
+      "label": {
+        "en": "Color Theme Accent",
+        "zh-CN": "颜色主题风格"
+      }
+    },
+    {
+      "key": "drawerSpeed",
+      "type": "enum",
+      "default": "normal",
+      "options": [
+        {
+          "value": "fast",
+          "label": { "en": "Fast (120ms)", "zh-CN": "快速 (120ms)" }
+        },
+        {
+          "value": "normal",
+          "label": { "en": "Balanced (200ms)", "zh-CN": "标准 (200ms)" }
+        },
+        {
+          "value": "smooth",
+          "label": { "en": "Smooth (320ms)", "zh-CN": "舒缓 (320ms)" }
+        },
+        {
+          "value": "off",
+          "label": { "en": "Instant (0ms)", "zh-CN": "无动画 (0ms)" }
+        }
+      ],
+      "label": {
+        "en": "Drawer Transition Speed",
+        "zh-CN": "抽屉展开/收起动画速度"
+      }
+    },
+    {
+      "key": "allowedRoots",
+      "type": "list",
+      "default": [],
+      "label": {
+        "en": "Allowed Workspace Root Directories",
+        "zh-CN": "允许访问的工作区根目录白名单"
+      }
+    },
+    {
+      "key": "autoOpenBrowser",
+      "type": "boolean",
+      "default": true,
+      "label": {
+        "en": "Auto-open Browser on Launch",
+        "zh-CN": "启动时自动打开浏览器"
+      }
+    }
+  ]
+}

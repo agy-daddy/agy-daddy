@@ -1,0 +1,93 @@
+const TOKEN_KEY = 'agy_remote_token';
+const CID_KEY = 'agy_remote_client_id';
+const DID_KEY = 'agy_remote_device_hint';
+
+export interface InitialUrlState {
+  token: string;
+  sessionId: string;
+  enteredFromLanding: boolean;
+}
+
+export function getClientId(): string {
+  try {
+    const existing = window.sessionStorage?.getItem(CID_KEY);
+    if (existing) return existing;
+    const next = `cli_${Math.random().toString(36).slice(2, 10)}`;
+    window.sessionStorage?.setItem(CID_KEY, next);
+    return next;
+  } catch {
+    return 'cli_default';
+  }
+}
+
+export function getDeviceHint(): string {
+  try {
+    const existing = window.localStorage?.getItem(DID_KEY);
+    if (existing) return existing;
+    const next = `dev_${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage?.setItem(DID_KEY, next);
+    return next;
+  } catch {
+    return 'dev_default';
+  }
+}
+
+export function saveToken(token: string): void {
+  const clean = token.trim();
+  if (!clean) return;
+  try {
+    window.sessionStorage?.setItem(TOKEN_KEY, clean);
+  } catch {}
+  try {
+    window.localStorage?.setItem(TOKEN_KEY, clean);
+  } catch {}
+}
+
+export function loadSavedToken(): string {
+  try {
+    return (
+      window.sessionStorage?.getItem(TOKEN_KEY) ||
+      window.localStorage?.getItem(TOKEN_KEY) ||
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+export function clearSavedToken(): void {
+  try {
+    window.sessionStorage?.removeItem(TOKEN_KEY);
+    window.localStorage?.removeItem(TOKEN_KEY);
+  } catch {}
+}
+
+export function extractTokenAndScrubUrl(): InitialUrlState {
+  let token = '';
+  let sessionId = '';
+  let enteredFromLanding = false;
+
+  try {
+    const url = new URL(window.location.href);
+    const urlToken = (url.searchParams.get('t') || url.searchParams.get('token') || '').trim();
+    sessionId = (url.searchParams.get('session') || '').trim();
+    enteredFromLanding =
+      url.searchParams.get('enter') === '1' || url.searchParams.get('direct') === '1';
+
+    if (urlToken) {
+      token = urlToken;
+      saveToken(urlToken);
+      url.searchParams.delete('t');
+      url.searchParams.delete('token');
+      const nextSearch = url.searchParams.toString();
+      const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+      window.history?.replaceState?.(null, '', nextUrl);
+    } else {
+      token = loadSavedToken();
+    }
+  } catch {
+    token = loadSavedToken();
+  }
+
+  return { token, sessionId, enteredFromLanding };
+}

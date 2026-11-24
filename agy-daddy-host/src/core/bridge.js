@@ -19,6 +19,7 @@ class DynamicBridgeServer {
     this.hostToken = options.hostToken || crypto.randomBytes(32).toString('hex');
     this.pluginTokens = new Map(); // pluginId -> token
     this.pluginRoutes = new Map(); // `${pluginId}:${subPath}` -> handler
+    this.pluginSystemRoutes = new Map(); // subPath (e.g. '/__settings') -> handler
     this.hostRoutes = new Map();   // `/host/...` -> handler
     this.server = null;
     this.port = 0;
@@ -48,11 +49,34 @@ class DynamicBridgeServer {
     return () => this.hostRoutes.delete(normalized);
   }
 
+  async invokeHostRoute(fullPath, body = {}, ctx = {}) {
+    const raw = String(fullPath || '').trim();
+    const normalized = raw.startsWith('/') ? raw : `/${raw}`;
+    const handler = this.hostRoutes.get(normalized);
+    if (!handler) {
+      const err = new Error(`HOST_CONTROL_ROUTE_BLOCKED: unknown host route ${normalized}`);
+      err.code = 'HOST_CONTROL_ROUTE_BLOCKED';
+      throw err;
+    }
+    const result = await handler(body, { path: normalized, ...ctx });
+    return result === undefined ? { ok: true } : result;
+  }
+
   registerPluginRoute(pluginId, subPath, handler) {
     const cleanSub = subPath.startsWith('/') ? subPath : `/${subPath}`;
     const key = `${pluginId}:${cleanSub}`;
     this.pluginRoutes.set(key, handler);
     return () => this.pluginRoutes.delete(key);
+  }
+
+  registerPluginSystemRoute(subPath, handler) {
+    const cleanSub = subPath.startsWith('/') ? subPath : `/${subPath}`;
+    this.pluginSystemRoutes.set(cleanSub, handler);
+    return () => {
+      if (this.pluginSystemRoutes.get(cleanSub) === handler) {
+        this.pluginSystemRoutes.delete(cleanSub);
+      }
+    };
   }
 
   unregisterPluginRoutes(pluginId) {
@@ -250,6 +274,12 @@ class DynamicBridgeServer {
     if (!expectedToken || !safeTokenEqual(providedToken, expectedToken)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: `Forbidden token for plugin ${pluginId}` }));
+      return;
+    }
+
+    const sysHandler = this.pluginSystemRoutes.get(subPath);
+    if (sysHandler) {
+      await this.invokeRoute(req, res, sysHandler, { pluginId, subPath, system: true });
       return;
     }
 

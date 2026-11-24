@@ -3,6 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  KNOWN_ANCHORS,
+  CONTRIBUTION_POINTS
+} = require('../src/contracts/constants');
+const {
   parseSemver,
   compareSemver,
   satisfies
@@ -11,6 +15,7 @@ const {
   validateManifest,
   validateSettingsSchema,
   validateSettingsValues,
+  redactWriteOnlySettings,
   evaluateTrustPolicy
 } = require('../src/contracts/manifest-validator');
 
@@ -58,6 +63,17 @@ test('manifest 校验：合法、非法 ID、主世界缺权限、未知贡献�
   const badContrib = validateManifest(makeBaseManifest({ contributes: { 'unknown.slot': [] } }));
   assert.equal(badContrib.ok, false);
 
+  // migrations 已彻底从 CONTRIBUTION_POINTS 移除
+  assert.equal(CONTRIBUTION_POINTS.includes('migrations'), false);
+  const legacyMig = validateManifest(makeBaseManifest({ contributes: { migrations: [{ from: 'legacy', files: [] }] } }));
+  assert.equal(legacyMig.ok, false);
+
+  // 14 个具名锚点含 4 个原生设置弹窗锚点
+  assert.equal(KNOWN_ANCHORS.length, 14);
+  for (const a of ['settings.dialog', 'settings.nav', 'settings.content', 'settings.openTrigger']) {
+    assert.ok(KNOWN_ANCHORS.includes(a), `Missing anchor: ${a}`);
+  }
+
   const serviceWithRealm = validateManifest(makeBaseManifest({
     provides: {
       services: { demo: { version: '1.0.0', realm: 'page-isolated' } },
@@ -68,16 +84,31 @@ test('manifest 校验：合法、非法 ID、主世界缺权限、未知贡献�
   assert.equal(serviceWithRealm.ok, true);
 });
 
-test('声明式设置 schema 与值校验', () => {
+test('声明式设置 schema（含可选 actions）与值校验', () => {
   const schema = {
     version: 1,
     fields: [
       { key: 'enabled', type: 'boolean', default: true },
       { key: 'port', type: 'number', min: 1024, max: 65535, default: 18766 },
       { key: 'mode', type: 'enum', options: ['auto', 'direct'], default: 'auto' }
+    ],
+    actions: [
+      { id: 'probe', command: 'proxy.probe', label: { 'zh-CN': '测试连通性', en: 'Probe' } },
+      { id: 'reset', command: 'proxy.reset', label: '重置', args: ['soft'] }
     ]
   };
   assert.equal(validateSettingsSchema(schema).ok, true);
+
+  const badActions = validateSettingsSchema({
+    fields: [],
+    actions: [
+      { id: 'dup', command: 'a.b', label: 'OK' },
+      { id: 'dup', command: '', label: '' },
+      { id: 'badArgs', command: 'a.c', label: 'Bad', args: 'not-array' }
+    ]
+  });
+  assert.equal(badActions.ok, false);
+  assert.ok(badActions.errors.length >= 3);
 
   const okRes = validateSettingsValues(schema, { port: 20000 });
   assert.equal(okRes.ok, true);
@@ -86,6 +117,103 @@ test('声明式设置 schema 与值校验', () => {
   const badRes = validateSettingsValues(schema, { port: 80, mode: 'invalid' });
   assert.equal(badRes.ok, false);
   assert.equal(badRes.errors.length, 2);
+
+  // visibleWhen、secret 与 writeOnly 校验
+  const condSchema = {
+    fields: [
+      { key: 'tunnelMode', type: 'enum', options: ['quick', 'named'], default: 'quick' },
+      { key: 'tunnelHostname', type: 'string', default: '', visibleWhen: { key: 'tunnelMode', equals: 'named' } },
+      { key: 'tunnelToken', type: 'string', default: '', secret: true, writeOnly: true, visibleWhen: { key: 'tunnelMode', in: ['named'] } }
+    ]
+  };
+  assert.equal(validateSettingsSchema(condSchema).ok, true);
+
+  const redactedSet = redactWriteOnlySettings(condSchema, {
+    tunnelMode: 'named',
+    tunnelHostname: 'https://ag.example.com',
+    tunnelToken: 'secret-token-abc'
+  });
+  assert.equal(redactedSet.values.tunnelToken, '');
+  assert.equal(redactedSet.values.tunnelHostname, 'https://ag.example.com');
+  assert.deepEqual(redactedSet.secretState, { tunnelToken: true });
+
+  const redactedEmpty = redactWriteOnlySettings(condSchema, {
+    tunnelMode: 'named',
+    tunnelHostname: '',
+    tunnelToken: ''
+  });
+  assert.equal(redactedEmpty.values.tunnelToken, '');
+  assert.deepEqual(redactedEmpty.secretState, { tunnelToken: false });
+
+  const badCondSchema = validateSettingsSchema({
+    fields: [
+      { key: 'a', type: 'string', secret: 'yes', writeOnly: 'yes', visibleWhen: { key: '' } }
+    ]
+  });
+  assert.equal(badCondSchema.ok, false);
+  assert.ok(badCondSchema.errors.length >= 3);
+
+  // multiline string 与 ordered-preset-list schema 校验
+  const richSchema = validateSettingsSchema({
+    fields: [
+      { key: 'promptTpl', type: 'string', multiline: true, rows: 8, resetToDefault: true, default: 'hi' },
+      {
+        key: 'promptModal',
+        type: 'string',
+        editorMode: 'markdown-modal',
+        openButtonLabel: { 'zh-CN': '查看 / 编辑', en: 'Edit' },
+        modalTitle: '提示词详情',
+        resetToDefault: true,
+        default: '# Title'
+      },
+      {
+        key: 'shortcutKey',
+        type: 'string',
+        editorMode: 'shortcut',
+        resetToDefault: true,
+        default: 'Alt+Shift+O'
+      },
+      {
+        key: 'quickItems',
+        type: 'list',
+        default: ['a'],
+        itemEditor: {
+          kind: 'ordered-preset-list',
+          allowCustom: true,
+          dynamicPresetsCommand: 'demo.listDynamic',
+          dynamicPoolTitle: { 'zh-CN': '动态可添加池', en: 'Dynamic Pool' },
+          dynamicEmptyHint: '暂无',
+          dynamicAction: {
+            id: 'refresh-dynamic',
+            command: 'demo.refreshDynamic',
+            label: { 'zh-CN': '手动生成', en: 'Generate' }
+          },
+          presets: [{ id: 'a', label: 'A', text: 'cmd A' }, { id: 'b', label: 'B', text: 'cmd B' }]
+        }
+      }
+    ]
+  });
+  assert.equal(richSchema.ok, true);
+
+  const badRichSchema = validateSettingsSchema({
+    fields: [
+      { key: 'promptTpl', type: 'string', multiline: 'yes', rows: 99, resetToDefault: 'yes' },
+      { key: 'badModal', type: 'string', editorMode: 'popup-unknown', openButtonLabel: 123, modalTitle: false },
+      {
+        key: 'quickItems',
+        type: 'list',
+        itemEditor: {
+          kind: 'ordered-preset-list',
+          allowCustom: 'no',
+          dynamicPresetsCommand: 'bad command!',
+          dynamicAction: { command: 'bad cmd', label: '' },
+          presets: [{ id: '' }]
+        }
+      }
+    ]
+  });
+  assert.equal(badRichSchema.ok, false);
+  assert.ok(badRichSchema.errors.length >= 10);
 });
 
 test('信任分级策略 T0 / T1 / T2 与权限隔离判定', () => {

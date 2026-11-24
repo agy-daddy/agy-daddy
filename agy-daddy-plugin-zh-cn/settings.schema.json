@@ -1,38 +1,113 @@
 {
-  "title": { "zh-CN": "客户端中文汉化", "en": "Chinese Localization" },
+  "title": {
+    "zh-CN": "客户端多语言",
+    "zh-TW": "用戶端多語言",
+    "ja": "クライアント多言語",
+    "ko": "클라이언트 다국어",
+    "es": "Localización multilingüe",
+    "pt": "Localização multilíngue",
+    "fr": "Localisation multilingue",
+    "ru": "Мультиязычная локализация",
+    "it": "Localizzazione multilingue",
+    "en": "Client Multi-Language Localization"
+  },
   "fields": [
     {
       "key": "lang",
       "type": "enum",
       "default": "zh",
+      "group": { "zh-CN": "界面与品牌", "en": "Language & Branding" },
       "options": [
-        { "value": "zh", "label": "简体中文" },
+        { "value": "zh", "label": "简体中文 (zh-CN)" },
+        { "value": "zh-TW", "label": "繁體中文 (zh-TW)" },
+        { "value": "ja", "label": "日本語 (Japanese)" },
+        { "value": "ko", "label": "한국어 (Korean)" },
+        { "value": "es", "label": "Español (Spanish)" },
+        { "value": "pt", "label": "Português (Portuguese)" },
+        { "value": "fr", "label": "Français (French)" },
+        { "value": "ru", "label": "Русский (Russian)" },
+        { "value": "it", "label": "Italiano (Italian)" },
         { "value": "en", "label": "English (原文)" }
       ],
-      "label": { "zh-CN": "界面语言", "en": "UI Language" }
+      "label": {
+        "zh-CN": "界面语言",
+        "zh-TW": "介面語言",
+        "ja": "表示言語",
+        "ko": "인터페이스 언어",
+        "es": "Idioma de interfaz",
+        "pt": "Idioma da interface",
+        "fr": "Langue de l'interface",
+        "ru": "Язык интерфейса",
+        "it": "Lingua interfaccia",
+        "en": "UI Language"
+      },
+      "description": {
+        "zh-CN": "切换 Antigravity 宿主界面显示语言（支持简繁中文、日韩、西葡法俄意及英文原文），即切即生效无需重启",
+        "en": "Switch Antigravity host UI display language immediately without restart (10 languages)"
+      }
     },
     {
       "key": "brandTitle",
       "type": "enum",
       "default": "english",
+      "group": { "zh-CN": "界面与品牌", "en": "Language & Branding" },
       "options": [
         { "value": "english", "label": "保留 Antigravity 英文" },
-        { "value": "translated", "label": "显示“反重力”中文标题" },
+        { "value": "translated", "label": "显示当前语言本地化品牌标题" },
         { "value": "hidden", "label": "隐藏品牌标题" }
       ],
-      "label": { "zh-CN": "左上角品牌标题显示方式", "en": "Brand title display" }
+      "label": { "zh-CN": "左上角品牌标题", "en": "Brand title display" },
+      "description": { "zh-CN": "控制窗口左上角品牌标题的呈现（保留英文/本地化译名）或隐藏以节省顶栏空间", "en": "Control top-left brand label text (English / localized) or hide it to free topbar space" }
     },
     {
       "key": "englishLabels",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "模型与权限选项名保留英文", "en": "Keep option labels in English" }
+      "group": { "zh-CN": "界面与品牌", "en": "Language & Branding" },
+      "label": { "zh-CN": "模型与权限选项保留英文", "en": "Keep option labels in English" },
+      "description": { "zh-CN": "在任意界面语言下保留模型名称与权限档位原始英文术语", "en": "Localize UI chrome while preserving original English model and policy names" }
+    },
+    {
+      "key": "translateThinking",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "按需文本翻译", "en": "On-Demand Translation" },
+      "label": { "zh-CN": "翻译思考过程", "en": "Translate thinking process" },
+      "description": { "zh-CN": "开启后自动翻译思考耗时标签与展开后的思考块内容；关闭后思考区保持原文", "en": "Translate thinking duration labels and expanded thinking blocks; keep original text when disabled" }
+    },
+    {
+      "key": "translateConversationTitles",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "按需文本翻译", "en": "On-Demand Translation" },
+      "label": { "zh-CN": "翻译会话标题", "en": "Translate conversation titles" },
+      "description": { "zh-CN": "开启后翻译侧边栏会话标题（保留用户手动重命名的自定义标题）；关闭后会话标题保持原文", "en": "Translate sidebar conversation titles (custom renamed titles are always preserved); keep original titles when disabled" }
     },
     {
       "key": "enableRemoteThinkingTranslation",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "允许远程翻译思考片段（会外发选中文本至 translate.googleapis.com，默认关闭）", "en": "Enable remote translation via translate.googleapis.com (default OFF)" }
+      "group": { "zh-CN": "按需文本翻译", "en": "On-Demand Translation" },
+      "label": { "zh-CN": "允许远程翻译思考片段", "en": "Enable remote thinking translation" },
+      "description": { "zh-CN": "默认关闭；开启后仅在触发时将选中内容发送至 translate.googleapis.com（按当前语言目标翻译）", "en": "Default OFF; sends selected snippet to translate.googleapis.com for the active target language only on trigger" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "toggle-lang",
+      "command": "zh-cn.toggle-lang",
+      "label": {
+        "zh-CN": "切换当前语言 / English 原文",
+        "zh-TW": "切換目前語言 / English 原文",
+        "ja": "現在の言語 / English 原文を切り替え",
+        "ko": "현재 언어 / English 원문 전환",
+        "es": "Alternar idioma actual / English",
+        "pt": "Alternar idioma atual / English",
+        "fr": "Basculer langue actuelle / English",
+        "ru": "Переключить язык / English",
+        "it": "Cambia lingua corrente / English",
+        "en": "Toggle Active Language / English"
+      }
     }
   ]
 }

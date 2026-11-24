@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { safeWriteJsonSync, safeReadJsonSync, PluginDataStore } = require('../src/core/storage');
-const { migrateLegacyData, detectLegacySuite } = require('../src/core/migration');
+const paths = require('../src/core/paths');
+const hostIndex = require('../src/index');
+const { DEFAULT_HOST_SETTINGS, normalizeHostSettings } = require('../src/core/daemon');
 
 function makeTempDir(prefix = 'agy-storage-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -65,83 +67,58 @@ test('safeReadJsonSync 损坏文件隔离与备份恢复', () => {
   }
 });
 
-test('旧 AntigravityContextMeter 只读无损迁移与幂等性', () => {
-  const root = makeTempDir('agy-mig-');
+test('彻底移除历史迁移包袱且 host-settings.json 归一化与持久化正常', () => {
+  const hostRoot = path.resolve(__dirname, '..');
+  assert.equal(fs.existsSync(path.join(hostRoot, 'src', 'core', 'migration.js')), false);
+  assert.equal(fs.existsSync(path.join(hostRoot, 'plugins', 'legacy-suite')), false);
+  assert.equal(paths.getLegacyStateDir, undefined);
+  assert.equal(hostIndex.migration, undefined);
+
+  const root = makeTempDir('agy-host-settings-');
   try {
-    const legacyDir = path.join(root, 'legacy');
-    const stateDir = path.join(root, 'state');
-    fs.mkdirSync(legacyDir, { recursive: true });
+    const settingsPath = paths.getHostSettingsPath({ stateDir: root });
+    assert.equal(settingsPath, path.join(root, 'host-settings.json'));
 
-    safeWriteJsonSync(path.join(legacyDir, 'token-pricing-ledger.json'), { records: [{ id: 'c1', tokens: 100 }] });
-    safeWriteJsonSync(path.join(legacyDir, 'remote-config.json'), { port: 18765, token: 'secret-tok' });
-    safeWriteJsonSync(path.join(legacyDir, 'zh-translation-cache.json'), { Hello: '你好' });
-    safeWriteJsonSync(path.join(legacyDir, 'modules.json'), {
-      modules: {
-        proxy: { enabled: true, proxyUrl: 'http://127.0.0.1:7897' },
-        chinese: { enabled: true, language: 'zh-CN' }
-      }
-    });
-    safeWriteJsonSync(path.join(legacyDir, 'settings.json'), {
-      uiPreferences: {
-        terminalApp: 'ghostty',
-        autoAccept: false,
-        autoCompact: true
-      }
-    });
-
-    // dryRun 不落盘
-    const dry = migrateLegacyData({ legacyStateDir: legacyDir, stateDir, dryRun: true });
-    assert.equal(dry.ok, true);
-    assert.ok(dry.copied.length >= 6);
-    assert.equal(fs.existsSync(path.join(stateDir, 'plugins-data')), false);
-
-    // 真实只读迁移
-    const real = migrateLegacyData({ legacyStateDir: legacyDir, stateDir });
-    assert.equal(real.ok, true);
-    assert.equal(real.skipped, false);
-    assert.deepEqual(
-      safeReadJsonSync(path.join(stateDir, 'plugins-data', 'agy-daddy.usage', 'token-pricing-ledger.json')).data,
-      { records: [{ id: 'c1', tokens: 100 }] }
+    const merged = normalizeHostSettings(
+      {
+        themeMode: 'dark',
+        heatPreset: 'violet',
+        customColors: { accent: '#a78bfa' },
+        topbarPins: { 'agy-daddy.proxy:proxy': false },
+        topbarOrder: ['agy-daddy.context:ctx', 'agy-daddy.quota:quota'],
+        maxVisibleUnits: 4
+      },
+      DEFAULT_HOST_SETTINGS
     );
-    assert.equal(
-      safeReadJsonSync(path.join(stateDir, 'plugins-data', 'agy-daddy.proxy', 'config.json')).data.proxyUrl,
-      'http://127.0.0.1:7897'
-    );
-    assert.equal(
-      safeReadJsonSync(path.join(stateDir, 'plugins-data', 'agy-daddy.cli', 'settings.json')).data.terminalApp,
-      'ghostty'
-    );
-    // 确认原旧目录文件未被修改或删除
-    assert.equal(fs.existsSync(path.join(legacyDir, 'token-pricing-ledger.json')), true);
-
-    // 二次运行幂等跳过
-    const second = migrateLegacyData({ legacyStateDir: legacyDir, stateDir });
-    assert.equal(second.alreadyMigrated, true);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('旧套件共存只读探测（LaunchAgent、CLI 软链、live-host 进程）', () => {
-  const root = makeTempDir('agy-legacy-detect-');
-  try {
-    const plist = path.join(root, 'com.demo.ag-live-helper.plist');
-    const cliTarget = path.join(root, 'target-cli');
-    const cliLink = path.join(root, 'ag-context-meter');
-    fs.writeFileSync(plist, '<plist/>');
-    fs.writeFileSync(cliTarget, '#!/bin/sh\n');
-    fs.symlinkSync(cliTarget, cliLink);
-
-    const det = detectLegacySuite({
-      launchAgentPath: plist,
-      cliSymlinkPath: cliLink,
-      legacyStateDir: path.join(root, 'missing'),
-      psOutput: '  30439 node /Volumes/external/Projects/antigravity-suite/live-host.js\n'
+    assert.deepEqual(merged, {
+      themeMode: 'dark',
+      heatPreset: 'violet',
+      customColors: { accent: '#a78bfa' },
+      topbarPins: { 'agy-daddy.proxy:proxy': false },
+      topbarOrder: ['agy-daddy.context:ctx', 'agy-daddy.quota:quota'],
+      maxVisibleUnits: 4,
+      showTopbarEntry: true,
+      injectNativeSettings: true,
+      autoSyncNativeOnInstall: true
     });
-    assert.equal(det.detected, true);
-    assert.equal(det.launchAgent.exists, true);
-    assert.equal(det.cliSymlink.exists, true);
-    assert.deepEqual(det.runningLiveHostPids, [30439]);
+
+    const toggledOff = normalizeHostSettings(
+      {
+        showTopbarEntry: false,
+        injectNativeSettings: false,
+        autoSyncNativeOnInstall: false
+      },
+      merged
+    );
+    assert.equal(toggledOff.showTopbarEntry, false);
+    assert.equal(toggledOff.injectNativeSettings, false);
+    assert.equal(toggledOff.autoSyncNativeOnInstall, false);
+
+    const wr = safeWriteJsonSync(settingsPath, merged);
+    assert.equal(wr.ok, true);
+    const rd = safeReadJsonSync(settingsPath);
+    assert.equal(rd.ok, true);
+    assert.deepEqual(rd.data, merged);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

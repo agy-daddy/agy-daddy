@@ -3,6 +3,27 @@
 const crypto = require('node:crypto');
 
 const DEFAULT_REMOTE_PORT = 18765;
+const PERMISSION_LEVELS = Object.freeze(['L0', 'L1', 'L2']);
+const PERMISSION_RANK = Object.freeze({ L0: 0, L1: 1, L2: 2 });
+const DEFAULT_CONFIRM_TTL_MS = 60 * 1000;
+
+function normalizePermissionLevel(raw, allowRemoteWriteFallback = false) {
+  if (typeof raw === 'string') {
+    const clean = raw.trim().toUpperCase();
+    if (clean === 'L0' || clean === '0' || clean === 'READONLY' || clean === 'READ-ONLY') return 'L0';
+    if (clean === 'L1' || clean === '1' || clean === 'CHAT' || clean === 'WRITE' || clean === 'WRITABLE') return 'L1';
+    if (clean === 'L2' || clean === '2' || clean === 'WORKSPACE') return 'L2';
+  } else if (typeof raw === 'boolean') {
+    return raw ? 'L1' : 'L0';
+  }
+  return allowRemoteWriteFallback === true ? 'L1' : 'L0';
+}
+
+function isPermissionAtLeast(current, required) {
+  const curRank = PERMISSION_RANK[normalizePermissionLevel(current)] ?? 0;
+  const reqRank = PERMISSION_RANK[normalizePermissionLevel(required)] ?? 0;
+  return curRank >= reqRank;
+}
 
 const DEFAULT_CHANNELS = Object.freeze({
   loopback: true,
@@ -65,6 +86,7 @@ function isLanIp(ip) {
 function classifyRequestChannel(req, cfg = {}) {
   const headers = req?.headers || {};
   const hostHeader = String(headers.host || '').split(':')[0].trim().toLowerCase();
+  const forwardedHost = String(headers['x-forwarded-host'] || '').split(',')[0].split(':')[0].trim().toLowerCase();
   const remoteIp = String(req?.socket?.remoteAddress || req?.remoteAddress || '').replace(/^::ffff:/, '').trim().toLowerCase();
 
   // 1. Cloudflare 隧道流量识别
@@ -78,8 +100,13 @@ function classifyRequestChannel(req, cfg = {}) {
     } catch {}
   }
 
-  // 2. Tailscale 私网流量识别
-  if (hostHeader.endsWith('.ts.net') || isTailscaleIp(remoteIp)) {
+  // 2. Tailscale 私网流量识别（含 tailscale serve 反向代理头）
+  if (
+    hostHeader.endsWith('.ts.net') ||
+    forwardedHost.endsWith('.ts.net') ||
+    Boolean(headers['tailscale-user-login']) ||
+    isTailscaleIp(remoteIp)
+  ) {
     return 'tailscale';
   }
 
@@ -201,12 +228,90 @@ function safeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function createConfirmToken(secret, { action = '', ttlMs = DEFAULT_CONFIRM_TTL_MS, now = Date.now() } = {}) {
+  const key = String(secret || '');
+  if (!key) {
+    throw new Error('CONFIRM_SECRET_REQUIRED');
+  }
+  const parsedTtl = Number.isFinite(Number(ttlMs)) ? Math.floor(Number(ttlMs)) : DEFAULT_CONFIRM_TTL_MS;
+  const boundedTtl = Math.max(1000, Math.min(5 * 60 * 1000, parsedTtl));
+  const exp = Math.floor(Number(now)) + boundedTtl;
+  const nonce = crypto.randomBytes(8).toString('hex');
+  const act = typeof action === 'string' ? action : '';
+  const payloadB64 = Buffer.from(JSON.stringify({ exp, nonce, act }), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', key).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+function verifyConfirmToken(token, secret, { action = '', now = Date.now() } = {}) {
+  if (typeof token !== 'string' || typeof secret !== 'string' || !token || !secret) {
+    return false;
+  }
+  const parts = token.trim().split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return false;
+  }
+  const [payloadB64, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', secret).update(payloadB64).digest('base64url');
+  if (!safeTokenEqual(sig, expectedSig)) {
+    return false;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch {
+    return false;
+  }
+  if (!payload || typeof payload !== 'object' || !Number.isFinite(Number(payload.exp))) {
+    return false;
+  }
+  if (Number(now) > Number(payload.exp)) {
+    return false;
+  }
+  if (action && payload.act && String(payload.act) !== String(action)) {
+    return false;
+  }
+  return true;
+}
+
+function parseTailscaleServeHttpsUrl(rawJsonOrObj, targetPort) {
+  const portNum = Number(targetPort);
+  if (!Number.isInteger(portNum) || portNum <= 0) return '';
+  let data = rawJsonOrObj;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return ''; }
+  }
+  if (!data || typeof data !== 'object' || !data.Web || typeof data.Web !== 'object') return '';
+  const targetRe = new RegExp(`^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost):${portNum}(?:\\/.*)?$`, 'i');
+
+  for (const [hostPort, spec] of Object.entries(data.Web)) {
+    const handlers = spec?.Handlers;
+    if (!handlers || typeof handlers !== 'object') continue;
+    for (const [mountPath, handler] of Object.entries(handlers)) {
+      const proxyTarget = String(handler?.Proxy || '').trim();
+      if (!targetRe.test(proxyTarget)) continue;
+      const cleanHost = String(hostPort || '').replace(/:443$/, '');
+      if (!cleanHost) continue;
+      const cleanMount = mountPath && mountPath !== '/' ? mountPath.replace(/\/+$/, '') : '';
+      return `https://${cleanHost}${cleanMount}`;
+    }
+  }
+  return '';
+}
+
 module.exports = {
   DEFAULT_REMOTE_PORT,
+  PERMISSION_LEVELS,
+  PERMISSION_RANK,
+  DEFAULT_CONFIRM_TTL_MS,
   DEFAULT_CHANNELS,
   DEFAULT_REMOTE_DISPLAY_CONFIG,
+  normalizePermissionLevel,
+  isPermissionAtLeast,
   sanitizeRemoteDisplayConfig,
   normalizeChannelConfig,
+  isTailscaleIp,
+  isLanIp,
   classifyRequestChannel,
   isChannelAllowed,
   extractCloudflareTunnelToken,
@@ -214,5 +319,8 @@ module.exports = {
   validateCloudflareTunnelToken,
   validateTunnelHostname,
   generatePairingToken,
-  safeTokenEqual
+  safeTokenEqual,
+  createConfirmToken,
+  verifyConfirmToken,
+  parseTailscaleServeHttpsUrl
 };

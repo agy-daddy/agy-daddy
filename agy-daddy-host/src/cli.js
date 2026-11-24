@@ -3,18 +3,23 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const readline = require('readline');
+const { spawnSync, spawn } = require('child_process');
 const { getStateDir, isTestMode } = require('./core/paths');
-const { resolveActiveCdpTarget } = require('./core/cdp');
+const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./core/cdp');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./core/storage');
 const { runDoctor, exportDiagnosticBundle } = require('./core/doctor');
-const { migrateLegacyData } = require('./core/migration');
 const {
   installPlugin,
   linkPlugin,
   enablePlugin,
   disablePlugin,
   rollbackPlugin,
+  updatePluginNativeConfig,
+  rollbackPluginNativeRules,
+  inspectPluginNativeStatus,
+  readInstalledIndex,
+  readManifestFromDir,
   uninstallPlugin,
   listInstalledPlugins
 } = require('./core/installer');
@@ -24,13 +29,34 @@ const {
   removeAutoStart,
   installMacLauncherApp,
   planAntigravityRestart,
+  relaunchAntigravityWithCdp,
   checkAndPullGitUpdate
 } = require('./core/lifecycle');
+const { createLiveWatchdog } = require('./core/live-watchdog');
 const { auditUpstreamsAndBaselines } = require('./core/upstreams');
 
 const BOOLEAN_FLAGS = new Set([
-  'json', 'dry-run', 'force', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token'
+  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native'
 ]);
+
+function openBrowserUrl(url) {
+  try {
+    const spec = process.platform === 'darwin'
+      ? { bin: 'open', args: [url] }
+      : (process.platform === 'win32'
+        ? { bin: 'cmd', args: ['/c', 'start', '', url], windowsHide: true }
+        : { bin: 'xdg-open', args: [url] });
+    const child = spawn(spec.bin, spec.args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: Boolean(spec.windowsHide)
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function parseFlags(argv) {
   const flags = {};
@@ -53,11 +79,35 @@ function parseFlags(argv) {
       }
     } else if (a === '-h') {
       flags.help = true;
+    } else if (a === '-y') {
+      flags.yes = true;
     } else {
       positional.push(a);
     }
   }
   return { flags, positional };
+}
+
+function promptConfirm(questionText) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr
+    });
+    rl.question(questionText, (answer) => {
+      rl.close();
+      const norm = String(answer || '').trim().toLowerCase();
+      resolve(norm === 'y' || norm === 'yes');
+    });
+  });
+}
+
+function parseBoolFlagValue(raw) {
+  if (typeof raw === 'boolean') return raw;
+  const s = String(raw || '').trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+  throw new Error(`Invalid boolean flag value: ${String(raw)}`);
 }
 
 function stopRunningDaemon(stateDir = getStateDir()) {
@@ -98,7 +148,6 @@ async function main(argv = process.argv.slice(2)) {
       console.log(`- 宿主窗口: ${report.antigravity.cdpTargetsCount > 0 ? `✅ CDP 已连接 (端口 ${report.antigravity.cdpPort})` : '⚪ 未检测到活跃 CDP 窗口'}`);
       console.log(`- 锚点注册表: ${report.anchors.count} 个具名锚点`);
       console.log(`- 已装插件: ${report.plugins.count} 个`);
-      console.log(`- 旧套件痕迹: ${report.legacySuite.detected ? '⚠️ 检测到残留（可保持隔离或迁移后手动停用）' : '✅ 无残留'}`);
     }
     return;
   }
@@ -115,15 +164,8 @@ async function main(argv = process.argv.slice(2)) {
       },
       daemon: report.daemon,
       antigravity: report.antigravity,
-      plugins: report.plugins,
-      legacySuite: report.legacySuite
+      plugins: report.plugins
     }, null, 2));
-    return;
-  }
-
-  if (cmd === 'migrate') {
-    const res = migrateLegacyData({ dryRun: Boolean(flags['dry-run']), force: Boolean(flags.force) });
-    console.log(JSON.stringify(res, null, 2));
     return;
   }
 
@@ -135,8 +177,25 @@ async function main(argv = process.argv.slice(2)) {
 
   if (cmd === 'restart') {
     const plan = planAntigravityRestart({ allowSelfTerminate: Boolean(flags.force) });
-    console.log(JSON.stringify({ ...plan, dryRun: Boolean(flags['dry-run']) }, null, 2));
-    if (!plan.ok) process.exitCode = 1;
+    if (flags['dry-run'] || isTestMode()) {
+      console.log(JSON.stringify({ ...plan, dryRun: Boolean(flags['dry-run']) }, null, 2));
+      if (!plan.ok) process.exitCode = 1;
+      return;
+    }
+    if (!plan.ok) {
+      console.log(JSON.stringify(plan, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    const res = await relaunchAntigravityWithCdp({ allowSelfTerminate: Boolean(flags.force) });
+    if (flags.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (res.ok) {
+      console.log(`✅ 已带调试端口重启 Antigravity (CDP :${res.port || '?'}, 目标 ${res.targetsCount || 0} 个)`);
+    } else {
+      console.error(`❌ 重启失败 (${res.reason || 'UNKNOWN'}): ${res.message || res.error || ''}`);
+    }
+    if (!res.ok) process.exitCode = 1;
     return;
   }
 
@@ -188,6 +247,58 @@ async function main(argv = process.argv.slice(2)) {
       allowRemoteWrite: cfg.allowRemoteWrite === true,
       channels: cfg.channels || {},
       tokenRotated: Boolean(flags['reset-token'])
+    }, null, 2));
+    return;
+  }
+
+  if (cmd === 'web') {
+    const crypto = require('crypto');
+    const cfgPath = path.join(getStateDir(), 'plugins-data', 'agy-daddy.web', 'web-config.json');
+    const existed = fs.existsSync(cfgPath);
+    const cfg = safeReadJsonSync(cfgPath, {}, { quarantineCorrupt: false }).data || {};
+    const tokenRotated = Boolean(flags['reset-token']);
+    let dirty = !existed;
+
+    if (tokenRotated || typeof cfg.token !== 'string' || !cfg.token.trim()) {
+      cfg.token = crypto.randomBytes(24).toString('hex');
+      dirty = true;
+    }
+
+    let port = Number.isInteger(cfg.port) && cfg.port >= 1 && cfg.port <= 65535 ? cfg.port : 18767;
+    if (flags.port !== undefined) {
+      if (flags.port === true || !/^\d+$/.test(String(flags.port).trim())) {
+        throw new Error(`Invalid port: ${String(flags.port)}`);
+      }
+      const parsedPort = Number(flags.port);
+      if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        throw new Error(`Port out of range (1-65535): ${parsedPort}`);
+      }
+      if (cfg.port !== parsedPort) {
+        dirty = true;
+      }
+      port = parsedPort;
+    }
+
+    if (cfg.port !== port) {
+      cfg.port = port;
+      dirty = true;
+    }
+    if (dirty) {
+      cfg.updatedAt = new Date().toISOString();
+      safeWriteJsonSync(cfgPath, cfg);
+    }
+
+    const url = `http://127.0.0.1:${port}/?token=${cfg.token}`;
+    const shouldOpen = !flags['no-open'] && !isTestMode();
+    const opened = shouldOpen ? openBrowserUrl(url) : false;
+
+    console.log(JSON.stringify({
+      ok: true,
+      url,
+      port,
+      opened,
+      tokenRotated,
+      configPath: cfgPath
     }, null, 2));
     return;
   }
@@ -264,7 +375,12 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (sub === 'install') {
       if (!target) throw new Error('Usage: agy-daddy plugin install <name|github:...|npm:...|local:...>');
-      const res = await installPlugin(target, { trustLevel: flags.trust, grantedPermissions, copy: Boolean(flags.copy) });
+      const res = await installPlugin(target, {
+        trustLevel: flags.trust,
+        grantedPermissions,
+        copy: Boolean(flags.copy),
+        defaultNativeEnabled: flags['no-native'] ? false : undefined
+      });
       console.log(JSON.stringify(res, null, 2));
       return;
     }
@@ -289,17 +405,161 @@ async function main(argv = process.argv.slice(2)) {
       console.log(JSON.stringify(rollbackPlugin(target), null, 2));
       return;
     }
+    if (sub === 'native') {
+      if (!target) throw new Error('Usage: agy-daddy plugin native <pluginId> [--rules=true|false] [--skills=...] [--mcp=...] [--hooks=...] [--rollback-rules]');
+      if (flags['rollback-rules']) {
+        const rbRes = rollbackPluginNativeRules(target, {
+          backupId: typeof flags.backup === 'string' ? flags.backup : undefined
+        });
+        console.log(JSON.stringify(rbRes, null, 2));
+        if (!rbRes.ok) process.exitCode = 1;
+        return;
+      }
+      const patch = {};
+      for (const kind of ['rules', 'skills', 'mcp', 'hooks']) {
+        if (flags[kind] !== undefined) {
+          patch[kind] = parseBoolFlagValue(flags[kind]);
+        }
+      }
+      if (Object.keys(patch).length > 0) {
+        const updRes = updatePluginNativeConfig(target, patch);
+        console.log(JSON.stringify(updRes, null, 2));
+        if (!updRes.ok) process.exitCode = 1;
+        return;
+      }
+      const idx = readInstalledIndex();
+      const rec = idx.plugins?.[target];
+      if (!rec) throw new Error(`Plugin not installed: ${target}`);
+      let manifest = null;
+      if (rec.installPath && fs.existsSync(rec.installPath)) {
+        try { manifest = readManifestFromDir(rec.installPath); } catch {}
+      }
+      const status = inspectPluginNativeStatus(target, manifest, {
+        pluginDir: rec.installPath,
+        nativeConfig: rec.nativeConfig
+      });
+      console.log(JSON.stringify({ ok: true, id: target, nativeInfo: status }, null, 2));
+      return;
+    }
     if (sub === 'uninstall') {
-      if (!target) throw new Error('Usage: agy-daddy plugin uninstall <pluginId>');
-      console.log(JSON.stringify(uninstallPlugin(target), null, 2));
+      if (!target) throw new Error('Usage: agy-daddy plugin uninstall <pluginId> [--yes]');
+      const confirmed = Boolean(flags.yes || flags.y || flags.force);
+      const res = uninstallPlugin(target, {
+        requireNativeConfirm: true,
+        confirmNativeDelete: confirmed
+      });
+      if (res.needsNativeUninstallConfirm) {
+        if (process.stdin.isTTY && process.stdout.isTTY) {
+          const info = res.nativeInfo || {};
+          console.error(`⚠️ 插件 ${target} 包含原生扩展，卸载将同步删除：${info.targetDir}`);
+          if (info.declared) {
+            const parts = [];
+            if (info.declared.rules?.length) parts.push(`Rules(${info.declared.rules.join(', ')})`);
+            if (info.declared.skills?.length) parts.push(`Skills(${info.declared.skills.join(', ')})`);
+            if (info.declared.mcp?.length) parts.push(`MCP(${info.declared.mcp.join(', ')})`);
+            if (info.declared.hooks?.length) parts.push(`Hooks(${info.declared.hooks.join(', ')})`);
+            if (parts.length) console.error(`   包含原生项：${parts.join(' · ')}`);
+          }
+          const agreed = await promptConfirm(`确认删除上述原生扩展并卸载 ${target}? [y/N] `);
+          if (!agreed) {
+            console.log(JSON.stringify({ ok: false, cancelled: true, id: target }, null, 2));
+            process.exitCode = 1;
+            return;
+          }
+          console.log(JSON.stringify(uninstallPlugin(target, { confirmNativeDelete: true }), null, 2));
+          return;
+        }
+        console.log(JSON.stringify({
+          ...res,
+          hint: 'Re-run with --yes to confirm deleting native extension artifacts.'
+        }, null, 2));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(res, null, 2));
       return;
     }
     throw new Error(`Unknown plugin subcommand: ${sub}`);
   }
 
   if (cmd === 'live') {
-    const daemon = new AgyDaddyDaemon();
-    const started = await daemon.start();
+    let watchdog = null;
+    const daemon = new AgyDaddyDaemon({
+      onRestartDaemon: async () => {
+        if (watchdog) {
+          watchdog.stop();
+          watchdog = null;
+        }
+        if (process.env.AGY_DADDY_LAUNCHD === '1') {
+          await daemon.stop().catch(() => {});
+          process.exit(75);
+        }
+        const args = [
+          __filename,
+          'live',
+          '--replace',
+          ...(flags['no-auto-relaunch'] ? ['--no-auto-relaunch'] : [])
+        ];
+        const child = spawn(process.execPath, args, {
+          detached: true,
+          stdio: 'ignore',
+          env: { ...process.env }
+        });
+        child.unref();
+      }
+    });
+    if (flags.replace) {
+      const stopRes = stopRunningDaemon(daemon.stateDir);
+      if (stopRes.stopped && !stopRes.exited) {
+        throw new Error(`停止旧守护进程 (PID ${stopRes.pid}) 超时，请先手动停止后再试`);
+      }
+    }
+    let started;
+    try {
+      started = await daemon.start();
+    } catch (err) {
+      if (err?.code === 'DAEMON_ALREADY_RUNNING') {
+        if (process.env.AGY_DADDY_LAUNCHD === '1') {
+          return;
+        }
+        const liveSession = safeReadJsonSync(
+          path.join(daemon.stateDir, '.live-session.json'),
+          null,
+          { quarantineCorrupt: false }
+        ).data;
+        const samePid = liveSession && Number(liveSession.pid) === Number(err.existingPid);
+        const port = samePid && liveSession.port ? Number(liveSession.port) : null;
+        const activePlugins = samePid && Array.isArray(liveSession.activePlugins) ? liveSession.activePlugins : [];
+        const cdp = (flags['skip-cdp'] || isTestMode())
+          ? { port: null, targets: [] }
+          : await resolveActiveCdpTarget({ timeoutMs: 1200 }).catch(() => ({ port: null, targets: [] }));
+        const hostProc = inspectAntigravityHostProcess();
+        const cdpTargetsCount = Array.isArray(cdp?.targets) ? cdp.targets.length : 0;
+        const info = {
+          ok: true,
+          alreadyRunning: true,
+          pid: err.existingPid,
+          port,
+          activePlugins,
+          antigravity: {
+            hostProcess: hostProc,
+            cdpPort: cdp?.port || null,
+            cdpTargetsCount
+          }
+        };
+        if (flags.json) {
+          console.log(JSON.stringify(info, null, 2));
+        } else {
+          console.log(`✅ Agy-Daddy Live 已在后台运行中 (PID ${info.pid}${info.port ? `, Bridge :${info.port}` : ''}, 插件 ${info.activePlugins.length} 个, CDP 窗口 ${cdpTargetsCount} 个)`);
+          if (cdpTargetsCount === 0 && hostProc.running && !hostProc.hasDebugSwitch) {
+            console.log(`⚠️ 检测到运行中的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口；请按 ⌘Q 退出并重开 Antigravity（后台 Live 将自动补参注入），或在外部终端运行 agy-daddy restart。`);
+          }
+          console.log('💡 如需在前台重启并查看实时日志，可运行: agy-daddy live --replace');
+        }
+        return;
+      }
+      throw err;
+    }
     let inject = { ok: true, skipped: true, targetsInjected: 0, pluginsInjected: 0, errors: [] };
     if (!flags['skip-inject']) {
       inject = await daemon.injectActiveTargets();
@@ -321,30 +581,20 @@ async function main(argv = process.argv.slice(2)) {
       await daemon.stop();
       return;
     }
-    let watchdogTimer = null;
     if (!isTestMode()) {
-      let watchdogBusy = false;
-      watchdogTimer = setInterval(async () => {
-        if (watchdogBusy || !daemon.running) return;
-        watchdogBusy = true;
-        try {
-          const { targets } = await resolveActiveCdpTarget({ timeoutMs: 1200 });
-          const plugins = Array.from(daemon.activePlugins.values());
-          for (const target of targets || []) {
-            const targetId = target?.id || target?.webSocketDebuggerUrl;
-            if (!targetId || daemon.injector.sessions.has(targetId)) continue;
-            await daemon.injector.attachTarget(target, plugins).catch(() => {});
-          }
-        } catch {} finally {
-          watchdogBusy = false;
-        }
-      }, 5000);
-      if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
+      watchdog = createLiveWatchdog(daemon, {
+        autoRelaunch: !flags['no-auto-relaunch'],
+        silent: Boolean(flags.json)
+      });
+      watchdog.start();
+      if ((inject.targetsInjected || 0) === 0) {
+        await watchdog.tick();
+      }
     }
     const shutdown = async () => {
-      if (watchdogTimer) {
-        clearInterval(watchdogTimer);
-        watchdogTimer = null;
+      if (watchdog) {
+        watchdog.stop();
+        watchdog = null;
       }
       await daemon.stop();
       process.exit(0);
@@ -368,7 +618,18 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (sub === 'start') {
-      const daemon = new AgyDaddyDaemon();
+      const daemon = new AgyDaddyDaemon({
+        onRestartDaemon: async () => {
+          await daemon.stop().catch(() => {});
+          const child = spawn(process.execPath, [__filename, 'daemon', 'start'], {
+            detached: true,
+            stdio: 'ignore',
+            env: { ...process.env }
+          });
+          child.unref();
+          process.exit(0);
+        }
+      });
       const info = await daemon.start();
       console.log(JSON.stringify({ ok: true, ...info }, null, 2));
       process.on('SIGTERM', async () => { await daemon.stop(); process.exit(0); });
@@ -454,7 +715,7 @@ async function main(argv = process.argv.slice(2)) {
         ok: report.runtime.ok,
         checklist: [
           { step: 'runtime', ok: report.runtime.ok },
-          { step: 'anchors', ok: report.anchors.count >= 10 },
+          { step: 'anchors', ok: report.anchors.count >= 14 },
           { step: 'cdpTarget', ok: report.antigravity.cdpTargetsCount > 0, note: report.antigravity.cdpTargetsCount > 0 ? 'ready' : 'no active IDE window in headless check' }
         ]
       }, null, 2));
@@ -468,14 +729,14 @@ async function main(argv = process.argv.slice(2)) {
 用法:
   agy-daddy doctor [--json] [--bundle <file>]         运行环境诊断 / 导出脱敏诊断包
   agy-daddy status [--json]                           查看守护进程、CDP 与插件状态
-  agy-daddy live [--once] [--skip-inject] [--json]    启动守护进程并执行 CDP 热注入
+  agy-daddy live [--once] [--skip-inject] [--no-auto-relaunch] [--replace] [--json]    启动守护进程并执行 CDP 热注入
   agy-daddy stop | restart | auto-on | auto-off       停止、自愈重启与开机自启管理
   agy-daddy install-launcher [--dir <path>]           生成独立桌面增强启动器
   agy-daddy remote [--reset-token]                    查看手机远程链接或轮换配对令牌
+  agy-daddy web [--port <n>] [--no-open] [--reset-token] 查看或打开 PC Web 工作台链接
   agy-daddy update [--dry-run] | upstreams [--json]   拉取更新与上游基线漂移追踪
   agy-daddy run <commandId>                           执行已安装插件贡献命令
-  agy-daddy plugin list|install|link|enable|disable|rollback|uninstall|audit
-  agy-daddy migrate [--dry-run] [--force]             只读迁移旧 AntigravityContextMeter 数据
+  agy-daddy plugin list|install|link|enable|disable|rollback|native|uninstall|audit
   agy-daddy daemon start|stop|status                  管理 agy-daddyd 单实例守护进程
   agy-daddy dev test-all|link-all|clone-all|capture-fixture|smoke`);
 }

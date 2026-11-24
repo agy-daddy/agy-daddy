@@ -1,7 +1,7 @@
 {
   "name": "@agy-daddy/plugin-chat-nav",
   "version": "1.0.0",
-  "description": "Agy-Daddy floating chat navigation, thinking expand guard, search slot, inline file editor, and safe external link plugin",
+  "description": "Agy-Daddy floating chat navigation, thinking expand guard, search slot, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external link plugin",
   "license": "MIT",
   "main": "./src/node.js",
   "agyPlugin": "./agy-plugin.json",

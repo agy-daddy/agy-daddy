@@ -1,12 +1,37 @@
 'use strict';
 
 const HEAT_LEVEL_VARS = Object.freeze([
-  'var(--ag-custom-heat-lvl-0, #27272a)',
-  'var(--ag-custom-heat-lvl-1, #3f1e6b)',
-  'var(--ag-custom-heat-lvl-2, #652ab7)',
-  'var(--ag-custom-heat-lvl-3, #9053f8)',
-  'var(--ag-custom-heat-lvl-4, #c084fc)'
+  'var(--ag-custom-heat-lvl-0, rgba(113, 113, 122, 0.14))',
+  'var(--ag-custom-heat-lvl-1, rgba(113, 113, 122, 0.34))',
+  'var(--ag-custom-heat-lvl-2, rgba(113, 113, 122, 0.56))',
+  'var(--ag-custom-heat-lvl-3, rgba(113, 113, 122, 0.78))',
+  'var(--ag-custom-heat-lvl-4, var(--ag-text-primary, #18181b))'
 ]);
+
+const HEATMAP_STYLES_CSS = `
+.ag-heatmap-box {
+  width: 100%;
+  overflow-x: auto;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--ag-bg-subcard);
+  border: none;
+  box-sizing: border-box;
+}
+
+.ag-heatmap-box svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.ag-usage-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  gap: 2px;
+}
+`.trim();
 
 function renderHeatmapSvg(heatmapData = {}, options = {}) {
   const weeks = Number(heatmapData.weeks) > 0 ? Number(heatmapData.weeks) : 52;
@@ -37,5 +62,6 @@ function renderHeatmapSvg(heatmapData = {}, options = {}) {
 
 module.exports = {
   HEAT_LEVEL_VARS,
+  HEATMAP_STYLES_CSS,
   renderHeatmapSvg
 };

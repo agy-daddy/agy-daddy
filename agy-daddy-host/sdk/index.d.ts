@@ -12,7 +12,11 @@ export type AnchorName =
   | 'chat.thinkingTrigger'
   | 'chat.actionButtons'
   | 'sidebar.conversationRows'
-  | 'fileViewer.header';
+  | 'fileViewer.header'
+  | 'settings.dialog'
+  | 'settings.nav'
+  | 'settings.content'
+  | 'settings.openTrigger';
 
 export type Permission =
   | 'dom:read'
@@ -44,11 +48,28 @@ export interface SettingsField {
   max?: number;
   options?: Array<string | { value: string; label: string | LocalizedText }>;
   label: string | LocalizedText;
+  itemEditor?: Record<string, unknown>;
+}
+
+export interface SettingsAction {
+  id: string;
+  command: string;
+  label: string | LocalizedText;
+  args?: unknown[];
 }
 
 export interface SettingsSchema {
   title: string | LocalizedText;
   fields: SettingsField[];
+  actions?: SettingsAction[];
+}
+
+export interface SettingsUpdateResult {
+  ok: boolean;
+  values: Record<string, unknown>;
+  changedKeys: string[];
+  rendererNotified?: number;
+  errors?: string[];
 }
 
 export interface AgyPluginManifest {
@@ -83,7 +104,6 @@ export interface AgyPluginManifest {
     'chat.search'?: Array<{ id: string; title?: string | LocalizedText }>;
     locales?: string;
     native?: { mcp?: string; rules?: string[]; skills?: string[]; hooks?: string };
-    migrations?: Array<{ from: string; files: string[] }>;
   };
 }
 
@@ -129,25 +149,109 @@ export interface AgyHostApi {
   net: {
     fetch(url: string, init?: RequestInit): Promise<Response>;
   };
+  settings: {
+    get(): Record<string, unknown>;
+    update(patch: Record<string, unknown>): Promise<SettingsUpdateResult>;
+    save?(values: Record<string, unknown>, schema?: SettingsSchema | null): { ok: boolean; error?: string } | Promise<SettingsUpdateResult>;
+    onChange(handler: (values: Record<string, unknown>, changedKeys: string[]) => void): () => void;
+  };
+  commands: {
+    register(commandId: string, handler: (...args: unknown[]) => unknown): (() => void) | Promise<() => void>;
+    execute<T = unknown>(commandId: string, args?: unknown[]): Promise<T>;
+  };
 }
 
 export interface AgyRendererContext {
   pluginId: string;
   hostVersion: string;
+  hostDom: {
+    getSessionId(): string | null;
+    getComposer(): HTMLElement | null;
+    getScrollViewport(): HTMLElement | null;
+    getSidebarRows(): HTMLElement[];
+    isAssistantBusy(): boolean;
+    sendText(text: string): boolean;
+  };
   anchors: {
     query(name: AnchorName): HTMLElement | null;
     queryAll(name: AnchorName): HTMLElement[];
     observe(name: AnchorName, callback: (el: HTMLElement | null) => void): () => void;
   };
+  styles: {
+    inject(cssText: string, opts?: { scope?: 'document' | 'shadow'; id?: string }): () => void;
+  };
   topbar: {
-    registerUnit(def: { id: string; order?: number; label?: string; render?: (node: HTMLElement) => void; onClick?: () => void }): () => void;
-    registerPopover(def: { id: string; anchorId: string; render?: (node: HTMLElement) => void; onToggle?: (open: boolean) => void }): {
-      toggle(force?: boolean): boolean;
+    registerUnit(def: {
+      id: string;
+      order?: number;
+      label?: string;
+      iconSvg?: string;
+      segments?: Array<{
+        iconSvg?: string;
+        text?: string;
+        tone?: string;
+        muted?: boolean;
+        title?: string;
+      }>;
+      title?: string;
+      badge?: string;
+      tone?: string;
+      accentColor?: string;
+      render?: (node: HTMLElement) => void;
+      onClick?: () => void;
+    }): () => void;
+    updateUnit(unitId: string, patch: {
+      label?: string;
+      iconSvg?: string;
+      segments?: Array<{
+        iconSvg?: string;
+        text?: string;
+        tone?: string;
+        muted?: boolean;
+        title?: string;
+      }> | null;
+      title?: string;
+      badge?: string;
+      tone?: string;
+      accentColor?: string;
+      order?: number;
+      render?: (node: HTMLElement) => void;
+      onClick?: () => void;
+    }): Promise<unknown>;
+    registerPopover(def: {
+      id: string;
+      anchorId?: string;
+      title?: string;
+      render?: (node: HTMLElement) => void;
+      onToggle?: (open: boolean) => void;
+    }): {
+      toggle(
+        force?: boolean | {
+          force?: boolean;
+          anchorRect?: { top: number; left: number; right: number; bottom: number; width: number; height: number } | null;
+          placement?: 'top' | 'bottom' | 'auto';
+        },
+        opts?: {
+          anchorRect?: { top: number; left: number; right: number; bottom: number; width: number; height: number } | null;
+          placement?: 'top' | 'bottom' | 'auto';
+        }
+      ): boolean | Promise<unknown>;
       dispose(): void;
     };
   };
+  surfaces: {
+    provide(surfaceName: string, el: HTMLElement): () => void;
+    mount(
+      surfaceName: string,
+      mountFn: (slotEl: HTMLElement, meta: { surfaceName: string; fallback: boolean }) => (() => void) | void,
+      opts?: { fallbackAnchor?: AnchorName }
+    ): () => void;
+  };
   settings: {
-    registerSection(def: { id: string; title?: string | LocalizedText; schema?: SettingsSchema; values?: Record<string, unknown>; onChange?: (key: string, value: unknown) => void }): () => void;
+    get(): Record<string, unknown>;
+    update(patch: Record<string, unknown>): Promise<SettingsUpdateResult>;
+    onChange(handler: (values: Record<string, unknown>, changedKeys: string[]) => void): () => void;
+    open(opts?: string | { tab?: string; pluginId?: string }): Promise<unknown>;
   };
   schedule: {
     every(ms: number, fn: () => void): () => void;
@@ -155,16 +259,20 @@ export interface AgyRendererContext {
   };
   services: {
     provide(name: string, methods: Record<string, (...args: unknown[]) => unknown>): () => void;
+    call<T = unknown>(name: string, method: string, args?: unknown[]): Promise<T>;
     get(name: string): Record<string, (...args: unknown[]) => unknown> | null;
   };
   events: {
-    emit(topic: string, payload?: unknown): void;
+    emit(topic: string, payload?: unknown): void | Promise<unknown>;
     on(topic: string, handler: (payload: unknown) => void): () => void;
   };
   state: {
-    set(key: string, value: unknown): { version: number; value: unknown };
-    get(key: string): { version: number; value: unknown } | null;
+    set(key: string, value: unknown): { version: number; value: unknown } | Promise<unknown>;
+    get(key: string): { version: number; value: unknown } | null | Promise<unknown>;
     subscribe(key: string, handler: (value: unknown, meta: { version: number; replay?: boolean }) => void): () => void;
+  };
+  commands: {
+    execute<T = unknown>(commandId: string, args?: unknown[]): Promise<T>;
   };
   bridge: {
     post<T = unknown>(subPath: string, payload?: unknown): Promise<T>;

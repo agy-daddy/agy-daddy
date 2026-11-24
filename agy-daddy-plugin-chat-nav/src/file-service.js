@@ -1,10 +1,22 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
 const MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_EXPORT_BYTES = 16 * 1024 * 1024;
+
+function expandHomePath(rawPath) {
+  const s = String(rawPath || '').trim();
+  if (!s) return '';
+  if (s === '~') return os.homedir();
+  if (s.startsWith('~/') || s.startsWith('~\\')) {
+    return path.join(os.homedir(), s.slice(2));
+  }
+  return s;
+}
 
 const BLOCKED_PATH_PREFIXES = Object.freeze([
   '/System',
@@ -105,12 +117,42 @@ function writeFileSafe(rawPathOrUri, content, options = {}) {
   }
 }
 
+function writeBinaryFileSafe(rawPathOrUri, buffer, options = {}) {
+  const maxBytes = Number(options.maxBytes) > 0 ? Number(options.maxBytes) : MAX_BINARY_EXPORT_BYTES;
+  const normalized = normalizeFilePathInput(expandHomePath(rawPathOrUri));
+  if (!normalized) {
+    return { ok: false, error: '无效的文件路径（必须为绝对路径或 file:// URI）' };
+  }
+  const resolved = resolveSafeEditablePath(normalized);
+  if (!resolved) {
+    return { ok: false, error: '禁止写入受保护的系统或敏感凭据目录', path: normalized };
+  }
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+  if (buf.length > maxBytes) {
+    return { ok: false, error: `写入内容超限 (${buf.length} bytes > ${maxBytes})`, path: resolved };
+  }
+
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const tmpPath = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmpPath, buf);
+    fs.renameSync(tmpPath, resolved);
+    return { ok: true, path: resolved, bytesWritten: buf.length };
+  } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+    return { ok: false, error: err?.message || '写入失败', path: resolved };
+  }
+}
+
 module.exports = {
   MAX_INLINE_FILE_BYTES,
+  MAX_BINARY_EXPORT_BYTES,
   BLOCKED_PATH_PREFIXES,
   SENSITIVE_PATH_REGEX,
+  expandHomePath,
   normalizeFilePathInput,
   resolveSafeEditablePath,
   readFileSafe,
-  writeFileSafe
+  writeFileSafe,
+  writeBinaryFileSafe
 };

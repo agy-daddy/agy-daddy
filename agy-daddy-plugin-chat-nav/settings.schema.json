@@ -5,25 +5,101 @@
       "key": "showFloatDock",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "显示右侧悬浮导航条", "en": "Show floating navigation dock" }
+      "label": { "zh-CN": "右侧悬浮导航条", "en": "Floating navigation dock" },
+      "description": { "zh-CN": "在对话视口右侧显示置顶、置底、上/下一轮、思考展开、复制会话 ID 与导出 Markdown 控制栏", "en": "Show top, bottom, turn step, thinking, copy session ID, and Markdown export controls alongside chat" }
     },
     {
       "key": "keepThinkingExpanded",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "锁定思考块防止宿主自动折叠", "en": "Keep thinking blocks expanded" }
+      "label": { "zh-CN": "锁定思考块保持展开", "en": "Keep thinking blocks expanded" },
+      "description": { "zh-CN": "防止宿主在输出完成后自动折叠已展开的思考过程卡片", "en": "Prevent the host from auto-collapsing thinking blocks after completion" }
     },
     {
       "key": "enableInlineFileEditor",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "启用产物文件头内联编辑", "en": "Enable inline file editor" }
+      "label": { "zh-CN": "产物文件头内联编辑", "en": "Inline file editor" },
+      "description": { "zh-CN": "在对话内联文件卡片标题栏注入即时编辑与 ⌘S 保存按钮", "en": "Inject inline edit and Cmd+S save buttons on conversation file headers" }
     },
     {
       "key": "enableCmdClickLinks",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "启用 Cmd/Ctrl+点击安全打开外链", "en": "Enable Cmd/Ctrl+click external links" }
+      "label": { "zh-CN": "Cmd/Ctrl+点击安全打开外链", "en": "Cmd/Ctrl+click external links" },
+      "description": { "zh-CN": "按住 Cmd 或 Ctrl 点击文件路径或安全链接时直接在默认应用打开", "en": "Open safe external links when clicked with Cmd or Ctrl" }
+    },
+    {
+      "key": "searchRegexMode",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "全文检索默认启用正则", "en": "Enable regex search by default" },
+      "description": { "zh-CN": "打开检索栏时默认以正则表达式匹配当前对话内容", "en": "Default to regular-expression matching when searching conversation messages" }
+    },
+    {
+      "key": "searchCaseSensitive",
+      "type": "boolean",
+      "default": false,
+      "label": { "zh-CN": "全文检索区分大小写", "en": "Case-sensitive search" },
+      "description": { "zh-CN": "在全文检索时严格区分英文字母大小写", "en": "Match exact uppercase and lowercase characters during search" }
+    },
+    {
+      "key": "exportSaveBehavior",
+      "type": "enum",
+      "default": "dialog",
+      "group": { "zh-CN": "对话导出", "en": "Conversation Export" },
+      "label": { "zh-CN": "默认保存行为", "en": "Default save behavior" },
+      "description": { "zh-CN": "选择点击导出后弹出系统保存对话框，或直接保存到默认路径", "en": "Choose whether exporting opens the native save dialog or saves directly to the default directory" },
+      "options": [
+        { "value": "dialog", "label": { "zh-CN": "打开保存对话框", "en": "Open save dialog" } },
+        { "value": "direct", "label": { "zh-CN": "直接保存到默认路径", "en": "Save directly to default folder" } }
+      ]
+    },
+    {
+      "key": "exportSaveDir",
+      "type": "string",
+      "default": "",
+      "group": { "zh-CN": "对话导出", "en": "Conversation Export" },
+      "placeholder": "~/Downloads",
+      "label": { "zh-CN": "默认保存路径", "en": "Default save folder" },
+      "description": { "zh-CN": "作为保存对话框的默认初始目录或直接保存的目标目录；留空则使用 ~/Downloads", "en": "Initial folder for the save dialog or target folder for direct save; defaults to ~/Downloads when blank" },
+      "browse": {
+        "command": "chat-nav.browseExportDir",
+        "label": { "zh-CN": "浏览选择", "en": "Browse" }
+      }
+    },
+    {
+      "key": "exportFormats",
+      "type": "list",
+      "maxItems": 3,
+      "default": ["md"],
+      "group": { "zh-CN": "对话导出", "en": "Conversation Export" },
+      "label": { "zh-CN": "允许导出文件格式", "en": "Allowed export formats" },
+      "description": { "zh-CN": "支持 md、html、pdf；仅保留 1 项时点击导出直接保存，保留多项时先弹出格式选择", "en": "Supports md, html, pdf; single selection exports directly, multiple selection prompts format choice first" },
+      "itemEditor": {
+        "kind": "ordered-preset-list",
+        "allowCustom": false,
+        "presets": [
+          {
+            "id": "md",
+            "label": { "zh-CN": "Markdown (.md)", "en": "Markdown (.md)" },
+            "tag": { "zh-CN": "纯文本", "en": "Plaintext" },
+            "description": { "zh-CN": "导出为结构化 Markdown 文档并顺带复制到剪贴板", "en": "Export structured Markdown and copy to clipboard" }
+          },
+          {
+            "id": "html",
+            "label": { "zh-CN": "网页 (.html)", "en": "HTML (.html)" },
+            "tag": { "zh-CN": "富文本排版", "en": "Styled Web" },
+            "description": { "zh-CN": "导出为独立样式 HTML 文档，支持浏览器查看与打印", "en": "Export standalone styled HTML document" }
+          },
+          {
+            "id": "pdf",
+            "label": { "zh-CN": "PDF (.pdf)", "en": "PDF (.pdf)" },
+            "tag": { "zh-CN": "便携文档", "en": "Portable" },
+            "description": { "zh-CN": "导出为可归档分享的 PDF 文档", "en": "Export portable PDF document" }
+          }
+        ]
+      }
     }
   ]
 }

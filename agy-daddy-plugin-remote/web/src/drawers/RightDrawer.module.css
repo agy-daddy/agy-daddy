@@ -1,0 +1,100 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--ag-surface);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ag-border-sub);
+  background: var(--ag-surface);
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-subcard);
+  border: 1px solid var(--ag-border-sub);
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tabBtn {
+  padding: 5px 11px;
+  border-radius: var(--ag-r-pill);
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--ag-secondary);
+  background: transparent;
+  white-space: nowrap;
+  transition:
+    background-color 150ms var(--ag-ease-out),
+    color 150ms var(--ag-ease-out),
+    transform 120ms var(--ag-ease-out),
+    box-shadow 150ms var(--ag-ease-out);
+}
+
+.tabBtn:hover:not(.tabActive) {
+  color: var(--ag-fg);
+}
+
+.tabBtn:active {
+  transform: scale(0.97);
+}
+
+.tabActive {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  box-shadow: var(--ag-shadow-sm);
+}
+
+.closeBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-control);
+  color: var(--ag-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 13px;
+  box-shadow: var(--ag-highlight-top);
+  transition:
+    background-color 140ms var(--ag-ease-out),
+    color 140ms var(--ag-ease-out),
+    transform 120ms var(--ag-ease-out);
+}
+
+.closeBtn:hover {
+  background: var(--ag-control-hover);
+  color: var(--ag-fg);
+}
+
+.closeBtn:active {
+  transform: translateY(1px) scale(0.96);
+}
+
+.content {
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--ag-bg);
+}

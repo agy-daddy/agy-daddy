@@ -1,17 +1,25 @@
 {
-  "title": { "zh-CN": "上下文监测与能量胶囊", "en": "Context Monitor & Pulse Capsule" },
+  "title": { "zh-CN": "上下文与实时速度", "en": "Context & Live Speed" },
   "fields": [
     {
-      "key": "showPulseCapsule",
-      "type": "boolean",
-      "default": true,
-      "label": { "zh-CN": "显示底部实时能量胶囊", "en": "Show bottom pulse capsule" }
+      "key": "displayLocation",
+      "type": "enum",
+      "default": "composer",
+      "options": [
+        { "value": "composer", "label": "输入框下方" },
+        { "value": "topbar", "label": "顶栏" }
+      ],
+      "group": { "zh-CN": "显示位置与采样", "en": "Display & Sampling" },
+      "label": { "zh-CN": "胶囊显示位置", "en": "Capsule position" },
+      "description": { "zh-CN": "二选一：仅在输入框下方或仅在顶栏显示实时胶囊，点击就近弹出详情面板", "en": "Exclusive choice: show live capsule below the composer or in the topbar, opening the panel nearby on click" }
     },
     {
-      "key": "showSpeedInTopbar",
+      "key": "showSpeed",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "顶栏显示生成速度 (tok/s)", "en": "Show generation speed in topbar" }
+      "group": { "zh-CN": "显示位置与采样", "en": "Display & Sampling" },
+      "label": { "zh-CN": "显示生成速度", "en": "Show generation speed" },
+      "description": { "zh-CN": "在胶囊中实时显示流式估算速率 (~tok/s) 及完成后的精确速率", "en": "Show live estimated streaming rate (~tok/s) and final exact rate in the capsule" }
     },
     {
       "key": "pollIntervalMs",
@@ -19,23 +27,58 @@
       "min": 1000,
       "max": 30000,
       "default": 3000,
-      "label": { "zh-CN": "轮询采样间隔 (毫秒)", "en": "Polling interval (ms)" }
+      "group": { "zh-CN": "显示位置与采样", "en": "Display & Sampling" },
+      "unit": { "zh-CN": "毫秒", "en": "ms" },
+      "placeholder": "3000",
+      "label": { "zh-CN": "轮询采样间隔", "en": "Polling interval" },
+      "description": { "zh-CN": "定期读取当前会话记录并重算 Token 构成的时间间隔", "en": "Interval between transcript scans to recompute token breakdown" }
     },
     {
-      "key": "warnThresholdTokens",
-      "type": "number",
-      "min": 50000,
-      "max": 1000000,
-      "default": 240000,
-      "label": { "zh-CN": "240K 缓存衰减提醒阈值", "en": "Cache cliff warning threshold (tokens)" }
+      "key": "warnThreshold",
+      "type": "string",
+      "default": "240K",
+      "group": { "zh-CN": "缓存断崖与压缩", "en": "Cache Cliff & Compaction" },
+      "placeholder": "240K 或 50%",
+      "label": { "zh-CN": "预警阈值", "en": "Warning threshold" },
+      "description": { "zh-CN": "支持绝对值（如 240K / 240000）或窗口百分比（如 50%）；达到后胶囊变橙提醒", "en": "Supports absolute tokens (e.g. 240K / 240000) or window percentage (e.g. 50%)" }
     },
     {
-      "key": "cliffThresholdTokens",
-      "type": "number",
-      "min": 100000,
-      "max": 1048576,
-      "default": 328000,
-      "label": { "zh-CN": "高风险缓存断崖阈值", "en": "Critical cache cliff threshold (tokens)" }
+      "key": "cliffThreshold",
+      "type": "string",
+      "default": "328K",
+      "group": { "zh-CN": "缓存断崖与压缩", "en": "Cache Cliff & Compaction" },
+      "placeholder": "328K 或 70%",
+      "label": { "zh-CN": "断崖阈值", "en": "Critical cliff threshold" },
+      "description": { "zh-CN": "支持绝对值（如 328K / 328000）或窗口百分比（如 70%）；达到后标记高风险断崖", "en": "Supports absolute tokens (e.g. 328K / 328000) or window percentage (e.g. 70%)" }
+    },
+    {
+      "key": "compactPolicy",
+      "type": "enum",
+      "default": "remind",
+      "options": [
+        { "value": "remind", "label": "仅提醒" },
+        { "value": "idle_prompt", "label": "仅预警快捷按钮" },
+        { "value": "cliff_auto", "label": "仅断崖自动压缩" },
+        { "value": "idle_and_cliff", "label": "预警快捷按钮 + 断崖自动压缩" }
+      ],
+      "group": { "zh-CN": "缓存断崖与压缩", "en": "Cache Cliff & Compaction" },
+      "label": { "zh-CN": "压缩触发策略", "en": "Compaction policy" },
+      "description": { "zh-CN": "支持四档自由组合：仅提醒；仅开 A（达预警且空闲无草稿时在胶囊旁显示一键压缩）；仅开 B（达断崖等本步结束自动发 /compact，不强杀生成中回复）；A+B 同时开启", "en": "Supports all 4 combinations: remind only; A only (quick compact button when warn & idle & empty); B only (auto-send /compact after turn finishes at cliff); or A+B combined" }
+    },
+    {
+      "key": "autoCompactOnCacheDrop",
+      "type": "boolean",
+      "default": false,
+      "group": { "zh-CN": "缓存断崖与压缩", "en": "Cache Cliff & Compaction" },
+      "label": { "zh-CN": "丢缓存强行触发压缩", "en": "Force compact on cache drop" },
+      "description": { "zh-CN": "独立开关，默认关闭；开启后检测到缓存失效时无视上方策略与阈值，等本步结束立即自动发 /compact（发前暂存并恢复草稿）", "en": "Independent override (default OFF); ignores policy & thresholds when cache drop is detected and auto-sends /compact once idle" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "rescan",
+      "command": "context.rescan",
+      "label": { "zh-CN": "立即重新扫描会话", "en": "Rescan Session Now" }
     }
   ]
 }

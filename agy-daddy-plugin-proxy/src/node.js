@@ -16,8 +16,18 @@ const {
 const { LocalProxyGateway } = require('./gateway');
 const { probeConnectivity } = require('./probe');
 
+const MANAGED_SETTING_KEYS = [
+  'gatewayEnabled',
+  'mode',
+  'upstreamUrl',
+  'noProxy',
+  'gatewayPort',
+  'fallbackToDirectOnUpstreamError'
+];
+
 let activeGateway = null;
 let disposers = [];
+let applyChain = Promise.resolve();
 
 function normalizeStoredConfig(rawCfg = {}, legacyCfg = null) {
   const merged = { ...(legacyCfg && typeof legacyCfg === 'object' ? legacyCfg : {}), ...(rawCfg && typeof rawCfg === 'object' ? rawCfg : {}) };
@@ -27,10 +37,10 @@ function normalizeStoredConfig(rawCfg = {}, legacyCfg = null) {
     ? merged.mode
     : (merged.enabled === true && rawUpstream ? 'upstream' : 'direct');
 
-  const defaultPort = isTestMode() ? 0 : DEFAULT_GATEWAY_PORT;
-  const gatewayPort = Number.isInteger(Number(merged.gatewayPort)) && (Number(merged.gatewayPort) === 0 || (Number(merged.gatewayPort) >= 1024 && Number(merged.gatewayPort) <= 65535))
-    ? Number(merged.gatewayPort)
-    : defaultPort;
+  const parsedPort = Number(merged.gatewayPort);
+  const gatewayPort = Number.isInteger(parsedPort) && (parsedPort === 0 || (parsedPort >= 1024 && parsedPort <= 65535))
+    ? parsedPort
+    : DEFAULT_GATEWAY_PORT;
 
   return {
     gatewayEnabled: merged.gatewayEnabled !== false,
@@ -55,20 +65,30 @@ function buildPublicConfigView(cfg, gatewayStats = null) {
   };
 }
 
+function resolveListenPort(configuredPort, preferEphemeralInTest = false) {
+  if (configuredPort === 0) return 0;
+  if (preferEphemeralInTest && isTestMode() && configuredPort === DEFAULT_GATEWAY_PORT) {
+    return 0;
+  }
+  return configuredPort;
+}
+
 async function activate(host) {
-  const legacyRes = host.storage.readJson('proxy-legacy.json', null);
-  const savedRes = host.storage.readJson('config.json', null);
-  let currentConfig = normalizeStoredConfig(savedRes?.data, legacyRes?.data);
+  let currentConfig = normalizeStoredConfig(host.settings.get());
+  let syncingSettings = false;
+  let pendingAsyncCount = 0;
+  applyChain = Promise.resolve();
 
   if (currentConfig.gatewayEnabled) {
+    const initPort = resolveListenPort(currentConfig.gatewayPort, true);
     activeGateway = new LocalProxyGateway({
-      port: currentConfig.gatewayPort,
+      port: initPort,
       mode: currentConfig.mode,
       upstreamUrl: currentConfig.upstreamUrl,
       noProxy: currentConfig.noProxy,
       fallbackToDirectOnUpstreamError: currentConfig.fallbackToDirectOnUpstreamError
     });
-    await activeGateway.start(currentConfig.gatewayPort);
+    await activeGateway.start(initPort);
   }
 
   const getLocalGatewayUrl = () => {
@@ -90,6 +110,61 @@ async function activate(host) {
     return status;
   };
 
+  async function applyGatewayLifecycleAsync(candidate, { portChanged = false, preferEphemeralInTest = false } = {}) {
+    const listenPort = resolveListenPort(candidate.gatewayPort, preferEphemeralInTest);
+    if (candidate.gatewayEnabled === false) {
+      if (activeGateway) {
+        await activeGateway.stop();
+        activeGateway = null;
+      }
+    } else if (!activeGateway) {
+      activeGateway = new LocalProxyGateway({ ...candidate, port: listenPort });
+      await activeGateway.start(listenPort);
+    } else if (portChanged) {
+      await activeGateway.stop();
+      activeGateway = new LocalProxyGateway({ ...candidate, port: listenPort });
+      await activeGateway.start(listenPort);
+    } else {
+      activeGateway.updateConfig(candidate);
+    }
+    currentConfig = { ...candidate };
+    return publishStatus(true);
+  }
+
+  function applySettingsUpdate(nextValues, changedKeys = []) {
+    const nextConfig = normalizeStoredConfig(nextValues);
+    const portChanged = changedKeys.includes('gatewayPort') && nextConfig.gatewayPort !== currentConfig.gatewayPort;
+    const enableChanged = nextConfig.gatewayEnabled !== currentConfig.gatewayEnabled;
+    const needsLifecycleChange = enableChanged || portChanged || (nextConfig.gatewayEnabled && !activeGateway);
+
+    if (!needsLifecycleChange && pendingAsyncCount === 0) {
+      if (activeGateway) {
+        activeGateway.updateConfig(nextConfig);
+      }
+      currentConfig = { ...nextConfig };
+      publishStatus(true);
+      return;
+    }
+
+    pendingAsyncCount++;
+    applyChain = applyChain
+      .then(async () => {
+        await applyGatewayLifecycleAsync(nextConfig, {
+          portChanged,
+          preferEphemeralInTest: !portChanged
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        pendingAsyncCount = Math.max(0, pendingAsyncCount - 1);
+      });
+  }
+
+  const stopSettingsSub = host.settings.onChange((nextValues, changedKeys) => {
+    if (syncingSettings) return;
+    applySettingsUpdate(nextValues, Array.isArray(changedKeys) ? changedKeys : []);
+  });
+
   const serviceMethods = {
     getStatus() {
       return {
@@ -102,6 +177,7 @@ async function activate(host) {
       return buildPublicConfigView(currentConfig, activeGateway ? activeGateway.getStats() : null);
     },
     async setConfig(nextPatch = {}) {
+      await applyChain;
       const candidate = {
         ...currentConfig,
         ...nextPatch,
@@ -118,25 +194,31 @@ async function activate(host) {
       }
 
       const wantPort = nextPatch.gatewayPort !== undefined ? Number(nextPatch.gatewayPort) : currentConfig.gatewayPort;
-      if (candidate.gatewayEnabled === false && activeGateway) {
-        await activeGateway.stop();
-        activeGateway = null;
-      } else if (candidate.gatewayEnabled !== false) {
-        if (!activeGateway) {
-          activeGateway = new LocalProxyGateway({ ...candidate, port: wantPort });
-          await activeGateway.start(wantPort);
-        } else if (nextPatch.gatewayPort !== undefined && wantPort !== currentConfig.gatewayPort) {
-          await activeGateway.stop();
-          activeGateway = new LocalProxyGateway({ ...candidate, port: wantPort });
-          await activeGateway.start(wantPort);
-        } else {
-          activeGateway.updateConfig(candidate);
+      const portChanged = nextPatch.gatewayPort !== undefined && wantPort !== currentConfig.gatewayPort;
+      candidate.gatewayPort = wantPort;
+
+      const status = await applyGatewayLifecycleAsync(candidate, {
+        portChanged,
+        preferEphemeralInTest: !portChanged
+      });
+
+      const managedPatch = {};
+      for (const k of MANAGED_SETTING_KEYS) {
+        if (nextPatch[k] !== undefined) {
+          if (k === 'gatewayPort' && (wantPort < 1024 || wantPort > 65535)) continue;
+          managedPatch[k] = candidate[k];
+        }
+      }
+      if (Object.keys(managedPatch).length > 0) {
+        syncingSettings = true;
+        try {
+          await host.settings.update(managedPatch);
+        } finally {
+          syncingSettings = false;
         }
       }
 
-      currentConfig = { ...candidate, gatewayPort: wantPort };
-      host.storage.writeJson('config.json', currentConfig);
-      return publishStatus(true);
+      return status;
     },
     async switchMode(mode) {
       const nextMode = mode === 'upstream' || mode === 'direct'
@@ -145,6 +227,7 @@ async function activate(host) {
       return await serviceMethods.setConfig({ mode: nextMode });
     },
     async probe(opts = {}) {
+      await applyChain;
       return await probeConnectivity({
         config: currentConfig,
         gatewayPort: activeGateway?.port || 0,
@@ -203,22 +286,37 @@ async function activate(host) {
 
   const stopSvc = host.services.provide('proxy', serviceMethods, { realm: 'node', version: '1.0.0' });
   const stopStatusRoute = await host.bridge.registerRoute('/status', async () => serviceMethods.getStatus());
-  const stopConfigRoute = await host.bridge.registerRoute('/config', async () => serviceMethods.getConfig());
-  const stopSetConfigRoute = await host.bridge.registerRoute('/set-config', async (body) => await serviceMethods.setConfig(body || {}));
   const stopSwitchRoute = await host.bridge.registerRoute('/switch-mode', async (body) => await serviceMethods.switchMode(body?.mode));
   const stopProbeRoute = await host.bridge.registerRoute('/probe', async (body) => await serviceMethods.probe(body || {}));
+
+  const stopSwitchCmd = host.commands.register('proxy.switch-mode', async (mode) => {
+    const status = await serviceMethods.switchMode(mode);
+    return {
+      ...status,
+      message: status.mode === 'upstream' ? '已切换至上游代理转发' : '已切换至直连模式'
+    };
+  });
+
+  const stopProbeCmd = host.commands.register('proxy.probe', async (opts = {}) => {
+    const res = await serviceMethods.probe(opts || {});
+    return {
+      ...res,
+      message: res.ok ? '代理网关连通正常' : (res.error || '探测未通过')
+    };
+  });
 
   publishStatus(false);
 
   disposers.push(
+    stopSettingsSub,
     stopArgHook,
     stopEnvHook,
     stopSvc,
     stopStatusRoute,
-    stopConfigRoute,
-    stopSetConfigRoute,
     stopSwitchRoute,
-    stopProbeRoute
+    stopProbeRoute,
+    stopSwitchCmd,
+    stopProbeCmd
   );
 }
 
@@ -227,6 +325,7 @@ async function deactivate() {
     try { if (typeof fn === 'function') fn(); } catch {}
   }
   disposers = [];
+  try { await applyChain; } catch {}
   if (activeGateway) {
     await activeGateway.stop();
     activeGateway = null;

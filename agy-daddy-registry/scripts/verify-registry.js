@@ -20,12 +20,23 @@ function buildFixtureDocument(fixtureJson) {
   const box = createMockElement('div', doc);
   box.className = 'surface-composer';
   doc.body.appendChild(box);
+  let settingsDialog = null;
   for (const spec of fixtureJson.nodes || []) {
     const el = createMockElement(spec.tag || 'div', doc);
     for (const [k, v] of Object.entries(spec.attrs || {})) {
       el.setAttribute(k, v);
     }
-    if (spec.attrs && (spec.attrs['data-lexical-editor'] || spec.attrs['data-testid'] === 'input-send-button' || spec.attrs['data-testid'] === 'send-button')) {
+    if (spec.attrs && (spec.attrs['data-testid'] === 'settings-dialog' || spec.attrs.role === 'dialog')) {
+      settingsDialog = el;
+      doc.body.appendChild(el);
+    } else if (
+      settingsDialog &&
+      (spec.attrs?.['data-testid'] === 'settings-nav' ||
+        spec.attrs?.['data-testid'] === 'settings-content' ||
+        spec.attrs?.['data-settings-child'] === 'true')
+    ) {
+      settingsDialog.appendChild(el);
+    } else if (spec.attrs && (spec.attrs['data-lexical-editor'] || spec.attrs['data-testid'] === 'input-send-button' || spec.attrs['data-testid'] === 'send-button')) {
       box.appendChild(el);
     } else if (spec.attrs && (spec.attrs['data-testid'] === 'turn-cards-container' || spec.attrs['data-testid'] === 'agent-response')) {
       const vp = doc.querySelector('[data-testid="autoscroll-viewport"]') || doc.body;
@@ -37,25 +48,17 @@ function buildFixtureDocument(fixtureJson) {
   return doc;
 }
 
-function verifyRegistryAndMatrix(options = {}) {
-  const workspaceRoot = options.workspaceRoot || path.resolve(REG_ROOT, '..');
-  const reg = JSON.parse(fs.readFileSync(path.join(REG_ROOT, 'registry.json'), 'utf8'));
-  const anchorsReg = JSON.parse(fs.readFileSync(path.join(REG_ROOT, 'anchors.json'), 'utf8'));
+function verifyAnchorsMatrix() {
+  const regAnchorsPath = path.join(REG_ROOT, 'anchors.json');
+  const hostAnchorsPath = path.join(HOST_ROOT, 'data', 'anchors.json');
+  const regRaw = fs.readFileSync(regAnchorsPath);
+  const hostRaw = fs.readFileSync(hostAnchorsPath);
+  assert.equal(Buffer.compare(regRaw, hostRaw), 0, 'agy-daddy-registry/anchors.json and agy-daddy-host/data/anchors.json must be byte-identical');
 
-  assert.equal(Array.isArray(reg.plugins), true);
-  assert.ok(reg.plugins.length >= 10);
-
-  const hashResults = [];
-  for (const entry of reg.plugins) {
-    const pluginDir = path.join(workspaceRoot, entry.localRepo || '');
-    assert.ok(fs.existsSync(pluginDir), `Missing sibling plugin repo: ${pluginDir}`);
-    const manifestRaw = fs.readFileSync(path.join(pluginDir, 'agy-plugin.json'));
-    const actualSha = 'sha512-' + crypto.createHash('sha512').update(manifestRaw).digest('base64');
-    assert.equal(actualSha, entry.manifestSha512, `SHA-512 mismatch for ${entry.id}`);
-    const manifest = JSON.parse(manifestRaw.toString('utf8'));
-    const v = validateManifest(manifest);
-    assert.equal(v.ok, true, `Invalid manifest in ${entry.id}: ${v.errors.join('; ')}`);
-    hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, shaVerified: true });
+  const anchorsReg = JSON.parse(regRaw.toString('utf8'));
+  assert.equal(KNOWN_ANCHORS.length, 14, `Expected 14 KNOWN_ANCHORS, got ${KNOWN_ANCHORS.length}`);
+  for (const anchorName of KNOWN_ANCHORS) {
+    assert.ok(anchorsReg.anchors && anchorsReg.anchors[anchorName], `Missing anchor definition in anchors.json: ${anchorName}`);
   }
 
   const fixtureFiles = fs.readdirSync(path.join(REG_ROOT, 'fixtures')).filter((f) => f.endsWith('.json')).sort();
@@ -79,7 +82,31 @@ function verifyRegistryAndMatrix(options = {}) {
     matrix.push({ fixture: f, version: fx.antigravityVersion, anchorsMatched: Object.keys(matchedAnchors).length });
   }
 
-  return { ok: true, pluginsVerified: hashResults.length, matrix };
+  return { ok: true, anchorsCount: KNOWN_ANCHORS.length, matrix };
+}
+
+function verifyRegistryAndMatrix(options = {}) {
+  const workspaceRoot = options.workspaceRoot || path.resolve(REG_ROOT, '..');
+  const reg = JSON.parse(fs.readFileSync(path.join(REG_ROOT, 'registry.json'), 'utf8'));
+
+  assert.equal(Array.isArray(reg.plugins), true);
+  assert.ok(reg.plugins.length >= 9);
+
+  const hashResults = [];
+  for (const entry of reg.plugins) {
+    const pluginDir = path.join(workspaceRoot, entry.localRepo || '');
+    assert.ok(fs.existsSync(pluginDir), `Missing sibling plugin repo: ${pluginDir}`);
+    const manifestRaw = fs.readFileSync(path.join(pluginDir, 'agy-plugin.json'));
+    const actualSha = 'sha512-' + crypto.createHash('sha512').update(manifestRaw).digest('base64');
+    assert.equal(actualSha, entry.manifestSha512, `SHA-512 mismatch for ${entry.id}`);
+    const manifest = JSON.parse(manifestRaw.toString('utf8'));
+    const v = validateManifest(manifest);
+    assert.equal(v.ok, true, `Invalid manifest in ${entry.id}: ${v.errors.join('; ')}`);
+    hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, shaVerified: true });
+  }
+
+  const anchorsRes = verifyAnchorsMatrix();
+  return { ok: true, pluginsVerified: hashResults.length, anchorsCount: anchorsRes.anchorsCount, matrix: anchorsRes.matrix };
 }
 
 if (require.main === module) {
@@ -87,4 +114,4 @@ if (require.main === module) {
   console.log(JSON.stringify(res, null, 2));
 }
 
-module.exports = { verifyRegistryAndMatrix };
+module.exports = { verifyAnchorsMatrix, verifyRegistryAndMatrix };

@@ -12,7 +12,7 @@ function createPluginScaffold(targetDir, options = {}) {
   const world = options.world === 'main' ? 'main' : 'isolated';
   const permissions = Array.isArray(options.permissions) && options.permissions.length
     ? [...options.permissions]
-    : ['dom:write', 'bridge:route'];
+    : ['dom:write'];
   if (world === 'main' && !permissions.includes('page:main-world')) {
     permissions.push('page:main-world');
   }
@@ -48,6 +48,7 @@ function createPluginScaffold(targetDir, options = {}) {
     permissions,
     contributes: {
       'topbar.units': [{ id: `${shortName}-unit`, order: 90 }],
+      commands: [{ id: `${shortName}.ping`, title: { 'zh-CN': '测试命令', en: 'Run Ping' } }],
       settings: { schema: './settings.schema.json' },
       locales: './locales'
     }
@@ -86,6 +87,13 @@ function createPluginScaffold(targetDir, options = {}) {
         default: true,
         label: { 'zh-CN': '显示顶栏状态单元', en: 'Show topbar unit' }
       }
+    ],
+    actions: [
+      {
+        id: 'ping',
+        command: `${shortName}.ping`,
+        label: { 'zh-CN': '测试插件命令', en: 'Run Ping Command' }
+      }
     ]
   };
 
@@ -95,21 +103,23 @@ let disposers = [];
 
 async function activate(host) {
   let count = 0;
+  const doPing = () => {
+    count++;
+    const cfg = host.settings.get();
+    host.state.set(${JSON.stringify(`state:${shortName}.status@1`)}, { count, enabledBadge: cfg.enabledBadge !== false });
+    return { ok: true, pluginId: host.pluginId, count };
+  };
+
   const stopSvc = host.services.provide(${JSON.stringify(shortName)}, {
-    ping() {
-      count++;
-      host.state.set(${JSON.stringify(`state:${shortName}.status@1`)}, { count });
-      return { ok: true, pluginId: host.pluginId, count };
-    }
+    ping: doPing
   }, { realm: 'node', version: '1.0.0' });
 
-  const stopRoute = await host.bridge.registerRoute('/ping', async () => ({
-    ok: true,
-    pluginId: host.pluginId,
-    count
-  }));
+  const stopCmd = await host.commands.register(${JSON.stringify(`${shortName}.ping`)}, doPing);
+  const stopSettings = host.settings.onChange((next) => {
+    host.state.set(${JSON.stringify(`state:${shortName}.status@1`)}, { count, enabledBadge: next.enabledBadge !== false });
+  });
 
-  disposers.push(stopSvc, stopRoute);
+  disposers.push(stopSvc, stopCmd, stopSettings);
 }
 
 async function deactivate() {
@@ -127,20 +137,30 @@ module.exports = { activate, deactivate };
 let disposers = [];
 
 async function mount(ctx) {
+  const stopStyle = ctx.styles.inject(
+    '.agy-sample-badge{border-color:var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));}',
+    { scope: 'shadow', id: ${JSON.stringify(`${shortName}-style`)} }
+  );
+  const cfg = ctx.settings.get();
   const stopUnit = ctx.topbar.registerUnit({
     id: ${JSON.stringify(`${shortName}-unit`)},
     order: 90,
-    label: ${JSON.stringify(shortName)},
+    label: cfg.enabledBadge === false ? ${JSON.stringify(`${shortName}(off)`)} : ${JSON.stringify(shortName)},
     render(node) {
       if (node.style && typeof node.style.setProperty === 'function') {
         node.style.setProperty('border-color', 'var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))');
       }
     },
     onClick() {
-      void ctx.bridge.post('/ping', {}).catch(() => {});
+      void ctx.commands.execute(${JSON.stringify(`${shortName}.ping`)}, []).catch(() => {});
     }
   });
-  disposers.push(stopUnit);
+  const stopSettings = ctx.settings.onChange((next) => {
+    void ctx.topbar.updateUnit(${JSON.stringify(`${shortName}-unit`)}, {
+      label: next.enabledBadge === false ? ${JSON.stringify(`${shortName}(off)`)} : ${JSON.stringify(shortName)}
+    }).catch(() => {});
+  });
+  disposers.push(stopStyle, stopUnit, stopSettings);
 }
 
 function dispose() {

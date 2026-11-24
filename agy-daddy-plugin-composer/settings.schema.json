@@ -5,33 +5,181 @@
       "key": "showQuickBar",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "显示输入框快捷指令栏", "en": "Show quick prompt bar" }
+      "group": { "zh-CN": "输入辅助", "en": "Editing Assistance" },
+      "label": { "zh-CN": "快捷指令栏", "en": "Quick prompt bar" },
+      "description": { "zh-CN": "在输入框上方提供常用斜杠指令与提示词优化入口", "en": "Show quick commands and prompt optimizer above the composer" }
     },
     {
       "key": "ghostSuggest",
       "type": "boolean",
       "default": true,
-      "label": { "zh-CN": "显示下一步幽灵追问建议", "en": "Show ghost follow-up suggestions" }
+      "group": { "zh-CN": "输入辅助", "en": "Editing Assistance" },
+      "label": { "zh-CN": "感知提示", "en": "Contextual suggestions" },
+      "description": { "zh-CN": "在快捷栏最右侧根据上下文展示「感知提示」，支持 Tab / → 一键填入、↑ / ↓ 切换候选、Esc 隐藏", "en": "Show contextual suggestions on the right of the quick bar with Tab / → accept, ↑ / ↓ cycle, and Esc dismiss" }
+    },
+    {
+      "key": "contextAwareQuickItems",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "输入辅助", "en": "Editing Assistance" },
+      "label": { "zh-CN": "上下文感知动态快捷条目", "en": "Context-aware quick items" },
+      "description": { "zh-CN": "零 Token 本地信号感知（新建对话、上下文水位、生成中、报错/网页/完成回复），在不打乱自定义顺序的前提下动态补充或高亮最相关快捷按钮", "en": "Uses zero-token local signals (new chat, context risk, busy state, reply keywords) to adapt quick buttons without scrambling your custom order" }
+    },
+    {
+      "key": "autoSummarizeFrequentPrompts",
+      "type": "boolean",
+      "default": false,
+      "group": { "zh-CN": "快捷输入栏", "en": "Quick Input Bar" },
+      "label": { "zh-CN": "自动总结历史高频手动发送词", "en": "Auto-summarize frequent manual prompts" },
+      "description": { "zh-CN": "开启后允许调用快速模型分析全部历史会话中的手动发送记录，自动提炼高频指令到下方可添加列表中（也可随时点击下方「手动总结高频手动发送词」按钮立即生成）", "en": "Allow calling a fast LLM to analyze manual prompts across all historical sessions and populate addable Key-Value items below" }
+    },
+    {
+      "key": "quickItems",
+      "type": "list",
+      "maxItems": 30,
+      "default": ["compact", "plan", "goal", "reload"],
+      "group": { "zh-CN": "快捷输入栏", "en": "Quick Input Bar" },
+      "label": { "zh-CN": "快捷输入条目与显示顺序", "en": "Quick input items & order" },
+      "description": { "zh-CN": "自定义输入框上方展示的快捷按钮及其排列顺序；UI 展示名称，点击后向输入框填充对应命令。可从预设池或历史高频总结添加、调整顺序或新建条目", "en": "Customize quick buttons above the composer (Key-Value: UI shows label, clicking fills actual command)" },
+      "itemEditor": {
+        "kind": "ordered-preset-list",
+        "allowCustom": true,
+        "labelPlaceholder": { "zh-CN": "UI 显示名称（如 提交 PR）", "en": "UI display label (e.g. Create PR)" },
+        "textPlaceholder": { "zh-CN": "实际填充命令或提示词（如 请运行测试并提交 PR）", "en": "Actual command or prompt to fill..." },
+        "dynamicPresetsCommand": "composer.listFrequentPrompts",
+        "dynamicPoolTitle": { "zh-CN": "历史高频手动发送词（模型分析提炼，点击添加到上方，UI 仅显示名称）：", "en": "Frequent manual prompts (AI-summarized; click to add):" },
+        "dynamicEmptyHint": { "zh-CN": "暂无已提炼的高频词，点击右侧按钮立即分析全部历史会话", "en": "No summarized frequent prompts yet; click the button on the right to analyze sessions" },
+        "dynamicAction": {
+          "id": "summarize-frequent",
+          "command": "composer.summarizeFrequentPrompts",
+          "label": { "zh-CN": "手动总结高频手动发送词", "en": "Summarize Frequent Prompts" }
+        },
+        "presets": [
+          {
+            "id": "compact",
+            "label": { "zh-CN": "压缩上下文", "en": "Compact" },
+            "text": "/compact",
+            "tag": { "zh-CN": "防卡死", "en": "Anti-Stall" },
+            "description": { "zh-CN": "触发官方本地压缩，将冗长历史浓缩为高密度摘要", "en": "Triggers native compaction to summarize long history" }
+          },
+          {
+            "id": "plan",
+            "label": { "zh-CN": "规划模式", "en": "Plan" },
+            "text": "/plan",
+            "tag": { "zh-CN": "先谋后动", "en": "Plan First" },
+            "description": { "zh-CN": "切换规划模式，先读代码并给出方案再动手修改", "en": "Enter planning mode before editing" }
+          },
+          {
+            "id": "grill-me",
+            "label": { "zh-CN": "追问对齐", "en": "Clarify" },
+            "text": "/grill-me",
+            "tag": { "zh-CN": "需求澄清", "en": "Clarify" },
+            "description": { "zh-CN": "连环追问澄清模糊需求与边界条件", "en": "Interview to clarify requirements and edge cases" }
+          },
+          {
+            "id": "btw",
+            "label": { "zh-CN": "插话提问", "en": "Side Q" },
+            "text": "/btw",
+            "tag": { "zh-CN": "旁路问答", "en": "Side Q" },
+            "description": { "zh-CN": "不打断当前主线进度的轻量旁路提问", "en": "Ask a quick side question without interrupting main flow" }
+          },
+          {
+            "id": "learn",
+            "label": { "zh-CN": "提炼经验", "en": "Learn" },
+            "text": "/learn",
+            "tag": { "zh-CN": "规则沉淀", "en": "Learn" },
+            "description": { "zh-CN": "复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill", "en": "Capture lessons learned as reusable skills or rules" }
+          },
+          {
+            "id": "goal",
+            "label": { "zh-CN": "持续到底", "en": "Goal" },
+            "text": "/goal",
+            "tag": { "zh-CN": "长程死磕", "en": "Long Run" },
+            "description": { "zh-CN": "开启长程目标循环模式，直到目标彻底达成", "en": "Run until the specified goal is completely finished" }
+          },
+          {
+            "id": "boost",
+            "label": { "zh-CN": "深度攻坚", "en": "Boost" },
+            "text": "/boost",
+            "tag": { "zh-CN": "单点深研", "en": "Deep Dive" },
+            "description": { "zh-CN": "调用 Boost 多智能体编排器深度推理与校验", "en": "Invoke Boost multi-agent orchestrator for complex tasks" }
+          },
+          {
+            "id": "swarm",
+            "label": { "zh-CN": "蜂群并发", "en": "Swarm" },
+            "text": "/swarm",
+            "tag": { "zh-CN": "横向分包", "en": "Parallel" },
+            "description": { "zh-CN": "调度多个子 Agent 并发协作拆分复杂任务", "en": "Spawn parallel agents collaborating on one task" }
+          },
+          {
+            "id": "teamwork",
+            "label": { "zh-CN": "团队协作", "en": "Teamwork" },
+            "text": "/teamwork",
+            "tag": { "zh-CN": "军团流水", "en": "Pipeline" },
+            "description": { "zh-CN": "拉起 5 阶段自治 Agent 团队接管大型项目", "en": "Invoke autonomous agent team for large projects" }
+          },
+          {
+            "id": "browser",
+            "label": { "zh-CN": "浏览器", "en": "Browser" },
+            "text": "/browser",
+            "tag": { "zh-CN": "网页实操", "en": "Web UI" },
+            "description": { "zh-CN": "唤醒内置浏览器子 Agent 实操网页与视觉核验", "en": "Launch browser subagent for web UI inspection" }
+          },
+          {
+            "id": "schedule",
+            "label": { "zh-CN": "定时任务", "en": "Schedule" },
+            "text": "/schedule",
+            "tag": { "zh-CN": "定时巡检", "en": "Cron" },
+            "description": { "zh-CN": "创建后台 Cron 周期巡检或一次性定时提醒", "en": "Schedule a recurring cron or one-shot timer" }
+          },
+          {
+            "id": "reload",
+            "label": { "zh-CN": "重载规则", "en": "Reload Rules" },
+            "text": "重新读取 AGENTS",
+            "tag": { "zh-CN": "恢复约束", "en": "Rules" },
+            "description": { "zh-CN": "一键填入「重新读取 AGENTS」，恢复行为约束", "en": "Insert reload AGENTS prompt" }
+          }
+        ]
+      }
+    },
+    {
+      "key": "showPromptOptimizer",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "提示词优化", "en": "Prompt Optimizer" },
+      "label": { "zh-CN": "显示提示词优化入口", "en": "Show prompt optimizer button" },
+      "description": { "zh-CN": "在发送按键上方显示提示词优化图标按钮；关闭后仍可通过快捷键触发优化", "en": "Show the prompt optimizer icon button above the send button; keyboard shortcut continues to work when hidden" }
+    },
+    {
+      "key": "optimizerShortcut",
+      "type": "string",
+      "editorMode": "shortcut",
+      "resetToDefault": true,
+      "default": "Alt+Shift+O",
+      "group": { "zh-CN": "提示词优化", "en": "Prompt Optimizer" },
+      "label": { "zh-CN": "提示词优化快捷键", "en": "Prompt optimizer shortcut" },
+      "description": { "zh-CN": "默认 Alt+Shift+O（macOS 为 Option+Shift+O）；按下触发优化，刚优化完成时再按一次可撤回；点击录入框修改，清空或按 Backspace 禁用", "en": "Default Alt+Shift+O (Option+Shift+O on macOS); press to optimize or undo immediately after optimizing; click to record a new shortcut or clear to disable" }
+    },
+    {
+      "key": "optimizerPrompt",
+      "type": "string",
+      "editorMode": "markdown-modal",
+      "resetToDefault": true,
+      "openButtonLabel": { "zh-CN": "查看 / 修改提示词", "en": "View / Edit Prompt" },
+      "modalTitle": { "zh-CN": "提示词优化指令模板", "en": "Prompt Optimizer Instruction Template" },
+      "default": "你是一位精通 Google Cloud 提示工程（Prompt Engineering）原则的提示词优化专家。\n你的唯一任务是将 `<draft>` 标签内的用户原始提示词草稿，改写并优化为更清晰、具体、高质量的提示词，供软件工程与通用 AI 助手直接执行。\n\n## 提示词优化准则\n1. **明确任务与具体性（Clarity & Specificity）**：消除口语化模糊表达与指代不明，使用清晰的动作动词界定核心目标。\n2. **语境与角色定位（Context & Persona）**：根据任务性质自然提炼所需专业视角与作用范围；严禁编造草稿中未提及的业务事实、文件路径、接口名或参数。\n3. **复杂任务分步拆解（Step-by-Step Breakdown）**：若原草稿包含多个需求或复杂目标，拆解为逻辑清晰的有序步骤；若原草稿只是简单直接的单步指令，则保持精炼紧凑，不要强行扩写成冗长模板。\n4. **明确边界与输出格式（Constraints & Output Format）**：按需补充合理的边界约束、验收标准或期望的输出结构。\n5. **格式与标识符保真（Strict Preservation）**：\n   - 保持与原草稿一致的自然语言（中文输入则输出中文，英文输入则输出英文）；\n   - 原样保留草稿中的所有文件路径、代码片段、变量/函数名、URL 与 `@` 引用。\n\n> **重要限制**：不要回答、执行或解释 `<draft>` 中的问题！只直接输出优化后的提示词正文，不要包含任何开场白、解释说明、引号或外层代码块包裹。",
+      "group": { "zh-CN": "提示词优化", "en": "Prompt Optimizer" },
+      "placeholder": { "zh-CN": "支持 Markdown 排版与 {{draft}} 占位符；留空则使用默认提示词", "en": "Supports Markdown formatting and {{draft}} placeholder; leave blank for default" },
+      "label": { "zh-CN": "提示词优化指令模板", "en": "Prompt optimizer system instruction" },
+      "description": { "zh-CN": "通过弹窗完整查看与编辑发送给快速模型的改写指令（支持 Markdown 预览与 {{draft}} 占位符）", "en": "View and edit the full optimizer instruction in a Markdown-capable modal (supports {{draft}} placeholder)" }
     },
     {
       "key": "autoAccept",
       "type": "boolean",
       "default": false,
-      "label": { "zh-CN": "自动批准安全步骤 (Auto-Accept，命中高危命令自动拦截，默认关闭)", "en": "Auto-Accept safe steps (blocks high-risk commands, default OFF)" }
-    },
-    {
-      "key": "autoCompact",
-      "type": "boolean",
-      "default": false,
-      "label": { "zh-CN": "达到阈值时自动触发 /compact（默认关闭）", "en": "Auto-send /compact at threshold (default OFF)" }
-    },
-    {
-      "key": "autoCompactThresholdTokens",
-      "type": "number",
-      "min": 80000,
-      "max": 900000,
-      "default": 240000,
-      "label": { "zh-CN": "自动 /compact 触发阈值 (Tokens)", "en": "Auto-compact threshold (tokens)" }
+      "group": { "zh-CN": "安全与自动化", "en": "Safety & Automation" },
+      "label": { "zh-CN": "自动批准安全步骤 (Auto-Accept)", "en": "Auto-Accept safe steps" },
+      "description": { "zh-CN": "默认关闭；启用后自动确认常规操作，但命中高危命令时仍会拦截提醒", "en": "Default OFF; confirms routine actions while blocking high-risk commands" }
     }
   ]
 }

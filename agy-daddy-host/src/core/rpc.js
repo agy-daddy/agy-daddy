@@ -8,7 +8,8 @@ const https = require('https');
 const { RPC_READ_ALLOWLIST, RPC_WRITE_ALLOWLIST } = require('../contracts/constants');
 const { resolveActiveCdpTarget, CdpClient } = require('./cdp');
 
-function loopbackRequest(url, body, token) {
+function loopbackRequest(url, body, token, timeoutMs = 20000) {
+  const limit = Math.max(1000, Math.min(60000, Number(timeoutMs) || 20000));
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? https : http;
     const req = mod.request(url, {
@@ -33,14 +34,25 @@ function loopbackRequest(url, body, token) {
         }
       });
     });
-    req.setTimeout(20000, () => req.destroy(new Error('Local API timeout')));
+    req.setTimeout(limit, () => req.destroy(new Error('Local API timeout')));
     req.on('error', reject);
     req.end(body ? JSON.stringify(body) : undefined);
   });
 }
 
+function defaultIsPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function discoverFromHubDaemonFiles(options = {}) {
   const fsImpl = options.fs || fs;
+  const isPidAlive = typeof options.isPidAlive === 'function' ? options.isPidAlive : defaultIsPidAlive;
   const home = options.homeDir || os.homedir();
   const daemonDirs = Array.isArray(options.daemonDirs)
     ? options.daemonDirs
@@ -60,6 +72,9 @@ function discoverFromHubDaemonFiles(options = {}) {
       try {
         const stat = fsImpl.statSync(fullPath);
         const parsed = JSON.parse(fsImpl.readFileSync(fullPath, 'utf8'));
+        if (parsed?.pid !== undefined && parsed?.pid !== null && !options.skipPidCheck) {
+          if (!isPidAlive(Number(parsed.pid))) continue;
+        }
         const csrfToken = typeof parsed?.csrfToken === 'string' ? parsed.csrfToken.trim() : '';
         const httpsPort = typeof parsed?.httpsPort === 'number' && parsed.httpsPort > 0 ? parsed.httpsPort : null;
         const httpPort = typeof parsed?.httpPort === 'number' && parsed.httpPort > 0 ? parsed.httpPort : null;
@@ -140,13 +155,15 @@ function createRpcTransport(options = {}) {
       const creds = await ensureCreds(false);
       return creds.origin;
     },
-    async call(method, body = {}) {
+    async call(method, body = {}, opts = {}) {
+      const callTimeoutMs = opts?.timeoutMs ? Math.max(1000, Math.min(60000, Number(opts.timeoutMs))) : 20000;
       let creds = await ensureCreds(false);
       try {
         const text = await reqFn(
           `${creds.origin}/exa.language_server_pb.LanguageServerService/${method}`,
           body,
-          creds.csrfToken
+          creds.csrfToken,
+          callTimeoutMs
         );
         return JSON.parse(text);
       } catch (err) {
@@ -155,7 +172,8 @@ function createRpcTransport(options = {}) {
           const text = await reqFn(
             `${creds.origin}/exa.language_server_pb.LanguageServerService/${method}`,
             body,
-            creds.csrfToken
+            creds.csrfToken,
+            callTimeoutMs
           );
           return JSON.parse(text);
         }
@@ -180,19 +198,19 @@ function createScopedRpcClient(pluginId, permissions = [], transport) {
       }
       return transport.getOrigin();
     },
-    async call(method, body = {}) {
+    async call(method, body = {}, opts = {}) {
       const m = String(method || '').trim();
       if (RPC_READ_ALLOWLIST.includes(m)) {
         if (!canRead && !canWrite) {
           throw new Error(`RPC_PERMISSION_DENIED: ${pluginId} cannot call read method ${m}`);
         }
-        return transport.call(m, body);
+        return transport.call(m, body, opts);
       }
       if (RPC_WRITE_ALLOWLIST.includes(m)) {
         if (!canWrite) {
           throw new Error(`RPC_PERMISSION_DENIED: ${pluginId} requires rpc:write to call ${m}`);
         }
-        return transport.call(m, body);
+        return transport.call(m, body, opts);
       }
       throw new Error(`RPC_METHOD_BLOCKED: ${m} is not in the LanguageServer allowlist`);
     }

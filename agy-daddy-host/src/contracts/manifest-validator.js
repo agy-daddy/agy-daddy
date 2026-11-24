@@ -16,6 +16,7 @@ const { parseSemver, isValidRange, satisfies } = require('./semver');
 const ID_RE = /^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/;
 const PUBLISHER_RE = /^[a-z0-9][a-z0-9-]*$/;
 const TOPIC_RE = /^[a-z0-9-]+:[a-z0-9.-]+@\d+$/;
+const STRING_EDITOR_MODES = Object.freeze(['markdown-modal', 'shortcut']);
 
 function isPlainObject(val) {
   return Boolean(val) && typeof val === 'object' && !Array.isArray(val);
@@ -226,6 +227,209 @@ function validateSettingsSchema(schema) {
     if (field.type === 'enum' && (!Array.isArray(field.options) || field.options.length === 0)) {
       errors.push(`enum field ${field.key} must provide non-empty options`);
     }
+    if (field.type === 'string') {
+      if (field.options !== undefined) {
+        if (!Array.isArray(field.options)) {
+          errors.push(`options for ${field.key} must be an array`);
+        } else {
+          for (const opt of field.options) {
+            const validOpt = typeof opt === 'string' || (isPlainObject(opt) && typeof opt.value === 'string');
+            if (!validOpt) {
+              errors.push(`options for ${field.key} must contain strings or { value, label } objects`);
+              break;
+            }
+          }
+        }
+      }
+      if (field.optionsCommand !== undefined && (typeof field.optionsCommand !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(field.optionsCommand))) {
+        errors.push(`invalid optionsCommand for ${field.key}: ${String(field.optionsCommand)}`);
+      }
+      if (field.multiline !== undefined && typeof field.multiline !== 'boolean') {
+        errors.push(`multiline for ${field.key} must be boolean`);
+      }
+      if (field.rows !== undefined && (!Number.isInteger(field.rows) || field.rows < 2 || field.rows > 20)) {
+        errors.push(`rows for ${field.key} must be an integer between 2 and 20`);
+      }
+      if (field.resetToDefault !== undefined && typeof field.resetToDefault !== 'boolean') {
+        errors.push(`resetToDefault for ${field.key} must be boolean`);
+      }
+      if (field.editorMode !== undefined && (typeof field.editorMode !== 'string' || !STRING_EDITOR_MODES.includes(field.editorMode))) {
+        errors.push(`editorMode for ${field.key} must be one of: ${STRING_EDITOR_MODES.join(', ')}`);
+      }
+      if (field.openButtonLabel !== undefined && typeof field.openButtonLabel !== 'string' && !isPlainObject(field.openButtonLabel)) {
+        errors.push(`openButtonLabel for ${field.key} must be a string or locale object`);
+      }
+      if (field.modalTitle !== undefined && typeof field.modalTitle !== 'string' && !isPlainObject(field.modalTitle)) {
+        errors.push(`modalTitle for ${field.key} must be a string or locale object`);
+      }
+      if (field.composer !== undefined) {
+        const cp = field.composer;
+        if (!isPlainObject(cp) || typeof cp.command !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(cp.command)) {
+          errors.push(`composer for ${field.key} must be an object with a valid command`);
+        } else {
+          if (cp.watchKeys !== undefined && (!Array.isArray(cp.watchKeys) || !cp.watchKeys.every((k) => typeof k === 'string' && k.trim()))) {
+            errors.push(`composer.watchKeys for ${field.key} must be an array of non-empty strings`);
+          }
+          if (cp.resetLabel !== undefined && typeof cp.resetLabel !== 'string' && !isPlainObject(cp.resetLabel)) {
+            errors.push(`composer.resetLabel for ${field.key} must be a string or locale object`);
+          }
+          if (cp.runOnOpen !== undefined && typeof cp.runOnOpen !== 'boolean') {
+            errors.push(`composer.runOnOpen for ${field.key} must be boolean`);
+          }
+        }
+      }
+    }
+    if (field.type === 'list' && field.itemEditor?.kind === 'ordered-preset-list') {
+      const ie = field.itemEditor;
+      if (ie.presets !== undefined) {
+        if (!Array.isArray(ie.presets)) {
+          errors.push(`itemEditor.presets for ${field.key} must be an array`);
+        } else {
+          for (const preset of ie.presets) {
+            if (!isPlainObject(preset) || typeof preset.id !== 'string' || !preset.id.trim()) {
+              errors.push(`itemEditor.presets entries for ${field.key} must have a non-empty string id`);
+              break;
+            }
+          }
+        }
+      }
+      if (ie.allowCustom !== undefined && typeof ie.allowCustom !== 'boolean') {
+        errors.push(`itemEditor.allowCustom for ${field.key} must be boolean`);
+      }
+      if (ie.dynamicPresetsCommand !== undefined && (typeof ie.dynamicPresetsCommand !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(ie.dynamicPresetsCommand))) {
+        errors.push(`itemEditor.dynamicPresetsCommand for ${field.key} must be a valid command string`);
+      }
+      if (ie.dynamicAction !== undefined) {
+        const da = ie.dynamicAction;
+        const daLabelValid = isPlainObject(da) && (
+          (typeof da.label === 'string' && da.label.trim().length > 0)
+          || (isPlainObject(da.label) && Object.values(da.label).some((v) => typeof v === 'string' && v.trim().length > 0))
+        );
+        if (!isPlainObject(da) || typeof da.command !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(da.command) || !daLabelValid) {
+          errors.push(`itemEditor.dynamicAction for ${field.key} must have a valid command and non-empty label`);
+        }
+      }
+      if (ie.dynamicPoolTitle !== undefined && typeof ie.dynamicPoolTitle !== 'string' && !isPlainObject(ie.dynamicPoolTitle)) {
+        errors.push(`itemEditor.dynamicPoolTitle for ${field.key} must be a string or localized object`);
+      }
+      if (ie.dynamicEmptyHint !== undefined && typeof ie.dynamicEmptyHint !== 'string' && !isPlainObject(ie.dynamicEmptyHint)) {
+        errors.push(`itemEditor.dynamicEmptyHint for ${field.key} must be a string or localized object`);
+      }
+    }
+    if (field.type === 'list' && field.itemEditor?.kind === 'catalog-filter-sort') {
+      const ie = field.itemEditor;
+      if (typeof ie.itemsCommand !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(ie.itemsCommand)) {
+        errors.push(`itemEditor.itemsCommand for ${field.key} must be a valid command string`);
+      }
+      if (ie.sortModeKey !== undefined && (typeof ie.sortModeKey !== 'string' || !ie.sortModeKey.trim())) {
+        errors.push(`itemEditor.sortModeKey for ${field.key} must be a non-empty string`);
+      }
+      if (ie.filterDimensions !== undefined) {
+        if (!Array.isArray(ie.filterDimensions) || !ie.filterDimensions.every((d) => isPlainObject(d) && typeof d.id === 'string' && d.id.trim())) {
+          errors.push(`itemEditor.filterDimensions for ${field.key} must be an array of { id, label } objects`);
+        }
+      }
+      if (ie.sortOptions !== undefined) {
+        if (!Array.isArray(ie.sortOptions) || !ie.sortOptions.every((o) => isPlainObject(o) && typeof o.value === 'string' && o.value.trim())) {
+          errors.push(`itemEditor.sortOptions for ${field.key} must be an array of { value, label } objects`);
+        }
+      }
+    }
+    if (field.browse !== undefined) {
+      if (field.type !== 'string' && field.type !== 'list') {
+        errors.push(`browse for ${field.key} is only supported for string or list fields`);
+      } else {
+        const br = field.browse;
+        if (!isPlainObject(br) || typeof br.command !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(br.command)) {
+          errors.push(`browse for ${field.key} must be an object with a valid command`);
+        } else if (br.label !== undefined && typeof br.label !== 'string' && !isPlainObject(br.label)) {
+          errors.push(`browse.label for ${field.key} must be a string or locale object`);
+        }
+      }
+    }
+    if (field.probe !== undefined) {
+      const pr = field.probe;
+      if (!isPlainObject(pr) || typeof pr.command !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(pr.command)) {
+        errors.push(`probe for ${field.key} must be an object with a valid command`);
+      } else {
+        if (pr.watchKeys !== undefined && (!Array.isArray(pr.watchKeys) || !pr.watchKeys.every((k) => typeof k === 'string' && k.trim()))) {
+          errors.push(`probe.watchKeys for ${field.key} must be an array of non-empty strings`);
+        }
+        if (pr.autoFill !== undefined && typeof pr.autoFill !== 'boolean') {
+          errors.push(`probe.autoFill for ${field.key} must be boolean`);
+        }
+        if (pr.runOnOpen !== undefined && typeof pr.runOnOpen !== 'boolean') {
+          errors.push(`probe.runOnOpen for ${field.key} must be boolean`);
+        }
+        if (pr.onlyWhenTruthy !== undefined && typeof pr.onlyWhenTruthy !== 'boolean') {
+          errors.push(`probe.onlyWhenTruthy for ${field.key} must be boolean`);
+        }
+      }
+    }
+    if (field.guide !== undefined) {
+      const g = field.guide;
+      if (!isPlainObject(g)) {
+        errors.push(`guide for ${field.key} must be an object`);
+      } else {
+        if (g.steps !== undefined && !Array.isArray(g.steps)) {
+          errors.push(`guide.steps for ${field.key} must be an array`);
+        }
+        if (g.commands !== undefined && !Array.isArray(g.commands)) {
+          errors.push(`guide.commands for ${field.key} must be an array`);
+        }
+        if (g.links !== undefined && !Array.isArray(g.links)) {
+          errors.push(`guide.links for ${field.key} must be an array`);
+        }
+      }
+    }
+    if (field.secret !== undefined && typeof field.secret !== 'boolean') {
+      errors.push(`secret for ${field.key} must be boolean`);
+    }
+    if (field.writeOnly !== undefined && typeof field.writeOnly !== 'boolean') {
+      errors.push(`writeOnly for ${field.key} must be boolean`);
+    }
+    if (field.visibleWhen !== undefined) {
+      const vw = field.visibleWhen;
+      const hasCondition = isPlainObject(vw) && (
+        Object.prototype.hasOwnProperty.call(vw, 'equals') ||
+        Object.prototype.hasOwnProperty.call(vw, 'notEquals') ||
+        (Array.isArray(vw.in) && vw.in.length > 0)
+      );
+      if (!isPlainObject(vw) || typeof vw.key !== 'string' || !vw.key.trim() || !hasCondition) {
+        errors.push(`visibleWhen for ${field.key} must be an object with key and equals/notEquals/in`);
+      }
+    }
+  }
+  if (schema.actions !== undefined) {
+    if (!Array.isArray(schema.actions)) {
+      errors.push('settings schema actions must be an array');
+    } else {
+      const seenActionIds = new Set();
+      for (const action of schema.actions) {
+        if (!isPlainObject(action)) {
+          errors.push('each setting action must be an object');
+          continue;
+        }
+        if (typeof action.id !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(action.id)) {
+          errors.push(`invalid setting action id: ${String(action.id)}`);
+        } else if (seenActionIds.has(action.id)) {
+          errors.push(`duplicate setting action id: ${action.id}`);
+        } else {
+          seenActionIds.add(action.id);
+        }
+        if (typeof action.command !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(action.command)) {
+          errors.push(`invalid setting action command for ${String(action.id)}: ${String(action.command)}`);
+        }
+        const labelValid = (typeof action.label === 'string' && action.label.trim().length > 0) ||
+          (isPlainObject(action.label) && Object.values(action.label).some((v) => typeof v === 'string' && v.trim().length > 0));
+        if (!labelValid) {
+          errors.push(`setting action ${String(action.id)} must provide a non-empty label`);
+        }
+        if (action.args !== undefined && !Array.isArray(action.args)) {
+          errors.push(`setting action ${String(action.id)} args must be an array`);
+        }
+      }
+    }
   }
   return { ok: errors.length === 0, errors };
 }
@@ -284,6 +488,21 @@ function validateSettingsValues(schema, rawValues = {}) {
   }
 
   return { ok: errors.length === 0, errors, values };
+}
+
+function redactWriteOnlySettings(schema, rawValues = {}) {
+  const out = isPlainObject(rawValues) ? { ...rawValues } : {};
+  const secretState = {};
+  if (schema && Array.isArray(schema.fields)) {
+    for (const field of schema.fields) {
+      if (!field || !field.key || field.writeOnly !== true) continue;
+      const cur = out[field.key];
+      const configured = typeof cur === 'string' ? cur.trim().length > 0 : Boolean(cur);
+      secretState[field.key] = configured;
+      out[field.key] = '';
+    }
+  }
+  return { values: out, secretState };
 }
 
 function evaluateTrustPolicy(manifest, trustLevel = 'T2', grantedPermissions = []) {
@@ -363,5 +582,6 @@ module.exports = {
   validateManifest,
   validateSettingsSchema,
   validateSettingsValues,
+  redactWriteOnlySettings,
   evaluateTrustPolicy
 };

@@ -8,17 +8,18 @@
 
 ### 1.1 多环境通道矩阵
 
-| 环境 (`RELEASE_ENV`) | 适用场景 | npm `dist-tag` | 触发来源 | Provenance 溯源签名 | 审批门禁 |
+| 环境 (`RELEASE_ENV`) | 适用场景 | npm `dist-tag` | 触发来源 | 认证与溯源机制 | 审批门禁 |
 |---|---|---|---|---|---|
-| `development` | 本地预演、本地 Verdaccio 联调 | `dev` | 本地手动 / `--dry-run` | 关闭 | 无 |
-| `staging` | 预发布 / 金丝雀灰度验证 | `next` | `vX.Y.Z-rc.N` tag 或 `workflow_dispatch(staging)` | 关闭（可按需开启） | GitHub Environment `staging` |
-| `production` | 正式生产发布 | `latest` | `vX.Y.Z` / `<pkg>@X.Y.Z` 正式 tag 或 `workflow_dispatch(production)` | 开启 (`--provenance`) | GitHub Environment `production`（建议配置 Required Reviewers） |
+| `development` | 本地预演、本地 Verdaccio 联调 | `dev` | 本地手动 / `--dry-run` | 本地 `npm login` 或无鉴权 | 无 |
+| `staging` | 预发布 / 金丝雀灰度验证 | `next` | `vX.Y.Z-rc.N` tag 或 `workflow_dispatch(staging)` | 纯 OIDC Trusted Publishing（自动附带 Provenance） | GitHub Environment `npm-release` |
+| `production` | 正式生产发布 | `latest` | `vX.Y.Z` / `<pkg>@X.Y.Z` 正式 tag 或 `workflow_dispatch(production)` | 纯 OIDC Trusted Publishing（自动附带 Provenance） | GitHub Environment `npm-release`（可配 Required Reviewers） |
 
 ### 1.2 环境变量与敏感凭证规范
 
 所有发布相关环境变量模板定义在根目录 [`.env.release.example`](../.env.release.example)（本地覆盖文件 `.env.release.local` 与快照目录 `.release-artifacts/` 均已在 `.gitignore` 中忽略，严禁提交）：
 
-- **敏感凭证**：仅通过 GitHub Environment Secrets (`secrets.NPM_TOKEN`) 或本机环境变量 `NODE_AUTH_TOKEN` 注入，绝不写入 `package.json`、`.npmrc` 或脚本源码。生产环境启用 npm Trusted Publishing / OIDC (`id-token: write`) + `--provenance`。
+- **纯 OIDC 免 Token 认证（CI 默认）**：`release.yml` 的 `publish-npm` job 使用 GitHub Environment `npm-release` 与 `permissions: { id-token: write }`，且要求 `npm >= 11.5.1`。执行发布时主动剥离 `NODE_AUTH_TOKEN` 与 `NPM_TOKEN`（不在 `setup-node` 传 `registry-url`，避免生成 token 占位配置），由 GitHub OIDC 与 npm Trusted Publishing 直接换取临时发布凭据并自动附带 Provenance 溯源签名。
+- **首版手动交互式 2FA**：新包在 npmjs.com 首次创建前无法配置 Trusted Publisher，需先通过本机 `npm login` 并使用 `node scripts/release.js publish --env production --target all --execute --interactive` 完成首版交互式 2FA 发布，随后在 npmjs.com 各包的 **Settings → Trusted Publisher** 绑定 `agy-daddy/agy-daddy` + `release.yml` + `npm-release`。
 - **构建期配置**：`VITE_PUBLIC_BASE`（控制前端静态资源公共路径，默认 `/`）、`VITE_SOURCEMAP`（生产默认 `false` 避免源码暴露）。
 - **零外部运行依赖约束**：全部 13 个可发布子包的 `dependencies` 必须保持为空，构建期工具（Vite、TypeScript、Vitest）仅隔离在 `agy-daddy-plugin-remote/web` 和 `agy-daddy-plugin-web/web` 的 `devDependencies` 中。
 
@@ -58,8 +59,23 @@
 - **4 阶段流水线**：
   1. `preflight-verify`：Web UI 构建校验 + `npm run verify` + `scripts/release.js plan` 版本与 `registry.json` SHA-512 一致性检查。
   2. `pack-snapshot`：运行 `scripts/release.js pack` 生成全部 `.tgz` 与带 `sha512` 校验和的 `release-manifest.json`，上传为 30 天保留期的 GitHub Artifact 快照。
-  3. `publish-npm`：绑定对应 GitHub Environment 与 `secrets.NPM_TOKEN`，幂等跳过已存在版本，执行 `npm publish --access public --tag <distTag>`（生产附加 `--provenance`）。
+  3. `publish-npm`：绑定单一 GitHub Environment `npm-release` 与 `id-token: write`，确保 `npm >= 11.5.1` 并剥离 `NODE_AUTH_TOKEN` / `NPM_TOKEN`，以纯 OIDC Trusted Publishing 幂等跳过已存在版本并执行 `npm publish --access public --tag <distTag>`（自动生成 Provenance）。
   4. `post-release-verify`：执行本地与远端 npm 元数据健康检查；Tag 正式发布成功后自动创建 GitHub Release 并附带 `release-manifest.json`。
+
+### 3.3 首版交互式 2FA 发布与 Trusted Publishing 绑定
+
+1. **首版 1.0.0 本机交互式发布**（创建 13 个包）：
+   ```bash
+   npm login
+   npm run verify
+   node scripts/release.js publish --env production --target all --execute --interactive --skip-verify
+   ```
+2. **绑定 Trusted Publisher**：在 npmjs.com 依次打开 13 个包的 `https://www.npmjs.com/package/<encoded-name>/access`，选择 **GitHub Actions**，填入：
+   - Organization or user：`agy-daddy`
+   - Repository：`agy-daddy`
+   - Workflow filename：`release.yml`
+   - Environment name：`npm-release`
+3. **后续纯 OIDC 自动发版**：在 GitHub Repository Settings → Environments 创建 `npm-release` 后，推送 tag（如 `v1.0.1`）或手动运行 `Release & Publish npm Packages` 即可免 `NPM_TOKEN` 自动发布。
 
 ---
 
@@ -95,7 +111,7 @@ node scripts/release.js rollback --env production --target all --to-version 1.0.
 
 ## 5. 生产发布前执行清单（Checklist）
 
-- [ ] **npm 组织与权限**：确认 npmjs.com 已创建 `@agy-daddy` 组织，并在 GitHub Repository Settings -> Environments 中分别配置 `staging` 与 `production`（附带 `NPM_TOKEN` Secret，生产建议开启人工审批）。
+- [ ] **首版发布与 Trusted Publishing 绑定**：13 个包已完成首版 `1.0.0` 交互式发布，并在 npmjs.com 各包的 **Settings → Trusted Publisher** 配置为 `GitHub Actions`（Owner: `agy-daddy`、Repository: `agy-daddy`、Workflow: `release.yml`、Environment: `npm-release`），且在 GitHub Repository Settings → Environments 创建 `npm-release`（不配置多余 `NPM_TOKEN`，可选开启人工审批）。
 - [ ] **版本与哈希同步**：若修改过任何插件的 `agy-plugin.json`，已同步更新 `agy-daddy-registry/registry.json` 的 `version` 与 `manifestSha512`。
 - [ ] **前端静态构建**：修改过 `plugin-remote/web` 或 `plugin-web/web` 源码后，已执行 `npm run typecheck && npm test && npm run build` 刷新预编译产物。
 - [ ] **全量门禁与体积检查**：根目录运行 `npm run verify`（8 项 gate 全绿、测试 `Failed: 0`）与 `npm run analyze`（确认 tarball 无 `test/` / `web/src/` 泄露）。

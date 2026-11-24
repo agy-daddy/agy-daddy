@@ -160,7 +160,7 @@ function inspectAntigravityHostProcess(options = {}) {
     return empty;
   }
 
-  if (platform === 'win32') {
+  if (platform === 'win32' && typeof options.psOutput !== 'string') {
     let rawJson = options.winProcessJson;
     if (rawJson === undefined) {
       try {
@@ -243,6 +243,10 @@ function inspectAntigravityHostProcess(options = {}) {
     return empty;
   }
 
+  const psPlatform = options.platform || (platform === 'win32'
+    ? (/\/Contents\/MacOS\//.test(psOut) ? 'darwin' : 'linux')
+    : platform);
+
   for (const line of psOut.split(/\r?\n/)) {
     const m = line.match(/^\s*(\d+)\s+([0-9:-]+)\s+(.+)$/);
     if (!m) continue;
@@ -250,7 +254,7 @@ function inspectAntigravityHostProcess(options = {}) {
     const etime = m[2];
     const cmd = m[3].trim();
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    if (platform === 'darwin') {
+    if (psPlatform === 'darwin') {
       if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
       if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)/i.test(cmd)) continue;
     } else {

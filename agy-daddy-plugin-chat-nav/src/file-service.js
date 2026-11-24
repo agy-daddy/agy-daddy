@@ -29,7 +29,7 @@ const BLOCKED_PATH_PREFIXES = Object.freeze([
   '/Applications/Antigravity.app'
 ]);
 
-const SENSITIVE_PATH_REGEX = /\/(?:\.ssh|\.gnupg|\.aws|1Password)\//i;
+const SENSITIVE_PATH_REGEX = /[\\/](?:\.ssh|\.gnupg|\.aws|1Password)[\\/]/i;
 
 function normalizeFilePathInput(rawPathOrUri) {
   const s = String(rawPathOrUri || '').trim();
@@ -37,10 +37,19 @@ function normalizeFilePathInput(rawPathOrUri) {
 
   let decoded = s;
   if (/^file:\/\//i.test(s)) {
-    try {
-      decoded = decodeURIComponent(new URL(s).pathname);
-    } catch {
-      return null;
+    if (/^file:\/\/\/?[A-Za-z]:[\\/]/i.test(s)) {
+      const stripped = s.replace(/^file:\/\/\/?/i, '');
+      try {
+        decoded = decodeURIComponent(stripped);
+      } catch {
+        decoded = stripped;
+      }
+    } else {
+      try {
+        decoded = decodeURIComponent(new URL(s).pathname);
+      } catch {
+        return null;
+      }
     }
   }
   if (!path.isAbsolute(decoded)) return null;
@@ -52,11 +61,18 @@ const ALLOWED_VAR_TEMP_PREFIXES = ['/var/folders/', '/private/var/folders/'];
 function resolveSafeEditablePath(rawPathOrUri) {
   const resolved = normalizeFilePathInput(rawPathOrUri);
   if (!resolved) return null;
-  const isMacUserTemp = ALLOWED_VAR_TEMP_PREFIXES.some((p) => resolved.startsWith(p));
+  const slashed = resolved.replace(/\\/g, '/');
+  if (/^c:\/windows(?:\/|$)/i.test(slashed)) {
+    return null;
+  }
+  const posixPart = slashed.replace(/^[A-Za-z]:/, '');
+  const isMacUserTemp = ALLOWED_VAR_TEMP_PREFIXES.some((p) => slashed.startsWith(p));
   for (const prefix of BLOCKED_PATH_PREFIXES) {
     if (isMacUserTemp && prefix === '/var') continue;
-    if (resolved === prefix || resolved.startsWith(prefix + '/')) {
-      return null;
+    for (const candidate of [slashed, posixPart]) {
+      if (candidate === prefix || candidate.startsWith(prefix + '/')) {
+        return null;
+      }
     }
   }
   if (SENSITIVE_PATH_REGEX.test(resolved)) {

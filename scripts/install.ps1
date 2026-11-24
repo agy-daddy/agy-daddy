@@ -72,7 +72,7 @@ function Test-AgyRuntime {
     } else {
       Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
     }
-    $probeCode = 'const [maj,min]=process.versions.node.split(".").map(Number);if(maj<22||(maj===22&&min<4))process.exit(1);if(typeof WebSocket!=="function"||typeof fetch!=="function")process.exit(1);'
+    $probeCode = "const [maj,min]=process.versions.node.split('.').map(Number);if(maj<22||(maj===22&&min<4))process.exit(1);if(typeof WebSocket!=='function'||typeof fetch!=='function')process.exit(1);"
     & $ExePath -e $probeCode *> $null
     return ($LASTEXITCODE -eq 0)
   } catch {

@@ -530,14 +530,22 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
   const prevTestMode = process.env.AGY_DADDY_TEST_MODE;
   process.env.AGY_DADDY_TEST_MODE = '1';
   const tmpDir = makeTempDir('agy-meta-appsync-');
+  const alphaPath = path.resolve('/Volumes/mock/alpha-repo');
+  const cjkPath = path.resolve('/Volumes/mock/中文项目');
+  const betaPath = path.resolve('/Volumes/mock/beta-db-only');
+  const gammaPath = path.resolve('/Volumes/mock/gamma-implicit');
+  const deltaPath = path.resolve('/Volumes/mock/delta-new');
+  const freshPath = path.resolve('/Volumes/mock/fresh-after-ttl');
+  const defaultWsPath = path.resolve('/Volumes/mock/default-ws');
+  const urlMod = require('node:url');
   try {
     const vscdbPath = path.join(tmpDir, 'state.vscdb');
     const convDbPath = path.join(tmpDir, 'conversation_summaries.db');
 
     createTestVscdb(vscdbPath, [
-      'file:///Volumes/mock/alpha-repo',
-      'file:///Volumes/mock/%E4%B8%AD%E6%96%87%E9%A1%B9%E7%9B%AE',
-      'file:///etc/secret',
+      urlMod.pathToFileURL(alphaPath).href,
+      urlMod.pathToFileURL(cjkPath).href,
+      urlMod.pathToFileURL(path.resolve('/etc/secret')).href,
       'file:///tmp/magpie-agy-bridge-abc123',
       'file:///var/folders/3n/8vkwhj/T/magpie-agy-bridge-xyz'
     ]);
@@ -549,7 +557,7 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
         step_count: 4,
         last_modified_time: '2026-11-24T01:00:00.000Z',
         workspace_uris: JSON.stringify([
-          'file:///Volumes/mock/alpha-repo',
+          urlMod.pathToFileURL(alphaPath).href,
           'file:///private/var/folders/3n/8vkwhj/T/magpie-agy-bridge-999'
         ]),
         project_id: 'uuid-alpha'
@@ -559,7 +567,7 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
         title: 'Conv 2',
         step_count: 2,
         last_modified_time: '2026-11-24T02:30:00.000Z',
-        workspace_uris: JSON.stringify(['file:///Volumes/mock/beta-db-only']),
+        workspace_uris: JSON.stringify([urlMod.pathToFileURL(betaPath).href]),
         project_id: 'uuid-beta'
       },
       {
@@ -575,7 +583,7 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     const storage = createInMemoryStorage();
     const store = createWorkspaceMetaStore({
       storage,
-      defaultBaseDir: '/Volumes/mock/default-ws',
+      defaultBaseDir: defaultWsPath,
       stateVscdbPath: vscdbPath,
       conversationDbPath: convDbPath,
       sharedReadStatePath: null,
@@ -591,16 +599,19 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
 
     const synced = store.loadAppSyncedProjects();
     const syncedRoots = synced.map((p) => p.rootPath);
-    assert.ok(syncedRoots.includes('/Volumes/mock/alpha-repo'));
-    assert.ok(syncedRoots.includes('/Volumes/mock/中文项目'));
-    assert.ok(syncedRoots.includes('/Volumes/mock/beta-db-only'));
-    assert.equal(syncedRoots.some((r) => r.includes('magpie-agy-bridge') || r.includes('route-score') || r.startsWith('/etc')), false);
+    assert.ok(syncedRoots.includes(alphaPath));
+    assert.ok(syncedRoots.includes(cjkPath));
+    assert.ok(syncedRoots.includes(betaPath));
+    assert.equal(
+      syncedRoots.some((r) => r.includes('magpie-agy-bridge') || r.includes('route-score') || r.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '').startsWith('/etc')),
+      false
+    );
 
     // Allowed roots includes App-synced roots
     const rootPaths = store.getProjectRootPaths();
-    assert.ok(rootPaths.includes('/Volumes/mock/alpha-repo'));
-    assert.ok(rootPaths.includes('/Volumes/mock/中文项目'));
-    assert.ok(rootPaths.includes('/Volumes/mock/beta-db-only'));
+    assert.ok(rootPaths.includes(alphaPath));
+    assert.ok(rootPaths.includes(cjkPath));
+    assert.ok(rootPaths.includes(betaPath));
 
     // Group creation + listProjectsAndGroups merging registered + App-synced + session-discovered implicit
     const grp = store.createGroup({ name: 'Synced Group' }).group;
@@ -610,20 +621,20 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
         title: 'RPC Alpha',
         stepCount: 3,
         lastModifiedTime: '2026-11-24T04:00:00.000Z',
-        workspaceUri: 'file:///Volumes/mock/alpha-repo'
+        workspaceUri: urlMod.pathToFileURL(alphaPath).href
       },
       {
         cascadeId: 'rpc-s2',
         title: 'RPC Implicit',
         stepCount: 2,
         lastModifiedTime: '2026-11-24T04:10:00.000Z',
-        workspaceUri: 'file:///Volumes/mock/gamma-implicit'
+        workspaceUri: urlMod.pathToFileURL(gammaPath).href
       }
     ]);
 
-    const alphaProj = listed.projects.find((p) => p.rootPath === '/Volumes/mock/alpha-repo');
-    const cjkProj = listed.projects.find((p) => p.rootPath === '/Volumes/mock/中文项目');
-    const gammaProj = listed.projects.find((p) => p.rootPath === '/Volumes/mock/gamma-implicit');
+    const alphaProj = listed.projects.find((p) => p.rootPath === alphaPath);
+    const cjkProj = listed.projects.find((p) => p.rootPath === cjkPath);
+    const gammaProj = listed.projects.find((p) => p.rootPath === gammaPath);
     assert.ok(alphaProj && alphaProj.id.startsWith('app:'));
     assert.equal(alphaProj.syncedFromApp, true);
     assert.equal(alphaProj.source, 'app');
@@ -633,11 +644,11 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     assert.equal(gammaProj.implicit, true);
 
     // getProjectById resolves app:..., implicit:..., and workspaceUri fallback
-    assert.equal(store.getProjectById(alphaProj.id).rootPath, '/Volumes/mock/alpha-repo');
-    assert.equal(store.getProjectById(gammaProj.id).rootPath, '/Volumes/mock/gamma-implicit');
+    assert.equal(store.getProjectById(alphaProj.id).rootPath, alphaPath);
+    assert.equal(store.getProjectById(gammaProj.id).rootPath, gammaPath);
     assert.equal(
-      store.getProjectById('implicit:custom123', { workspaceUri: 'file:///Volumes/mock/delta-new' }).rootPath,
-      '/Volumes/mock/delta-new'
+      store.getProjectById('implicit:custom123', { workspaceUri: urlMod.pathToFileURL(deltaPath).href }).rootPath,
+      deltaPath
     );
     assert.equal(store.getProjectById('proj_missing'), null);
 
@@ -654,7 +665,7 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     const updRes = store.updateProject(cjkProj.id, { groupId: grp.id, name: '中文工作区' });
     assert.equal(updRes.ok, true);
     assert.equal(updRes.project.id, cjkProj.id);
-    assert.equal(updRes.project.rootPath, '/Volumes/mock/中文项目');
+    assert.equal(updRes.project.rootPath, cjkPath);
     assert.equal(updRes.project.groupId, grp.id);
     assert.equal(updRes.project.name, '中文工作区');
 
@@ -665,10 +676,10 @@ test('W4: App 项目全量同步 (state.vscdb + conversation_summaries.db)、CJK
     assert.equal(reloadedCjk.name, '中文工作区');
 
     // TTL cache check: update vscdb and verify cache serves old until TTL expires
-    createTestVscdb(vscdbPath, ['file:///Volumes/mock/fresh-after-ttl']);
-    assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === '/Volumes/mock/fresh-after-ttl'), false);
+    createTestVscdb(vscdbPath, [urlMod.pathToFileURL(freshPath).href]);
+    assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === freshPath), false);
     await new Promise((r) => setTimeout(r, 100));
-    assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === '/Volumes/mock/fresh-after-ttl'), true);
+    assert.equal(store.loadAppSyncedProjects().some((p) => p.rootPath === freshPath), true);
   } finally {
     if (prevTestMode === undefined) delete process.env.AGY_DADDY_TEST_MODE;
     else process.env.AGY_DADDY_TEST_MODE = prevTestMode;

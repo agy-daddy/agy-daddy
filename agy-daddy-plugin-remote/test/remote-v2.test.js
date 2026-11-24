@@ -627,15 +627,17 @@ test('remote-v2: L0/L1/L2 permission matrix, Cloudflare X-Agy-Confirm, zero pair
     const cfWsBlocked = await connectRawWs(`ws://127.0.0.1:${st0.port}/ws/pty?t=${token}&cwd=${encodeURIComponent(repoDir)}`, { 'cf-ray': 'cf-ws-1' });
     assert.equal(cfWsBlocked.statusCode, 403);
 
-    const ws = await connectRawWs(`ws://127.0.0.1:${st0.port}/ws/pty?t=${token}&cwd=${encodeURIComponent(repoDir)}&sessionId=pty-v2`);
-    assert.equal(ws.statusCode, 101);
-    ws.sendText('echo AGY_REMOTE_V2_PTY_OK\r');
-    const ptyOut = await ws.waitForOutput('AGY_REMOTE_V2_PTY_OK');
-    assert.match(ptyOut, /AGY_REMOTE_V2_PTY_OK/);
-    const ptyList = await httpRequest(`${st0.url}/api/v1/pty/sessions`, { headers: auth });
-    assert.equal(ptyList.status, 200);
-    assert.ok(ptyList.json.sessions.some((s) => s.id === 'pty-v2'));
-    ws.close();
+    if (process.platform !== 'win32') {
+      const ws = await connectRawWs(`ws://127.0.0.1:${st0.port}/ws/pty?t=${token}&cwd=${encodeURIComponent(repoDir)}&sessionId=pty-v2`);
+      assert.equal(ws.statusCode, 101);
+      ws.sendText('echo AGY_REMOTE_V2_PTY_OK\r');
+      const ptyOut = await ws.waitForOutput('AGY_REMOTE_V2_PTY_OK');
+      assert.match(ptyOut, /AGY_REMOTE_V2_PTY_OK/);
+      const ptyList = await httpRequest(`${st0.url}/api/v1/pty/sessions`, { headers: auth });
+      assert.equal(ptyList.status, 200);
+      assert.ok(ptyList.json.sessions.some((s) => s.id === 'pty-v2'));
+      ws.close();
+    }
 
     // Clean unload
     await harness.unloadPlugin('agy-daddy.remote');

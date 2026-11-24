@@ -1242,8 +1242,8 @@ test('D8: internal/subagent filtering, user-created session protection, read-sta
 
 test('D9: POST /api/v1/sessions supports App-synced/implicit projects with enriched summary, GET /api/v1/projects uses limit 500, and GET /api/v1/remote/status serves QR', async () => {
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ws-d9-'));
-  const implicitDir = '/Volumes/mock/d9-implicit-proj';
-  const appDir = '/Volumes/mock/d9-app-proj';
+  const implicitDir = path.resolve('/Volumes/mock/d9-implicit-proj');
+  const appDir = path.resolve('/Volumes/mock/d9-app-proj');
   const files = new Map();
   const storage = {
     readJson(name, fallback = null) {
@@ -1260,7 +1260,7 @@ test('D9: POST /api/v1/sessions supports App-synced/implicit projects with enric
   // Create state.vscdb with appDir
   const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync(vscdbPath);
-  const uri = `file://${appDir}`;
+  const uri = url.pathToFileURL(appDir).href;
   const buf = Buffer.concat([
     Buffer.from([0x0a, 0x01, 0x0a, Buffer.byteLength(uri, 'utf8')]),
     Buffer.from(uri, 'utf8'),
@@ -1296,7 +1296,7 @@ test('D9: POST /api/v1/sessions supports App-synced/implicit projects with enric
             stepCount: 2,
             status: 'CASCADE_RUN_STATUS_IDLE',
             lastModifiedTime: '2026-11-24T01:00:00.000Z',
-            workspaceUri: `file://${implicitDir}`
+            workspaceUri: url.pathToFileURL(implicitDir).href
           }
         ]
       };

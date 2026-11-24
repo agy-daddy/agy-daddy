@@ -54,7 +54,7 @@ test('install.sh and install.ps1 exist and pass syntax/contract checks', () => {
     const psExe = spawnSync('powershell.exe', [
       '-NoProfile',
       '-Command',
-      `$null = [System.Management.Automation.Language.Parser]::ParseFile('${INSTALL_PS1.replace(/'/g, "''")}', [ref]$null, [ref]$errs); if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }`
+      `$tokens = $null; $errs = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile('${INSTALL_PS1.replace(/'/g, "''")}', [ref]$tokens, [ref]$errs); if ($errs -and $errs.Count -gt 0) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }`
     ], { encoding: 'utf8', windowsHide: true });
     assert.equal(psExe.status, 0, psExe.stderr);
   }

@@ -394,48 +394,50 @@ test('pty-bridge: RFC 6455 framing (7/16/64-bit, fragmentation, ping/pong), live
       /WS_UPGRADE_REJECTED_403/
     );
 
-    // 3. Live python3 PTY echo, resize, and 64KB ring buffer replay
-    const sessionId = 'pty-test-1';
-    const ptyClient1 = await connectRawWs(ptyPort, `/ws/pty?sessionId=${sessionId}&cols=80&rows=24`);
-    let termText1 = '';
-    ptyClient1.onFrame((f) => {
-      if (f.opcode === 0x1 || f.opcode === 0x2) {
-        termText1 += f.payload.toString('utf8');
-      }
-    });
+    // 3. Live python3 PTY echo, resize, and 64KB ring buffer replay (POSIX pty/termios)
+    if (process.platform !== 'win32') {
+      const sessionId = 'pty-test-1';
+      const ptyClient1 = await connectRawWs(ptyPort, `/ws/pty?sessionId=${sessionId}&cols=80&rows=24`);
+      let termText1 = '';
+      ptyClient1.onFrame((f) => {
+        if (f.opcode === 0x1 || f.opcode === 0x2) {
+          termText1 += f.payload.toString('utf8');
+        }
+      });
 
-    ptyClient1.sendMaskedText('echo PTY_ECHO_CHECK_99\n');
-    assert.equal(await waitUntil(() => termText1.includes('PTY_ECHO_CHECK_99')), true);
+      ptyClient1.sendMaskedText('echo PTY_ECHO_CHECK_99\n');
+      assert.equal(await waitUntil(() => termText1.includes('PTY_ECHO_CHECK_99')), true);
 
-    ptyClient1.sendMaskedText(JSON.stringify({ type: 'resize', cols: 117, rows: 39 }));
-    await new Promise((r) => setTimeout(r, 80));
-    ptyClient1.sendMaskedText('stty size\n');
-    assert.equal(await waitUntil(() => termText1.includes('39 117')), true);
+      ptyClient1.sendMaskedText(JSON.stringify({ type: 'resize', cols: 117, rows: 39 }));
+      await new Promise((r) => setTimeout(r, 80));
+      ptyClient1.sendMaskedText('stty size\n');
+      assert.equal(await waitUntil(() => termText1.includes('39 117')), true);
 
-    // Verify 64KB ring buffer caps at exactly 65536 bytes while retaining tail
-    const sessionObj = ptyMgr.getOrCreateSession({ sessionId }).session;
-    const bigPayload = 'A'.repeat(70000) + 'TAIL_MARKER_64K';
-    sessionObj.ring.push(Buffer.from(bigPayload, 'utf8'));
-    const snap = sessionObj.getReplayBuffer();
-    assert.equal(snap.length, RING_BUFFER_BYTES);
-    assert.ok(snap.toString('utf8').endsWith('TAIL_MARKER_64K'));
+      // Verify 64KB ring buffer caps at exactly 65536 bytes while retaining tail
+      const sessionObj = ptyMgr.getOrCreateSession({ sessionId }).session;
+      const bigPayload = 'A'.repeat(70000) + 'TAIL_MARKER_64K';
+      sessionObj.ring.push(Buffer.from(bigPayload, 'utf8'));
+      const snap = sessionObj.getReplayBuffer();
+      assert.equal(snap.length, RING_BUFFER_BYTES);
+      assert.ok(snap.toString('utf8').endsWith('TAIL_MARKER_64K'));
 
-    // Disconnect client1 and reconnect client2 to confirm replay
-    ptyClient1.sendClose(1000, 'detach');
-    await new Promise((r) => setTimeout(r, 60));
-    ptyClient1.closeNow();
+      // Disconnect client1 and reconnect client2 to confirm replay
+      ptyClient1.sendClose(1000, 'detach');
+      await new Promise((r) => setTimeout(r, 60));
+      ptyClient1.closeNow();
 
-    const ptyClient2 = await connectRawWs(ptyPort, `/ws/pty?sessionId=${sessionId}`);
-    let termText2 = '';
-    ptyClient2.onFrame((f) => {
-      if (f.opcode === 0x1 || f.opcode === 0x2) {
-        termText2 += f.payload.toString('utf8');
-      }
-    });
-    assert.equal(await waitUntil(() => termText2.includes('TAIL_MARKER_64K')), true);
-    ptyClient2.closeNow();
+      const ptyClient2 = await connectRawWs(ptyPort, `/ws/pty?sessionId=${sessionId}`);
+      let termText2 = '';
+      ptyClient2.onFrame((f) => {
+        if (f.opcode === 0x1 || f.opcode === 0x2) {
+          termText2 += f.payload.toString('utf8');
+        }
+      });
+      assert.equal(await waitUntil(() => termText2.includes('TAIL_MARKER_64K')), true);
+      ptyClient2.closeNow();
 
-    assert.equal(ptyMgr.listSessions().length, 1);
+      assert.equal(ptyMgr.listSessions().length, 1);
+    }
   } finally {
     ptyMgr.disposeAll();
     rawServer.close();

@@ -72,7 +72,15 @@ test('10 语言元数据、别名规范化、全量词典与正则规则、品�
       'Built-in Browser',
       'Manage project folders and settings.',
       'Pin / Unpin Conversation',
-      'Font'
+      'Font',
+      'Side Chat',
+      'Side Conversation',
+      'Insert into Composer',
+      'Clear Side Chat',
+      'Independent Side Chat',
+      'Custom Menu',
+      'Plugin Management',
+      'Stop Task'
     ]) {
       assert.notEqual(translateText(key, { lang: code }), key, `${code} must translate "${key}"`);
     }

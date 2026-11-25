@@ -3973,7 +3973,14 @@
     "Browser Subagent": "Субагент браузера",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "Настройте разрешённые и запрещённые URL для субагента браузера. Он работает во встроенном браузере и не требует отдельной установки.",
     "Manage project folders and settings.": "Управление папками и настройками проекта.",
-    "Font": "Шрифт"
+    "Font": "Шрифт",
+    "Side Chat": "Боковой чат",
+    "Side Conversation": "Боковая беседа",
+    "Insert into Composer": "Вставить в поле ввода",
+    "Clear Side Chat": "Очистить боковой чат",
+    "Independent Side Chat": "Независимый боковой чат",
+    "Custom Menu": "Пользовательское меню",
+    "Plugin Management": "Управление плагинами"
   },
   "patterns": [
     {

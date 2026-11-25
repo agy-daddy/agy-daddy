@@ -3973,7 +3973,14 @@
     "Browser Subagent": "浏览器子智能体",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "为浏览器子智能体配置允许与拒绝访问的 URL。它运行在内置浏览器中，无需单独安装浏览器。",
     "Manage project folders and settings.": "管理项目文件夹与设置。",
-    "Font": "字体"
+    "Font": "字体",
+    "Side Chat": "旁路对话",
+    "Side Conversation": "旁路会话",
+    "Insert into Composer": "填入主输入框",
+    "Clear Side Chat": "清空旁路对话",
+    "Independent Side Chat": "独立旁路对话",
+    "Custom Menu": "自定义菜单",
+    "Plugin Management": "插件管理"
   },
   "patterns": [
     {

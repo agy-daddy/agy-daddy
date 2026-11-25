@@ -579,3 +579,101 @@ test('回归：Lexical beforeinput 返回 false 且同步触发 document input �
     await harness.cleanup();
   }
 });
+
+test('跨插件状态广播：emptySnap/snapshot 携带 displayLocation/showSpeed/compactPolicy，无会话设置变更即时发布，getSettings 与 deactivate 置空', async () => {
+  let hasActiveSession = false;
+  const harness = createMockHostHarness({
+    onRpc(method) {
+      if (method === 'GetAllCascadeTrajectories') {
+        return hasActiveSession
+          ? {
+              trajectorySummaries: {
+                'ctx-sync-1': { lastModifiedTime: '2026-11-25T10:00:00Z', annotations: { title: '同步测试' } }
+              }
+            }
+          : { trajectorySummaries: {} };
+      }
+      if (method === 'GetCascadeTrajectoryGeneratorMetadata') {
+        return {
+          generatorMetadata: hasActiveSession
+            ? [{
+                stepIndices: [0],
+                chatModel: {
+                  model: 'claude-opus-5-5',
+                  usage: { responseId: 'r-1', inputTokens: 1000, cacheReadTokens: 500, outputTokens: 100 },
+                  chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 200000 } }
+                }
+              }]
+            : []
+        };
+      }
+      if (method === 'GetCascadeTrajectory') {
+        return { steps: hasActiveSession ? [{ userInput: { userResponse: 'hi' } }] : [] };
+      }
+      return {};
+    }
+  });
+
+  try {
+    const stateEvents = [];
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    harness.bus.subscribeState('test', 'state:context.snapshot@1', (val) => stateEvents.push(val));
+
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+    const ctxSvc = harness.bus.getServiceProxy('context');
+
+    const initSettings = await ctxSvc.getSettings();
+    assert.equal(initSettings.displayLocation, 'composer');
+    assert.equal(initSettings.showSpeed, true);
+    assert.equal(initSettings.compactPolicy, 'remind');
+
+    // 无活跃会话时 emptySnap 携带 displayLocation/showSpeed/compactPolicy
+    const emptySnap = await ctxSvc.rescan();
+    assert.equal(emptySnap.hasSession, false);
+    assert.equal(emptySnap.displayLocation, 'composer');
+    assert.equal(emptySnap.showSpeed, true);
+    assert.equal(emptySnap.compactPolicy, 'remind');
+
+    // 无活跃会话时修改 displayLocation / showSpeed / compactPolicy 仍立即更新 latestSnapshot 并发布 state
+    await harness.updatePluginSettings('agy-daddy.context', {
+      displayLocation: 'topbar',
+      showSpeed: false,
+      compactPolicy: 'idle_prompt'
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const latestAfterIdleChange = stateEvents[stateEvents.length - 1];
+    assert.ok(latestAfterIdleChange);
+    assert.equal(latestAfterIdleChange.hasSession, false);
+    assert.equal(latestAfterIdleChange.displayLocation, 'topbar');
+    assert.equal(latestAfterIdleChange.showSpeed, false);
+    assert.equal(latestAfterIdleChange.compactPolicy, 'idle_prompt');
+
+    const updatedSettings = await ctxSvc.getSettings();
+    assert.equal(updatedSettings.displayLocation, 'topbar');
+    assert.equal(updatedSettings.showSpeed, false);
+    assert.equal(updatedSettings.compactPolicy, 'idle_prompt');
+
+    // 有活跃会话时 snapshot 携带设置字段，且设置变更即时同步
+    hasActiveSession = true;
+    const activeSnap = await ctxSvc.rescan({ cascadeId: 'ctx-sync-1' });
+    assert.equal(activeSnap.hasSession, true);
+    assert.equal(activeSnap.displayLocation, 'topbar');
+    assert.equal(activeSnap.showSpeed, false);
+    assert.equal(activeSnap.compactPolicy, 'idle_prompt');
+
+    await harness.updatePluginSettings('agy-daddy.context', { displayLocation: 'composer', showSpeed: true });
+    await new Promise((r) => setTimeout(r, 20));
+    const latestAfterActiveChange = stateEvents[stateEvents.length - 1];
+    assert.equal(latestAfterActiveChange.hasSession, true);
+    assert.equal(latestAfterActiveChange.displayLocation, 'composer');
+    assert.equal(latestAfterActiveChange.showSpeed, true);
+
+    // 停用插件后 state:context.snapshot@1 置为 null
+    await harness.unloadPlugin('agy-daddy.context');
+    assert.equal(stateEvents[stateEvents.length - 1], null);
+    harness.assertCleanDispose('agy-daddy.context');
+  } finally {
+    await harness.cleanup();
+  }
+});

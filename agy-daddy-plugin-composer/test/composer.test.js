@@ -205,7 +205,7 @@ test('微内核契约 v2：isolated 世界、样式自注入、ctx.surfaces(comp
     const ghostEl = harness.mockDoc.getElementById('agy-next-step-ghost');
     assert.equal(ghostEl.querySelector('.agy-ns-prefix').textContent, '感知提示');
     assert.equal(ghostEl.querySelector('.agy-ns-kbd').textContent, 'Tab / →');
-    assert.equal(ghostEl.querySelector('.agy-ns-text').textContent, '先帮我梳理下当前…');
+    assert.equal(ghostEl.querySelector('.agy-ns-text').textContent, '先帮我梳理下当前任务并给出方案');
     assert.equal(ghostEl.getAttribute('data-full-suggestion'), '先帮我梳理下当前任务并给出方案');
     harness.mockDoc.dispatchEvent({ type: 'keydown', key: 'ArrowDown', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false });
     assert.equal(ghostEl.querySelector('.agy-ns-text').textContent, '/plan');
@@ -2077,5 +2077,86 @@ test('回归：区分后端 RPC ECONNREFUSED、真桥接传输失败与桥接鉴
     assert.match(doc.getElementById('agy-prompt-opt-status').textContent, /底座桥接鉴权已过期/);
     assert.equal(doc.getElementById('agy-qcap-toast').hidden, true);
     dispose();
+  }
+});
+
+test('跨插件状态广播与桌面端感知提示/Toast 互斥让位：state:composer.settings@1 全生命周期同步与 data-toast-visible', async () => {
+  const harness = createMockHostHarness();
+  const stateUpdates = [];
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    harness.bus.subscribeState('test', 'state:composer.settings@1', (val) => stateUpdates.push(val));
+
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    // activate() 即发布 state:composer.settings@1
+    assert.ok(stateUpdates.length >= 1);
+    const initialState = stateUpdates[stateUpdates.length - 1];
+    assert.equal(initialState.available, true);
+    assert.equal(initialState.settings.ghostSuggest, true);
+    assert.ok(Array.isArray(initialState.builtins));
+    assert.ok(Array.isArray(initialState.custom));
+
+    const composerSvc = harness.bus.getServiceProxy('composer-node');
+
+    // saveSettings() 发布更新
+    await composerSvc.saveSettings({ ghostSuggest: false });
+    const afterSave = stateUpdates[stateUpdates.length - 1];
+    assert.equal(afterSave.available, true);
+    assert.equal(afterSave.settings.ghostSuggest, false);
+
+    // host.settings.onChange 发布更新
+    await harness.updatePluginSettings('agy-daddy.composer', { ghostSuggest: true });
+    await new Promise((r) => setTimeout(r, 20));
+    const afterOnChange = stateUpdates[stateUpdates.length - 1];
+    assert.equal(afterOnChange.available, true);
+    assert.equal(afterOnChange.settings.ghostSuggest, true);
+
+    // addCustomPrompt() & removeCustomPrompt() 发布更新
+    await composerSvc.addCustomPrompt({ id: 'sync_test_1', label: '同步测试', text: '同步测试内容' });
+    const afterAdd = stateUpdates[stateUpdates.length - 1];
+    assert.equal(afterAdd.available, true);
+    assert.equal(afterAdd.custom.some((c) => c.id === 'sync_test_1'), true);
+
+    await composerSvc.removeCustomPrompt('sync_test_1');
+    const afterRemove = stateUpdates[stateUpdates.length - 1];
+    assert.equal(afterRemove.available, true);
+    assert.equal(afterRemove.custom.some((c) => c.id === 'sync_test_1'), false);
+
+    // 校验样式与 data-toast-visible 互斥让位
+    const doc = harness.mockDoc;
+    const styleEl = doc.head.querySelector('[data-agy-style="agy-daddy.composer"]');
+    assert.match(styleEl.textContent, /\.agy-ns-text\s*\{[\s\S]*?max-width:\s*clamp\(96px,\s*22vw,\s*200px\);/);
+    assert.match(styleEl.textContent, /#agy-quick-capsule-bar\[data-toast-visible="true"\]\s+#agy-next-step-ghost\s*\{[\s\S]*?display:\s*none\s*!important;/);
+    assert.match(styleEl.textContent, /#agy-qcap-toast\s*\{[\s\S]*?margin-left:\s*auto;/);
+
+    const quickBar = doc.getElementById('agy-quick-capsule-bar');
+    assert.equal(quickBar.getAttribute('data-toast-visible'), 'false');
+
+    // 触发 quick 提示 Toast（如 /compact 快捷指令反馈）-> data-toast-visible 变为 true，关闭后回落 false
+    const slashOpt = doc.createElement('div');
+    slashOpt.setAttribute('role', 'option');
+    slashOpt.setAttribute('data-command', '/compact');
+    slashOpt.textContent = '/compact';
+    doc.body.appendChild(slashOpt);
+    const compactBtn = doc.getElementById('agy-qcap-compact');
+    assert.ok(compactBtn);
+    compactBtn.click();
+    assert.equal(quickBar.getAttribute('data-toast-visible'), 'true');
+    const qcapToast = doc.getElementById('agy-qcap-toast');
+    assert.equal(qcapToast.hidden, false);
+    qcapToast.click();
+    assert.equal(quickBar.getAttribute('data-toast-visible'), 'false');
+    assert.equal(qcapToast.hidden, true);
+
+    // deactivate() 发布 available: false
+    await harness.unloadPlugin('agy-daddy.composer');
+    const finalState = stateUpdates[stateUpdates.length - 1];
+    assert.equal(finalState.available, false);
+    assert.equal(typeof finalState.updatedAt, 'number');
+    harness.assertCleanDispose('agy-daddy.composer');
+  } finally {
+    await harness.cleanup();
   }
 });

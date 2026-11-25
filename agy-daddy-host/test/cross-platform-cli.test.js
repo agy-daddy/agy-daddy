@@ -226,7 +226,7 @@ test('lifecycle findAntigravityApp, systemd unit, autostart roundtrip, and relau
   assert.match(winExe, /Antigravity\.exe$/);
 
   const sysd = generateLinuxSystemdUnit({ runtimePath: '/usr/bin/node', isElectron: true });
-  assert.match(sysd, /bin[\\/]agy-daddy\.js" "live"/);
+  assert.ok(sysd.includes(`${JSON.stringify(BIN_JS)} "live"`));
   assert.match(sysd, /Environment=ELECTRON_RUN_AS_NODE=1/);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-xplat-life-'));

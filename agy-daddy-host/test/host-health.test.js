@@ -53,7 +53,7 @@ test('resident wrappers remove session values and preserve only the inherited na
   for (const key of sessionVars) assert.equal(clean[key], undefined);
   assert.deepEqual(clean.AGY_DADDY_INHERITED_SESSION_VARS.split(','), sessionVars);
 
-  const fixture = path.join(homeDir, 'fixture "probe".js');
+  const fixture = path.join(homeDir, 'fixture probe.js');
   fs.writeFileSync(fixture, 'console.log(JSON.stringify(process.env));');
   const runtimeInfo = { runtime: process.execPath };
   const mac = installAutoStart({
@@ -136,13 +136,17 @@ test('launcher and daemon start expose a names-only session audit while they are
 });
 
 test('version inspection reads CFBundleShortVersionString from the running or installed app', (t) => {
-  const appPath = path.join(tempDir(t), 'Antigravity Preview.app');
+  const nativeMac = process.platform === 'darwin';
+  const appPath = nativeMac ? path.join(tempDir(t), 'Antigravity Preview.app') : '/Applications/Antigravity Preview.app';
   const plist = path.join(appPath, 'Contents', 'Info.plist');
-  fs.mkdirSync(path.dirname(plist), { recursive: true });
-  fs.writeFileSync(plist, '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>2.35.1</string></dict></plist>');
+  if (nativeMac) {
+    fs.mkdirSync(path.dirname(plist), { recursive: true });
+    fs.writeFileSync(plist, '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>2.35.1</string></dict></plist>');
+  }
   const options = {
     platform: 'darwin',
-    ...(process.platform !== 'darwin' ? {
+    ...(!nativeMac ? {
+      fs: { existsSync: (file) => file === plist },
       execFileSync(binary, args) {
         assert.equal(binary, '/usr/bin/plutil');
         assert.equal(args[1], 'CFBundleShortVersionString');

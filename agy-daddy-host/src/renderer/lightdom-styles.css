@@ -88,6 +88,21 @@
   display: none !important;
 }
 
+#agy-safe-mode-pill-host {
+  position: fixed;
+  z-index: 2147483647;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+#agy-safe-mode-pill-host[hidden] {
+  display: none !important;
+}
+
 :root[data-agy-aux-compact="true"] [data-side-panel-strip="true"] {
   padding-right: var(--agy-aux-strip-pr, 116px) !important;
 }

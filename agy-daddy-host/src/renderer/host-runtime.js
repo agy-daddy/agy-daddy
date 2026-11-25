@@ -5,8 +5,10 @@
     ? __AGY_HOST_VERSION__
     : '1.0.0';
   const HOST_ELEMENT_ID = 'agy-daddy-host';
+  const SAFE_MODE_PILL_HOST_ID = 'agy-safe-mode-pill-host';
   const NATIVE_SETTINGS_MOUNT_ID = 'agy-native-settings-mount';
   const DEFAULT_ACCENT = '#18181b';
+  const DEFAULT_RUNTIME_HEALTH_REPORT_INTERVAL_MS = 8000;
 
   const DEFAULT_HOST_SETTINGS = {
     themeMode: 'auto',
@@ -554,6 +556,10 @@
       locale: mergedOpts.locale || 'zh-CN',
       antigravityVersion: mergedOpts.antigravityVersion || '2.33.0',
       anchorsRegistry: mergedOpts.anchorsRegistry || { anchors: {} },
+      healthTargetId: typeof mergedOpts.healthTargetId === 'string' ? mergedOpts.healthTargetId : '',
+      healthReportId: typeof mergedOpts.healthReportId === 'string' ? mergedOpts.healthReportId : '',
+      healthAnchors: isPlainObject(mergedOpts.healthAnchors) ? mergedOpts.healthAnchors : null,
+      healthReportIntervalMs: Math.max(50, Number(mergedOpts.healthReportIntervalMs) || DEFAULT_RUNTIME_HEALTH_REPORT_INTERVAL_MS),
       bridgePort: Number(mergedOpts.bridgePort || 0),
       activeSettingsTab: 'plugins',
       selectedPluginId: null,
@@ -618,6 +624,23 @@
       crashCounts: new Map(),          // pluginId -> number[]
       rendererErrors: new Map(),       // pluginId -> { message, at }
       metrics: new Map(),              // pluginId -> { mountMs, observerMs, timersCount, crashes }
+      isolatedPlugins: new Set(),      // isolated-world pluginIds observed via xworld
+      safeModeViewOpen: false,
+      settingsInjectionAttemptFailed: false,
+      safeModePillPos: null,           // null | { left, top }
+      safeMode: {
+        active: false,
+        reasons: [],
+        missingAnchors: [],
+        topbarMissing: false,
+        settingsInjectionFailed: false,
+        pluginIssues: []
+      },
+      hostHealth: null,
+      hostHealthLoading: false,
+      hostHealthError: '',
+      lastRuntimeHealthSig: '',
+      lastRuntimeHealthSentAt: 0,
       xworldNonce: mergedOpts.xworldNonce || (String(Math.random()).slice(2) + Date.now().toString(36))
     };
 
@@ -771,6 +794,16 @@
     let styleSeq = 0;
     let serviceInvokeSeq = 0;
     const boundOverflowUnitNodes = new WeakSet();
+    let safeModePillHostEl = null;
+    let safeModePillShadow = null;
+    let safeModePillBtnEl = null;
+    let safeModePillDragState = null;
+    let suppressNextSafeModePillClick = false;
+    let suppressSafeModeClickTimer = null;
+    let runtimeHealthTimer = null;
+    let runtimeHealthDebounceTimer = null;
+    let runtimeHealthInFlight = null;
+    let hostHealthInFlight = null;
 
     const nativeState = {
       dialogEl: null,
@@ -1074,11 +1107,14 @@
         if (nativeState.mountHostEl) {
           themeEngine.applyThemeVariables(doc, nativeState.mountHostEl, applyOpts);
         }
+        if (safeModePillHostEl) {
+          themeEngine.applyThemeVariables(doc, safeModePillHostEl, applyOpts);
+        }
       } else {
         if (doc?.documentElement?.style?.setProperty) {
           doc.documentElement.style.setProperty('--ag-effective-accent', resolved.accent);
         }
-        for (const target of [hostEl, nativeState.mountHostEl]) {
+        for (const target of [hostEl, nativeState.mountHostEl, safeModePillHostEl]) {
           if (target?.style?.setProperty) {
             target.style.setProperty('--ag-custom-token-accent', resolved.accent);
             target.setAttribute?.('data-theme', effectiveModeFallback);
@@ -3082,8 +3118,9 @@
     }
 
     // 锚点解析与共享 MutationObserver 中心
-    function resolveAnchorSelectors(anchorName) {
-      const def = state.anchorsRegistry?.anchors?.[anchorName];
+    function resolveAnchorSelectors(anchorName, registryOverride = null) {
+      const reg = registryOverride || state.anchorsRegistry;
+      const def = reg?.anchors?.[anchorName];
       if (!def || !Array.isArray(def.versions) || !def.versions.length) return [];
       return def.versions[0].selectors || [];
     }
@@ -3092,11 +3129,300 @@
       if (!el) return false;
       let cur = el;
       while (cur) {
-        if (cur === hostEl || cur === browserOccluderEl || cur === modalDialogEl || cur === modalBackdropEl || cur === nativeState.mountHostEl) return true;
-        if (cur.id === HOST_ELEMENT_ID || cur.id === 'agy-popover-browser-occluder' || cur.id === NATIVE_SETTINGS_MOUNT_ID || cur.id === 'agy-settings-modal') return true;
+        if (
+          cur === hostEl
+          || cur === safeModePillHostEl
+          || cur === browserOccluderEl
+          || cur === modalDialogEl
+          || cur === modalBackdropEl
+          || cur === nativeState.mountHostEl
+        ) return true;
+        if (
+          cur.id === HOST_ELEMENT_ID
+          || cur.id === SAFE_MODE_PILL_HOST_ID
+          || cur.id === 'agy-popover-browser-occluder'
+          || cur.id === NATIVE_SETTINGS_MOUNT_ID
+          || cur.id === 'agy-settings-modal'
+        ) return true;
         cur = cur.parentElement || null;
       }
       return false;
+    }
+
+    function getActiveHealthAnchorsRegistry() {
+      if (state.healthAnchors?.anchors && Object.keys(state.healthAnchors.anchors).length > 0) {
+        return state.healthAnchors;
+      }
+      return state.anchorsRegistry || { anchors: {} };
+    }
+
+    function probeHealthAnchors(registryOverride = null) {
+      const reg = registryOverride || getActiveHealthAnchorsRegistry();
+      const names = Object.keys(reg.anchors || {});
+      const items = names.map((name) => {
+        const selectors = resolveAnchorSelectors(name, reg);
+        let matchedSelector = null;
+        if (doc && typeof doc.querySelectorAll === 'function') {
+          for (const sel of selectors) {
+            try {
+              const list = Array.from(doc.querySelectorAll(sel));
+              if (list.some((el) => el && !isHostOwnedElement(el))) {
+                matchedSelector = sel;
+                break;
+              }
+            } catch {}
+          }
+        } else if (doc && typeof doc.querySelector === 'function') {
+          for (const sel of selectors) {
+            try {
+              const el = doc.querySelector(sel);
+              if (el && !isHostOwnedElement(el)) {
+                matchedSelector = sel;
+                break;
+              }
+            } catch {}
+          }
+        }
+        return {
+          name,
+          status: matchedSelector ? 'ok' : 'missing',
+          matchedSelector
+        };
+      });
+      const healthyCount = items.filter((item) => item.status === 'ok').length;
+      return {
+        total: items.length,
+        healthyCount,
+        missingCount: items.length - healthyCount,
+        items
+      };
+    }
+
+    function hasNativeSettingsMarkerInDom() {
+      if (!doc) return false;
+      if (typeof doc.querySelectorAll === 'function') {
+        try {
+          const list = Array.from(doc.querySelectorAll(
+            '[data-testid="settings-dialog"],[data-testid="settings-sidebar"],[data-testid="settings-content"],[role="dialog"][aria-label*="Settings"],[role="dialog"][aria-label*="设置"]'
+          ));
+          if (list.some((el) => el && !isHostOwnedElement(el))) return true;
+        } catch {}
+      } else if (typeof doc.querySelector === 'function') {
+        try {
+          const marker = doc.querySelector(
+            '[data-testid="settings-dialog"],[data-testid="settings-sidebar"],[data-testid="settings-content"],[role="dialog"][aria-label*="Settings"],[role="dialog"][aria-label*="设置"]'
+          );
+          if (marker && !isHostOwnedElement(marker)) return true;
+        } catch {}
+      }
+      return Boolean(queryAnchor('settings.nav') || queryAnchor('settings.content'));
+    }
+
+    function isSettingsExpectedInDom() {
+      if (state.settingsMode === 'native') return true;
+      if (state.settingsInjectionAttemptFailed && state.hostSettings.injectNativeSettings !== false) return true;
+      return hasNativeSettingsMarkerInDom();
+    }
+
+    function collectRuntimePluginStates() {
+      const ids = Array.from(new Set([
+        ...state.pluginInstances.keys(),
+        ...state.isolatedPlugins.keys(),
+        ...state.rendererErrors.keys(),
+        ...state.pluginMeta.keys()
+      ])).sort();
+      const list = [];
+      for (const id of ids) {
+        const meta = state.pluginMeta.get(id);
+        const err = state.rendererErrors.get(id);
+        if (state.pluginInstances.has(id)) {
+          list.push({
+            id,
+            rendererMounted: true,
+            lastError: err ? err.message : null,
+            lastErrorStack: err ? (err.stack || null) : null
+          });
+        } else if (err) {
+          list.push({
+            id,
+            rendererMounted: false,
+            lastError: err.message,
+            lastErrorStack: err.stack || null
+          });
+        } else if (state.isolatedPlugins.has(id)) {
+          list.push({
+            id,
+            rendererMounted: true,
+            lastError: null,
+            lastErrorStack: null
+          });
+        } else if (meta && meta.enabled === false) {
+          list.push({
+            id,
+            rendererMounted: false,
+            lastError: null,
+            lastErrorStack: null
+          });
+        } else if (meta && (meta.health?.lastErrorStage === 'renderer' || meta.health?.lastError)) {
+          list.push({
+            id,
+            rendererMounted: false,
+            lastError: meta.health.lastError || null,
+            lastErrorStack: meta.health.lastErrorStack || null
+          });
+        } else if (meta && meta.world === 'main' && meta.enabled !== false) {
+          list.push({
+            id,
+            rendererMounted: false,
+            lastError: null,
+            lastErrorStack: null
+          });
+        }
+      }
+      return list;
+    }
+
+    function buildRuntimeHealthReport() {
+      const probe = probeHealthAnchors(getActiveHealthAnchorsRegistry());
+      return {
+        targetId: state.healthTargetId,
+        reportId: state.healthReportId,
+        settingsExpected: isSettingsExpectedInDom(),
+        anchors: { items: probe.items },
+        plugins: collectRuntimePluginStates()
+      };
+    }
+
+    function canReportRuntimeHealth() {
+      const reg = getActiveHealthAnchorsRegistry();
+      return Boolean(
+        !state.disposed
+        && hasBridgeAvailable()
+        && state.healthTargetId
+        && state.healthReportId
+        && reg?.anchors
+        && Object.keys(reg.anchors).length > 0
+      );
+    }
+
+    async function reportRuntimeHealth({ force = false } = {}) {
+      if (!canReportRuntimeHealth()) {
+        return { ok: false, skipped: true };
+      }
+      const payload = buildRuntimeHealthReport();
+      const sig = JSON.stringify({
+        settingsExpected: payload.settingsExpected,
+        items: payload.anchors.items,
+        plugins: payload.plugins
+      });
+      const now = Date.now();
+      const refreshThreshold = Math.max(40, Math.floor(state.healthReportIntervalMs * 0.75));
+      if (!force && sig === state.lastRuntimeHealthSig && (now - state.lastRuntimeHealthSentAt < refreshThreshold)) {
+        return { ok: true, deduped: true };
+      }
+      if (runtimeHealthInFlight) {
+        try { await runtimeHealthInFlight; } catch {}
+      }
+      const run = (async () => {
+        try {
+          const res = await hostBridgePost('/host/health/runtime-report', payload);
+          state.lastRuntimeHealthSig = sig;
+          state.lastRuntimeHealthSentAt = Date.now();
+          return res;
+        } catch (err) {
+          return { ok: false, error: err?.message || String(err) };
+        } finally {
+          if (runtimeHealthInFlight === run) {
+            runtimeHealthInFlight = null;
+          }
+        }
+      })();
+      runtimeHealthInFlight = run;
+      return await run;
+    }
+
+    function scheduleRuntimeHealthReport({ immediate = false } = {}) {
+      if (!canReportRuntimeHealth()) return;
+      if (immediate) {
+        if (runtimeHealthDebounceTimer) {
+          clearTimeout(runtimeHealthDebounceTimer);
+          runtimeHealthDebounceTimer = null;
+        }
+        void reportRuntimeHealth();
+        return;
+      }
+      if (runtimeHealthDebounceTimer) return;
+      runtimeHealthDebounceTimer = setTimeout(() => {
+        runtimeHealthDebounceTimer = null;
+        if (!state.disposed) {
+          void reportRuntimeHealth();
+        }
+      }, 25);
+      runtimeHealthDebounceTimer.unref?.();
+    }
+
+    function startRuntimeHealthReporting() {
+      if (runtimeHealthTimer || !canReportRuntimeHealth()) return;
+      const initialTid = setTimeout(() => {
+        hostRetryTimers.delete(initialTid);
+        if (!state.disposed) {
+          void reportRuntimeHealth({ force: true });
+        }
+      }, 0);
+      initialTid.unref?.();
+      hostRetryTimers.add(initialTid);
+      runtimeHealthTimer = setInterval(() => {
+        if (!state.disposed) {
+          void reportRuntimeHealth({ force: true });
+        }
+      }, state.healthReportIntervalMs);
+      runtimeHealthTimer.unref?.();
+    }
+
+    async function fetchHostHealth({ reportFirst = true } = {}) {
+      if (!hasBridgeAvailable()) {
+        return state.hostHealth;
+      }
+      if (hostHealthInFlight) {
+        return await hostHealthInFlight;
+      }
+      state.hostHealthLoading = true;
+      state.hostHealthError = '';
+      if (state.settingsMode !== 'closed' && (state.safeModeViewOpen || state.diagnosticsExpanded)) {
+        renderSettingsBody();
+      }
+      const run = (async () => {
+        try {
+          if (reportFirst && canReportRuntimeHealth()) {
+            await reportRuntimeHealth({ force: true });
+          }
+          const res = await hostBridgePost('/host/health', {});
+          if (res && res.ok && res.daemon && res.antigravity && res.cdp && res.injection && res.fault) {
+            state.hostHealth = res;
+            state.hostHealthError = '';
+          } else if (res?.hostHealth) {
+            state.hostHealth = res.hostHealth;
+            state.hostHealthError = '';
+          } else {
+            state.hostHealthError = res?.error || '无效的 hostHealth 响应';
+          }
+          return state.hostHealth;
+        } catch (err) {
+          state.hostHealthError = err?.message || String(err);
+          return state.hostHealth;
+        } finally {
+          state.hostHealthLoading = false;
+          if (hostHealthInFlight === run) hostHealthInFlight = null;
+          if (!state.disposed) {
+            evaluateSafeMode();
+            if (state.settingsMode !== 'closed' && (state.safeModeViewOpen || state.diagnosticsExpanded)) {
+              renderSettingsBody();
+            }
+          }
+        }
+      })();
+      hostHealthInFlight = run;
+      return await run;
     }
 
     function queryAnchor(anchorName, opts = {}) {
@@ -3295,6 +3621,7 @@
     function syncNativeSettingsIntegration() {
       if (state.disposed || !doc?.createElement) return false;
       if (state.hostSettings.injectNativeSettings === false) {
+        state.settingsInjectionAttemptFailed = false;
         if (nativeState.dialogEl || nativeState.navBtnEl || nativeState.mountHostEl) {
           teardownNativeSettingsMount();
         }
@@ -3437,6 +3764,7 @@
         nativeState.viewRootEl = nativeState.mountShadow.querySelector?.('#agy-native-settings-root') || nativeState.viewRootEl;
       }
 
+      state.settingsInjectionAttemptFailed = false;
       return true;
     }
 
@@ -3464,6 +3792,8 @@
           }
         }
       }
+      evaluateSafeMode();
+      scheduleRuntimeHealthReport();
     }
 
     function ensureSharedObserver() {
@@ -3488,7 +3818,8 @@
       arr.push(now);
       state.crashCounts.set(pluginId, arr);
       const errMsg = err?.message || String(err || '未知渲染错误');
-      state.rendererErrors.set(pluginId, { message: errMsg, at: now });
+      const errStack = typeof err?.stack === 'string' && err.stack ? err.stack : null;
+      state.rendererErrors.set(pluginId, { message: errMsg, stack: errStack, at: now });
       const metric = getMetric(pluginId);
       metric.crashes = arr.length;
       if (arr.length >= 3) {
@@ -3496,6 +3827,8 @@
       }
       renderPluginAlertCapsule();
       renderUnits();
+      evaluateSafeMode();
+      scheduleRuntimeHealthReport({ immediate: true });
       return { crashes: arr.length, circuitOpen: arr.length >= 3, error: errMsg };
     }
 
@@ -3621,6 +3954,27 @@
             settingsValues: {},
             commands: [],
             topbarUnits: [{ id: u.id }],
+            sourceKind: 'memory'
+          });
+        }
+      }
+      for (const id of state.rendererErrors.keys()) {
+        if (!byId.has(id)) {
+          addOrMerge({
+            id,
+            displayName: id,
+            description: '',
+            version: '1.0.0',
+            trustLevel: id.startsWith('agy-daddy.') ? 'T0' : (id.startsWith('community.') ? 'T1' : 'T2'),
+            enabled: true,
+            active: false,
+            hasNative: false,
+            hasRollback: false,
+            permissions: [],
+            settingsSchema: null,
+            settingsValues: {},
+            commands: [],
+            topbarUnits: [],
             sourceKind: 'memory'
           });
         }
@@ -3845,6 +4199,345 @@
         }
       }
       return issues;
+    }
+
+    function getViewportSize() {
+      const vw = Number(win?.innerWidth || doc?.documentElement?.clientWidth || 1280);
+      const vh = Number(win?.innerHeight || doc?.documentElement?.clientHeight || 800);
+      return {
+        vw: Number.isFinite(vw) && vw > 0 ? vw : 1280,
+        vh: Number.isFinite(vh) && vh > 0 ? vh : 800
+      };
+    }
+
+    function clampSafeModePillCoords(rawLeft, rawTop, width = 168, height = 32) {
+      const { vw, vh } = getViewportSize();
+      const margin = 8;
+      const w = Number.isFinite(width) && width > 0 ? width : 168;
+      const h = Number.isFinite(height) && height > 0 ? height : 32;
+      const maxLeft = Math.max(margin, vw - w - margin);
+      const maxTop = Math.max(margin, vh - h - margin);
+      return {
+        left: Math.min(maxLeft, Math.max(margin, Math.round(rawLeft))),
+        top: Math.min(maxTop, Math.max(margin, Math.round(rawTop)))
+      };
+    }
+
+    function applySafeModePillPosition(pos = null) {
+      if (!safeModePillHostEl?.style) return;
+      safeModePillHostEl.style.setProperty('position', 'fixed');
+      safeModePillHostEl.style.setProperty('z-index', '2147483647');
+      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+        safeModePillHostEl.style.setProperty('left', `${Math.round(pos.left)}px`);
+        safeModePillHostEl.style.setProperty('top', `${Math.round(pos.top)}px`);
+        safeModePillHostEl.style.setProperty('right', 'auto');
+        safeModePillHostEl.style.setProperty('bottom', 'auto');
+      } else {
+        safeModePillHostEl.style.setProperty('right', '16px');
+        safeModePillHostEl.style.setProperty('bottom', '16px');
+        safeModePillHostEl.style.setProperty('left', 'auto');
+        safeModePillHostEl.style.setProperty('top', 'auto');
+      }
+    }
+
+    function clampSafeModePillPosition() {
+      if (!safeModePillHostEl || !state.safeModePillPos) return;
+      const rect = typeof safeModePillHostEl.getBoundingClientRect === 'function'
+        ? safeModePillHostEl.getBoundingClientRect()
+        : null;
+      const w = (rect && Number.isFinite(rect.width) && rect.width > 0) ? rect.width : 168;
+      const h = (rect && Number.isFinite(rect.height) && rect.height > 0) ? rect.height : 32;
+      const clamped = clampSafeModePillCoords(state.safeModePillPos.left, state.safeModePillPos.top, w, h);
+      state.safeModePillPos = clamped;
+      applySafeModePillPosition(clamped);
+    }
+
+    function detachSafeModePillDragListeners() {
+      if (!safeModePillDragState) return;
+      const d = safeModePillDragState;
+      safeModePillDragState = null;
+      safeModePillBtnEl?.removeAttribute?.('data-dragging');
+      if (doc?.removeEventListener) {
+        if (d.onMove) {
+          doc.removeEventListener('pointermove', d.onMove, true);
+          doc.removeEventListener('mousemove', d.onMove, true);
+        }
+        if (d.onUp) {
+          doc.removeEventListener('pointerup', d.onUp, true);
+          doc.removeEventListener('pointercancel', d.onUp, true);
+          doc.removeEventListener('mouseup', d.onUp, true);
+        }
+      }
+      if (win?.removeEventListener) {
+        if (d.onMove) {
+          win.removeEventListener('pointermove', d.onMove, true);
+          win.removeEventListener('mousemove', d.onMove, true);
+        }
+        if (d.onUp) {
+          win.removeEventListener('pointerup', d.onUp, true);
+          win.removeEventListener('pointercancel', d.onUp, true);
+          win.removeEventListener('mouseup', d.onUp, true);
+        }
+      }
+    }
+
+    function startSafeModePillDrag(ev, source) {
+      if (state.disposed || !safeModePillHostEl) return;
+      if (ev && ev.button !== undefined && ev.button !== 0) return;
+      if (safeModePillDragState) {
+        if (safeModePillDragState.source === 'pointer' && source === 'mouse') return;
+        detachSafeModePillDragListeners();
+      }
+
+      const { vw, vh } = getViewportSize();
+      const rect = typeof safeModePillHostEl.getBoundingClientRect === 'function'
+        ? safeModePillHostEl.getBoundingClientRect()
+        : null;
+      const width = (rect && Number.isFinite(rect.width) && rect.width > 0) ? rect.width : 168;
+      const height = (rect && Number.isFinite(rect.height) && rect.height > 0) ? rect.height : 32;
+      const hasRectOrigin = Boolean(rect && Number.isFinite(rect.left) && Number.isFinite(rect.top) && (rect.width > 0 || rect.height > 0));
+      const startLeft = hasRectOrigin
+        ? rect.left
+        : (state.safeModePillPos ? state.safeModePillPos.left : Math.max(8, vw - width - 16));
+      const startTop = hasRectOrigin
+        ? rect.top
+        : (state.safeModePillPos ? state.safeModePillPos.top : Math.max(8, vh - height - 16));
+      const startClientX = Number(ev?.clientX ?? 0);
+      const startClientY = Number(ev?.clientY ?? 0);
+
+      let moved = false;
+      const onMove = (moveEv) => {
+        if (!safeModePillDragState || state.disposed) return;
+        const cx = Number(moveEv?.clientX ?? startClientX);
+        const cy = Number(moveEv?.clientY ?? startClientY);
+        const dx = cx - startClientX;
+        const dy = cy - startClientY;
+        if (!moved && Math.hypot(dx, dy) < 5) return;
+        if (!moved) {
+          moved = true;
+          suppressNextSafeModePillClick = true;
+          safeModePillBtnEl?.setAttribute?.('data-dragging', 'true');
+        }
+        moveEv?.preventDefault?.();
+        const clamped = clampSafeModePillCoords(startLeft + dx, startTop + dy, width, height);
+        state.safeModePillPos = clamped;
+        applySafeModePillPosition(clamped);
+      };
+
+      const onUp = () => {
+        detachSafeModePillDragListeners();
+        if (moved) {
+          suppressNextSafeModePillClick = true;
+          if (suppressSafeModeClickTimer) clearTimeout(suppressSafeModeClickTimer);
+          suppressSafeModeClickTimer = setTimeout(() => {
+            suppressSafeModeClickTimer = null;
+            suppressNextSafeModePillClick = false;
+          }, 120);
+          suppressSafeModeClickTimer.unref?.();
+        }
+      };
+
+      safeModePillDragState = { source, onMove, onUp };
+      const target = doc?.addEventListener ? doc : (win?.addEventListener ? win : null);
+      if (target) {
+        if (source === 'pointer') {
+          target.addEventListener('pointermove', onMove, true);
+          target.addEventListener('pointerup', onUp, true);
+          target.addEventListener('pointercancel', onUp, true);
+        } else {
+          target.addEventListener('mousemove', onMove, true);
+          target.addEventListener('mouseup', onUp, true);
+        }
+      }
+    }
+
+    function ensureSafeModePillShell() {
+      if (!doc || typeof doc.createElement !== 'function' || state.disposed) return null;
+      if (safeModePillHostEl && safeModePillBtnEl) {
+        const mountParent = doc.body || doc.documentElement;
+        if (mountParent && safeModePillHostEl.parentElement !== mountParent && typeof mountParent.appendChild === 'function') {
+          mountParent.appendChild(safeModePillHostEl);
+        }
+        return safeModePillShadow;
+      }
+
+      const stale = doc.getElementById ? doc.getElementById(SAFE_MODE_PILL_HOST_ID) : null;
+      if (stale && stale.remove) stale.remove();
+      ensureLightDomStyles();
+
+      safeModePillHostEl = doc.createElement('div');
+      safeModePillHostEl.id = SAFE_MODE_PILL_HOST_ID;
+      safeModePillHostEl.setAttribute('data-agy-safe-mode', 'true');
+      safeModePillHostEl.setAttribute('data-theme', state.themeMode === 'light' ? 'light' : 'dark');
+      applySafeModePillPosition(state.safeModePillPos);
+      setHidden(safeModePillHostEl, true);
+
+      if (typeof safeModePillHostEl.attachShadow === 'function') {
+        safeModePillShadow = safeModePillHostEl.attachShadow({ mode: 'open' });
+      } else {
+        safeModePillShadow = safeModePillHostEl;
+      }
+
+      const styleEl = doc.createElement('style');
+      styleEl.textContent = typeof __AGY_HOST_CSS__ === 'string' ? __AGY_HOST_CSS__ : '';
+      safeModePillShadow.appendChild(styleEl);
+
+      safeModePillBtnEl = doc.createElement('button');
+      safeModePillBtnEl.id = 'agy-safe-mode-pill';
+      safeModePillBtnEl.type = 'button';
+      safeModePillBtnEl.className = 'ag-safe-mode-pill';
+      safeModePillBtnEl.setAttribute('aria-haspopup', 'dialog');
+      safeModePillBtnEl.addEventListener('pointerdown', (ev) => startSafeModePillDrag(ev, 'pointer'));
+      safeModePillBtnEl.addEventListener('mousedown', (ev) => startSafeModePillDrag(ev, 'mouse'));
+      safeModePillBtnEl.addEventListener('click', (ev) => {
+        if (suppressNextSafeModePillClick) {
+          suppressNextSafeModePillClick = false;
+          if (suppressSafeModeClickTimer) {
+            clearTimeout(suppressSafeModeClickTimer);
+            suppressSafeModeClickTimer = null;
+          }
+          ev?.preventDefault?.();
+          ev?.stopPropagation?.();
+          return;
+        }
+        void openSafeModeDiagnostics();
+      });
+      safeModePillShadow.appendChild(safeModePillBtnEl);
+
+      const mountTarget = doc.body || doc.documentElement;
+      if (mountTarget && typeof mountTarget.appendChild === 'function') {
+        mountTarget.appendChild(safeModePillHostEl);
+      }
+      applyThemeVars();
+      return safeModePillShadow;
+    }
+
+    function computeSafeModeStatus() {
+      const reg = getActiveHealthAnchorsRegistry();
+      const hasTopbarDef = Boolean(reg?.anchors?.['topbar.rightCluster']);
+      const topbarMissing = hasTopbarDef && !queryAnchor('topbar.rightCluster');
+
+      let liveSettingsBroken = false;
+      const injectNativeEnabled = state.hostSettings.injectNativeSettings !== false;
+      if (injectNativeEnabled && hasNativeSettingsMarkerInDom() && !nativeState.active && !resolveNativeSettingsNodes()) {
+        liveSettingsBroken = true;
+      }
+      const settingsInjectionFailed = Boolean(
+        injectNativeEnabled && (liveSettingsBroken || state.settingsInjectionAttemptFailed)
+      );
+
+      const pluginIssues = getUnusablePlugins();
+      const probe = probeHealthAnchors(reg);
+      const settingsExpected = settingsInjectionFailed || isSettingsExpectedInDom();
+      const missingAnchors = probe.items
+        .filter((item) => {
+          if (item.status !== 'missing') return false;
+          if (!settingsExpected && item.name.startsWith('settings.')) return false;
+          return true;
+        })
+        .map((item) => item.name);
+      if (topbarMissing && !missingAnchors.includes('topbar.rightCluster')) {
+        missingAnchors.unshift('topbar.rightCluster');
+      }
+      if (settingsInjectionFailed) {
+        if (!queryAnchor('settings.dialog') && !missingAnchors.includes('settings.dialog')) {
+          missingAnchors.push('settings.dialog');
+        }
+        if (!queryAnchor('settings.nav') && !missingAnchors.includes('settings.nav')) {
+          missingAnchors.push('settings.nav');
+        }
+      }
+
+      const reasons = [];
+      if (topbarMissing) reasons.push('顶栏挂载锚点 topbar.rightCluster 缺失');
+      if (settingsInjectionFailed) reasons.push('原生设置注入失败（settings.dialog / settings.nav 不可用）');
+      if (pluginIssues.length > 0) {
+        const names = pluginIssues.slice(0, 2).map((p) => p.displayName || p.id).join('、');
+        reasons.push(`${pluginIssues.length} 个插件异常（${names}${pluginIssues.length > 2 ? ' 等' : ''}）`);
+      }
+
+      const daemonFault = state.hostHealth?.fault?.active ? state.hostHealth.fault : null;
+      const active = Boolean(topbarMissing || settingsInjectionFailed || pluginIssues.length > 0);
+      return {
+        active,
+        reasons,
+        missingAnchors,
+        topbarMissing,
+        settingsInjectionFailed,
+        pluginIssues,
+        daemonFault
+      };
+    }
+
+    function evaluateSafeMode() {
+      const next = computeSafeModeStatus();
+      state.safeMode = next;
+      if (state.disposed || !doc || typeof doc.createElement !== 'function') {
+        return next;
+      }
+
+      if (!next.active) {
+        if (safeModePillHostEl) {
+          setHidden(safeModePillHostEl, true);
+          safeModePillHostEl.removeAttribute?.('data-safe-mode-active');
+        }
+        syncTopbarEntryVisibility();
+        return next;
+      }
+
+      ensureSafeModePillShell();
+      if (!safeModePillHostEl || !safeModePillBtnEl) return next;
+
+      setHidden(safeModePillHostEl, false);
+      safeModePillHostEl.setAttribute('data-safe-mode-active', 'true');
+      applySafeModePillPosition(state.safeModePillPos);
+
+      const hasDanger = next.topbarMissing
+        || next.settingsInjectionFailed
+        || next.pluginIssues.some((i) => i.tone === 'danger')
+        || Boolean(next.daemonFault);
+      safeModePillBtnEl.setAttribute('data-tone', hasDanger ? 'danger' : 'warn');
+
+      let labelText = 'Agy ⚠️ 异常诊断';
+      if (next.missingAnchors.length > 0 && next.pluginIssues.length > 0) {
+        labelText = `Agy ⚠️ ${next.missingAnchors.length} 锚点 · ${next.pluginIssues.length} 插件异常`;
+      } else if (next.missingAnchors.length > 0) {
+        labelText = `Agy ⚠️ ${next.missingAnchors.length} 锚点失效`;
+      } else if (next.settingsInjectionFailed) {
+        labelText = 'Agy ⚠️ 设置注入异常';
+      } else if (next.pluginIssues.length > 0) {
+        labelText = `Agy ⚠️ ${next.pluginIssues.length} 插件异常`;
+      }
+
+      const tipText = `Safe Mode：${next.reasons.join('；')}（点击打开独立诊断弹窗，可拖动调整位置）`;
+      safeModePillBtnEl.setAttribute('title', tipText);
+      safeModePillBtnEl.setAttribute('aria-label', tipText);
+
+      clearElement(safeModePillBtnEl);
+      const gripWrap = doc.createElement('span');
+      gripWrap.className = 'ag-safe-mode-pill-grip';
+      gripWrap.appendChild(createIconEl('grip'));
+      const lbl = doc.createElement('span');
+      lbl.className = 'ag-safe-mode-pill-text';
+      lbl.textContent = labelText;
+      safeModePillBtnEl.appendChild(gripWrap);
+      safeModePillBtnEl.appendChild(lbl);
+
+      return next;
+    }
+
+    function openSafeModeDiagnostics() {
+      state.safeModeViewOpen = true;
+      state.activeSettingsTab = 'plugins';
+      state.selectedPluginId = null;
+      state.marketplaceOpen = false;
+      state.diagnosticsExpanded = true;
+      ensureDomShell();
+      const opened = openFallbackModal();
+      if (hasBridgeAvailable()) {
+        void fetchHostHealth({ reportFirst: true });
+      }
+      return { ok: opened, mode: 'modal', safeMode: true };
     }
 
     function activatePluginFromUi(pluginId, opts = {}) {
@@ -4339,6 +5032,7 @@
         btn.setAttribute('data-active', seg.id === state.activeSettingsTab ? 'true' : 'false');
         btn.textContent = seg.label;
         btn.addEventListener('click', () => {
+          state.safeModeViewOpen = false;
           state.activeSettingsTab = seg.id;
           if (seg.id === 'plugins') {
             state.selectedPluginId = null;
@@ -4456,7 +5150,9 @@
       }
       const subtitleEl = rootEl.querySelector ? rootEl.querySelector('#agy-settings-page-subtitle') : null;
       if (subtitleEl) {
-        subtitleEl.textContent = SETTINGS_TAB_META[state.activeSettingsTab]?.subtitle || SETTINGS_TAB_META.plugins.subtitle;
+        subtitleEl.textContent = state.safeModeViewOpen && state.activeSettingsTab === 'plugins'
+          ? 'Safe Mode 诊断视图：统一展示故障摘要、14 锚点探活、插件健康与守护进程状态。'
+          : (SETTINGS_TAB_META[state.activeSettingsTab]?.subtitle || SETTINGS_TAB_META.plugins.subtitle);
       }
       const searchEl = rootEl.querySelector ? rootEl.querySelector('#agy-settings-search') : null;
       if (searchEl) {
@@ -10101,6 +10797,485 @@
       body.appendChild(diagSection);
     }
 
+    function formatHealthDuration(ms) {
+      const val = Number(ms);
+      if (!Number.isFinite(val) || val <= 0) return '0s';
+      if (val < 1000) return `${Math.round(val)}ms`;
+      if (val < 60000) return `${(val / 1000).toFixed(1)}s`;
+      const mins = Math.floor(val / 60000);
+      const secs = Math.floor((val % 60000) / 1000);
+      return `${mins}m ${secs}s`;
+    }
+
+    function buildMergedAnchorRows(health, queryLower = '') {
+      const liveProbe = probeHealthAnchors();
+      const liveByName = new Map(liveProbe.items.map((item) => [item.name, item]));
+      const remoteItems = Array.isArray(health?.injection?.anchors?.items) ? health.injection.anchors.items : [];
+      const remoteByName = new Map(remoteItems.map((item) => [item.name, item]));
+      const names = Array.from(new Set([
+        ...remoteItems.map((item) => item.name),
+        ...liveProbe.items.map((item) => item.name)
+      ]));
+      const rows = names.map((name) => {
+        const live = liveByName.get(name) || null;
+        const remote = remoteByName.get(name) || null;
+        const status = live ? live.status : (remote?.status || 'missing');
+        const matchedSelector = live ? live.matchedSelector : (remote?.matchedSelector || null);
+        const affectedPlugins = Array.isArray(remote?.affectedPlugins) ? remote.affectedPlugins : [];
+        return { name, status, matchedSelector, affectedPlugins };
+      });
+      if (!queryLower) return rows;
+      return rows.filter((row) => `${row.name} ${row.matchedSelector || ''} ${row.affectedPlugins.join(' ')}`.toLowerCase().includes(queryLower));
+    }
+
+    function buildMergedPluginHealthRows(health, queryLower = '') {
+      const remotePlugins = Array.isArray(health?.plugins) ? health.plugins : [];
+      const remoteById = new Map(remotePlugins.map((p) => [p.id, p]));
+      const allIds = Array.from(new Set([
+        ...remotePlugins.map((p) => p.id),
+        ...state.pluginInstances.keys(),
+        ...state.isolatedPlugins.keys(),
+        ...state.rendererErrors.keys(),
+        ...state.pluginMeta.keys()
+      ])).sort();
+      const rows = allIds.map((id) => {
+        const remote = remoteById.get(id) || null;
+        const meta = state.pluginMeta.get(id) || null;
+        const localErr = state.rendererErrors.get(id) || null;
+        const enabled = remote ? Boolean(remote.enabled) : (meta?.enabled !== false);
+        const nodeState = remote?.nodeState || (enabled ? (meta?.active === false ? 'inactive' : 'not_applicable') : 'disabled');
+        const localMounted = state.pluginInstances.has(id) || state.isolatedPlugins.has(id);
+        const rendererMounted = localErr
+          ? false
+          : (localMounted ? true : Boolean(remote?.rendererMounted));
+        const lastError = localErr?.message || remote?.lastError || meta?.health?.lastError || null;
+        const lastErrorStack = localErr?.stack || remote?.lastErrorStack || meta?.health?.lastErrorStack || null;
+        const affectedByMissingAnchors = Array.isArray(remote?.affectedByMissingAnchors)
+          ? remote.affectedByMissingAnchors
+          : [];
+        return {
+          id,
+          name: remote?.name || pickLocaleText(meta?.displayName, id),
+          enabled,
+          nodeState,
+          rendererMounted,
+          lastError,
+          lastErrorStack,
+          affectedByMissingAnchors
+        };
+      });
+      if (!queryLower) return rows;
+      return rows.filter((row) => `${row.id} ${row.name} ${row.lastError || ''}`.toLowerCase().includes(queryLower));
+    }
+
+    function appendKvCardItem(grid, label, value, mono = false) {
+      const item = doc.createElement('div');
+      item.className = 'ag-sm-kv-item';
+      const lbl = doc.createElement('span');
+      lbl.className = 'ag-sm-kv-label';
+      lbl.textContent = label;
+      const valEl = doc.createElement('span');
+      valEl.className = mono ? 'ag-sm-kv-val ag-sm-mono' : 'ag-sm-kv-val';
+      valEl.textContent = value;
+      item.appendChild(lbl);
+      item.appendChild(valEl);
+      grid.appendChild(item);
+    }
+
+    function renderSafeModeDiagnosticsView(body) {
+      const hasBridge = hasBridgeAvailable();
+      const queryLower = state.settingsSearchQuery.trim().toLowerCase();
+      const health = state.hostHealth;
+      const safeStatus = state.safeMode || computeSafeModeStatus();
+
+      // 1. 故障摘要与升级事件
+      const summaryActions = doc.createElement('div');
+      summaryActions.className = 'ag-plugin-actions';
+
+      const refreshHealthBtn = doc.createElement('button');
+      refreshHealthBtn.type = 'button';
+      refreshHealthBtn.id = 'agy-safe-mode-refresh-btn';
+      refreshHealthBtn.className = 'ag-btn';
+      refreshHealthBtn.disabled = Boolean(state.hostHealthLoading) || !hasBridge;
+      refreshHealthBtn.appendChild(createIconEl('refresh'));
+      const refreshLbl = doc.createElement('span');
+      refreshLbl.textContent = state.hostHealthLoading ? '刷新中...' : '刷新健康快照';
+      refreshHealthBtn.appendChild(refreshLbl);
+      refreshHealthBtn.addEventListener('click', () => {
+        void fetchHostHealth({ reportFirst: true });
+      });
+      summaryActions.appendChild(refreshHealthBtn);
+
+      const exitSafeViewBtn = doc.createElement('button');
+      exitSafeViewBtn.type = 'button';
+      exitSafeViewBtn.id = 'agy-safe-mode-manage-btn';
+      exitSafeViewBtn.className = 'ag-btn';
+      exitSafeViewBtn.textContent = '插件管理';
+      exitSafeViewBtn.addEventListener('click', () => {
+        state.safeModeViewOpen = false;
+        renderSettingsBody();
+      });
+      summaryActions.appendChild(exitSafeViewBtn);
+
+      const faultSection = createSectionBlock(
+        '故障摘要与升级事件',
+        '独立 Shadow DOM 诊断视图：聚合 daemon hostHealth 快照与宿内实时探活。',
+        summaryActions
+      );
+      faultSection.id = 'agy-safe-mode-diagnostics-view';
+
+      const faultCard = doc.createElement('div');
+      faultCard.className = 'settings-card-box';
+      faultCard.id = 'agy-safe-mode-fault-card';
+
+      const fault = health?.fault || null;
+      const hasFault = Boolean(safeStatus.active || fault?.active);
+      const banner = doc.createElement('div');
+      banner.className = 'ag-sm-banner';
+      banner.setAttribute('data-tone', hasFault ? (safeStatus.topbarMissing || safeStatus.settingsInjectionFailed || fault?.active ? 'danger' : 'warn') : 'ok');
+
+      const bannerMain = doc.createElement('div');
+      bannerMain.className = 'ag-sm-banner-main';
+      const titleRow = doc.createElement('div');
+      titleRow.className = 'ag-sm-banner-title-row';
+
+      const bTitle = doc.createElement('span');
+      bTitle.className = 'ag-sm-banner-title';
+      bTitle.textContent = hasFault
+        ? `当前异常：${fault?.code || (safeStatus.topbarMissing ? 'topbar_missing' : (safeStatus.settingsInjectionFailed ? 'settings_injection_failed' : 'plugin_error'))}`
+        : '当前无活动故障';
+      titleRow.appendChild(bTitle);
+
+      if (fault?.exceeded5s) {
+        const exChip = doc.createElement('span');
+        exChip.className = 'ag-chip';
+        exChip.setAttribute('data-tone', 'danger');
+        exChip.textContent = '>5s 告警';
+        titleRow.appendChild(exChip);
+      }
+      if (fault?.active) {
+        const durChip = doc.createElement('span');
+        durChip.className = 'ag-chip';
+        durChip.setAttribute('data-tone', 'warn');
+        durChip.textContent = `持续 ${formatHealthDuration(fault.durationMs)}`;
+        titleRow.appendChild(durChip);
+      }
+      bannerMain.appendChild(titleRow);
+
+      const bDesc = doc.createElement('div');
+      bDesc.className = 'ag-sm-banner-desc';
+      const reasonParts = [];
+      if (fault?.reason) reasonParts.push(`Daemon: ${fault.reason}`);
+      if (safeStatus.reasons.length > 0) reasonParts.push(`宿内: ${safeStatus.reasons.join('；')}`);
+      if (fault?.since) reasonParts.push(`开始于 ${fault.since}`);
+      if (state.hostHealthError) reasonParts.push(`快照拉取失败: ${state.hostHealthError}`);
+      bDesc.textContent = reasonParts.length > 0 ? reasonParts.join(' · ') : '所有核心锚点与插件均运行正常。';
+      bannerMain.appendChild(bDesc);
+
+      banner.appendChild(bannerMain);
+      faultCard.appendChild(banner);
+
+      const upgradeSub = doc.createElement('div');
+      upgradeSub.className = 'ag-diag-subhead';
+      const upgradeEvents = Array.isArray(health?.antigravity?.upgradeEvents) ? health.antigravity.upgradeEvents : [];
+      upgradeSub.textContent = `近期版本升级事件（${upgradeEvents.length}）`;
+      faultCard.appendChild(upgradeSub);
+
+      const upgradeList = doc.createElement('div');
+      upgradeList.id = 'agy-safe-mode-upgrade-events';
+      upgradeList.className = 'ag-sm-list';
+      if (upgradeEvents.length === 0) {
+        const emptyUp = doc.createElement('div');
+        emptyUp.className = 'ag-sv-empty';
+        emptyUp.textContent = '暂无近期版本升级事件';
+        upgradeList.appendChild(emptyUp);
+      } else {
+        for (const ev of upgradeEvents) {
+          const item = doc.createElement('div');
+          item.className = 'ag-sm-list-item';
+          const head = doc.createElement('div');
+          head.className = 'ag-sm-list-head';
+          const verSpan = doc.createElement('span');
+          verSpan.className = 'ag-sv-row-title ag-sm-mono';
+          verSpan.textContent = `${ev.fromVersion} -> ${ev.toVersion}`;
+          const outChip = doc.createElement('span');
+          outChip.className = 'ag-chip';
+          outChip.setAttribute('data-tone', ev.outcome === 'succeeded' ? 'accent' : (ev.outcome === 'failed' || ev.outcome === 'blocked' ? 'danger' : 'warn'));
+          outChip.textContent = ev.outcome;
+          head.appendChild(verSpan);
+          head.appendChild(outChip);
+          const detail = doc.createElement('span');
+          detail.className = 'ag-sv-row-desc';
+          detail.textContent = `${ev.at}${ev.pid ? ` · PID ${ev.pid}` : ''}${ev.reason ? ` · ${ev.reason}` : ''}`;
+          item.appendChild(head);
+          item.appendChild(detail);
+          upgradeList.appendChild(item);
+        }
+      }
+      faultCard.appendChild(upgradeList);
+      faultSection.appendChild(faultCard);
+      body.appendChild(faultSection);
+
+      // 2. 14 锚点实时探活表
+      const anchorRows = buildMergedAnchorRows(health, queryLower);
+      const healthyAnchors = anchorRows.filter((r) => r.status === 'ok').length;
+      const missingAnchorsCount = anchorRows.length - healthyAnchors;
+      const probeSourceLabel = health?.injection?.probeSource || 'runtime';
+
+      const anchorSection = createSectionBlock(
+        `14 锚点实时探活表（命中 ${healthyAnchors}/${anchorRows.length} · 失效 ${missingAnchorsCount}）`,
+        `探活来源：${probeSourceLabel} · 逐项展示命中 selector（或 MISSING）与波及插件。`
+      );
+      const anchorCard = doc.createElement('div');
+      anchorCard.className = 'settings-card-box';
+      anchorCard.id = 'agy-safe-mode-anchors-card';
+
+      const tableWrap = doc.createElement('div');
+      tableWrap.className = 'ag-sm-table-wrap';
+      const table = doc.createElement('table');
+      table.id = 'agy-safe-mode-anchors-table';
+      table.className = 'ag-sm-table';
+
+      const thead = doc.createElement('thead');
+      const headRow = doc.createElement('tr');
+      for (const colTitle of ['锚点', '状态', '命中 Selector', '波及插件']) {
+        const th = doc.createElement('th');
+        th.textContent = colTitle;
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = doc.createElement('tbody');
+      if (anchorRows.length === 0) {
+        const tr = doc.createElement('tr');
+        const td = doc.createElement('td');
+        td.textContent = '暂无锚点探活数据';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        for (const row of anchorRows) {
+          const tr = doc.createElement('tr');
+          tr.setAttribute('data-anchor-name', row.name);
+          tr.setAttribute('data-anchor-status', row.status);
+
+          const tdName = doc.createElement('td');
+          tdName.className = 'ag-sm-mono';
+          tdName.textContent = row.name;
+
+          const tdStatus = doc.createElement('td');
+          const sChip = doc.createElement('span');
+          sChip.className = 'ag-chip';
+          sChip.setAttribute('data-tone', row.status === 'ok' ? 'accent' : 'danger');
+          sChip.textContent = row.status === 'ok' ? 'OK' : 'MISSING';
+          tdStatus.appendChild(sChip);
+
+          const tdSel = doc.createElement('td');
+          tdSel.className = 'ag-sm-mono';
+          tdSel.textContent = row.matchedSelector || 'MISSING';
+
+          const tdAffected = doc.createElement('td');
+          tdAffected.textContent = row.affectedPlugins.length > 0 ? row.affectedPlugins.join(', ') : '—';
+
+          tr.appendChild(tdName);
+          tr.appendChild(tdStatus);
+          tr.appendChild(tdSel);
+          tr.appendChild(tdAffected);
+          tbody.appendChild(tr);
+        }
+      }
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      anchorCard.appendChild(tableWrap);
+      anchorSection.appendChild(anchorCard);
+      body.appendChild(anchorSection);
+
+      // 3. 插件健康列表
+      const pluginRows = buildMergedPluginHealthRows(health, queryLower);
+      const pluginSection = createSectionBlock(
+        `插件健康列表（${pluginRows.length}）`,
+        '展示每个插件的 node 激活态、renderer 挂载态、受缺失锚点影响情况与最近错误栈。'
+      );
+      const pluginCard = doc.createElement('div');
+      pluginCard.className = 'settings-card-box';
+      pluginCard.id = 'agy-safe-mode-plugins-card';
+
+      const pluginList = doc.createElement('div');
+      pluginList.className = 'ag-sm-list';
+      if (pluginRows.length === 0) {
+        const emptyPl = doc.createElement('div');
+        emptyPl.className = 'ag-sv-empty';
+        emptyPl.textContent = '暂无已安装或已挂载插件';
+        pluginList.appendChild(emptyPl);
+      } else {
+        for (const p of pluginRows) {
+          const item = doc.createElement('div');
+          item.className = 'ag-sm-list-item';
+          item.setAttribute('data-safe-mode-plugin', p.id);
+
+          const head = doc.createElement('div');
+          head.className = 'ag-sm-list-head';
+
+          const titleWrap = doc.createElement('div');
+          titleWrap.className = 'ag-sv-row-info';
+          const nameEl = doc.createElement('span');
+          nameEl.className = 'ag-sv-row-title';
+          nameEl.textContent = `${p.name} (${p.id})`;
+          titleWrap.appendChild(nameEl);
+
+          const chips = doc.createElement('div');
+          chips.className = 'ag-plugin-actions';
+          const nodeChip = doc.createElement('span');
+          nodeChip.className = 'ag-chip';
+          nodeChip.setAttribute('data-tone', p.nodeState === 'error' || p.nodeState === 'inactive' ? 'danger' : (p.nodeState === 'active' ? 'accent' : 'muted'));
+          nodeChip.textContent = `node: ${p.nodeState}`;
+          const renChip = doc.createElement('span');
+          renChip.className = 'ag-chip';
+          renChip.setAttribute('data-tone', p.rendererMounted ? 'accent' : (p.enabled ? 'warn' : 'muted'));
+          renChip.textContent = `renderer: ${p.rendererMounted ? 'mounted' : 'unmounted'}`;
+          chips.appendChild(nodeChip);
+          chips.appendChild(renChip);
+
+          head.appendChild(titleWrap);
+          head.appendChild(chips);
+          item.appendChild(head);
+
+          if (p.affectedByMissingAnchors.length > 0) {
+            const aff = doc.createElement('span');
+            aff.className = 'ag-sv-row-desc';
+            aff.textContent = `缺失依赖锚点：${p.affectedByMissingAnchors.join(', ')}`;
+            item.appendChild(aff);
+          }
+
+          if (p.lastError) {
+            const errLine = doc.createElement('span');
+            errLine.className = 'ag-sv-row-desc ag-plugin-meta-danger';
+            errLine.textContent = `最近错误：${p.lastError}`;
+            item.appendChild(errLine);
+          }
+
+          if (p.lastErrorStack) {
+            const stackPre = doc.createElement('pre');
+            stackPre.className = 'ag-sm-stack';
+            stackPre.textContent = p.lastErrorStack;
+            item.appendChild(stackPre);
+          }
+
+          pluginList.appendChild(item);
+        }
+      }
+      pluginCard.appendChild(pluginList);
+      pluginSection.appendChild(pluginCard);
+      body.appendChild(pluginSection);
+
+      // 4. Daemon / Antigravity / CDP 摘要
+      const sysSection = createSectionBlock(
+        'Daemon / Antigravity / CDP 摘要',
+        '展示会话变量隔离状态、客户端版本与调试参数、CDP /json/list 目标匹配与过滤明细。'
+      );
+      const sysCard = doc.createElement('div');
+      sysCard.className = 'settings-card-box';
+      sysCard.id = 'agy-safe-mode-system-card';
+
+      const kvGrid = doc.createElement('div');
+      kvGrid.className = 'ag-sm-kv-grid';
+
+      const dInfo = health?.daemon;
+      const envIsolationText = dInfo
+        ? (dInfo.hasSessionEnvPollution
+          ? `存在污染 (${(dInfo.inheritedSessionVars || []).join(', ') || 'unknown'})`
+          : `已隔离（继承变量: ${(dInfo.inheritedSessionVars || []).length}）`)
+        : '未知（未连接 daemon）';
+      appendKvCardItem(
+        kvGrid,
+        'Daemon & 会话变量隔离',
+        dInfo
+          ? `PID ${dInfo.pid ?? '—'} · 端口 ${dInfo.bridgePort ?? '—'} · ${envIsolationText}`
+          : `桥接端口 ${state.bridgePort || '—'} · ${envIsolationText}`
+      );
+
+      const aInfo = health?.antigravity;
+      appendKvCardItem(
+        kvGrid,
+        'Antigravity 进程',
+        aInfo
+          ? `v${aInfo.version || state.antigravityVersion} · PID ${aInfo.pid ?? '—'} · hasDebugSwitch=${String(Boolean(aInfo.hasDebugSwitch))} · ${aInfo.running ? '运行中' : '未运行'}`
+          : `v${state.antigravityVersion} · 暂无进程快照`
+      );
+
+      const cInfo = health?.cdp;
+      const matchedTargets = Array.isArray(cInfo?.targets?.matched) ? cInfo.targets.matched : [];
+      const filteredTargets = Array.isArray(cInfo?.targets?.filtered) ? cInfo.targets.filtered : [];
+      appendKvCardItem(
+        kvGrid,
+        'CDP 发现与 /json/list',
+        cInfo
+          ? `端口 ${cInfo.port ?? '—'} · reachable=${String(Boolean(cInfo.reachable))} · 已匹配 ${matchedTargets.length} / 已过滤 ${filteredTargets.length}`
+          : '暂无 CDP 发现快照'
+      );
+
+      appendKvCardItem(
+        kvGrid,
+        '宿内注入与上次补参',
+        `injectedCount=${health?.injection?.injectedCount ?? 0} · lastRelaunch=${aInfo?.lastRelaunch?.status || '—'}${aInfo?.lastRelaunch?.reason ? ` (${aInfo.lastRelaunch.reason})` : ''}`
+      );
+
+      sysCard.appendChild(kvGrid);
+
+      if (matchedTargets.length > 0 || filteredTargets.length > 0) {
+        const cdpSub = doc.createElement('div');
+        cdpSub.className = 'ag-diag-subhead';
+        cdpSub.textContent = `CDP 页面 URL 明细（已匹配 ${matchedTargets.length} · 被过滤 ${filteredTargets.length}）`;
+        sysCard.appendChild(cdpSub);
+
+        const cdpList = doc.createElement('div');
+        cdpList.id = 'agy-safe-mode-cdp-targets';
+        cdpList.className = 'ag-sm-list';
+
+        for (const t of matchedTargets) {
+          const item = doc.createElement('div');
+          item.className = 'ag-sm-list-item';
+          item.setAttribute('data-cdp-target-kind', 'matched');
+          const head = doc.createElement('div');
+          head.className = 'ag-sm-list-head';
+          const urlEl = doc.createElement('span');
+          urlEl.className = 'ag-sm-mono';
+          urlEl.textContent = t.url || '(no url)';
+          const chip = doc.createElement('span');
+          chip.className = 'ag-chip';
+          chip.setAttribute('data-tone', 'accent');
+          chip.textContent = `已匹配 (${t.type || 'page'})`;
+          head.appendChild(urlEl);
+          head.appendChild(chip);
+          item.appendChild(head);
+          cdpList.appendChild(item);
+        }
+
+        for (const f of filteredTargets) {
+          const item = doc.createElement('div');
+          item.className = 'ag-sm-list-item';
+          item.setAttribute('data-cdp-target-kind', 'filtered');
+          const head = doc.createElement('div');
+          head.className = 'ag-sm-list-head';
+          const urlEl = doc.createElement('span');
+          urlEl.className = 'ag-sm-mono';
+          urlEl.textContent = f.url || '(no url)';
+          const chip = doc.createElement('span');
+          chip.className = 'ag-chip';
+          chip.setAttribute('data-tone', 'warn');
+          chip.textContent = `被过滤: ${f.filterReason}`;
+          head.appendChild(urlEl);
+          head.appendChild(chip);
+          item.appendChild(head);
+          cdpList.appendChild(item);
+        }
+        sysCard.appendChild(cdpList);
+      }
+
+      sysSection.appendChild(sysCard);
+      body.appendChild(sysSection);
+    }
+
     function renderSettingsBody() {
       const rootEl = getActiveSettingsRootEl();
       if (!rootEl) return;
@@ -10122,6 +11297,10 @@
       }
       if (state.marketplaceOpen) {
         renderMarketplaceView(body);
+        return;
+      }
+      if (state.safeModeViewOpen) {
+        renderSafeModeDiagnosticsView(body);
         return;
       }
       renderPluginsListView(body);
@@ -10156,8 +11335,10 @@
       state.recordingShortcutKey = null;
       state.openComboboxKey = null;
       state.commandEdits.clear();
+      state.safeModeViewOpen = false;
       if (state.settingsMode === 'native') {
         deactivateNativeSettingsView();
+        scheduleRuntimeHealthReport();
         return false;
       }
       if (state.settingsMode === 'modal') {
@@ -10165,6 +11346,7 @@
         state.settingsMode = 'closed';
         settingsBtnEl?.setAttribute?.('data-active', 'false');
         updateElevationAttr();
+        scheduleRuntimeHealthReport();
         return false;
       }
       return false;
@@ -10172,6 +11354,10 @@
 
     async function openSettings(opts = {}) {
       ensureDomShell();
+      if (opts?.safeMode === true) {
+        return openSafeModeDiagnostics();
+      }
+      state.safeModeViewOpen = false;
       const rawTab = opts && opts.tab !== undefined ? String(opts.tab).toLowerCase() : '';
       const explicitTab = (opts && opts.tab !== undefined) ? normalizeTabId(opts.tab) : null;
       if (explicitTab) {
@@ -10203,7 +11389,10 @@
       // 1. 若允许注入原生设置，优先切入原生设置弹窗
       if (state.hostSettings.injectNativeSettings !== false) {
         if (syncNativeSettingsIntegration()) {
+          state.settingsInjectionAttemptFailed = false;
           activateNativeSettingsView();
+          evaluateSafeMode();
+          scheduleRuntimeHealthReport();
           return { ok: true, mode: 'native', tab: state.activeSettingsTab, pluginId: state.selectedPluginId };
         }
 
@@ -10212,7 +11401,10 @@
         if (triggerEl && typeof triggerEl.click === 'function') {
           try { triggerEl.click(); } catch {}
           if (syncNativeSettingsIntegration()) {
+            state.settingsInjectionAttemptFailed = false;
             activateNativeSettingsView();
+            evaluateSafeMode();
+            scheduleRuntimeHealthReport();
             return { ok: true, mode: 'native', tab: state.activeSettingsTab, pluginId: state.selectedPluginId };
           }
           const waitMs = Number(opts.triggerWaitMs) > 0 ? Number(opts.triggerWaitMs) : 150;
@@ -10220,15 +11412,21 @@
           while (Date.now() < deadline && !state.disposed) {
             await new Promise((r) => setTimeout(r, 25));
             if (syncNativeSettingsIntegration()) {
+              state.settingsInjectionAttemptFailed = false;
               activateNativeSettingsView();
+              evaluateSafeMode();
+              scheduleRuntimeHealthReport();
               return { ok: true, mode: 'native', tab: state.activeSettingsTab, pluginId: state.selectedPluginId };
             }
           }
         }
+        state.settingsInjectionAttemptFailed = true;
       }
 
       // 3. 关闭原生注入、锚点未命中或未弹出 -> 自动降级为居中独立模态窗
       openFallbackModal();
+      evaluateSafeMode();
+      scheduleRuntimeHealthReport();
       return { ok: true, mode: 'modal', tab: state.activeSettingsTab, pluginId: state.selectedPluginId };
     }
 
@@ -10339,6 +11537,9 @@
         try {
           const action = detail.action || (detail.service ? 'services.call' : '');
           const pid = detail.pluginId || 'isolated';
+          if (detail.pluginId && action !== 'plugin.dispose') {
+            state.isolatedPlugins.add(String(detail.pluginId));
+          }
           let val = null;
 
           if (action === 'topbar.registerUnit') {
@@ -10560,6 +11761,7 @@
           } else if (action === 'commands.execute') {
             val = await executeCommand(pid, detail.commandId, detail.args || []);
           } else if (action === 'plugin.dispose') {
+            if (detail.pluginId) state.isolatedPlugins.delete(String(detail.pluginId));
             await disposePlugin(detail.pluginId);
             val = { ok: true };
           } else {
@@ -11106,6 +12308,8 @@
         state.pluginInstances.set(pluginId, { pluginObj, ctx });
         renderPluginAlertCapsule();
         renderUnits();
+        evaluateSafeMode();
+        scheduleRuntimeHealthReport();
         return { ok: true };
       } catch (err) {
         const health = recordPluginRuntimeError(pluginId, err);
@@ -11118,6 +12322,7 @@
       dispatchLifecycleEvent({ type: 'plugin.dispose', pluginId });
       const inst = state.pluginInstances.get(pluginId);
       state.pluginInstances.delete(pluginId);
+      state.isolatedPlugins.delete(pluginId);
       state.topbarSuppressedPlugins.delete(pluginId);
       if (inst && typeof inst.pluginObj?.dispose === 'function') {
         try { await inst.pluginObj.dispose(); } catch {}
@@ -11188,6 +12393,8 @@
         state.metrics.get(pluginId).timersCount = 0;
       }
       updateElevationAttr();
+      evaluateSafeMode();
+      scheduleRuntimeHealthReport();
     }
 
     function getPluginUsageStats(pluginId) {
@@ -11337,6 +12544,7 @@
         if (getActiveElevatedPanelEl()) {
           syncBrowserOccluder(false);
         }
+        clampSafeModePillPosition();
       };
       win.addEventListener('resize', occluderWindowResizeHandler);
     }
@@ -11345,6 +12553,9 @@
       version: HOST_VERSION,
       configure(nextOpts = {}) {
         if (nextOpts.anchorsRegistry) state.anchorsRegistry = nextOpts.anchorsRegistry;
+        if (nextOpts.healthTargetId !== undefined) state.healthTargetId = String(nextOpts.healthTargetId || '');
+        if (nextOpts.healthReportId !== undefined) state.healthReportId = String(nextOpts.healthReportId || '');
+        if (isPlainObject(nextOpts.healthAnchors)) state.healthAnchors = nextOpts.healthAnchors;
         if (nextOpts.bridgePort !== undefined) state.bridgePort = Number(nextOpts.bridgePort || 0);
         if (nextOpts.hostToken !== undefined) hostToken = String(nextOpts.hostToken || '');
         if (nextOpts.antigravityVersion) state.antigravityVersion = nextOpts.antigravityVersion;
@@ -11376,18 +12587,35 @@
           if (nextOpts.heatPreset) { state.heatPreset = nextOpts.heatPreset; state.hostSettings.heatPreset = nextOpts.heatPreset; }
           applyThemeVars(nextOpts.accent || DEFAULT_ACCENT);
         }
+        evaluateSafeMode();
+        startRuntimeHealthReporting();
+        scheduleRuntimeHealthReport();
         if (state.settingsMode !== 'closed') {
           renderSettingsView();
         }
       },
       queryAnchor,
       queryAnchorAll,
+      probeHealthAnchors: (reg) => probeHealthAnchors(reg),
+      getSafeModeState: () => ({
+        ...state.safeMode,
+        pillVisible: Boolean(safeModePillHostEl && !safeModePillHostEl.hidden),
+        pillPosition: state.safeModePillPos ? { ...state.safeModePillPos } : null
+      }),
+      openSafeModeDiagnostics,
+      reportRuntimeHealth: (opts) => reportRuntimeHealth({ force: true, ...(opts || {}) }),
+      fetchHostHealth: (opts) => fetchHostHealth(opts),
       mountPlugin,
       disposePlugin,
       openSettings,
       closeSettings,
       toggleSettingsPanel,
-      syncNativeSettings: syncNativeSettingsIntegration,
+      syncNativeSettings: () => {
+        const res = syncNativeSettingsIntegration();
+        evaluateSafeMode();
+        scheduleRuntimeHealthReport();
+        return res;
+      },
       syncAuxSidebar: () => syncAuxSidebarState(),
       isAuxSidebarExpanded: () => Boolean(state.auxSidebarExpanded),
       getSettingsMode: () => state.settingsMode,
@@ -11398,6 +12626,7 @@
         syncNativeSettingsIntegration();
         applyThemeVars();
         renderUnits();
+        evaluateSafeMode();
         if (state.settingsMode !== 'closed') renderSettingsBody();
         return res;
       },
@@ -11437,6 +12666,8 @@
         m.crashes = 0;
         renderPluginAlertCapsule();
         renderUnits();
+        evaluateSafeMode();
+        scheduleRuntimeHealthReport();
         return { ok: true, pluginId };
       },
       syncPluginStates(metaInput) {
@@ -11463,6 +12694,8 @@
         }
         renderPluginAlertCapsule();
         renderUnits();
+        evaluateSafeMode();
+        scheduleRuntimeHealthReport();
         if (state.settingsMode !== 'closed') {
           renderSettingsBody();
         }
@@ -11473,10 +12706,24 @@
         state.disposed = true;
         dispatchLifecycleEvent({ type: 'host.dispose', nonce: state.xworldNonce });
         resetDragReorderState();
+        detachSafeModePillDragListeners();
+        if (suppressSafeModeClickTimer) {
+          clearTimeout(suppressSafeModeClickTimer);
+          suppressSafeModeClickTimer = null;
+        }
+        if (runtimeHealthTimer) {
+          clearInterval(runtimeHealthTimer);
+          runtimeHealthTimer = null;
+        }
+        if (runtimeHealthDebounceTimer) {
+          clearTimeout(runtimeHealthDebounceTimer);
+          runtimeHealthDebounceTimer = null;
+        }
         state.pendingFlipReorder = null;
         for (const tid of hostRetryTimers) clearTimeout(tid);
         hostRetryTimers.clear();
         state.rendererErrors.clear();
+        state.isolatedPlugins.clear();
         teardownNativeSettingsMount();
         for (const id of Array.from(state.pluginInstances.keys())) {
           await disposePlugin(id);
@@ -11543,6 +12790,10 @@
         state.recordingShortcutKey = null;
         if (lightDomStyleEl?.remove) lightDomStyleEl.remove();
         lightDomStyleEl = null;
+        if (safeModePillHostEl?.remove) safeModePillHostEl.remove();
+        safeModePillHostEl = null;
+        safeModePillShadow = null;
+        safeModePillBtnEl = null;
         if (hostEl?.remove) hostEl.remove();
         hostEl = null;
         shadow = null;
@@ -11558,6 +12809,12 @@
       renderPluginAlertCapsule();
       renderUnits();
     }
+
+    if (doc && typeof doc.createElement === 'function') {
+      ensureSharedObserver();
+      evaluateSafeMode();
+    }
+    startRuntimeHealthReporting();
 
     if (isPlainObject(mergedOpts.initialView) && mergedOpts.initialView.open) {
       const iv = mergedOpts.initialView;

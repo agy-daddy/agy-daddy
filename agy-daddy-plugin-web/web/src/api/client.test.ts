@@ -2,14 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   apiRequest,
+  archiveSession,
+  browseWorkspace,
+  cancelRemoteProjectJob,
+  deleteSession,
   getAppBasePrefix,
+  getRemotePreflight,
+  getSessionOrg,
   listBackgroundTasks,
+  listGithubRepos,
   markSessionRead,
+  mkdirWorkspace,
+  mutateOrgGroup,
+  reorderOrg,
   resolveApiUrl,
   sendTerminalInput,
   setConfirmWriteHandler,
+  startRemoteProjectJob,
   stopBackgroundTask,
   streamSideChatCompletion,
+  toggleOrgPin,
 } from './client';
 
 describe('apiRequest Cloudflare write confirmation gate', () => {
@@ -283,6 +295,73 @@ describe('apiRequest Cloudflare write confirmation gate', () => {
       expect(tasksRes.runningCount).toBe(0);
       const stopRes = await stopBackgroundTask('session:c1');
       expect(stopRes.alreadyFinished).toBe(true);
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: origLocation,
+        configurable: true,
+      });
+    }
+  });
+
+  it('calls v2 session-org, archive/delete, and workspace provisioning APIs with /pc/ prefixing', async () => {
+    const origLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/pc/' },
+      configurable: true,
+    });
+    try {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+      );
+
+      await getSessionOrg(true);
+      await toggleOrgPin({ type: 'project', id: 'p1', pinned: true });
+      await mutateOrgGroup({ action: 'upsert', name: 'G1' });
+      await reorderOrg({
+        targetType: 'project',
+        containerId: '__ungrouped__',
+        zone: 'normal',
+        orderedIds: ['p2', 'p1'],
+      });
+      await archiveSession('c1', { archived: true });
+      await deleteSession('c1', 'local_hide');
+      await browseWorkspace('/Users/dev', true);
+      await mkdirWorkspace('/Users/dev', 'app');
+      await getRemotePreflight('github');
+      await listGithubRepos('acme', 15);
+      await startRemoteProjectJob({
+        provider: 'github',
+        mode: 'gh_clone',
+        parentDir: '/Users/dev',
+        projectName: 'demo',
+        github: { repoSpec: 'acme/demo' },
+      });
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ok: false, error: 'CONFIRMATION_REQUIRED', confirmToken: 'tok-x' }),
+          { status: 403 },
+        ),
+      );
+      await expect(cancelRemoteProjectJob('pjob_1')).rejects.toMatchObject({
+        code: 'CONFIRMATION_REQUIRED',
+      });
+
+      const urls = fetchMock.mock.calls.map((c) => c[0]);
+      expect(urls).toEqual([
+        '/pc/api/v1/sessions/org?includeArchived=1',
+        '/pc/api/v1/sessions/pin',
+        '/pc/api/v1/sessions/groups',
+        '/pc/api/v1/sessions/org/reorder',
+        '/pc/api/v1/sessions/c1/archive',
+        '/pc/api/v1/sessions/c1?mode=local_hide',
+        '/pc/api/v1/workspace/browse?path=%2FUsers%2Fdev&showHidden=1',
+        '/pc/api/v1/workspace/mkdir',
+        '/pc/api/v1/workspace/remote-preflight?provider=github',
+        '/pc/api/v1/workspace/github-repos?owner=acme&limit=15',
+        '/pc/api/v1/projects/remote-jobs',
+        '/pc/api/v1/projects/remote-jobs/pjob_1/cancel',
+      ]);
     } finally {
       Object.defineProperty(window, 'location', {
         value: origLocation,

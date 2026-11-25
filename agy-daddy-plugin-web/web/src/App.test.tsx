@@ -37,16 +37,30 @@ const mocks = vi.hoisted(() => ({
   listArtifacts: vi.fn(),
   subscribeSessionStream: vi.fn(),
   setConfirmWriteHandler: vi.fn(),
+  toggleOrgPin: vi.fn(),
+  mutateOrgGroup: vi.fn(),
+  reorderOrg: vi.fn(),
+  archiveSession: vi.fn(),
+  deleteSession: vi.fn(),
+  browseWorkspace: vi.fn(),
+  mkdirWorkspace: vi.fn(),
+  getRemotePreflight: vi.fn(),
+  listGithubRepos: vi.fn(),
+  startRemoteProjectJob: vi.fn(),
+  getRemoteProjectJob: vi.fn(),
+  cancelRemoteProjectJob: vi.fn(),
 }));
 
 vi.mock('./api/client', () => {
   class MockApiError extends Error {
     status: number;
     code: string;
-    constructor(message: string, status = 500, code = 'API_ERROR') {
+    payload?: unknown;
+    constructor(message: string, status = 500, code = 'API_ERROR', payload?: unknown) {
       super(message);
       this.status = status;
       this.code = code;
+      this.payload = payload;
     }
   }
   return {
@@ -57,6 +71,18 @@ vi.mock('./api/client', () => {
       markSessionRead: mocks.markSessionRead,
       createSession: mocks.createSession,
       pinSession: vi.fn().mockResolvedValue({ ok: true }),
+      toggleOrgPin: mocks.toggleOrgPin.mockResolvedValue({ ok: true, pinned: true, pinnedAt: null }),
+      mutateOrgGroup: mocks.mutateOrgGroup.mockResolvedValue({ ok: true }),
+      reorderOrg: mocks.reorderOrg.mockResolvedValue({ ok: true }),
+      archiveSession: mocks.archiveSession.mockResolvedValue({ ok: true, archived: true, unpinned: false }),
+      deleteSession: mocks.deleteSession.mockResolvedValue({ ok: true, deletionMode: 'host_deleted', hostCleaned: true }),
+      browseWorkspace: mocks.browseWorkspace.mockResolvedValue({ ok: true, entries: [], breadcrumbs: [], shortcuts: [], exists: true, requestedPath: '', resolvedPath: '', willCreateRelative: '', parentPath: null }),
+      mkdirWorkspace: mocks.mkdirWorkspace.mockResolvedValue({ ok: true, name: 'x', path: '/x', parentPath: '/' }),
+      getRemotePreflight: mocks.getRemotePreflight.mockResolvedValue({ ok: true }),
+      listGithubRepos: mocks.listGithubRepos.mockResolvedValue({ ok: true, repos: [] }),
+      startRemoteProjectJob: mocks.startRemoteProjectJob,
+      getRemoteProjectJob: mocks.getRemoteProjectJob,
+      cancelRemoteProjectJob: mocks.cancelRemoteProjectJob,
       assignSessionProject: vi.fn().mockResolvedValue({ ok: true }),
       listProjects: mocks.listProjects,
       createProject: vi.fn().mockResolvedValue({ ok: true }),
@@ -837,6 +863,112 @@ describe('App optimistic send flow', () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe('dark');
       expect(document.documentElement.dataset.drawerSpeed).toBe('normal');
+    });
+  });
+
+  it('handles 503 HOST_DELETE_UNAVAILABLE fallback to local_hide with focus fallback, and SSE state:session.org@1 sync', async () => {
+    mocks.listSessions.mockResolvedValue({
+      ok: true,
+      sessions: [
+        {
+          cascadeId: 'sess-1',
+          title: 'First Session',
+          summary: '',
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          stepCount: 1,
+          lastModifiedTime: '2026-11-24T05:00:00Z',
+          createdTime: '2026-11-24T04:00:00Z',
+          workspaceUri: null,
+          gitRootUri: null,
+          repoName: null,
+          branchName: null,
+          workspaces: [],
+        },
+        {
+          cascadeId: 'sess-2',
+          title: 'Second Session',
+          summary: '',
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          stepCount: 1,
+          lastModifiedTime: '2026-11-24T04:00:00Z',
+          createdTime: '2026-11-24T03:00:00Z',
+          workspaceUri: null,
+          gitRootUri: null,
+          repoName: null,
+          branchName: null,
+          workspaces: [],
+        },
+      ],
+      hiddenInternalCount: 0,
+      archivedCount: 0,
+    });
+    mocks.getSessionDetail.mockResolvedValue({
+      ok: true,
+      session: {
+        cascadeId: 'sess-1',
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 1,
+        source: null,
+        metadata: null,
+        generatorMetadata: [],
+      },
+      events: [],
+    });
+    mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+      mockSseCallbacks.onStatePatch = cbs.onStatePatch;
+      return () => {};
+    });
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('First Session');
+    });
+
+    // SSE state:session.org@1 refreshes projects
+    const prevProjectsCalls = mocks.listProjects.mock.calls.length;
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({ key: 'state:session.org@1', value: { revision: 9 } });
+    });
+    await waitFor(() => {
+      expect(mocks.listProjects.mock.calls.length).toBeGreaterThan(prevProjectsCalls);
+    });
+
+    // Open delete modal for sess-1 -> 503 HOST_DELETE_UNAVAILABLE -> fallback to local_hide
+    mocks.deleteSession
+      .mockRejectedValueOnce(
+        new ApiError('HOST_DELETE_UNAVAILABLE', 503, 'HOST_DELETE_UNAVAILABLE', {
+          ok: false,
+          error: 'HOST_DELETE_UNAVAILABLE',
+          reasonCode: 'RPC_OFFLINE',
+          canFallbackLocalHide: true,
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        cascadeId: 'sess-1',
+        deletionMode: 'local_tombstone',
+        hostCleaned: false,
+      });
+
+    fireEvent.click(screen.getByTestId('session-actions-sess-1'));
+    fireEvent.click(screen.getByTestId('delete-session-sess-1'));
+    expect(screen.getByTestId('delete-session-modal')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('delete-session-confirm'));
+    await waitFor(() => {
+      expect(screen.getByTestId('delete-session-hide-local')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('delete-session-hide-local'));
+    await waitFor(() => {
+      expect(mocks.deleteSession).toHaveBeenLastCalledWith('sess-1', 'local_hide');
+      expect(screen.getByTestId('sidebar-toast')).toHaveTextContent(
+        'Removed from Web & PWA; desktop Antigravity history remains intact',
+      );
+      expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Second Session');
     });
   });
 });

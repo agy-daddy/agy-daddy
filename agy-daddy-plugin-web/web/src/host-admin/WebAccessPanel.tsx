@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getWebAccessStatus } from '../api/client';
-import { useI18n, type I18nKey } from '../i18n';
+import { copyTextWithFallback, getWebAccessStatus } from '../api/client';
+import { useI18n } from '../i18n';
 import type { AccessChannel, WebAccessStatusResponse } from '../types';
+import {
+  ACCESS_CHANNEL_ORDER,
+  CHANNEL_LABEL_KEY,
+  formatCloudflareGuidance,
+} from './webAccessHelpers';
 import styles from './WebAccessPanel.module.css';
-
-const CHANNEL_ORDER: AccessChannel[] = ['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare'];
-
-const CHANNEL_LABEL_KEY: Record<AccessChannel, I18nKey> = {
-  loopback: 'webAccess.channel.loopback',
-  lan: 'webAccess.channel.lan',
-  tailscale: 'webAccess.channel.tailscale',
-  bonjour: 'webAccess.channel.bonjour',
-  cloudflare: 'webAccess.channel.cloudflare',
-};
 
 export interface WebAccessPanelProps {
   /** Bump to re-read the status, e.g. right after saving settings. */
@@ -58,11 +53,7 @@ export function WebAccessPanel({ refreshToken = 0, className }: WebAccessPanelPr
   );
 
   const handleCopy = async (key: string, value: string) => {
-    try {
-      await navigator.clipboard?.writeText?.(value);
-    } catch {
-      // Clipboard can be blocked in non-secure LAN contexts; selection still works.
-    }
+    await copyTextWithFallback(value);
     setCopiedKey(key);
     if (copyTimerRef.current !== null) {
       window.clearTimeout(copyTimerRef.current);
@@ -70,7 +61,7 @@ export function WebAccessPanel({ refreshToken = 0, className }: WebAccessPanelPr
     copyTimerRef.current = window.setTimeout(() => setCopiedKey(null), 1500);
   };
 
-  const entries = CHANNEL_ORDER.map((key) => ({
+  const entries = ACCESS_CHANNEL_ORDER.map((key) => ({
     key,
     url: status?.urls?.[key] || '',
   })).filter((entry) => Boolean(entry.url));
@@ -82,6 +73,9 @@ export function WebAccessPanel({ refreshToken = 0, className }: WebAccessPanelPr
   const channelLabel = status?.channel && CHANNEL_LABEL_KEY[status.channel as AccessChannel]
     ? t(CHANNEL_LABEL_KEY[status.channel as AccessChannel])
     : t('webAccess.unknownChannel');
+  const primaryChannelKey = (status?.primaryChannel as AccessChannel | undefined) || undefined;
+  const primaryEntryUrl = status?.primaryUrl || '';
+  const cfGuidance = formatCloudflareGuidance(status?.cloudflareState, t);
 
   return (
     <section
@@ -128,29 +122,83 @@ export function WebAccessPanel({ refreshToken = 0, className }: WebAccessPanelPr
             </span>
           </div>
 
+          {primaryEntryUrl && primaryChannelKey && CHANNEL_LABEL_KEY[primaryChannelKey] && (
+            <div className={styles.primaryCard} data-testid="web-access-primary-card">
+              <div className={styles.primaryHead}>
+                <span className={styles.primaryTitle}>{t('webAccess.primaryTitle')}</span>
+                <span className={styles.primaryBadge} data-testid="web-access-primary-channel">
+                  {t(CHANNEL_LABEL_KEY[primaryChannelKey])}
+                </span>
+              </div>
+              <div className={styles.primaryRow}>
+                <code className={styles.url} title={primaryEntryUrl}>
+                  {primaryEntryUrl}
+                </code>
+                <div className={styles.primaryActions}>
+                  <a
+                    href={primaryEntryUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.openBtn}
+                    data-testid="web-access-primary-open"
+                  >
+                    {t('webAccess.open')}
+                  </a>
+                  <button
+                    type="button"
+                    className={styles.copyBtn}
+                    onClick={() => void handleCopy('primary', primaryEntryUrl)}
+                    data-testid="web-access-primary-copy"
+                  >
+                    {copiedKey === 'primary' ? t('webAccess.copied') : t('webAccess.copy')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {cfGuidance && (
+            <div
+              className={`${styles.cfNotice} ${cfGuidance.tone === 'warn' ? styles.cfNoticeWarn : ''}`.trim()}
+              data-testid="web-access-cf-notice"
+            >
+              {cfGuidance.message}
+            </div>
+          )}
+
           {isLoopback && nonLoopbackActive && (
             <p className={styles.note}>{t('webAccess.openFromOtherDevice')}</p>
           )}
 
           <ul className={styles.list}>
-            {entries.map(({ key, url }) => (
-              <li key={key} className={styles.row}>
-                <span className={styles.rowLabel}>
-                  {t(CHANNEL_LABEL_KEY[key as AccessChannel])}
-                </span>
-                <code className={styles.url} title={url}>
-                  {url}
-                </code>
-                <button
-                  type="button"
-                  className={styles.copyBtn}
-                  onClick={() => void handleCopy(key, url)}
-                  data-testid={`web-access-copy-${key}`}
+            {entries.map(({ key, url }) => {
+              const isCurrent = status.channel === key;
+              return (
+                <li
+                  key={key}
+                  className={`${styles.row} ${isCurrent ? styles.rowCurrent : ''}`.trim()}
+                  data-testid={`web-access-row-${key}`}
                 >
-                  {copiedKey === key ? t('webAccess.copied') : t('webAccess.copy')}
-                </button>
-              </li>
-            ))}
+                  <span className={styles.rowLabel}>
+                    {t(CHANNEL_LABEL_KEY[key as AccessChannel])}
+                    {isCurrent && (
+                      <span className={styles.currentBadge}>{t('webAccess.currentBadge')}</span>
+                    )}
+                  </span>
+                  <code className={styles.url} title={url}>
+                    {url}
+                  </code>
+                  <button
+                    type="button"
+                    className={styles.copyBtn}
+                    onClick={() => void handleCopy(key, url)}
+                    data-testid={`web-access-copy-${key}`}
+                  >
+                    {copiedKey === key ? t('webAccess.copied') : t('webAccess.copy')}
+                  </button>
+                </li>
+              );
+            })}
             {entries.length === 0 && (
               <li className={styles.empty}>{t('webAccess.noChannels')}</li>
             )}

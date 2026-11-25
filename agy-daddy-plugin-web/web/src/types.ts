@@ -854,6 +854,43 @@ export interface RemoteStatusResponse {
 
 export type AccessChannel = 'loopback' | 'lan' | 'tailscale' | 'bonjour' | 'cloudflare';
 
+export interface CloudflareStateInfo {
+  mode:
+    | 'shared_ready'
+    | 'web_disabled'
+    | 'remote_pending'
+    | 'remote_error'
+    | 'remote_tunnel_off'
+    | 'legacy_standalone'
+    | 'remote_unavailable'
+    | 'disabled';
+  tunnelMode?: 'quick' | 'named' | null;
+  publicOrigin?: string;
+  mountPath?: '/pc' | '/';
+  reasonCode?: string;
+  tokenSource: 'remote' | 'local';
+}
+
+export interface ChannelEndpointMeta {
+  key: AccessChannel;
+  origin: string;
+  basePath: string;
+  displayHost: string;
+  probeUrl: string;
+}
+
+export interface SwitchTicketResponse {
+  ok: boolean;
+  targetChannel: AccessChannel;
+  switchUrl: string;
+  expiresInMs: number;
+}
+
+export interface WebAuthResponse {
+  ok: boolean;
+  channel?: string;
+}
+
 export interface WebAccessStatusResponse {
   ok: boolean;
   running?: boolean;
@@ -868,11 +905,13 @@ export interface WebAccessStatusResponse {
   channels?: Record<string, boolean>;
   activeChannels?: string[];
   urls?: Partial<Record<AccessChannel, string>>;
+  channelEndpoints?: Partial<Record<AccessChannel, ChannelEndpointMeta>>;
   primaryChannel?: string;
   primaryUrl?: string;
   permissionLevel?: string;
   allowRemoteWrite?: boolean;
   tunnelHostname?: string;
+  cloudflareState?: CloudflareStateInfo | null;
 }
 
 export interface OptimizePromptResponse {

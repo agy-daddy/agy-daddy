@@ -1,4 +1,5 @@
 import type {
+  AccessChannel,
   ApproveStepRequest,
   ApproveStepResponse,
   ArtifactPreviewersResponse,
@@ -48,11 +49,26 @@ import type {
   SseHostEventPayload,
   SseResyncPayload,
   SseStatePatchPayload,
+  SwitchTicketResponse,
   TopbarResponse,
   UpdateProjectGroupRequest,
   UpdateProjectRequest,
   WebAccessStatusResponse,
+  WebAuthResponse,
 } from '../types';
+
+export function getAppBasePrefix(
+  pathname = typeof window !== 'undefined' ? window.location.pathname : '/',
+): string {
+  return pathname === '/pc' || pathname.startsWith('/pc/') ? '/pc' : '';
+}
+
+export function resolveApiUrl(logicalPath: string): string {
+  const prefix = getAppBasePrefix();
+  if (!prefix || !logicalPath.startsWith('/')) return logicalPath;
+  if (logicalPath === '/pc' || logicalPath.startsWith('/pc/')) return logicalPath;
+  return `${prefix}${logicalPath}`;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -116,7 +132,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     body = '{}';
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(resolveApiUrl(path), {
     method,
     credentials: 'same-origin',
     headers,
@@ -443,7 +459,7 @@ export function readArtifact(
 }
 
 export function getArtifactRawUrl(sessionId: string, file: string): string {
-  return `/api/v1/artifacts/${encodeURIComponent(sessionId)}/raw?file=${encodeURIComponent(file)}`;
+  return resolveApiUrl(`/api/v1/artifacts/${encodeURIComponent(sessionId)}/raw?file=${encodeURIComponent(file)}`);
 }
 
 export function listArtifactPreviewers(
@@ -573,6 +589,92 @@ export function getWebAccessStatus(signal?: AbortSignal): Promise<WebAccessStatu
   return apiRequest<WebAccessStatusResponse>('/api/v1/web/status', { signal });
 }
 
+export function createChannelSwitchTicket(
+  targetChannel: AccessChannel,
+  sessionId?: string | null,
+): Promise<SwitchTicketResponse> {
+  return apiRequest<SwitchTicketResponse>('/api/v1/web/switch-ticket', {
+    method: 'POST',
+    body: {
+      targetChannel,
+      ...(sessionId ? { sessionId } : {}),
+    },
+  });
+}
+
+export function authenticateWithToken(token: string): Promise<WebAuthResponse> {
+  return apiRequest<WebAuthResponse>('/api/v1/web/auth', {
+    method: 'POST',
+    body: { token },
+  });
+}
+
+export async function probeChannelPing(
+  probeUrl: string,
+  timeoutMs = 2000,
+): Promise<{ state: 'ok' | 'timeout' | 'unreachable'; rttMs?: number }> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const start = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  try {
+    const sep = probeUrl.includes('?') ? '&' : '?';
+    const res = await fetch(`${probeUrl}${sep}_=${Date.now()}`, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    const end = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!res.ok) {
+      return { state: 'unreachable' };
+    }
+    return {
+      state: 'ok',
+      rttMs: Math.max(1, Math.round(end - start)),
+    };
+  } catch (err) {
+    const isAbort =
+      controller.signal.aborted ||
+      (err instanceof Error && err.name === 'AbortError');
+    return { state: isAbort ? 'timeout' : 'unreachable' };
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+export async function copyTextWithFallback(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to execCommand fallback for non-secure HTTP LAN contexts
+  }
+  if (typeof document === 'undefined' || !document.body) return false;
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  let copied = false;
+  try {
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false;
+  } catch {
+    copied = false;
+  } finally {
+    textarea.remove();
+  }
+  return copied;
+}
+
 export interface SessionStreamHandlers {
   onDelta?: (payload: SseDeltaPayload, lastEventId?: string) => void;
   onStatePatch?: (payload: SseStatePatchPayload, lastEventId?: string) => void;
@@ -597,7 +699,7 @@ export function subscribeSessionStream(
   sessionId: string | null | undefined,
   handlers: SessionStreamHandlers,
 ): () => void {
-  const url = `/api/v1/stream${buildQuery({ sessionId: sessionId || undefined })}`;
+  const url = resolveApiUrl(`/api/v1/stream${buildQuery({ sessionId: sessionId || undefined })}`);
   const es = new EventSource(url, { withCredentials: true });
 
   if (handlers.onOpen) {
@@ -701,6 +803,13 @@ export const apiClient = {
   getHostDoctor,
   getTopbar,
   getRemoteStatus,
+  getWebAccessStatus,
+  createChannelSwitchTicket,
+  authenticateWithToken,
+  probeChannelPing,
+  copyTextWithFallback,
+  getAppBasePrefix,
+  resolveApiUrl,
   getComposerState,
   optimizePrompt,
   exportSessionMarkdown,

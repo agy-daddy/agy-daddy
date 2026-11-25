@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, apiRequest, markSessionRead, setConfirmWriteHandler } from './client';
+import {
+  ApiError,
+  apiRequest,
+  getAppBasePrefix,
+  markSessionRead,
+  resolveApiUrl,
+  setConfirmWriteHandler,
+} from './client';
 
 describe('apiRequest Cloudflare write confirmation gate', () => {
   const fetchMock = vi.fn();
@@ -140,5 +147,57 @@ describe('apiRequest Cloudflare write confirmation gate', () => {
     });
     expect(handler).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefixes API calls with /pc when mounted under /pc/ while preserving logical confirm action', async () => {
+    const origLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/pc/' },
+      configurable: true,
+    });
+    try {
+      expect(getAppBasePrefix()).toBe('/pc');
+      expect(resolveApiUrl('/api/v1/sessions')).toBe('/pc/api/v1/sessions');
+      expect(resolveApiUrl('/pc/api/v1/sessions')).toBe('/pc/api/v1/sessions');
+
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error: 'CONFIRMATION_REQUIRED',
+              channel: 'cloudflare',
+              action: 'POST /api/v1/sessions',
+              confirmToken: 'tok-pc-1',
+            }),
+            { status: 403, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true }), { status: 200 }),
+        );
+
+      const handler = vi.fn().mockResolvedValue(true);
+      setConfirmWriteHandler(handler);
+
+      const res = await apiRequest<{ ok: boolean }>('/api/v1/sessions', {
+        method: 'POST',
+        body: { title: 'pc-test' },
+      });
+      expect(res).toEqual({ ok: true });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('/pc/api/v1/sessions');
+      expect(fetchMock.mock.calls[1]?.[0]).toBe('/pc/api/v1/sessions');
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'POST /api/v1/sessions',
+          path: '/api/v1/sessions',
+        }),
+      );
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: origLocation,
+        configurable: true,
+      });
+    }
   });
 });

@@ -5,7 +5,7 @@ const nodeEnv =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
 export default defineConfig({
-  base: nodeEnv.VITE_PUBLIC_BASE || '/',
+  base: nodeEnv.VITE_PUBLIC_BASE || './',
   plugins: [react()],
   build: {
     outDir: '../dist/web',

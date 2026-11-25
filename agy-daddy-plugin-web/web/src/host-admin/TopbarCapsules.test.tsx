@@ -319,4 +319,53 @@ describe('TopbarCapsules popovers & MobileQrPopover', () => {
     expect(screen.getByTestId('mobile-qr-offline')).toHaveTextContent('Remote service offline');
     expect(screen.queryByTestId('mobile-qr-card')).not.toBeInTheDocument();
   });
+
+  it('renders topbar channel switcher capsule and opens ChannelSwitcherPopover for L0/L1/L2', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const onRefreshWebAccess = vi.fn();
+      renderTopbar({
+        webAccessStatus: {
+          ok: true,
+          channel: 'lan',
+          permissionLevel: 'L0',
+          channelEndpoints: {
+            cloudflare: {
+              key: 'cloudflare',
+              origin: 'https://ag.example.com',
+              basePath: '/pc',
+              displayHost: 'ag.example.com/pc',
+              probeUrl: 'https://ag.example.com/pc/api/v1/ping',
+            },
+            lan: {
+              key: 'lan',
+              origin: 'http://192.168.1.20:18767',
+              basePath: '',
+              displayHost: '192.168.1.20:18767',
+              probeUrl: 'http://192.168.1.20:18767/api/v1/ping',
+            },
+          },
+        },
+        onRefreshWebAccess,
+      });
+
+      const switcherBtn = screen.getByTestId('topbar-channel-switcher-btn');
+      expect(switcherBtn).toHaveTextContent('LAN');
+
+      await user.click(switcherBtn);
+      expect(onRefreshWebAccess).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('channel-switcher-popover')).toBeInTheDocument();
+      expect(screen.getByTestId('channel-row-cloudflare')).toBeInTheDocument();
+      expect(screen.getByTestId('channel-row-lan')).toBeInTheDocument();
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByTestId('channel-switcher-popover')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

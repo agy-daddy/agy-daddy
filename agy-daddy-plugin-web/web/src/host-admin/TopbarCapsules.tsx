@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeLocale, useI18n, type TranslateFn } from '../i18n';
 import { useTheme } from '../theme/ThemeProvider';
-import type { RemoteStatusResponse, TopbarPanelSlot, TopbarPanels } from '../types';
+import type {
+  AccessChannel,
+  RemoteStatusResponse,
+  TopbarPanelSlot,
+  TopbarPanels,
+  WebAccessStatusResponse,
+} from '../types';
+import { ChannelSwitcherPopover, type ChannelProbeEntry } from './ChannelSwitcherPopover';
 import { MobileQrPopover } from './MobileQrPopover';
 import { TopbarPopover, type TopbarPopoverKind } from './TopbarPopover';
+import { CHANNEL_SHORT_LABEL_KEY } from './webAccessHelpers';
 import styles from './TopbarCapsules.module.css';
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'disconnected' | 'error';
@@ -18,8 +26,12 @@ export interface TopbarCapsulesProps {
   hubOrigin?: string | null;
   remoteStatus?: RemoteStatusResponse | null;
   remoteLoading?: boolean;
+  webAccessStatus?: WebAccessStatusResponse | null;
+  activeSessionId?: string | null;
   onRefreshTopbar?: () => void;
   onRefreshRemote?: () => void;
+  onRefreshWebAccess?: () => void;
+  onNavigateChannelUrl?: (url: string) => void;
   onRunCompact?: () => void;
   onOpenHostAdmin?: (initialTab?: HostAdminTab) => void;
   onOpenPlugins?: () => void;
@@ -30,7 +42,7 @@ export interface TopbarCapsulesProps {
 }
 
 type CapsuleTone = 'muted' | 'accent' | 'warning' | 'danger' | 'neutral';
-type ActivePopoverKey = TopbarPopoverKind | 'mobile-qr' | null;
+type ActivePopoverKey = TopbarPopoverKind | 'mobile-qr' | 'channel-switcher' | null;
 
 interface FormattedCapsule {
   key: 'context' | 'usage' | 'quota';
@@ -283,8 +295,12 @@ export function TopbarCapsules({
   hubOrigin,
   remoteStatus,
   remoteLoading = false,
+  webAccessStatus,
+  activeSessionId,
   onRefreshTopbar,
   onRefreshRemote,
+  onRefreshWebAccess,
+  onNavigateChannelUrl,
   onRunCompact,
   onOpenHostAdmin,
   onOpenPlugins,
@@ -298,10 +314,12 @@ export function TopbarCapsules({
 
   const [activePopover, setActivePopover] = useState<ActivePopoverKey>(null);
   const [anchorLeft, setAnchorLeft] = useState<number>(0);
+  const [channelProbeCache, setChannelProbeCache] = useState<Record<string, ChannelProbeEntry>>({});
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const popoverLayerRef = useRef<HTMLDivElement | null>(null);
   const mobileQrAnchorRef = useRef<HTMLDivElement | null>(null);
+  const channelSwitcherAnchorRef = useRef<HTMLDivElement | null>(null);
   const capsuleRefs = useRef<Partial<Record<'context' | 'usage' | 'quota', HTMLButtonElement | null>>>({});
 
   const closePopover = useCallback(() => {
@@ -323,6 +341,8 @@ export function TopbarCapsules({
 
       if (activePopover === 'mobile-qr') {
         if (mobileQrAnchorRef.current?.contains(target)) return;
+      } else if (activePopover === 'channel-switcher') {
+        if (channelSwitcherAnchorRef.current?.contains(target)) return;
       } else {
         const triggerBtn = capsuleRefs.current[activePopover];
         if (triggerBtn?.contains(target)) return;
@@ -395,6 +415,21 @@ export function TopbarCapsules({
           ? panels?.quota
           : undefined;
 
+  const currentWebChannel = (webAccessStatus?.channel as AccessChannel | undefined) || undefined;
+  const currentChannelLabel =
+    currentWebChannel && CHANNEL_SHORT_LABEL_KEY[currentWebChannel]
+      ? t(CHANNEL_SHORT_LABEL_KEY[currentWebChannel])
+      : t('webAccess.channelShort.loopback');
+  const currentChannelProbe = currentWebChannel ? channelProbeCache[currentWebChannel] : undefined;
+  const currentChannelRtt =
+    currentChannelProbe?.state === 'ok' && typeof currentChannelProbe.rttMs === 'number'
+      ? currentChannelProbe.rttMs
+      : currentChannelProbe?.cachedRttMs;
+  const channelCapsuleText =
+    typeof currentChannelRtt === 'number'
+      ? `${currentChannelLabel} · ${currentChannelRtt} ms`
+      : currentChannelLabel;
+
   return (
     <div ref={rootRef} className={`${styles.root} ${className || ''}`.trim()}>
       <div className={styles.capsules} aria-label={t('topbar.capsulesAria')}>
@@ -435,7 +470,7 @@ export function TopbarCapsules({
         )}
       </div>
 
-      {activePopover && activePopover !== 'mobile-qr' && (
+      {activePopover && activePopover !== 'mobile-qr' && activePopover !== 'channel-switcher' && (
         <div ref={popoverLayerRef}>
           <TopbarPopover
             kind={activePopover}
@@ -465,6 +500,37 @@ export function TopbarCapsules({
           <span className={`${styles.statusDot} ${conn.dotClass}`} aria-hidden="true" />
           <span className={styles.statusLabelText}>{conn.label}</span>
           {!rpcConnected && <span className={styles.rpcWarn}>· {t('topbar.rpc.disconnected')}</span>}
+        </div>
+
+        <div ref={channelSwitcherAnchorRef} className={styles.mobileQrAnchor}>
+          <button
+            type="button"
+            className={`${styles.triggerBtn} ${activePopover === 'channel-switcher' ? styles.triggerBtnActive : ''}`.trim()}
+            onClick={() => {
+              const next = activePopover === 'channel-switcher' ? null : 'channel-switcher';
+              setActivePopover(next);
+              if (next === 'channel-switcher') onRefreshWebAccess?.();
+            }}
+            title={t('channelSwitcher.title')}
+            aria-haspopup="dialog"
+            aria-expanded={activePopover === 'channel-switcher'}
+            data-testid="topbar-channel-switcher-btn"
+          >
+            <span>{channelCapsuleText}</span>
+            <span aria-hidden="true">▾</span>
+          </button>
+
+          {activePopover === 'channel-switcher' && (
+            <ChannelSwitcherPopover
+              status={webAccessStatus}
+              activeSessionId={activeSessionId}
+              probeCache={channelProbeCache}
+              onProbeCacheChange={setChannelProbeCache}
+              onRefreshStatus={onRefreshWebAccess}
+              onNavigate={onNavigateChannelUrl}
+              onClose={closePopover}
+            />
+          )}
         </div>
 
         <div ref={mobileQrAnchorRef} className={styles.mobileQrAnchor}>

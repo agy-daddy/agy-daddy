@@ -2565,3 +2565,154 @@ test('S3-1 org-api: archive, true/503/local_hide session delete, atomic reorder,
   }
 });
 
+test('WebServer workspace browse & remote provisioning endpoints: L2 gates, Cloudflare confirm, 202 jobs, cancel exemption', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { createSessionOrgBridge } = require('../src/session-org-bridge');
+  const { createWorkspaceBrowser } = require('../src/workspace-browser');
+  const { createRemoteProjectProvisioner } = require('../src/remote-project-provisioner');
+
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ws-prov-'));
+  const orgPath = path.join(tmpBase, 'session-org.json');
+  const wsRoot = path.join(tmpBase, 'ws');
+  fs.mkdirSync(wsRoot, { recursive: true });
+
+  const makeChild = ({ code = 0, stdout = '', delayMs = 5 } = {}) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let timer = setTimeout(() => {
+      if (stdout) child.stdout.write(stdout);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', code, null);
+    }, delayMs);
+    child.kill = (sig = 'SIGTERM') => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      setImmediate(() => {
+        child.stdout.end();
+        child.stderr.end();
+        child.emit('close', null, sig);
+      });
+      return true;
+    };
+    return child;
+  };
+
+  const bridge = createSessionOrgBridge({ orgPath });
+  const metaStore = createWorkspaceMetaStore({ sessionOrgBridge: bridge });
+  const browser = createWorkspaceBrowser({
+    getDefaultSessionPath: () => wsRoot,
+    getProjectRootPaths: () => metaStore.getProjectRootPaths()
+  });
+  const provisioner = createRemoteProjectProvisioner({
+    spawnFn: (bin, args) => {
+      if (bin === 'git' && args[0] === 'clone') {
+        const target = args[args.length - 1];
+        fs.mkdirSync(path.join(target, '.git'), { recursive: true });
+        return makeChild({ code: 0, delayMs: 40 });
+      }
+      if (bin === 'gh' && args[0] === '--version') {
+        return makeChild({ code: 0, stdout: 'gh version 2.50.0\n' });
+      }
+      if (bin === 'gh' && args[0] === 'auth') {
+        return makeChild({ code: 0, stdout: 'Logged in to github.com account octo\nActive account: true\n' });
+      }
+      if (bin === 'gh' && args[0] === 'repo' && args[1] === 'list') {
+        return makeChild({
+          code: 0,
+          stdout: JSON.stringify([{ nameWithOwner: 'octo/repo', url: 'https://github.com/octo/repo', isPrivate: false }])
+        });
+      }
+      return makeChild({ code: 0 });
+    },
+    createProjectFn: (payload) => metaStore.createProject(payload)
+  });
+
+  let channelMode = 'cloudflare';
+  const srv = createWebServer({
+    port: 0,
+    pairingToken: 'tok-prov-123',
+    confirmSecret: 'cf-secret-prov',
+    permissionLevel: 'L1',
+    channels: { loopback: true, lan: true, tailscale: true, bonjour: true, cloudflare: true },
+    resolveChannel: () => channelMode,
+    workspaceMetaStore: metaStore,
+    sessionOrgBridge: bridge,
+    workspaceBrowser: browser,
+    remoteProvisioner: provisioner,
+    deltaPollIntervalMs: 0
+  });
+
+  try {
+    const info = await srv.start();
+    const base = `http://127.0.0.1:${info.port}`;
+    const auth = { Authorization: 'Bearer tok-prov-123' };
+
+    // L1 blocked on L2 browse/preflight
+    const l1Browse = await httpRequest(`${base}/api/v1/workspace/browse?path=${encodeURIComponent(wsRoot)}`, { headers: auth });
+    assert.equal(l1Browse.status, 403);
+    assert.equal(l1Browse.json.required, 'L2');
+
+    srv.updateAccessConfig({ permissionLevel: 'L2' });
+
+    // L2 GET routes pass on Cloudflare without X-Agy-Confirm
+    assert.equal((await httpRequest(`${base}/api/v1/workspace/browse?path=${encodeURIComponent(wsRoot)}`, { headers: auth })).status, 200);
+    const pfRes = await httpRequest(`${base}/api/v1/workspace/remote-preflight?provider=github`, { headers: auth });
+    assert.equal(pfRes.status, 200);
+    assert.equal(pfRes.json.github.ghAuthenticated, true);
+    const reposRes = await httpRequest(`${base}/api/v1/workspace/github-repos`, { headers: auth });
+    assert.equal(reposRes.status, 200);
+    assert.equal(reposRes.json.repos[0].nameWithOwner, 'octo/repo');
+
+    // POST mkdir & remote-jobs require X-Agy-Confirm on Cloudflare
+    const jobCh = await httpRequest(`${base}/api/v1/projects/remote-jobs`, {
+      method: 'POST',
+      headers: auth,
+      body: {
+        provider: 'github',
+        mode: 'gh_clone',
+        projectName: 'Repo One',
+        parentDir: wsRoot,
+        localDirName: 'repo-one',
+        github: { repoSpec: 'octo/repo' }
+      }
+    });
+    assert.equal(jobCh.status, 403);
+    assert.equal(jobCh.json.error, 'CONFIRMATION_REQUIRED');
+
+    const jobStart = await httpRequest(`${base}/api/v1/projects/remote-jobs`, {
+      method: 'POST',
+      headers: { ...auth, 'X-Agy-Confirm': jobCh.json.confirmToken },
+      body: {
+        provider: 'github',
+        mode: 'gh_clone',
+        projectName: 'Repo One',
+        parentDir: wsRoot,
+        localDirName: 'repo-one',
+        github: { repoSpec: 'octo/repo' }
+      }
+    });
+    assert.equal(jobStart.status, 202);
+    assert.ok(jobStart.json.jobId);
+
+    // /cancel exempts X-Agy-Confirm
+    const cancelRes = await httpRequest(`${base}/api/v1/projects/remote-jobs/${jobStart.json.jobId}/cancel`, {
+      method: 'POST',
+      headers: auth,
+      body: {}
+    });
+    assert.equal(cancelRes.status, 200);
+    assert.equal(cancelRes.json.job.status, 'cancelled');
+  } finally {
+    provisioner.dispose();
+    bridge.dispose();
+    await srv.stop();
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
+

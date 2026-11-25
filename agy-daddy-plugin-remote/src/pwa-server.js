@@ -133,7 +133,14 @@ function sendResult(res, result, defaultOkStatus = 200) {
     sendJson(res, status, body);
     return;
   }
-  sendJson(res, defaultOkStatus, result && typeof result === 'object' ? result : { ok: true, data: result });
+  const status = result && Number.isInteger(result.statusCode) ? result.statusCode : defaultOkStatus;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const body = { ...result };
+    delete body.statusCode;
+    sendJson(res, status, body);
+    return;
+  }
+  sendJson(res, status, { ok: true, data: result });
 }
 
 function readJsonBody(req) {
@@ -223,6 +230,8 @@ class MobileRemoteServer {
     this.ptyManager = options.ptyManager || null;
     this.webPush = options.webPush || null;
     this.mobileWorkspace = options.mobileWorkspace || null;
+    this.workspaceBrowser = options.workspaceBrowser || null;
+    this.remoteProvisioner = options.remoteProvisioner || null;
     this.onPtyUpgrade = typeof options.onPtyUpgrade === 'function' ? options.onPtyUpgrade : null;
 
     this.server = null;
@@ -934,6 +943,90 @@ class MobileRemoteServer {
       return;
     }
 
+    if (method === 'GET' && pathname === '/api/v1/workspace/browse') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this.workspaceBrowser) {
+        sendJson(res, 503, { ok: false, error: 'WORKSPACE_BROWSER_UNAVAILABLE' });
+        return;
+      }
+      const rawPath = urlObj.searchParams.get('path') || '';
+      const showHidden = urlObj.searchParams.get('showHidden') === '1' || urlObj.searchParams.get('showHidden') === 'true';
+      sendResult(res, await this.workspaceBrowser.browse({ path: rawPath, showHidden }));
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/workspace/mkdir') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (!this.workspaceBrowser) {
+        sendJson(res, 503, { ok: false, error: 'WORKSPACE_BROWSER_UNAVAILABLE' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      sendResult(res, await this.workspaceBrowser.mkdir(body));
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/workspace/remote-preflight') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this.remoteProvisioner) {
+        sendJson(res, 503, { ok: false, error: 'REMOTE_PROVISIONER_UNAVAILABLE' });
+        return;
+      }
+      const provider = urlObj.searchParams.get('provider') || '';
+      sendResult(res, await this.remoteProvisioner.preflight({ provider }));
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/workspace/github-repos') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this.remoteProvisioner) {
+        sendJson(res, 503, { ok: false, error: 'REMOTE_PROVISIONER_UNAVAILABLE' });
+        return;
+      }
+      const owner = urlObj.searchParams.get('owner') || '';
+      const limitParam = urlObj.searchParams.get('limit');
+      sendResult(res, await this.remoteProvisioner.listGithubRepos({
+        owner,
+        limit: limitParam ? Number(limitParam) : undefined
+      }));
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/projects/remote-jobs') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (!this.remoteProvisioner) {
+        sendJson(res, 503, { ok: false, error: 'REMOTE_PROVISIONER_UNAVAILABLE' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      sendResult(res, await this.remoteProvisioner.startJob(body), 202);
+      return;
+    }
+
+    if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/projects\/remote-jobs\/([^/]+)$/))) {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this.remoteProvisioner) {
+        sendJson(res, 503, { ok: false, error: 'REMOTE_PROVISIONER_UNAVAILABLE' });
+        return;
+      }
+      const jobId = decodeURIComponent(match[1]);
+      sendResult(res, this.remoteProvisioner.getJob(jobId));
+      return;
+    }
+
+    if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/projects\/remote-jobs\/([^/]+)\/cancel$/))) {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this.remoteProvisioner) {
+        sendJson(res, 503, { ok: false, error: 'REMOTE_PROVISIONER_UNAVAILABLE' });
+        return;
+      }
+      const jobId = decodeURIComponent(match[1]);
+      sendResult(res, await this.remoteProvisioner.cancelJob(jobId));
+      return;
+    }
+
     if (method === 'GET' && pathname === '/api/v1/projects') {
       if (typeof h.listProjects === 'function') {
         sendResult(res, await h.listProjects());
@@ -944,6 +1037,18 @@ class MobileRemoteServer {
         return;
       }
       sendJson(res, 200, { ok: true, projects: [], groups: [] });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/projects') {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.createProject !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      sendResult(res, await h.createProject(body));
       return;
     }
 

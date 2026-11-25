@@ -6,6 +6,8 @@ const crypto = require('node:crypto');
 
 const { createHarnessAdapter } = require('./harness-adapter');
 const { createWorkspaceService, normalizeInputRoot, isForbiddenSystemRoot } = require('./workspace-service');
+const { createWorkspaceBrowser } = require('./workspace-browser');
+const { createRemoteProjectProvisioner } = require('./remote-project-provisioner');
 const { createWorkspaceMetaStore, normalizeLocalPath } = require('./workspace-meta-store');
 const { createSessionOrgBridge, buildOrgBusSummary } = require('./session-org-bridge');
 const { createHostProxy } = require('./host-proxy');
@@ -262,6 +264,34 @@ async function activate(host) {
 
   const harnessAdapter = createHarnessAdapter({ rpc: host.rpc });
   const workspaceService = createWorkspaceService({ getAllowedRoots, brainDir });
+  const workspaceBrowser = createWorkspaceBrowser({
+    getDefaultSessionPath: () => workspaceMetaStore.getState().defaultSessionPath,
+    getProjectRootPaths: () => workspaceMetaStore.getProjectRootPaths()
+  });
+  const remoteProvisioner = createRemoteProjectProvisioner({
+    getProjectRootPaths: () => workspaceMetaStore.getProjectRootPaths(),
+    checkDuplicateProjectFn: (target) => {
+      const rawRoot = typeof target === 'string' ? target : target?.rootPath;
+      const norm = normalizeLocalPath(rawRoot);
+      if (!norm) return null;
+      const key = IS_CASE_INSENSITIVE_FS ? norm.toLowerCase() : norm;
+      const listed = workspaceMetaStore.listProjectsAndGroups([]);
+      return (listed.projects || []).find((p) => {
+        const pk = p?.rootPath ? (IS_CASE_INSENSITIVE_FS ? p.rootPath.toLowerCase() : p.rootPath) : '';
+        return pk && pk === key;
+      }) || null;
+    },
+    createProjectFn: (payload) => workspaceMetaStore.createProject(payload),
+    authorizeRootFn: () => {
+      refreshSessionRoots();
+      return { ok: true };
+    },
+    onJobUpdated: (job) => {
+      if (runtime && activeRuntime === runtime && runtime.webServer) {
+        runtime.webServer.broadcast('project.job', job);
+      }
+    }
+  });
   let ptyManager = null;
   let sideChatService = null;
   let taskManager = null;
@@ -283,6 +313,8 @@ async function activate(host) {
     lastHubOrigin: null,
     harnessAdapter,
     workspaceService,
+    workspaceBrowser,
+    remoteProvisioner,
     workspaceMetaStore,
     sessionOrgBridge,
     ptyManager: null,
@@ -722,6 +754,8 @@ async function activate(host) {
     staticDir,
     harnessAdapter,
     workspaceService,
+    workspaceBrowser,
+    remoteProvisioner,
     workspaceMetaStore,
     sessionOrgBridge,
     ptyManager,
@@ -881,6 +915,12 @@ async function deactivate() {
   try {
     if (runtime.sessionOrgBridge) {
       runtime.sessionOrgBridge.dispose?.();
+    }
+  } catch {}
+
+  try {
+    if (runtime.remoteProvisioner) {
+      runtime.remoteProvisioner.dispose?.();
     }
   } catch {}
 

@@ -26,12 +26,19 @@ const { MobileRemoteServer, stripPairingSecrets } = require('./pwa-server');
 const { createWebPushManager } = require('./web-push');
 const { createPtyManager } = require('./pty-bridge');
 const { createMobileWorkspaceService } = require('./mobile-workspace');
+const {
+  createWorkspaceBrowser,
+  normalizeLocalPath,
+  isForbiddenSystemRoot
+} = require('./workspace-browser');
+const { createRemoteProjectProvisioner } = require('./remote-project-provisioner');
 const { createSseBroker } = require('./sse-broker');
 const {
   DEFAULT_SESSION_LIMIT,
   isTempBridgeWorkspace,
   sanitizeModelCatalogResult,
-  createSessionOrgStore
+  createSessionOrgStore,
+  canonicalKey
 } = require('./session-org-store');
 
 const CHANNEL_KEYS = ['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare'];
@@ -1237,6 +1244,155 @@ async function activate(host) {
     }
   });
 
+  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
+    const normalizedRoot = normalizeLocalPath(rootPath);
+    if (!normalizedRoot) {
+      return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
+    }
+    if (isForbiddenSystemRoot(normalizedRoot)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+
+    if (createDir) {
+      let cur = normalizedRoot;
+      let ancestor = null;
+      while (cur) {
+        if (fs.existsSync(cur)) {
+          ancestor = cur;
+          break;
+        }
+        const parent = path.dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+      }
+      let realAncestor = null;
+      try {
+        realAncestor = ancestor ? fs.realpathSync(ancestor) : null;
+      } catch {}
+      if (!realAncestor || isForbiddenSystemRoot(realAncestor)) {
+        return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+      }
+      try {
+        fs.mkdirSync(normalizedRoot, { recursive: true });
+      } catch (err) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: 'CREATE_DIR_FAILED',
+          message: err?.message || 'CREATE_DIR_FAILED'
+        };
+      }
+    }
+
+    let realRoot;
+    try {
+      realRoot = fs.realpathSync(normalizedRoot);
+    } catch {
+      return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
+    }
+    if (isForbiddenSystemRoot(realRoot)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+    try {
+      if (!fs.statSync(realRoot).isDirectory()) {
+        return { ok: false, statusCode: 400, error: 'ROOT_NOT_DIRECTORY' };
+      }
+    } catch {
+      return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
+    }
+
+    const cleanName = typeof name === 'string' && name.trim()
+      ? name.trim()
+      : (path.basename(normalizedRoot) || normalizedRoot);
+    const cleanSource = typeof source === 'string' && source.trim() ? source.trim() : 'local';
+    const normKey = canonicalKey(normalizedRoot);
+    const realKey = canonicalKey(realRoot);
+
+    return sessionOrgStore.mutateOrgAtomically((org) => {
+      let resolvedGroupId = null;
+      if (groupId !== undefined && groupId !== null && groupId !== '') {
+        const cleanGid = String(groupId).trim();
+        if (!org.groups.some((g) => g.id === cleanGid)) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+        }
+        resolvedGroupId = cleanGid;
+      }
+
+      const duplicate = (org.projects || []).find((p) => {
+        const pk = canonicalKey(p?.rootPath);
+        return pk && (pk === normKey || pk === realKey);
+      }) || null;
+      if (duplicate) {
+        return {
+          abort: true,
+          result: {
+            ok: false,
+            statusCode: 409,
+            error: 'PROJECT_ALREADY_EXISTS',
+            projectId: duplicate.id,
+            project: { ...duplicate }
+          }
+        };
+      }
+
+      const project = sessionOrgStore.materializeProjectInOrg(org, {
+        id: `proj_${crypto.randomUUID()}`,
+        name: cleanName,
+        rootPath: normalizedRoot,
+        groupId: resolvedGroupId,
+        source: cleanSource,
+        remote,
+        syncedFromApp: false
+      });
+
+      const containerKey = resolvedGroupId || '__ungrouped__';
+      if (org.projectOrder[containerKey] && Array.isArray(org.projectOrder[containerKey].normal)) {
+        org.projectOrder[containerKey].normal = [
+          project.id,
+          ...org.projectOrder[containerKey].normal.filter((x) => x !== project.id)
+        ];
+      }
+
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          project: { ...project, archived: false },
+          revision: saved.revision,
+          projects: saved.projects,
+          groups: saved.groups,
+          pins: saved.pins,
+          defaultSessionPath: saved.defaultSessionPath || ''
+        })
+      };
+    });
+  }
+
+  const workspaceBrowser = createWorkspaceBrowser({
+    getDefaultSessionPath: () => sessionOrgStore.loadPersistedOrg().defaultSessionPath || '',
+    getProjectRootPaths: () => (sessionOrgStore.loadPersistedOrg().projects || []).map((p) => p.rootPath)
+  });
+
+  const remoteProvisioner = createRemoteProjectProvisioner({
+    getProjectRootPaths: () => (sessionOrgStore.loadPersistedOrg().projects || []).map((p) => p.rootPath),
+    checkDuplicateProjectFn: (target) => {
+      const rawRoot = typeof target === 'string' ? target : target?.rootPath;
+      const k = canonicalKey(normalizeLocalPath(rawRoot));
+      if (!k) return null;
+      const org = sessionOrgStore.loadPersistedOrg();
+      return (org.projects || []).find((p) => canonicalKey(p?.rootPath) === k) || null;
+    },
+    createProjectFn: (payload) => createProjectInOrg(payload),
+    authorizeRootFn: (rootPath) => {
+      if (rootPath) discoveredSessionRoots.add(rootPath);
+      return { ok: true, rootPath };
+    },
+    onJobUpdated: (job) => {
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('project.job', job);
+      }
+    }
+  });
+
   async function callHarness(method, args = []) {
     if (typeof host?.services?.call === 'function') {
       try {
@@ -1892,6 +2048,9 @@ async function activate(host) {
         defaultSessionPath: res.defaultSessionPath
       };
     },
+    async createProject(body = {}) {
+      return createProjectInOrg(body);
+    },
     async updateProject(id, patch = {}) {
       const cleanId = String(id || '').trim();
       if (!cleanId || !isPlainObject(patch)) {
@@ -2143,7 +2302,9 @@ async function activate(host) {
     sseBroker,
     ptyManager,
     webPush,
-    mobileWorkspace
+    mobileWorkspace,
+    workspaceBrowser,
+    remoteProvisioner
   });
 
   if (
@@ -2648,6 +2809,7 @@ async function activate(host) {
     stopWebStateSub,
     stopOrgStateSub,
     () => { sessionOrgStore.dispose(); },
+    () => { remoteProvisioner.dispose(); },
     () => { sseBroker.dispose(); },
     () => { ptyManager.disposeAll(); },
     async () => { await cloudflared.stop(); },

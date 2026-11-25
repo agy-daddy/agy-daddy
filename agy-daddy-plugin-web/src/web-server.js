@@ -185,7 +185,7 @@ function requiredPermissionFor(method, pathname) {
     pathname === '/api/v1/workspace/browse'
     || pathname === '/api/v1/workspace/remote-preflight'
     || pathname === '/api/v1/workspace/github-repos'
-    || /^\/api\/v1\/projects\/remote-jobs(?:\/[^/]+)?$/.test(pathname)
+    || /^\/api\/v1\/projects\/remote-jobs(?:\/[^/]+(?:\/cancel)?)?$/.test(pathname)
   ) {
     return 'L2';
   }
@@ -295,7 +295,14 @@ function sendActionResult(res, result, defaultOkStatus = 200) {
     sendJson(res, status, body);
     return;
   }
-  sendJson(res, defaultOkStatus, isPlainObject(result) ? result : { ok: true, data: result });
+  const status = result && Number.isInteger(result.statusCode) ? result.statusCode : defaultOkStatus;
+  if (isPlainObject(result)) {
+    const body = { ...result };
+    delete body.statusCode;
+    sendJson(res, status, body);
+    return;
+  }
+  sendJson(res, status, { ok: true, data: result });
 }
 
 function formatSseFrame({ id, event, data }) {
@@ -366,6 +373,8 @@ class WebServer {
     this.resolveChannel = typeof options.resolveChannel === 'function' ? options.resolveChannel : null;
     this.harnessAdapter = options.harnessAdapter || null;
     this.workspaceService = options.workspaceService || null;
+    this.workspaceBrowser = options.workspaceBrowser || null;
+    this.remoteProvisioner = options.remoteProvisioner || null;
     this.workspaceMetaStore = options.workspaceMetaStore || null;
     this.sessionOrgBridge = options.sessionOrgBridge || null;
     this.refreshSessionRoots = typeof options.refreshSessionRoots === 'function'
@@ -1812,6 +1821,66 @@ class WebServer {
           return;
         }
         sendJson(res, 200, { ok: true, root: realRoot, allowedRoots: nextRoots });
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/workspace/browse') {
+        const browser = this._requireDep(this.workspaceBrowser, 'WORKSPACE_BROWSER');
+        const rawPath = urlObj.searchParams.get('path') || '';
+        const showHidden = urlObj.searchParams.get('showHidden') === '1' || urlObj.searchParams.get('showHidden') === 'true';
+        const result = await browser.browse({ path: rawPath, showHidden });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/workspace/mkdir') {
+        const browser = this._requireDep(this.workspaceBrowser, 'WORKSPACE_BROWSER');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await browser.mkdir(body);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/workspace/remote-preflight') {
+        const provisioner = this._requireDep(this.remoteProvisioner, 'REMOTE_PROVISIONER');
+        const provider = urlObj.searchParams.get('provider') || '';
+        const result = await provisioner.preflight({ provider });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/workspace/github-repos') {
+        const provisioner = this._requireDep(this.remoteProvisioner, 'REMOTE_PROVISIONER');
+        const owner = urlObj.searchParams.get('owner') || '';
+        const limitParam = urlObj.searchParams.get('limit');
+        const result = await provisioner.listGithubRepos({
+          owner,
+          limit: limitParam ? Number(limitParam) : undefined
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/projects/remote-jobs') {
+        const provisioner = this._requireDep(this.remoteProvisioner, 'REMOTE_PROVISIONER');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await provisioner.startJob(body);
+        sendActionResult(res, result, 202);
+        return;
+      }
+
+      if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/projects\/remote-jobs\/([^/]+)$/))) {
+        const provisioner = this._requireDep(this.remoteProvisioner, 'REMOTE_PROVISIONER');
+        const jobId = decodeURIComponent(match[1]);
+        sendActionResult(res, provisioner.getJob(jobId));
+        return;
+      }
+
+      if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/projects\/remote-jobs\/([^/]+)\/cancel$/))) {
+        const provisioner = this._requireDep(this.remoteProvisioner, 'REMOTE_PROVISIONER');
+        const jobId = decodeURIComponent(match[1]);
+        const result = await provisioner.cancelJob(jobId);
+        sendActionResult(res, result);
         return;
       }
 

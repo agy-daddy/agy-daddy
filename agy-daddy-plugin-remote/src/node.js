@@ -297,15 +297,68 @@ async function openAllowedRootDirectoryDialog(opts = {}) {
   return { ok: true, cancelled: true, path: '' };
 }
 
-function isSafeLoopbackUrl(rawUrl) {
+function scrubTokenFromUrl(rawUrl) {
   const str = String(rawUrl || '').trim();
-  if (!str) return false;
+  if (!str) return '';
   try {
     const u = new URL(str);
-    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(u.hostname);
+    if (!u.searchParams.has('token') && !u.searchParams.has('t')) {
+      return str;
+    }
+    u.searchParams.delete('token');
+    u.searchParams.delete('t');
+    return u.toString();
+  } catch {
+    return str;
+  }
+}
+
+function isAllowedPcWebUrl(rawUrl, allowCtx = {}) {
+  const str = String(rawUrl || '').trim();
+  if (!str) return false;
+  let u;
+  try {
+    u = new URL(str);
   } catch {
     return false;
   }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+
+  // 1. loopback
+  if (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    return true;
+  }
+  // 2. cloudflare shared tunnel (/pc or /pc/)
+  if (
+    u.protocol === 'https:' &&
+    allowCtx.tunnelPublicOrigin &&
+    u.origin === allowCtx.tunnelPublicOrigin &&
+    (u.pathname === '/pc' || u.pathname.startsWith('/pc/'))
+  ) {
+    return true;
+  }
+  // 3. tailscale
+  if (isTailscaleIp(host) && allowCtx.localTailscaleIps?.has?.(host)) {
+    return true;
+  }
+  if (u.protocol === 'https:' && allowCtx.tailscaleHttpsOrigin && u.origin === allowCtx.tailscaleHttpsOrigin) {
+    return true;
+  }
+  if (u.protocol === 'https:' && host.endsWith('.ts.net') && allowCtx.tailscaleHttpsOrigin) {
+    try {
+      if (new URL(allowCtx.tailscaleHttpsOrigin).hostname.toLowerCase() === host) return true;
+    } catch {}
+  }
+  // 4. lan
+  if (u.protocol === 'http:' && allowCtx.localLanIps?.has?.(host)) {
+    return true;
+  }
+  // 5. bonjour
+  if (u.protocol === 'http:' && allowCtx.bonjourHost && host === allowCtx.bonjourHost) {
+    return true;
+  }
+  return false;
 }
 
 function normalizeRootUriToPath(uriOrPath) {
@@ -330,36 +383,78 @@ function isExistingDirectory(dirPath) {
   }
 }
 
-function normalizePcWebInfo(raw) {
+function normalizePcWebInfo(raw, allowCtx = {}) {
   const empty = {
     available: false,
     running: false,
+    proxyRunning: false,
     host: '127.0.0.1',
     port: null,
     url: '',
-    pairingUrl: ''
+    pairingUrl: '',
+    primaryChannel: 'offline',
+    primaryUrl: '',
+    channels: {},
+    cloudflareState: null
   };
   if (!raw || typeof raw !== 'object' || raw.ok === false) {
     return empty;
   }
-  const running = Boolean(raw.running);
-  const safeUrl = isSafeLoopbackUrl(raw.url) ? String(raw.url).trim() : '';
-  const rawPairing = isSafeLoopbackUrl(raw.pairingUrl) ? String(raw.pairingUrl).trim() : '';
-  const pairingUrl = rawPairing || (running && safeUrl ? safeUrl : '');
+  const serviceRunning = Boolean(raw.running);
   const host = typeof raw.host === 'string' && raw.host.trim() ? raw.host.trim() : '127.0.0.1';
   const port = Number.isInteger(raw.port) && raw.port > 0 && raw.port <= 65535 ? raw.port : null;
+  const channels = raw.channels && typeof raw.channels === 'object' ? { ...raw.channels } : {};
+  const cloudflareState = raw.cloudflareState && typeof raw.cloudflareState === 'object' ? { ...raw.cloudflareState } : null;
+
+  const rawUrls = raw.urls && typeof raw.urls === 'object' ? raw.urls : {};
+  const rawAuthUrls = raw.authUrls && typeof raw.authUrls === 'object' ? raw.authUrls : {};
+
+  let chosenChannel = '';
+  let chosenCleanUrl = '';
+  let chosenPairingUrl = '';
+
+  for (const ch of PRIMARY_CHANNEL_ORDER) {
+    const authCand = isAllowedPcWebUrl(rawAuthUrls[ch], allowCtx) ? String(rawAuthUrls[ch]).trim() : '';
+    const pubCand = isAllowedPcWebUrl(rawUrls[ch], allowCtx) ? String(rawUrls[ch]).trim() : '';
+    if (authCand || pubCand) {
+      chosenChannel = ch;
+      chosenCleanUrl = pubCand ? scrubTokenFromUrl(pubCand) : scrubTokenFromUrl(authCand);
+      chosenPairingUrl = authCand || pubCand;
+      break;
+    }
+  }
+
+  if (!chosenCleanUrl && !chosenPairingUrl) {
+    const fallbackClean = isAllowedPcWebUrl(raw.url, allowCtx) ? String(raw.url).trim() : '';
+    const fallbackPrimary = isAllowedPcWebUrl(raw.primaryUrl, allowCtx) ? String(raw.primaryUrl).trim() : '';
+    const fallbackPairing = isAllowedPcWebUrl(raw.pairingUrl, allowCtx) ? String(raw.pairingUrl).trim() : '';
+    if (fallbackClean || fallbackPrimary || fallbackPairing) {
+      chosenCleanUrl = fallbackClean || scrubTokenFromUrl(fallbackPrimary || fallbackPairing);
+      chosenPairingUrl = fallbackPairing || fallbackPrimary || fallbackClean;
+      chosenChannel = typeof raw.primaryChannel === 'string' && PRIMARY_CHANNEL_ORDER.includes(raw.primaryChannel)
+        ? raw.primaryChannel
+        : 'loopback';
+    }
+  }
+
+  const isDisplayRunning = Boolean(serviceRunning && (chosenPairingUrl || chosenCleanUrl));
   return {
     available: true,
-    running: Boolean(running && (pairingUrl || safeUrl)),
+    running: isDisplayRunning,
+    proxyRunning: Boolean(serviceRunning && port),
     host,
     port,
-    url: safeUrl,
-    pairingUrl
+    url: chosenCleanUrl,
+    pairingUrl: chosenPairingUrl,
+    primaryChannel: isDisplayRunning ? (chosenChannel || 'loopback') : 'offline',
+    primaryUrl: chosenCleanUrl,
+    channels,
+    cloudflareState
   };
 }
 
-function openLocalBrowserUrl(url) {
-  if (!isSafeLoopbackUrl(url)) {
+function openLocalBrowserUrl(url, allowCtx = {}) {
+  if (!isAllowedPcWebUrl(url, allowCtx)) {
     return { ok: false, error: 'INVALID_PC_WEB_URL' };
   }
   const safeUrl = String(url).trim();
@@ -1031,6 +1126,8 @@ async function activate(host) {
 
   let server = null;
   let publishStatus = () => buildStatus();
+  let authEpoch = 1;
+  const proxySecret = crypto.randomBytes(32).toString('hex');
   let tailscaleHttpsUrl = '';
   let lastTailscaleCheckAt = 0;
   let tailscaleRefreshPromise = null;
@@ -1038,6 +1135,49 @@ async function activate(host) {
   const cloudflared = new CloudflaredManager({
     onStateChange: () => publishStatus()
   });
+
+  function getTunnelPublicOrigin() {
+    if (!config.channels.cloudflare || tunnelConfigError) return '';
+    const cfState = cloudflared.getState();
+    if (!cfState.active || cfState.error || !cfState.publicUrl) return '';
+    try {
+      const u = new URL(cfState.publicUrl);
+      return u.protocol === 'https:' ? u.origin : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function buildPcWebAllowContext() {
+    const localLanIps = new Set();
+    const localTailscaleIps = new Set();
+    try {
+      const ifaces = os.networkInterfaces();
+      for (const list of Object.values(ifaces)) {
+        for (const info of (list || [])) {
+          if (!info || info.internal || !info.address) continue;
+          const addr = String(info.address).replace(/^::ffff:/i, '').toLowerCase();
+          if (isTailscaleIp(addr)) {
+            localTailscaleIps.add(addr);
+          } else if (info.family === 'IPv4' || isLanIp(addr)) {
+            localLanIps.add(addr);
+          }
+        }
+      }
+    } catch {}
+    let tailscaleHttpsOrigin = '';
+    if (tailscaleHttpsUrl) {
+      try { tailscaleHttpsOrigin = new URL(tailscaleHttpsUrl).origin; } catch {}
+    }
+    const bonjourHost = `${os.hostname().replace(/\.local$/i, '').toLowerCase()}.local`;
+    return {
+      tunnelPublicOrigin: getTunnelPublicOrigin(),
+      tailscaleHttpsOrigin,
+      localTailscaleIps,
+      localLanIps,
+      bonjourHost
+    };
+  }
 
   function getEffectiveAllowedRoots() {
     if (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0) {
@@ -1157,7 +1297,7 @@ async function activate(host) {
     try {
       const res = await host.services.call('web-harness', 'getStatus', [], { optional: true });
       if (res?.ok && res.value) {
-        latestPcWeb = normalizePcWebInfo(res.value);
+        latestPcWeb = normalizePcWebInfo(res.value, buildPcWebAllowContext());
       } else {
         latestPcWeb = normalizePcWebInfo(null);
       }
@@ -1418,7 +1558,10 @@ async function activate(host) {
         available: latestPcWeb.available,
         running: latestPcWeb.running,
         port: latestPcWeb.port,
-        url: latestPcWeb.url
+        url: latestPcWeb.url,
+        primaryChannel: latestPcWeb.primaryChannel,
+        primaryUrl: latestPcWeb.primaryUrl,
+        cloudflareState: latestPcWeb.cloudflareState
       },
       registeredPanels: Array.from(extraPanels.keys()),
       registeredActions: Array.from(extraActions.keys()),
@@ -1749,6 +1892,8 @@ async function activate(host) {
     getChannels: () => config.channels,
     getChannelEntries: buildLandingChannelEntries,
     getTunnelHostname: () => config.tunnelHostname,
+    getProxySecret: () => proxySecret,
+    getPcWebProxyTarget: () => latestPcWeb,
     isWriteEnabled: () => config.allowRemoteWrite === true,
     onAction: handleRemoteAction,
     v1Handlers,
@@ -1758,7 +1903,13 @@ async function activate(host) {
     mobileWorkspace
   });
 
-  if (config.channels.loopback !== false || config.channels.lan === true || config.channels.tailscale === true || config.channels.bonjour === true) {
+  if (
+    config.channels.loopback !== false ||
+    config.channels.lan === true ||
+    config.channels.tailscale === true ||
+    config.channels.bonjour === true ||
+    config.channels.cloudflare === true
+  ) {
     await server.start();
   }
 
@@ -1845,6 +1996,29 @@ async function activate(host) {
     getConfirmSecret() {
       return config.confirmSecret;
     },
+    getSharedAuthBundle() {
+      const cfState = cloudflared.getState();
+      return {
+        ok: true,
+        available: true,
+        running: Boolean(server && server.port),
+        port: server?.port || null,
+        authEpoch,
+        token: config.token,
+        confirmSecret: config.confirmSecret,
+        proxySecret,
+        cloudflareEnabled: Boolean(config.channels.cloudflare),
+        tunnelMode: config.tunnelMode,
+        tunnelPublicOrigin: getTunnelPublicOrigin(),
+        tunnelState: {
+          active: Boolean(cfState.active),
+          mode: cfState.mode,
+          publicUrl: cfState.publicUrl || '',
+          error: cfState.error || null
+        },
+        tunnelConfigError: tunnelConfigError || cfState.error || ''
+      };
+    },
     getPairingBundle() {
       const urls = buildChannelUrls();
       const { primaryChannel, primaryUrl } = resolvePrimaryChannel(urls, config.channels);
@@ -1863,7 +2037,10 @@ async function activate(host) {
           running: latestPcWeb.running,
           port: latestPcWeb.port,
           url: latestPcWeb.url,
-          pairingUrl: latestPcWeb.pairingUrl
+          pairingUrl: latestPcWeb.pairingUrl,
+          primaryChannel: latestPcWeb.primaryChannel,
+          primaryUrl: latestPcWeb.primaryUrl,
+          cloudflareState: latestPcWeb.cloudflareState
         }
       };
     },
@@ -1874,10 +2051,11 @@ async function activate(host) {
     async openPcWeb() {
       const info = await refreshPcWebStatus();
       const targetUrl = info.pairingUrl || info.url;
-      if (!info.running || !isSafeLoopbackUrl(targetUrl)) {
+      const allowCtx = buildPcWebAllowContext();
+      if (!info.running || !isAllowedPcWebUrl(targetUrl, allowCtx)) {
         return { ok: false, error: 'PC_WEB_UNAVAILABLE' };
       }
-      return openLocalBrowserUrl(targetUrl);
+      return openLocalBrowserUrl(targetUrl, allowCtx);
     },
     getDevices() {
       return server ? server.getTrackedDevices() : { devices: [], clients: [] };
@@ -1903,11 +2081,15 @@ async function activate(host) {
       if (!server?.port) return { ok: false, error: 'SERVER_NOT_RUNNING' };
       const mode = opts.mode || config.tunnelMode;
       const dryRun = opts.dryRun !== undefined ? Boolean(opts.dryRun) : isTestMode();
+      let res;
       if (mode === 'named') {
         if (!config.tunnelToken) return { ok: false, error: 'MISSING_TUNNEL_TOKEN' };
-        return await cloudflared.startNamedTunnel(config.tunnelToken, config.tunnelHostname, { dryRun });
+        res = await cloudflared.startNamedTunnel(config.tunnelToken, config.tunnelHostname, { dryRun });
+      } else {
+        res = await cloudflared.startQuickTunnel(server.port, { dryRun });
       }
-      return await cloudflared.startQuickTunnel(server.port, { dryRun });
+      publishStatus();
+      return res;
     },
     async stopTunnel() {
       await cloudflared.stop();
@@ -1917,11 +2099,12 @@ async function activate(host) {
       return await collectAggregatedSnapshot();
     },
     rotateToken() {
+      authEpoch += 1;
       config.token = generatePairingToken();
       config.confirmSecret = generatePairingToken();
       persistConfig();
       const status = publishStatus();
-      return { ok: true, token: config.token, status };
+      return { ok: true, token: config.token, authEpoch, status };
     },
     async setAllowRemoteWrite(enabled) {
       config.allowRemoteWrite = enabled === true;
@@ -2110,14 +2293,14 @@ async function activate(host) {
     }
   };
 
+  const stopSvc = host.services.provide('remote', serviceMethods, { realm: 'node', version: '1.0.0' });
+
   await refreshPcWebStatus();
   publishStatus();
 
   const stopWebStateSub = host.state?.subscribe?.('state:web.status@1', () => {
     void refreshPcWebStatus().then(() => publishStatus()).catch(() => {});
   });
-
-  const stopSvc = host.services.provide('remote', serviceMethods, { realm: 'node', version: '1.0.0' });
   const stopStatusRoute = await host.bridge.registerRoute('/status', async () => {
     await refreshPcWebStatus();
     return serviceMethods.getStatus();
@@ -2229,7 +2412,16 @@ async function activate(host) {
     stopKickCmd,
     stopCheckCfCmd,
     stopBrowseRootCmd,
-    stopListModelsCmd
+    stopListModelsCmd,
+    () => {
+      try {
+        host.state?.set?.('state:remote.status@1', {
+          running: false,
+          deactivated: true,
+          updatedAt: Date.now()
+        });
+      } catch {}
+    }
   );
 }
 

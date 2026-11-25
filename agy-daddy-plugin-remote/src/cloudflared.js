@@ -155,6 +155,8 @@ class CloudflaredManager {
     if (!this.child) {
       this.state.active = false;
       this.state.pid = null;
+      this.state.publicUrl = '';
+      this.state.error = null;
       return true;
     }
     const ch = this.child;
@@ -162,6 +164,8 @@ class CloudflaredManager {
     try { ch.kill('SIGTERM'); } catch {}
     this.state.active = false;
     this.state.pid = null;
+    this.state.publicUrl = '';
+    this.state.error = null;
     return true;
   }
 }

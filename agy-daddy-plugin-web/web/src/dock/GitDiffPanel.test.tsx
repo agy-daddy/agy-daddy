@@ -269,6 +269,7 @@ describe('GitDiffPanel Git workbench & inline diff comment backfill', () => {
       expect(pushSpy).toHaveBeenCalledWith({
         root: '/repo/main',
         branch: 'feat/git-ui',
+        setUpstream: true,
       }),
     );
 

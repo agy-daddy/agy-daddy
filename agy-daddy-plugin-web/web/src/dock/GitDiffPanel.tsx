@@ -498,7 +498,7 @@ export function GitDiffPanel({
     setError(null);
     try {
       const branchArg = data?.branch && data.branch !== 'HEAD' ? data.branch : undefined;
-      await apiClient.gitPush({ root, branch: branchArg });
+      await apiClient.gitPush({ root, branch: branchArg, setUpstream: true });
       showTransientNotice(t('diff.pushedNotice'));
       await loadDiff();
       onGitMutated?.();

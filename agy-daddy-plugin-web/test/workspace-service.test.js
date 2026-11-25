@@ -11,6 +11,7 @@ const { execFileSync } = require('node:child_process');
 const {
   createWorkspaceService,
   normalizeInputRoot,
+  resolveRealPath,
   isForbiddenSystemRoot
 } = require('../src/workspace-service');
 const {
@@ -859,5 +860,85 @@ test('C10: Git stage/unstage/all, commit, push, and worktree add/list/remove/pru
   } finally {
     cleanupDir(allowedBase);
     cleanupDir(outsideDir);
+  }
+});
+
+test('C11: resolveRealPath prefers fs.realpathSync.native (Windows 8.3 short-path parity) and falls back to fs.realpathSync', async () => {
+  const realContainer = makeTempDir('agy-ws-c11-longname-');
+  const aliasContainer = makeTempDir('agy-ws-c11-alias-');
+  const origRealpathSync = fs.realpathSync;
+  const origNative = fs.realpathSync.native;
+
+  try {
+    // 1. Direct unit checks: .native preferred; falls back cleanly when .native throws
+    const fakeShort = (p) => `SHORT:${p}`;
+    fakeShort.native = (p) => `LONG_NATIVE:${p}`;
+    fs.realpathSync = fakeShort;
+    assert.equal(resolveRealPath('/sample/path'), 'LONG_NATIVE:/sample/path');
+
+    const fakeFallback = (p) => `FALLBACK_JS:${p}`;
+    fakeFallback.native = () => {
+      const err = new Error('GetFinalPathNameByHandleW failed on RAM disk');
+      err.code = 'ENOSYS';
+      throw err;
+    };
+    fs.realpathSync = fakeFallback;
+    assert.equal(resolveRealPath('/sample/path'), 'FALLBACK_JS:/sample/path');
+
+    fs.realpathSync = origRealpathSync;
+    fs.realpathSync.native = origNative;
+
+    // 2. End-to-end worktree allowed check when JS realpathSync leaves short-name alias unexpanded
+    // while realpathSync.native & git worktree list --porcelain expand to canonical long path
+    if (process.platform !== 'win32') {
+      const shortAliasRoot = path.join(aliasContainer, 'RUNNER~1');
+      const actualWsBase = path.join(realContainer, 'runneradmin-workspace');
+      fs.mkdirSync(actualWsBase, { recursive: true });
+      fs.symlinkSync(actualWsBase, shortAliasRoot, 'dir');
+
+      const repoViaShort = path.join(shortAliasRoot, 'repo');
+      fs.mkdirSync(repoViaShort, { recursive: true });
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoViaShort, stdio: 'ignore' });
+      fs.writeFileSync(path.join(repoViaShort, 'init.txt'), 'ok\n', 'utf8');
+      execFileSync('git', ['add', 'init.txt'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repoViaShort, stdio: 'ignore' });
+
+      // Simulate Windows Node JS realpathSync NOT expanding RUNNER~1 while .native DOES expand it
+      const winSimulatedRealpath = (p) => {
+        const s = String(p);
+        if (s.includes('RUNNER~1')) return path.resolve(s);
+        return origRealpathSync(p);
+      };
+      winSimulatedRealpath.native = (p) => origNative(p);
+      fs.realpathSync = winSimulatedRealpath;
+
+      const svc = createWorkspaceService({ allowedRoots: [shortAliasRoot] });
+      const wtAdd = await svc.gitWorktree({
+        root: repoViaShort,
+        action: 'create',
+        path: '../wt-83-check',
+        branch: 'feat/win-83',
+        createBranch: true
+      });
+      assert.equal(wtAdd.ok, true);
+      const createdWt = wtAdd.worktrees.find((w) => w.branch === 'feat/win-83');
+      assert.ok(createdWt);
+      assert.equal(createdWt.allowed, true);
+
+      const wtRemove = await svc.gitWorktree({
+        root: repoViaShort,
+        action: 'remove',
+        path: path.join(shortAliasRoot, 'wt-83-check')
+      });
+      assert.equal(wtRemove.ok, true);
+      assert.equal(wtRemove.worktrees.length, 1);
+    }
+  } finally {
+    fs.realpathSync = origRealpathSync;
+    fs.realpathSync.native = origNative;
+    cleanupDir(aliasContainer);
+    cleanupDir(realContainer);
   }
 });

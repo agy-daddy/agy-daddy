@@ -125,12 +125,29 @@ function findDeepestExistingAncestor(targetPath) {
   }
 }
 
+/**
+ * Canonicalizes an existing path on disk, preferring `fs.realpathSync.native`
+ * so Windows 8.3 short paths (e.g. `RUNNER~1`) expand to Win32 long paths
+ * matching `git.exe` output (`git worktree list --porcelain`), with fallback
+ * to `fs.realpathSync` when `.native` is unavailable or fails on virtual mounts.
+ */
+function resolveRealPath(targetPath) {
+  if (typeof fs.realpathSync.native === 'function') {
+    try {
+      return fs.realpathSync.native(targetPath);
+    } catch {
+      return fs.realpathSync(targetPath);
+    }
+  }
+  return fs.realpathSync(targetPath);
+}
+
 function resolveRealRoots(roots) {
   const resolved = [];
   for (const r of roots) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      resolved.push(fs.realpathSync(r));
+      resolved.push(resolveRealPath(r));
     } catch {
       // Ignore roots that do not exist yet
     }
@@ -164,7 +181,7 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
 
   if (lstat) {
     try {
-      const realTarget = fs.realpathSync(candidate);
+      const realTarget = resolveRealPath(candidate);
       if (!isInsideDir(realTarget, realBase)) return outsideError();
       if (allowedRealRoots && !allowedRealRoots.some((r) => isInsideDir(realTarget, r))) {
         return outsideError();
@@ -177,7 +194,7 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
           const rawLink = fs.readlinkSync(candidate);
           const resolvedLink = path.resolve(path.dirname(candidate), rawLink);
           if (!isInsideDir(resolvedLink, realBase)) return outsideError();
-          const linkAncestor = fs.realpathSync(findDeepestExistingAncestor(resolvedLink));
+          const linkAncestor = resolveRealPath(findDeepestExistingAncestor(resolvedLink));
           if (!isInsideDir(linkAncestor, realBase)) return outsideError();
         } catch {
           return outsideError();
@@ -192,11 +209,11 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
     }
   }
 
-  // Target does not exist: validate deepest existing ancestor via realpathSync.
+  // Target does not exist: validate deepest existing ancestor via resolveRealPath.
   let realAncestor;
   const ancestor = findDeepestExistingAncestor(candidate);
   try {
-    realAncestor = fs.realpathSync(ancestor);
+    realAncestor = resolveRealPath(ancestor);
   } catch {
     return outsideError();
   }
@@ -283,7 +300,7 @@ function buildTreeEntries({ dirPath, realRoot, remainingDepth, visitedRealDirs }
 
     if (ent.isSymbolicLink()) {
       try {
-        entryRealPath = fs.realpathSync(fullPath);
+        entryRealPath = resolveRealPath(fullPath);
         if (!isInsideDir(entryRealPath, realRoot)) continue;
         const st = fs.statSync(entryRealPath);
         isDir = st.isDirectory();
@@ -411,10 +428,18 @@ function parseWorktreePorcelain(stdout, realRoot, allowedRealRoots = null) {
     if (item.path) {
       let realWt = item.path;
       try {
-        realWt = fs.realpathSync(item.path);
+        realWt = resolveRealPath(item.path);
       } catch {
-        realWt = path.resolve(item.path);
+        const resolvedCandidate = path.resolve(item.path);
+        try {
+          const anc = findDeepestExistingAncestor(resolvedCandidate);
+          const realAnc = resolveRealPath(anc);
+          realWt = path.join(realAnc, path.relative(anc, resolvedCandidate));
+        } catch {
+          realWt = resolvedCandidate;
+        }
       }
+      item.path = realWt;
       item.isCurrent = isSameDir(realWt, realRoot);
       if (Array.isArray(allowedRealRoots) && allowedRealRoots.length > 0) {
         item.allowed = allowedRealRoots.some((allowed) => isInsideDir(realWt, allowed));
@@ -531,7 +556,7 @@ function createWorkspaceService({
         const ancestor = findDeepestExistingAncestor(normalizedRoot);
         let realAncestor;
         try {
-          realAncestor = fs.realpathSync(ancestor);
+          realAncestor = resolveRealPath(ancestor);
         } catch {
           return outsideError();
         }
@@ -549,17 +574,17 @@ function createWorkspaceService({
 
     let realRoot;
     try {
-      realRoot = fs.realpathSync(normalizedRoot);
+      realRoot = resolveRealPath(normalizedRoot);
     } catch (err) {
       if (rootLstat && rootLstat.isSymbolicLink() && err && err.code === 'ENOENT') {
         try {
-          const parentReal = fs.realpathSync(path.dirname(normalizedRoot));
+          const parentReal = resolveRealPath(path.dirname(normalizedRoot));
           if (!allowedRealRoots.some((allowed) => isInsideDir(parentReal, allowed))) {
             return outsideError();
           }
           const rawLink = fs.readlinkSync(normalizedRoot);
           const resolvedLink = path.resolve(parentReal, rawLink);
-          const linkAncestor = fs.realpathSync(findDeepestExistingAncestor(resolvedLink));
+          const linkAncestor = resolveRealPath(findDeepestExistingAncestor(resolvedLink));
           const realLinkTarget = path.join(
             linkAncestor,
             path.relative(findDeepestExistingAncestor(resolvedLink), resolvedLink)
@@ -694,7 +719,7 @@ function createWorkspaceService({
     // Re-verify parent containment after mkdirSync.
     let realParent;
     try {
-      realParent = fs.realpathSync(targetDir);
+      realParent = resolveRealPath(targetDir);
     } catch {
       return outsideError();
     }
@@ -1014,7 +1039,7 @@ function createWorkspaceService({
     const ancestor = findDeepestExistingAncestor(candidate);
     let realAncestor;
     try {
-      realAncestor = fs.realpathSync(ancestor);
+      realAncestor = resolveRealPath(ancestor);
     } catch {
       return outsideError();
     }
@@ -1031,7 +1056,7 @@ function createWorkspaceService({
     }
     try {
       if (fs.existsSync(target)) {
-        const realExisting = fs.realpathSync(target);
+        const realExisting = resolveRealPath(target);
         if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realExisting, allowed))) {
           return outsideError();
         }
@@ -1113,7 +1138,7 @@ function createWorkspaceService({
     let resolvedTargetPath = targetCheck.targetPath;
     try {
       if (fs.existsSync(targetCheck.targetPath)) {
-        resolvedTargetPath = fs.realpathSync(targetCheck.targetPath);
+        resolvedTargetPath = resolveRealPath(targetCheck.targetPath);
       }
     } catch {
       // Keep lexical target path if removed
@@ -1142,7 +1167,7 @@ function createWorkspaceService({
 
     let realBrainDir;
     try {
-      realBrainDir = fs.realpathSync(brainDir);
+      realBrainDir = resolveRealPath(brainDir);
     } catch (err) {
       if (err && err.code === 'ENOENT') {
         return { ok: true, missingBrain: true, realSessionDir: null };
@@ -1186,7 +1211,7 @@ function createWorkspaceService({
       let realItem;
       let stat;
       try {
-        realItem = fs.realpathSync(fullPath);
+        realItem = resolveRealPath(fullPath);
         if (!isInsideDir(realItem, session.realSessionDir)) continue;
         stat = fs.statSync(realItem);
       } catch {
@@ -1319,5 +1344,6 @@ function createWorkspaceService({
 module.exports = {
   createWorkspaceService,
   normalizeInputRoot,
+  resolveRealPath,
   isForbiddenSystemRoot
 };

@@ -517,11 +517,18 @@ async function activate(host) {
     return syncChain;
   }
 
+  let lastPublishedStatusJson = '';
+
   function publishStatus() {
-    if (typeof host?.state?.set === 'function') {
-      host.state.set('state:web.status@1', buildPublicStatus(runtime));
+    const st = buildPublicStatus(runtime);
+    const serialized = JSON.stringify(st);
+    if (serialized !== lastPublishedStatusJson) {
+      lastPublishedStatusJson = serialized;
+      if (typeof host?.state?.set === 'function') {
+        host.state.set('state:web.status@1', st);
+      }
     }
-    return buildPublicStatus(runtime);
+    return st;
   }
 
   let reconcileChain = Promise.resolve();
@@ -758,8 +765,8 @@ async function activate(host) {
       }
     }
 
+    publishStatus();
     if (typeof host?.state?.set === 'function') {
-      host.state.set('state:web.status@1', buildPublicStatus(runtime));
       host.state.set('state:session.readState@1', workspaceMetaStore.getReadStateSnapshot());
     }
 

@@ -2299,7 +2299,12 @@ async function activate(host) {
   publishStatus();
 
   const stopWebStateSub = host.state?.subscribe?.('state:web.status@1', () => {
-    void refreshPcWebStatus().then(() => publishStatus()).catch(() => {});
+    const prevPcWebJson = JSON.stringify(latestPcWeb);
+    void refreshPcWebStatus().then((nextPcWeb) => {
+      if (JSON.stringify(nextPcWeb) !== prevPcWebJson) {
+        publishStatus();
+      }
+    }).catch(() => {});
   });
   const stopStatusRoute = await host.bridge.registerRoute('/status', async () => {
     await refreshPcWebStatus();

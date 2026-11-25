@@ -344,25 +344,30 @@ if (count === 0) {
     throw
   }
 
+  $shimCli = if ($InstallDir -eq (Join-Path $env:LOCALAPPDATA 'AgyDaddy\host')) {
+    '%LOCALAPPDATA%\AgyDaddy\host\bin\agy-daddy.js'
+  } else {
+    (Join-Path $InstallDir 'bin\agy-daddy.js').Replace('%', '%%')
+  }
   $CmdLines = @(
     '@echo off',
-    'setlocal',
-    ("set ""AGY_CLI=" + (Join-Path $InstallDir 'bin\agy-daddy.js') + """"),
+    'setlocal DisableDelayedExpansion',
+    ("set ""AGY_CLI=" + $shimCli + """"),
     'if defined AGY_DADDY_NODE (',
     '  if "%AGY_DADDY_NODE_ELECTRON%"=="1" (',
     '    set "ELECTRON_RUN_AS_NODE=1"',
     '    "%AGY_DADDY_NODE%" "%AGY_CLI%" %*',
-    '    exit /b %ERRORLEVEL%',
+    '    goto :result',
     '  ) else (',
     '    set "ELECTRON_RUN_AS_NODE="',
     '    "%AGY_DADDY_NODE%" "%AGY_CLI%" %*',
-    '    exit /b %ERRORLEVEL%',
+    '    goto :result',
     '  )',
     ')',
     'for /f "delims=" %%N in (''where node.exe 2^>nul'') do (',
     '  set "ELECTRON_RUN_AS_NODE="',
     '  "%%N" "%AGY_CLI%" %*',
-    '  exit /b %ERRORLEVEL%',
+    '  goto :result',
     ')',
     'for %%E in (',
     '  "%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"',
@@ -374,11 +379,13 @@ if (count === 0) {
     '  if exist "%%~E" (',
     '    set "ELECTRON_RUN_AS_NODE=1"',
     '    "%%~E" "%AGY_CLI%" %*',
-    '    exit /b %ERRORLEVEL%',
+    '    goto :result',
     '  )',
     ')',
     'echo [agy-daddy] Node.js (>=22.4) or Antigravity.exe not found. >&2',
-    'exit /b 1'
+    'exit /b 1',
+    ':result',
+    'exit /b %ERRORLEVEL%'
   )
   Set-Content -Path $CmdShimPath -Value ($CmdLines -join "`r`n") -Encoding ASCII
 

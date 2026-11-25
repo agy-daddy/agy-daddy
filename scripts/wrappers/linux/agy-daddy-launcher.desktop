@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Agy-Daddy Launcher
+Comment=Start Agy-Daddy for Antigravity
+Exec=agy-daddy-launcher.sh
+Icon=agy-daddy-launcher
+Terminal=true
+Categories=Development;

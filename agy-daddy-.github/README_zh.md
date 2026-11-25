@@ -8,6 +8,16 @@ Agy-Daddy 无需修改 `app.asar` 或应用二进制文件即可扩展 Antigravi
 
 ---
 
+## 界面展示
+
+| 统一顶栏与悬浮 Popover 弹层 | PC Web 工作台与控制台 |
+|:---:|:---:|
+| [![统一顶栏与 Popover 包壳](../docs/assets/screenshots/topbar-and-popover.png)](../docs/assets/screenshots/topbar-and-popover.png)<br><sub>**统一顶栏与 Popover 包壳**：Shadow DOM 隔离无样式污染、底部脉冲遥测胶囊、配额与用量多维度账本弹层及快捷操作中心。</sub> | [![PC Web 工作台](../docs/assets/screenshots/pc-web-workbench.png)](../docs/assets/screenshots/pc-web-workbench.png)<br><sub>**PC Web 工作台（`@agy-daddy/plugin-web`）**：支持多通道访问的独立浏览器端工作台，集成工作区探索、会话调试与底座管控台。</sub> |
+| **原生设置中心融合** | **移动端远程 PWA 客户端** |
+| [![设置中心](../docs/assets/screenshots/settings-center.png)](../docs/assets/screenshots/settings-center.png)<br><sub>**声明式设置中心**：全托管 `settings.schema.json` 融合渲染于 Antigravity 原生设置弹窗，并提供独立模态窗安全降级。</sub> | [![移动端远程 PWA 客户端](../docs/assets/screenshots/mobile-remote-pwa.png)](../docs/assets/screenshots/mobile-remote-pwa.png)<br><sub>**移动端远程 PWA（`@agy-daddy/plugin-remote`）**：响应式移动端控制台，配合安全 Cloudflare Tunnel 隧道实现随时随地远程接管。</sub> |
+
+---
+
 ## 核心架构特性
 
 - **100% 零改包 CDP 架构**：通过 Chrome DevTools Protocol 外部挂载，统一管理 UI 注入、RPC 代理与原生宿主扩展，不改动任何 Antigravity 安装文件。

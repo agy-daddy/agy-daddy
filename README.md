@@ -8,6 +8,16 @@ Agy-Daddy extends Antigravity without modifying `app.asar` or application binari
 
 ---
 
+## Showcase
+
+| Unified Topbar & Floating Popovers | PC Web Workbench & Admin Console |
+|:---:|:---:|
+| [![Unified Topbar and Popover Shell](./docs/assets/screenshots/topbar-and-popover.png)](./docs/assets/screenshots/topbar-and-popover.png)<br><sub>**Unified Topbar & Popover Shell**: Shadow DOM topbar with zero style pollution, pulse telemetry capsule, quota/usage breakdown, and quick action popovers.</sub> | [![PC Web Workbench](./docs/assets/screenshots/pc-web-workbench.png)](./docs/assets/screenshots/pc-web-workbench.png)<br><sub>**PC Web Workbench (`@agy-daddy/plugin-web`)**: Browser-accessible workbench with workspace exploration, prompt engineering, and host admin console.</sub> |
+| **Native Settings Center Integration** | **Mobile Remote PWA Client** |
+| [![Settings Center](./docs/assets/screenshots/settings-center.png)](./docs/assets/screenshots/settings-center.png)<br><sub>**Integrated Settings Center**: Declarative plugin schema settings rendered inside Antigravity's settings modal with a standalone modal fallback.</sub> | [![Mobile Remote PWA](./docs/assets/screenshots/mobile-remote-pwa.png)](./docs/assets/screenshots/mobile-remote-pwa.png)<br><sub>**Mobile Remote PWA (`@agy-daddy/plugin-remote`)**: Responsive mobile PWA client with secure Cloudflare Tunnel support for remote control on the go.</sub> |
+
+---
+
 ## Core Architecture Highlights
 
 - **100% Zero-Patch CDP Architecture**: Attaches externally via Chrome DevTools Protocol and manages UI injection, RPC proxying, and native host extensions without altering Antigravity installation files.

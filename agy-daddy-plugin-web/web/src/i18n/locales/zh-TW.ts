@@ -524,4 +524,11 @@ export const zhTW: Partial<I18nMessages> = {
   'webAccess.channel.tailscale': 'Tailscale',
   'webAccess.channel.bonjour': 'Bonjour (.local)',
   'webAccess.channel.cloudflare': 'Cloudflare Tunnel',
+  'webAccess.confirm.title': '確認公開隧道寫入操作',
+  'webAccess.confirm.description': '目前透過 Cloudflare Tunnel 公開通道連線，執行此寫入操作前請二次確認。',
+  'webAccess.confirm.actionLabel': '目標動作',
+  'webAccess.confirm.channelBadge': 'Cloudflare Tunnel',
+  'webAccess.confirm.confirmBtn': '確認執行',
+  'webAccess.confirm.cancelBtn': '取消',
+  'errors.confirmationCancelled': '已取消本次寫入操作。',
 };

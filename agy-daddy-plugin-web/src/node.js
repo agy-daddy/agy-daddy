@@ -245,18 +245,25 @@ async function activate(host) {
     return buildPublicStatus(runtime);
   }
 
+  let reconcileChain = Promise.resolve();
+
   /**
-   * Apply a settings change to the live server. Only a change that alters the
-   * listen address needs a rebind; permission/channel policy applies
-   * immediately on the next request.
+   * Apply a settings change to the live server inside a serial Promise chain.
+   * Only a change that alters the listen address needs a rebind; if starting
+   * on the new address fails, roll back to `previousHost` and resume listening.
    */
-  async function reconcileAccess() {
-    if (!runtime.webServer) return;
+  async function runReconcileAccess() {
+    if (activeRuntime !== runtime || !runtime.webServer) return;
     const next = readAccessSettings(readStoredSettings(host));
-    const previousAccess = runtimeAccess;
+    const previousAccess = {
+      ...runtimeAccess,
+      channels: { ...runtimeAccess.channels }
+    };
     const previousHost = runtime.webServer.host;
     const previousBindHostMode = runtime.webServer.bindHostMode;
     const previousChannels = { ...runtime.webServer.channels };
+    const previousPermissionLevel = runtime.webServer.permissionLevel;
+    const previousTunnelHostname = runtime.webServer.tunnelHostname;
     let result;
     try {
       result = runtime.webServer.updateAccessConfig({
@@ -276,19 +283,33 @@ async function activate(host) {
       publishStatus();
       return;
     }
+    if (runtime.webServer.requestedPort === 0 && runtime.webServer.port > 0) {
+      runtime.webServer.requestedPort = runtime.webServer.port;
+    }
     try {
       await runtime.webServer.stop();
+      if (activeRuntime !== runtime || !runtime.webServer) return;
       await runtime.webServer.start();
     } catch {
+      if (activeRuntime !== runtime || !runtime.webServer) return;
       runtimeAccess = previousAccess;
       runtime.webServer.host = previousHost;
       runtime.webServer.bindHostMode = previousBindHostMode;
       runtime.webServer.channels = previousChannels;
+      runtime.webServer.permissionLevel = previousPermissionLevel;
+      runtime.webServer.tunnelHostname = previousTunnelHostname;
       try {
         await runtime.webServer.start();
       } catch {}
     }
-    publishStatus();
+    if (activeRuntime === runtime && runtime.webServer) {
+      publishStatus();
+    }
+  }
+
+  function reconcileAccess() {
+    reconcileChain = reconcileChain.then(runReconcileAccess, runReconcileAccess);
+    return reconcileChain;
   }
 
   const commands = {

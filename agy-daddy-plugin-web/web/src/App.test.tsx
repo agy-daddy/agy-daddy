@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   getFsTree: vi.fn(),
   listArtifacts: vi.fn(),
   subscribeSessionStream: vi.fn(),
+  setConfirmWriteHandler: vi.fn(),
 }));
 
 vi.mock('./api/client', () => {
@@ -91,6 +92,7 @@ vi.mock('./api/client', () => {
       optimizePrompt: vi.fn().mockResolvedValue({ ok: true, optimizedText: '' }),
       exportSessionMarkdown: vi.fn().mockResolvedValue({ ok: true, markdown: '' }),
       subscribeSessionStream: mocks.subscribeSessionStream,
+      setConfirmWriteHandler: mocks.setConfirmWriteHandler,
     },
   };
 });
@@ -491,5 +493,72 @@ describe('App optimistic send flow', () => {
     await act(async () => {
       resolveSend({ ok: true, cascadeId: 'sess-1' });
     });
+  });
+
+  it('shows WriteConfirmModal on Cloudflare write challenges and settles confirm/cancel sequentially', async () => {
+    mocks.getSessionDetail.mockResolvedValue({
+      ok: true,
+      session: {
+        cascadeId: 'sess-1',
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 1,
+        source: null,
+        metadata: null,
+        generatorMetadata: [],
+      },
+      events: [makeUserEvent(0, 'Hello')],
+    });
+    mocks.subscribeSessionStream.mockReturnValue(() => {});
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(mocks.setConfirmWriteHandler).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    const registeredHandler = mocks.setConfirmWriteHandler.mock.calls[0]?.[0] as (challenge: {
+      action: string;
+      channel: string;
+      confirmToken: string;
+      method: string;
+      path: string;
+    }) => Promise<boolean>;
+
+    let p1!: Promise<boolean>;
+    let p2!: Promise<boolean>;
+    await act(async () => {
+      p1 = registeredHandler({
+        action: 'POST /api/v1/sessions/sess-1/messages',
+        channel: 'cloudflare',
+        confirmToken: 'tok-1',
+        method: 'POST',
+        path: '/api/v1/sessions/sess-1/messages',
+      });
+      p2 = registeredHandler({
+        action: 'PUT /api/v1/fs/write',
+        channel: 'cloudflare',
+        confirmToken: 'tok-2',
+        method: 'PUT',
+        path: '/api/v1/fs/write',
+      });
+    });
+
+    expect(screen.getByTestId('cloudflare-confirm-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('cloudflare-confirm-action')).toHaveTextContent(
+      'POST /api/v1/sessions/sess-1/messages',
+    );
+
+    fireEvent.click(screen.getByTestId('cloudflare-confirm-submit'));
+    await expect(p1).resolves.toBe(true);
+
+    expect(screen.getByTestId('cloudflare-confirm-action')).toHaveTextContent(
+      'PUT /api/v1/fs/write',
+    );
+
+    fireEvent.click(screen.getByTestId('cloudflare-confirm-cancel'));
+    await expect(p2).resolves.toBe(false);
+    expect(screen.queryByTestId('cloudflare-confirm-modal')).toBeNull();
   });
 });

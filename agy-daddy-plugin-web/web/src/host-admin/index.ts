@@ -19,3 +19,6 @@ export type {
   HostAdminModalProps,
   HostCommandSuggestion,
 } from './HostAdminModal';
+
+export { WriteConfirmModal } from './WriteConfirmModal';
+export type { WriteConfirmModalProps } from './WriteConfirmModal';

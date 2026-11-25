@@ -559,4 +559,12 @@ export const en: I18nMessages = {
   'webAccess.channel.tailscale': 'Tailscale',
   'webAccess.channel.bonjour': 'Bonjour (.local)',
   'webAccess.channel.cloudflare': 'Cloudflare Tunnel',
+  'webAccess.confirm.title': 'Confirm Public Tunnel Write',
+  'webAccess.confirm.description':
+    'You are connected through Cloudflare Tunnel. Confirm before executing this mutating action on the host workbench.',
+  'webAccess.confirm.actionLabel': 'Target action',
+  'webAccess.confirm.channelBadge': 'Cloudflare Tunnel',
+  'webAccess.confirm.confirmBtn': 'Confirm & Execute',
+  'webAccess.confirm.cancelBtn': 'Cancel',
+  'errors.confirmationCancelled': 'Write action cancelled before execution.',
 };

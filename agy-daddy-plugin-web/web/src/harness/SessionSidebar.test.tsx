@@ -8,6 +8,12 @@ import {
   SessionSidebar,
   type VisibilityDecision,
 } from './index';
+import {
+  buildOrderedIdsAfterDrop,
+  partitionAndOrderItems,
+  reorderWithinZone,
+  resolveNextActiveSessionId,
+} from './useSidebarDragSort';
 
 function makeSession(overrides: Partial<SessionSummary> & { cascadeId: string }): SessionSummary {
   return {
@@ -669,5 +675,235 @@ describe('ThreeColumnShell bottom-left settings footer', () => {
 
     const footer = screen.getByTestId('sidebar-footer');
     expect(within(footer).getByTestId('custom-footer-btn')).toHaveTextContent('Custom Settings');
+  });
+});
+
+describe('SessionSidebar v2 org: pinning, archive, permissions, keyboard/menu reorder, and drag helpers', () => {
+  it('orders pinned groups and pinned projects first with zone dividers and pin toggles', () => {
+    const onPinGroup = vi.fn();
+    const onPinProject = vi.fn();
+    const groups: ProjectGroup[] = [
+      { id: 'g-normal', name: 'Normal Group', sortOrder: 1, collapsed: false, pinned: false },
+      { id: 'g-pinned', name: 'Pinned Group', sortOrder: 2, collapsed: false, pinned: true },
+    ];
+    const projects: ProjectItem[] = [
+      { id: 'p-normal', name: 'Normal Proj', rootPath: '/ws/pn', groupId: 'g-normal', pinned: false },
+      { id: 'p-pinned', name: 'Pinned Proj', rootPath: '/ws/pp', groupId: 'g-normal', pinned: true },
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={[]}
+        projects={projects}
+        projectGroups={groups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onPinGroup={onPinGroup}
+        onPinProject={onPinProject}
+      />,
+    );
+
+    const renderedGroups = Array.from(document.querySelectorAll('[data-dnd-type="group"]'));
+    expect(renderedGroups.map((el) => el.getAttribute('data-dnd-id'))).toEqual([
+      'g-pinned',
+      'g-normal',
+    ]);
+    expect(screen.getByTestId('group-zone-divider')).toBeInTheDocument();
+    expect(screen.getByTestId('group-pinned-badge-g-pinned')).toBeInTheDocument();
+
+    const gNormalEl = screen.getByTestId('project-group-g-normal');
+    const renderedProjects = Array.from(gNormalEl.querySelectorAll('[data-dnd-type="project"]'));
+    expect(renderedProjects.map((el) => el.getAttribute('data-dnd-id'))).toEqual([
+      'p-pinned',
+      'p-normal',
+    ]);
+    expect(screen.getByTestId('project-zone-divider-g-normal')).toBeInTheDocument();
+    expect(screen.getByTestId('project-pinned-badge-p-pinned')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('pin-group-g-normal'));
+    expect(onPinGroup).toHaveBeenCalledWith(expect.objectContaining({ id: 'g-normal' }), true);
+
+    fireEvent.click(screen.getByTestId('pin-project-p-normal'));
+    expect(onPinProject).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-normal' }), true);
+  });
+
+  it('switches to Archived view, supports restore/delete, and shows archived search jump hint', () => {
+    const onArchiveSession = vi.fn();
+    const onRequestDeleteSession = vi.fn();
+    const sessions: SessionSummary[] = [
+      makeSession({ cascadeId: 's-active', title: 'Active Work', archived: false }),
+    ];
+    const archivedSessions: SessionSummary[] = [
+      makeSession({
+        cascadeId: 's-arch-1',
+        title: 'Legacy Billing Migration',
+        archived: true,
+        archivedAt: '2026-11-24T10:00:00Z',
+        projectName: 'Alpha App',
+      }),
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={sessions}
+        archivedCount={1}
+        archivedSessions={archivedSessions}
+        projects={sampleProjects}
+        projectGroups={sampleGroups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onArchiveSession={onArchiveSession}
+        onRequestDeleteSession={onRequestDeleteSession}
+      />,
+    );
+
+    expect(screen.getByTestId('sidebar-filter-archived')).toHaveTextContent('Archived (1)');
+
+    // Search for archived session while in active view
+    fireEvent.click(screen.getByTestId('sidebar-filter-toggle'));
+    fireEvent.change(screen.getByTestId('session-search-input'), {
+      target: { value: 'billing' },
+    });
+    const jumpBtn = screen.getByTestId('archived-search-jump');
+    expect(jumpBtn).toHaveTextContent('Found 1 matching session(s) in Archived');
+    fireEvent.click(jumpBtn);
+
+    expect(screen.getByTestId('archived-sessions-view')).toBeInTheDocument();
+    expect(screen.getByTestId('archived-session-row-s-arch-1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('restore-session-s-arch-1'));
+    expect(onArchiveSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cascadeId: 's-arch-1' }),
+      false,
+    );
+
+    fireEvent.click(screen.getByTestId('delete-archived-session-s-arch-1'));
+    expect(onRequestDeleteSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cascadeId: 's-arch-1' }),
+    );
+  });
+
+  it('enforces L0 read-only and L1 delete/new-project permission locks', () => {
+    const sessions: SessionSummary[] = [
+      makeSession({ cascadeId: 's-1', title: 'One', projectId: 'proj-alpha' }),
+    ];
+
+    const { rerender } = render(
+      <SessionSidebar
+        sessions={sessions}
+        projects={sampleProjects}
+        projectGroups={sampleGroups}
+        channel="cloudflare"
+        permissionLevel="L0"
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onPinSession={vi.fn()}
+        onArchiveSession={vi.fn()}
+        onRequestDeleteSession={vi.fn()}
+        onOpenNewProjectModal={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('sidebar-l0-notice')).toBeInTheDocument();
+    expect(screen.getByTestId('pin-session-s-1')).toBeDisabled();
+    expect(screen.getByTestId('open-new-project-btn')).toBeDisabled();
+    expect(screen.getByTestId('new-session-btn')).toBeDisabled();
+
+    rerender(
+      <SessionSidebar
+        sessions={sessions}
+        projects={sampleProjects}
+        projectGroups={sampleGroups}
+        channel="lan"
+        permissionLevel="L1"
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onPinSession={vi.fn()}
+        onArchiveSession={vi.fn()}
+        onRequestDeleteSession={vi.fn()}
+        onOpenNewProjectModal={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('sidebar-l0-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pin-session-s-1')).not.toBeDisabled();
+    expect(screen.getByTestId('open-new-project-btn')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('session-actions-s-1'));
+    expect(screen.getByTestId('archive-session-s-1')).not.toBeDisabled();
+    expect(screen.getByTestId('delete-session-s-1')).toBeDisabled();
+  });
+
+  it('supports keyboard Space+ArrowDown+Space and menu reorder with aria-live announcements', () => {
+    const onReorderOrg = vi.fn();
+    const groups: ProjectGroup[] = [
+      { id: 'g-1', name: 'Group One', sortOrder: 1, collapsed: false },
+      { id: 'g-2', name: 'Group Two', sortOrder: 2, collapsed: false },
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={[]}
+        projects={[]}
+        projectGroups={groups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onReorderOrg={onReorderOrg}
+      />,
+    );
+
+    const handle = screen.getByTestId('drag-handle-group-g-1');
+    fireEvent.keyDown(handle, { key: ' ' });
+    expect(screen.getByTestId('dnd-aria-live')).toHaveTextContent('Reordering Group One, position 1 of 2');
+
+    fireEvent.keyDown(handle, { key: 'ArrowDown' });
+    expect(screen.getByTestId('dnd-aria-live')).toHaveTextContent('Moved Group One to position 2 of 2');
+
+    fireEvent.keyDown(handle, { key: ' ' });
+    expect(onReorderOrg).toHaveBeenCalledWith({
+      targetType: 'group',
+      containerId: '__groups__',
+      zone: 'normal',
+      orderedIds: ['g-2', 'g-1'],
+    });
+
+    // Menu reorder fallback
+    fireEvent.click(screen.getByTestId('group-actions-g-1'));
+    expect(screen.getByTestId('reorder-group-first-g-1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('reorder-group-down-g-1'));
+    expect(onReorderOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it('verifies pure ordering, drop clamping, and focus fallback helper invariants', () => {
+    const items = [
+      { id: 'a', pinned: false, score: 1 },
+      { id: 'b', pinned: true, score: 2 },
+      { id: 'c', pinned: false, score: 3 },
+      { id: 'd', pinned: false, score: 4 },
+    ];
+    const part = partitionAndOrderItems({
+      items,
+      isPinned: (x) => x.pinned,
+      getId: (x) => x.id,
+      order: { pinned: ['b'], normal: ['a', 'c'] },
+      defaultPinnedCompare: (x, y) => y.score - x.score,
+      defaultNormalCompare: (x, y) => y.score - x.score,
+    });
+    expect(part.pinned.map((x) => x.id)).toEqual(['b']);
+    // Unlisted 'd' inserts at TOP of normal without disrupting ['a', 'c']
+    expect(part.normal.map((x) => x.id)).toEqual(['d', 'a', 'c']);
+
+    expect(reorderWithinZone(['a', 'b', 'c'], 'a', 'up')).toBeNull();
+    expect(reorderWithinZone(['a', 'b', 'c'], 'a', 'last')).toEqual(['b', 'c', 'a']);
+    expect(buildOrderedIdsAfterDrop(['a', 'b', 'c'], 'a', 3)).toEqual(['b', 'c', 'a']);
+
+    const sessList: SessionSummary[] = [
+      makeSession({ cascadeId: 'p1-s1', projectId: 'p1', lastModifiedTime: '2026-11-24T01:00:00Z' }),
+      makeSession({ cascadeId: 'p1-s2', projectId: 'p1', lastModifiedTime: '2026-11-24T02:00:00Z' }),
+      makeSession({ cascadeId: 'p2-s1', projectId: 'p2', lastModifiedTime: '2026-11-24T05:00:00Z' }),
+    ];
+    expect(resolveNextActiveSessionId(sessList, 'p1-s1', 'p1-s1')).toBe('p1-s2');
+    expect(resolveNextActiveSessionId(sessList.slice(1), 'p1-s2', 'p1-s2')).toBe('p2-s1');
+    expect(resolveNextActiveSessionId([sessList[0]], 'p1-s1', 'p1-s1')).toBeNull();
   });
 });

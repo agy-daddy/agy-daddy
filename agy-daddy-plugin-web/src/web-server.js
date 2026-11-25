@@ -32,7 +32,9 @@ const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 const DEFAULT_RING_BUFFER_SIZE = 200;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15000;
-const DEFAULT_DELTA_POLL_INTERVAL_MS = 350;
+const DEFAULT_IDLE_DELTA_POLL_INTERVAL_MS = 400;
+const DEFAULT_ACTIVE_DELTA_POLL_INTERVAL_MS = 50;
+const DEFAULT_BURST_WINDOW_MS = 2500;
 
 const SECURITY_HEADERS = Object.freeze({
   'X-Content-Type-Options': 'nosniff',
@@ -300,14 +302,39 @@ class WebServer {
     this.heartbeatIntervalMs = Number(options.heartbeatIntervalMs) > 0
       ? Number(options.heartbeatIntervalMs)
       : DEFAULT_HEARTBEAT_INTERVAL_MS;
-    if (options.deltaPollIntervalMs === 0 || options.deltaPollIntervalMs === false) {
+    const disablePolling = options.deltaPollIntervalMs === 0 || options.deltaPollIntervalMs === false;
+    if (disablePolling) {
       this.deltaPollIntervalMs = 0;
-    } else if (options.deltaPollIntervalMs !== undefined) {
-      const parsedDelta = Number(options.deltaPollIntervalMs);
-      this.deltaPollIntervalMs = Number.isFinite(parsedDelta) && parsedDelta > 0 ? parsedDelta : 0;
+      this.idleDeltaPollIntervalMs = 0;
+      this.activeDeltaPollIntervalMs = 0;
     } else {
-      this.deltaPollIntervalMs = DEFAULT_DELTA_POLL_INTERVAL_MS;
+      let baseIdleMs = DEFAULT_IDLE_DELTA_POLL_INTERVAL_MS;
+      if (options.idleDeltaPollIntervalMs !== undefined) {
+        const parsedIdle = options.idleDeltaPollIntervalMs === false ? 0 : Number(options.idleDeltaPollIntervalMs);
+        baseIdleMs = Number.isFinite(parsedIdle) && parsedIdle > 0 ? parsedIdle : 0;
+      } else if (options.deltaPollIntervalMs !== undefined) {
+        const parsedDelta = Number(options.deltaPollIntervalMs);
+        baseIdleMs = Number.isFinite(parsedDelta) && parsedDelta > 0 ? parsedDelta : 0;
+      }
+
+      this.idleDeltaPollIntervalMs = baseIdleMs;
+      this.deltaPollIntervalMs = baseIdleMs;
+
+      if (baseIdleMs <= 0) {
+        this.activeDeltaPollIntervalMs = 0;
+      } else if (options.activeDeltaPollIntervalMs !== undefined) {
+        const parsedActive = Number(options.activeDeltaPollIntervalMs);
+        const activeVal = Number.isFinite(parsedActive) && parsedActive > 0
+          ? parsedActive
+          : DEFAULT_ACTIVE_DELTA_POLL_INTERVAL_MS;
+        this.activeDeltaPollIntervalMs = Math.min(baseIdleMs, activeVal);
+      } else {
+        this.activeDeltaPollIntervalMs = Math.min(baseIdleMs, DEFAULT_ACTIVE_DELTA_POLL_INTERVAL_MS);
+      }
     }
+
+    const parsedBurst = options.burstWindowMs === undefined ? DEFAULT_BURST_WINDOW_MS : Number(options.burstWindowMs);
+    this.burstWindowMs = Number.isFinite(parsedBurst) && parsedBurst >= 0 ? parsedBurst : DEFAULT_BURST_WINDOW_MS;
 
     this.server = null;
     this.port = null;
@@ -936,8 +963,8 @@ class WebServer {
         }
         const result = await adapter.sendMessage(id, body);
         sendActionResult(res, result);
-        if (this._sessionPollers.has(id)) {
-          void this._pollSessionDelta(id);
+        if (!result || result.ok !== false) {
+          this._nudgeSessionPoller(id);
         }
         return;
       }
@@ -948,8 +975,8 @@ class WebServer {
         await readJsonBody(req, this.maxBodyBytes);
         const result = await adapter.cancelSession(id);
         sendActionResult(res, result);
-        if (this._sessionPollers.has(id)) {
-          void this._pollSessionDelta(id);
+        if (!result || result.ok !== false) {
+          this._nudgeSessionPoller(id);
         }
         return;
       }
@@ -962,9 +989,7 @@ class WebServer {
           const result = await this.harnessAdapter.approveStep(id, stepIdx, body.decision, body.payload);
           if (result && result.ok === true) {
             sendActionResult(res, result);
-            if (this._sessionPollers.has(id)) {
-              void this._pollSessionDelta(id);
-            }
+            this._nudgeSessionPoller(id);
             return;
           }
           const status = Number.isInteger(result?.statusCode) ? result.statusCode : 501;
@@ -997,8 +1022,8 @@ class WebServer {
         }
         const result = await adapter.answerQuestion(id, stepIdx, body.answers ?? [], body.payload ?? {});
         sendActionResult(res, result);
-        if (this._sessionPollers.has(id)) {
-          void this._pollSessionDelta(id);
+        if (!result || result.ok !== false) {
+          this._nudgeSessionPoller(id);
         }
         return;
       }
@@ -1514,8 +1539,28 @@ class WebServer {
     res.on('error', () => client.close());
   }
 
+  _isRunningStatus(status) {
+    return typeof status === 'string' && /RUNNING|GENERATING/i.test(status);
+  }
+
+  _syncSessionPollerInterval(sessionId, entry, isRunningNow = false) {
+    if (!entry || this._sessionPollers.get(sessionId) !== entry) return;
+    const inBurst = entry.burstUntil > 0 && Date.now() < entry.burstUntil;
+    const desiredMs = (isRunningNow || inBurst)
+      ? this.activeDeltaPollIntervalMs
+      : this.idleDeltaPollIntervalMs;
+    if (desiredMs <= 0) return;
+    if (entry.currentIntervalMs === desiredMs && entry.timer) return;
+    if (entry.timer) clearInterval(entry.timer);
+    entry.currentIntervalMs = desiredMs;
+    entry.timer = setInterval(() => {
+      void this._pollSessionDelta(sessionId);
+    }, desiredMs);
+    entry.timer.unref?.();
+  }
+
   _ensureSessionPoller(sessionId) {
-    if (!sessionId || this.deltaPollIntervalMs <= 0 || typeof this.harnessAdapter?.pollDelta !== 'function') {
+    if (!sessionId || this.idleDeltaPollIntervalMs <= 0 || typeof this.harnessAdapter?.pollDelta !== 'function') {
       return;
     }
     if (this._sessionPollers.has(sessionId)) return;
@@ -1523,13 +1568,21 @@ class WebServer {
       timer: null,
       running: false,
       lastStatus: undefined,
-      pending: false
+      pending: false,
+      burstUntil: 0,
+      currentIntervalMs: 0
     };
-    entry.timer = setInterval(() => {
-      void this._pollSessionDelta(sessionId);
-    }, this.deltaPollIntervalMs);
-    entry.timer.unref?.();
     this._sessionPollers.set(sessionId, entry);
+    this._syncSessionPollerInterval(sessionId, entry, false);
+    void this._pollSessionDelta(sessionId);
+  }
+
+  _nudgeSessionPoller(sessionId) {
+    const entry = this._sessionPollers.get(sessionId);
+    if (!entry) return;
+    entry.burstUntil = Date.now() + this.burstWindowMs;
+    this._syncSessionPollerInterval(sessionId, entry, this._isRunningStatus(entry.lastStatus));
+    void this._pollSessionDelta(sessionId);
   }
 
   _maybeStopSessionPoller(sessionId) {
@@ -1540,12 +1593,14 @@ class WebServer {
     const entry = this._sessionPollers.get(sessionId);
     if (!entry) return;
     if (entry.timer) clearInterval(entry.timer);
+    entry.timer = null;
     this._sessionPollers.delete(sessionId);
   }
 
   _stopAllSessionPollers() {
     for (const entry of this._sessionPollers.values()) {
       if (entry.timer) clearInterval(entry.timer);
+      entry.timer = null;
     }
     this._sessionPollers.clear();
   }
@@ -1558,12 +1613,15 @@ class WebServer {
       return;
     }
     entry.running = true;
+    let isRunningNow = this._isRunningStatus(entry.lastStatus);
     try {
       const res = await this.harnessAdapter.pollDelta(sessionId);
       if (this._sessionPollers.get(sessionId) !== entry) return;
+      if (res) {
+        isRunningNow = this._isRunningStatus(res.status);
+      }
       if (res && (res.hasChanges || res.status !== entry.lastStatus)) {
-        const wasRunning = typeof entry.lastStatus === 'string' && /RUNNING|GENERATING/i.test(entry.lastStatus);
-        const isRunningNow = typeof res.status === 'string' && /RUNNING|GENERATING/i.test(res.status);
+        const wasRunning = this._isRunningStatus(entry.lastStatus);
         entry.lastStatus = res.status;
         this.broadcast('session.delta', {
           cascadeId: sessionId,
@@ -1588,9 +1646,12 @@ class WebServer {
       // Transient poll errors should not break future ticks.
     } finally {
       entry.running = false;
-      if (entry.pending && this._sessionPollers.get(sessionId) === entry) {
-        entry.pending = false;
-        void this._pollSessionDelta(sessionId);
+      if (this._sessionPollers.get(sessionId) === entry) {
+        this._syncSessionPollerInterval(sessionId, entry, isRunningNow);
+        if (entry.pending) {
+          entry.pending = false;
+          void this._pollSessionDelta(sessionId);
+        }
       }
     }
   }

@@ -1898,3 +1898,306 @@ test('D9: POST /api/v1/sessions supports App-synced/implicit projects with enric
     fs.rmSync(tmpBase, { recursive: true, force: true });
   }
 });
+
+test('D21: adaptive dual-tier delta polling defaults, backward-compatible options, immediate SSE connect poll, and active/idle/burst transitions', async () => {
+  // 1. Default split options and backward-compatible deltaPollIntervalMs semantics
+  const defaultSrv = createWebServer({});
+  assert.equal(defaultSrv.idleDeltaPollIntervalMs, 400);
+  assert.equal(defaultSrv.activeDeltaPollIntervalMs, 50);
+  assert.equal(defaultSrv.burstWindowMs, 2500);
+  assert.equal(defaultSrv.deltaPollIntervalMs, 400);
+
+  const disabledZeroSrv = createWebServer({ deltaPollIntervalMs: 0 });
+  assert.equal(disabledZeroSrv.deltaPollIntervalMs, 0);
+  assert.equal(disabledZeroSrv.idleDeltaPollIntervalMs, 0);
+  assert.equal(disabledZeroSrv.activeDeltaPollIntervalMs, 0);
+
+  const disabledFalseSrv = createWebServer({ deltaPollIntervalMs: false });
+  assert.equal(disabledFalseSrv.deltaPollIntervalMs, 0);
+  assert.equal(disabledFalseSrv.idleDeltaPollIntervalMs, 0);
+  assert.equal(disabledFalseSrv.activeDeltaPollIntervalMs, 0);
+
+  const customSlowSrv = createWebServer({ deltaPollIntervalMs: 250 });
+  assert.equal(customSlowSrv.deltaPollIntervalMs, 250);
+  assert.equal(customSlowSrv.idleDeltaPollIntervalMs, 250);
+  assert.equal(customSlowSrv.activeDeltaPollIntervalMs, 50);
+
+  const customFastSrv = createWebServer({ deltaPollIntervalMs: 35 });
+  assert.equal(customFastSrv.deltaPollIntervalMs, 35);
+  assert.equal(customFastSrv.idleDeltaPollIntervalMs, 35);
+  assert.equal(customFastSrv.activeDeltaPollIntervalMs, 35);
+
+  // Disabled polling never starts pollers even on SSE connect or POST /messages
+  const disabledCalls = [];
+  const disabledToken = 'd21-disabled-tok';
+  const disabledAuth = { Authorization: `Bearer ${disabledToken}`, 'Content-Type': 'application/json' };
+  const disabledLiveSrv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken: disabledToken,
+    deltaPollIntervalMs: 0,
+    harnessAdapter: {
+      async pollDelta(id) {
+        disabledCalls.push(id);
+        return { ok: true, cascadeId: id, status: 'CASCADE_RUN_STATUS_IDLE', totalSteps: 0, stepOffset: 0, events: [], hasChanges: false };
+      },
+      async sendMessage(id) {
+        return { ok: true, cascadeId: id };
+      }
+    }
+  });
+  const disabledInfo = await disabledLiveSrv.start();
+  try {
+    const client = await openSse(`http://127.0.0.1:${disabledInfo.port}/api/v1/stream?sessionId=s-off`, disabledAuth);
+    await httpRequest(`http://127.0.0.1:${disabledInfo.port}/api/v1/sessions/s-off/messages`, {
+      method: 'POST',
+      headers: disabledAuth,
+      body: { text: 'hello' }
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(disabledLiveSrv._sessionPollers.size, 0);
+    assert.equal(disabledCalls.length, 0);
+    client.close();
+  } finally {
+    await disabledLiveSrv.stop();
+  }
+
+  // 2. Live adaptive polling: immediate connect poll, <=60ms post-write delta, burst window, RUNNING 50ms, IDLE 400ms
+  const pairingToken = 'd21-live-tok';
+  const authHeaders = { Authorization: `Bearer ${pairingToken}`, 'Content-Type': 'application/json' };
+  const pollTimestamps = [];
+  let pollState = {
+    status: 'CASCADE_RUN_STATUS_IDLE',
+    totalSteps: 1,
+    stepOffset: 0,
+    events: [{ seq: 0, kind: 'user', status: 'done', payload: { text: 'init' } }],
+    hasChanges: true
+  };
+
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken,
+    idleDeltaPollIntervalMs: 400,
+    activeDeltaPollIntervalMs: 50,
+    burstWindowMs: 180,
+    harnessAdapter: {
+      async pollDelta(sessionId) {
+        pollTimestamps.push(Date.now());
+        const out = {
+          ok: true,
+          cascadeId: sessionId,
+          status: pollState.status,
+          totalSteps: pollState.totalSteps,
+          stepOffset: pollState.stepOffset,
+          events: pollState.events,
+          hasChanges: pollState.hasChanges
+        };
+        pollState.hasChanges = false;
+        pollState.events = [];
+        return out;
+      },
+      async sendMessage(sessionId, body) {
+        // Simulate language_server returning IDLE briefly right after SendUserCascadeMessage
+        pollState = {
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          totalSteps: 2,
+          stepOffset: 1,
+          events: [{ seq: 1, kind: 'user', status: 'done', payload: { text: body.text } }],
+          hasChanges: true
+        };
+        return { ok: true, cascadeId: sessionId };
+      }
+    }
+  });
+
+  const info = await srv.start();
+  const baseUrl = `http://127.0.0.1:${info.port}`;
+  try {
+    // Immediate first poll on SSE connect (much faster than 400ms idle interval)
+    const connectStart = Date.now();
+    const client = await openSse(`${baseUrl}/api/v1/stream?sessionId=s-adapt`, authHeaders);
+    const firstEv = await client.waitForEvent((e) => e.event === 'session.delta');
+    const connectElapsed = Date.now() - connectStart;
+    assert.equal(firstEv.json.totalSteps, 1);
+    assert.ok(connectElapsed < 120, `expected immediate SSE connect delta, took ${connectElapsed}ms`);
+
+    const poller = srv._sessionPollers.get('s-adapt');
+    assert.ok(poller);
+    assert.equal(poller.currentIntervalMs, 400);
+
+    // POST /messages triggers immediate poll + 50ms burst even before status flips to RUNNING
+    const writeStart = Date.now();
+    const sendRes = await httpRequest(`${baseUrl}/api/v1/sessions/s-adapt/messages`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: { text: 'fast burst' }
+    });
+    assert.equal(sendRes.status, 200);
+    const deltaAfterWrite = await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.totalSteps === 2);
+    const writeToDeltaMs = Date.now() - writeStart;
+    assert.equal(deltaAfterWrite.json.events[0].payload.text, 'fast burst');
+    assert.ok(writeToDeltaMs <= 60, `expected first post-write delta <= 60ms, got ${writeToDeltaMs}ms`);
+    assert.equal(poller.currentIntervalMs, 50);
+
+    // Flip to RUNNING and verify poller stays on 50ms past burstWindowMs (180ms)
+    pollState = {
+      status: 'CASCADE_RUN_STATUS_RUNNING',
+      totalSteps: 3,
+      stepOffset: 2,
+      events: [{ seq: 2, kind: 'thinking_and_text', status: 'generating', payload: { text: 'streaming' } }],
+      hasChanges: true
+    };
+    await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.status === 'CASCADE_RUN_STATUS_RUNNING');
+    const callsBeforeRunningWindow = pollTimestamps.length;
+    await new Promise((r) => setTimeout(r, 230));
+    const runningPolls = pollTimestamps.length - callsBeforeRunningWindow;
+    assert.equal(poller.currentIntervalMs, 50);
+    assert.ok(runningPolls >= 3, `expected >= 3 active polls in 230ms at 50ms cadence, got ${runningPolls}`);
+
+    // Flip back to IDLE after burst already expired -> automatically reverts to 400ms
+    pollState = {
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      totalSteps: 3,
+      stepOffset: 3,
+      events: [],
+      hasChanges: false
+    };
+    await client.waitForEvent(
+      (e) => e.event === 'session.delta' && e.json?.totalSteps === 3 && e.json?.status === 'CASCADE_RUN_STATUS_IDLE'
+    );
+    assert.equal(poller.currentIntervalMs, 400);
+
+    const callsAtIdle = pollTimestamps.length;
+    await new Promise((r) => setTimeout(r, 320));
+    const idlePolls = pollTimestamps.length - callsAtIdle;
+    assert.ok(idlePolls <= 1, `expected <= 1 idle poll in 320ms at 400ms cadence (<=2.5/s), got ${idlePolls}`);
+
+    client.close();
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D22: _nudgeSessionPoller triggers burst + immediate delta poll for approve, answer, and cancel routes', async () => {
+  const pairingToken = 'd22-nudge-tok';
+  const authHeaders = { Authorization: `Bearer ${pairingToken}`, 'Content-Type': 'application/json' };
+  let pollState = {
+    status: 'CASCADE_RUN_STATUS_IDLE',
+    totalSteps: 1,
+    stepOffset: 0,
+    events: [{ seq: 0, kind: 'user', status: 'done', payload: { text: 'start' } }],
+    hasChanges: true
+  };
+
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken,
+    idleDeltaPollIntervalMs: 400,
+    activeDeltaPollIntervalMs: 50,
+    burstWindowMs: 120,
+    harnessAdapter: {
+      async pollDelta(sessionId) {
+        const out = {
+          ok: true,
+          cascadeId: sessionId,
+          status: pollState.status,
+          totalSteps: pollState.totalSteps,
+          stepOffset: pollState.stepOffset,
+          events: pollState.events,
+          hasChanges: pollState.hasChanges
+        };
+        pollState.hasChanges = false;
+        pollState.events = [];
+        return out;
+      },
+      async approveStep(sessionId, stepIdx) {
+        pollState = {
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          totalSteps: 2,
+          stepOffset: 1,
+          events: [{ seq: stepIdx, kind: 'command', status: 'done', payload: { approved: true } }],
+          hasChanges: true
+        };
+        return { ok: true, cascadeId: sessionId, stepIdx };
+      },
+      async answerQuestion(sessionId, stepIdx) {
+        pollState = {
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          totalSteps: 3,
+          stepOffset: 2,
+          events: [{ seq: stepIdx, kind: 'question', status: 'done', payload: { answered: true } }],
+          hasChanges: true
+        };
+        return { ok: true, cascadeId: sessionId, stepIdx };
+      },
+      async cancelSession(sessionId) {
+        pollState = {
+          status: 'CASCADE_RUN_STATUS_CANCELED',
+          totalSteps: 3,
+          stepOffset: 3,
+          events: [],
+          hasChanges: false
+        };
+        return { ok: true, cascadeId: sessionId };
+      }
+    }
+  });
+
+  const info = await srv.start();
+  const baseUrl = `http://127.0.0.1:${info.port}`;
+  try {
+    const client = await openSse(`${baseUrl}/api/v1/stream?sessionId=s-nudge`, authHeaders);
+    await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.totalSteps === 1);
+    const poller = srv._sessionPollers.get('s-nudge');
+    assert.equal(poller.currentIntervalMs, 400);
+
+    // 1. Approve triggers immediate delta + burst
+    let t0 = Date.now();
+    const approveRes = await httpRequest(`${baseUrl}/api/v1/sessions/s-nudge/steps/1/approve`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: { decision: 'approve' }
+    });
+    assert.equal(approveRes.status, 200);
+    await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.totalSteps === 2);
+    assert.ok(Date.now() - t0 <= 60);
+    assert.equal(poller.currentIntervalMs, 50);
+
+    // Wait for burst expiration and verify return to 400ms
+    await new Promise((r) => setTimeout(r, 180));
+    assert.equal(poller.currentIntervalMs, 400);
+
+    // 2. Answer triggers immediate delta + burst
+    t0 = Date.now();
+    const answerRes = await httpRequest(`${baseUrl}/api/v1/sessions/s-nudge/steps/2/answer`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: { answers: ['yes'] }
+    });
+    assert.equal(answerRes.status, 200);
+    await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.totalSteps === 3);
+    assert.ok(Date.now() - t0 <= 60);
+    assert.equal(poller.currentIntervalMs, 50);
+
+    await new Promise((r) => setTimeout(r, 180));
+    assert.equal(poller.currentIntervalMs, 400);
+
+    // 3. Cancel triggers immediate delta + burst
+    t0 = Date.now();
+    const cancelRes = await httpRequest(`${baseUrl}/api/v1/sessions/s-nudge/cancel`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: {}
+    });
+    assert.equal(cancelRes.status, 200);
+    await client.waitForEvent((e) => e.event === 'session.delta' && e.json?.status === 'CASCADE_RUN_STATUS_CANCELED');
+    assert.ok(Date.now() - t0 <= 60);
+    assert.equal(poller.currentIntervalMs, 50);
+
+    client.close();
+  } finally {
+    await srv.stop();
+  }
+});

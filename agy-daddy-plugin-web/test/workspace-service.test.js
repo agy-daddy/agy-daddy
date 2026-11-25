@@ -702,3 +702,162 @@ test('C9: readArtifactRaw serves binary png/pdf/svg/webp/gif buffers and enforce
     cleanupDir(outsideDir);
   }
 });
+
+test('C10: Git stage/unstage/all, commit, push, and worktree add/list/remove/prune with strict sandbox & flag-injection guards', async () => {
+  const allowedBase = makeTempDir('agy-git-c10-');
+  const outsideDir = makeTempDir('agy-git-outside-c10-');
+  try {
+    const repoDir = path.join(allowedBase, 'repo');
+    const bareRemoteDir = path.join(allowedBase, 'remote.git');
+    const nonGitDir = path.join(allowedBase, 'plain');
+    fs.mkdirSync(repoDir, { recursive: true });
+    fs.mkdirSync(bareRemoteDir, { recursive: true });
+    fs.mkdirSync(nonGitDir, { recursive: true });
+
+    execFileSync('git', ['init', '--bare', bareRemoteDir]);
+    execFileSync('git', ['init', '-b', 'main', repoDir]);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Test User']);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', repoDir, 'remote', 'add', 'origin', bareRemoteDir]);
+
+    fs.writeFileSync(path.join(repoDir, 'a.txt'), 'line1\n', 'utf8');
+    fs.writeFileSync(path.join(repoDir, 'b.txt'), 'init\n', 'utf8');
+
+    const svc = createWorkspaceService({ allowedRoots: [allowedBase] });
+
+    // Non-git dir rejects mutating git operations with 400 NOT_A_GIT_REPO
+    const nonGitStage = await svc.gitStage({ root: nonGitDir, paths: ['x.txt'] });
+    assert.equal(nonGitStage.ok, false);
+    assert.equal(nonGitStage.statusCode, 400);
+    assert.equal(nonGitStage.error, 'NOT_A_GIT_REPO');
+
+    // Unborn HEAD: stage single file and unstage before first commit
+    const stageA = await svc.gitStage({ root: repoDir, paths: ['a.txt'] });
+    assert.equal(stageA.ok, true);
+    assert.equal(stageA.staged, true);
+
+    let diff = await svc.getGitDiff({ root: repoDir });
+    const fileMap1 = Object.fromEntries(diff.files.map((f) => [f.path, f]));
+    assert.equal(fileMap1['a.txt'].staged, true);
+    assert.equal(fileMap1['b.txt'].staged, false);
+    assert.equal(fileMap1['b.txt'].unstaged, true);
+
+    const unstageUnborn = await svc.gitStage({ root: repoDir, paths: ['a.txt'], unstage: true });
+    assert.equal(unstageUnborn.ok, true);
+    assert.equal(unstageUnborn.staged, false);
+
+    // Stage all & initial commit
+    const stageAllRes = await svc.gitStage({ root: repoDir, all: true });
+    assert.equal(stageAllRes.ok, true);
+    assert.equal(stageAllRes.all, true);
+
+    const badMsg = await svc.gitCommit({ root: repoDir, message: '   ' });
+    assert.equal(badMsg.ok, false);
+    assert.equal(badMsg.statusCode, 400);
+    assert.equal(badMsg.error, 'INVALID_COMMIT_MESSAGE');
+
+    const commitRes = await svc.gitCommit({ root: repoDir, message: 'feat: initial commit' });
+    assert.equal(commitRes.ok, true);
+    assert.equal(commitRes.branch, 'main');
+    assert.match(commitRes.commitSha, /^[0-9a-f]{40}$/);
+
+    // Push to local bare remote
+    const badPushRemote = await svc.gitPush({ root: repoDir, remote: '--mirror' });
+    assert.equal(badPushRemote.ok, false);
+    assert.equal(badPushRemote.statusCode, 400);
+    assert.equal(badPushRemote.error, 'INVALID_GIT_REMOTE');
+
+    const badPushBranch = await svc.gitPush({ root: repoDir, branch: 'main..bad' });
+    assert.equal(badPushBranch.ok, false);
+    assert.equal(badPushBranch.statusCode, 400);
+    assert.equal(badPushBranch.error, 'INVALID_GIT_BRANCH');
+
+    const pushRes = await svc.gitPush({ root: repoDir, branch: 'main', setUpstream: true });
+    assert.equal(pushRes.ok, true);
+    assert.equal(pushRes.remote, 'origin');
+    assert.equal(pushRes.branch, 'main');
+
+    const remoteSha = execFileSync('git', ['--git-dir', bareRemoteDir, 'rev-parse', 'refs/heads/main'], {
+      encoding: 'utf8'
+    }).trim();
+    assert.equal(remoteSha, commitRes.commitSha);
+
+    // Modify after HEAD exists: verify stage + unstage against HEAD + traversal/flag guards
+    fs.writeFileSync(path.join(repoDir, 'a.txt'), 'line1\nline2\n', 'utf8');
+    await svc.gitStage({ root: repoDir, paths: ['a.txt'] });
+    diff = await svc.getGitDiff({ root: repoDir });
+    assert.equal(diff.files[0].staged, true);
+
+    await svc.gitStage({ root: repoDir, all: true, unstage: true });
+    diff = await svc.getGitDiff({ root: repoDir });
+    assert.equal(diff.files[0].staged, false);
+    assert.equal(diff.files[0].unstaged, true);
+
+    // Traversal & flag injection checks
+    const travStage = await svc.gitStage({ root: repoDir, paths: ['../../outside.txt'] });
+    assert.equal(travStage.ok, false);
+    assert.equal(travStage.statusCode, 403);
+    assert.equal(travStage.error, 'PATH_OUTSIDE_WORKSPACE');
+
+    const flagStage = await svc.gitStage({ root: repoDir, paths: ['--force'] });
+    assert.equal(flagStage.ok, false);
+    assert.equal(flagStage.statusCode, 400);
+    assert.equal(flagStage.error, 'INVALID_PATH');
+
+    const flagDiff = await svc.getGitDiff({ root: repoDir, path: '--output=/tmp/x' });
+    assert.equal(flagDiff.ok, false);
+    assert.equal(flagDiff.statusCode, 400);
+
+    // Worktrees: list, create inside allowedBase, block outside allowedBase & main worktree removal, remove & prune
+    const wtTarget = path.join(allowedBase, 'wt-feature');
+    const wtAdd = await svc.gitWorktree({
+      root: repoDir,
+      action: 'create',
+      path: '../wt-feature',
+      branch: 'feat/wt-test',
+      createBranch: true
+    });
+    assert.equal(wtAdd.ok, true);
+    assert.equal(wtAdd.worktrees.length, 2);
+    assert.equal(wtAdd.worktrees.some((w) => w.branch === 'feat/wt-test' && w.allowed === true), true);
+    assert.equal(wtAdd.worktrees.some((w) => w.branch === 'main' && w.isCurrent === true), true);
+
+    // Block creating worktree outside allowedRoots
+    const wtOutside = await svc.gitWorktree({
+      root: repoDir,
+      action: 'add',
+      path: path.join(outsideDir, 'escaped-wt'),
+      branch: 'feat/escape',
+      createBranch: true
+    });
+    assert.equal(wtOutside.ok, false);
+    assert.equal(wtOutside.statusCode, 403);
+    assert.equal(wtOutside.error, 'PATH_OUTSIDE_WORKSPACE');
+
+    // Block removing main worktree
+    const rmMain = await svc.gitWorktree({
+      root: repoDir,
+      action: 'remove',
+      path: repoDir
+    });
+    assert.equal(rmMain.ok, false);
+    assert.equal(rmMain.statusCode, 400);
+    assert.equal(rmMain.error, 'CANNOT_REMOVE_MAIN_WORKTREE');
+
+    // Remove secondary worktree & prune
+    const rmWt = await svc.gitWorktree({
+      root: repoDir,
+      action: 'remove',
+      path: wtTarget
+    });
+    assert.equal(rmWt.ok, true);
+    assert.equal(rmWt.worktrees.length, 1);
+
+    const pruned = await svc.gitWorktree({ root: repoDir, action: 'prune' });
+    assert.equal(pruned.ok, true);
+    assert.equal(pruned.action, 'prune');
+  } finally {
+    cleanupDir(allowedBase);
+    cleanupDir(outsideDir);
+  }
+});

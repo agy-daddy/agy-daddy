@@ -198,6 +198,26 @@ function createFakeDeps() {
       async readArtifact(sessionId, file) {
         calls.push({ fn: 'readArtifact', sessionId, file });
         return { ok: true, name: file, mime: 'text/markdown', content: '# Plan' };
+      },
+      async listWorktrees({ root }) {
+        calls.push({ fn: 'listWorktrees', root });
+        return { ok: true, isGitRepo: true, worktrees: [{ path: root, branch: 'main', isCurrent: true }] };
+      },
+      async gitStage(payload) {
+        calls.push({ fn: 'gitStage', payload });
+        return { ok: true, staged: !payload.unstage, paths: payload.paths || [] };
+      },
+      async gitCommit(payload) {
+        calls.push({ fn: 'gitCommit', payload });
+        return { ok: true, commitSha: 'abcdef1234567890', branch: 'main', message: payload.message, stdout: '' };
+      },
+      async gitPush(payload) {
+        calls.push({ fn: 'gitPush', payload });
+        return { ok: true, remote: payload.remote || 'origin', branch: payload.branch || 'main', stdout: '', stderr: '' };
+      },
+      async gitWorktree(payload) {
+        calls.push({ fn: 'gitWorktree', payload });
+        return { ok: true, isGitRepo: true, action: payload.action, worktrees: [] };
       }
     },
     hostProxy: {
@@ -2372,6 +2392,97 @@ test('D23: /api/v1/ping CORS/PNA headers, CSP connect-src, /pc proxy secret anti
     });
     assert.equal(afterRotateLocal.status, 200);
     remoteSse.close();
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D24: /api/v1/git/{worktrees,stage,commit,push,worktree} enforces L0 read-only, L1 deny, and L2 Cloudflare X-Agy-Confirm', async () => {
+  const { srv, deps, state } = channelServer({
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L0'
+  });
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    // 1. L0 on LAN: GET /api/v1/git/worktrees succeeds, POST /api/v1/git/stage returns 403 PERMISSION_DENIED
+    state.channel = 'lan';
+    const wtReadL0 = await httpRequest(`${base}/api/v1/git/worktrees?root=%2Frepo`, { headers: bearer });
+    assert.equal(wtReadL0.status, 200);
+    assert.equal(wtReadL0.json.ok, true);
+    assert.equal(wtReadL0.json.worktrees[0].branch, 'main');
+
+    const stageBlockedL0 = await httpRequest(`${base}/api/v1/git/stage`, {
+      method: 'POST',
+      headers: bearer,
+      body: { root: '/repo', paths: ['a.ts'] }
+    });
+    assert.equal(stageBlockedL0.status, 403);
+    assert.equal(stageBlockedL0.json.error, 'PERMISSION_DENIED');
+    assert.equal(stageBlockedL0.json.required, 'L2');
+
+    // 2. L1 on LAN: Git mutations STILL return 403 PERMISSION_DENIED (requires L2)
+    srv.updateAccessConfig({ permissionLevel: 'L1' });
+    for (const [route, body] of [
+      ['/api/v1/git/stage', { root: '/repo', paths: ['a.ts'] }],
+      ['/api/v1/git/commit', { root: '/repo', message: 'feat: x' }],
+      ['/api/v1/git/push', { root: '/repo', branch: 'main' }],
+      ['/api/v1/git/worktree', { root: '/repo', action: 'add', path: '../wt', branch: 'feat/wt', createBranch: true }]
+    ]) {
+      const denied = await httpRequest(`${base}${route}`, { method: 'POST', headers: bearer, body });
+      assert.equal(denied.status, 403, `${route} must require L2`);
+      assert.equal(denied.json.required, 'L2');
+    }
+
+    // 3. L2 on Cloudflare: requires X-Agy-Confirm challenge before mutating Git state
+    srv.updateAccessConfig({ permissionLevel: 'L2' });
+    state.channel = 'cloudflare';
+
+    const commitChallenge = await httpRequest(`${base}/api/v1/git/commit`, {
+      method: 'POST',
+      headers: bearer,
+      body: { root: '/repo', message: 'feat: confirmed commit' }
+    });
+    assert.equal(commitChallenge.status, 403);
+    assert.equal(commitChallenge.json.error, 'CONFIRMATION_REQUIRED');
+    assert.equal(commitChallenge.json.action, 'POST /api/v1/git/commit');
+
+    const commitConfirmed = await httpRequest(`${base}/api/v1/git/commit`, {
+      method: 'POST',
+      headers: { ...bearer, 'X-Agy-Confirm': commitChallenge.json.confirmToken },
+      body: { root: '/repo', message: 'feat: confirmed commit' }
+    });
+    assert.equal(commitConfirmed.status, 200);
+    assert.equal(commitConfirmed.json.commitSha, 'abcdef1234567890');
+
+    // 4. Loopback always has full L2 access without confirmation challenge
+    state.channel = 'loopback';
+    const stageOk = await httpRequest(`${base}/api/v1/git/stage`, {
+      method: 'POST',
+      headers: bearer,
+      body: { root: '/repo', all: true, unstage: false }
+    });
+    assert.equal(stageOk.status, 200);
+    assert.equal(stageOk.json.staged, true);
+
+    const pushOk = await httpRequest(`${base}/api/v1/git/push`, {
+      method: 'POST',
+      headers: bearer,
+      body: { root: '/repo', branch: 'main', setUpstream: true }
+    });
+    assert.equal(pushOk.status, 200);
+    assert.equal(pushOk.json.remote, 'origin');
+
+    const wtOk = await httpRequest(`${base}/api/v1/git/worktree`, {
+      method: 'POST',
+      headers: bearer,
+      body: { root: '/repo', action: 'add', path: '../wt2', branch: 'feat/wt2', createBranch: true }
+    });
+    assert.equal(wtOk.status, 200);
+    assert.equal(wtOk.json.action, 'add');
+    assert.equal(deps.calls.some((c) => c.fn === 'gitWorktree'), true);
   } finally {
     await srv.stop();
   }

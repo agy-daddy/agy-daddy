@@ -24,7 +24,15 @@ import type {
   FsTreeResponse,
   FsWriteRequest,
   FsWriteResponse,
+  GitCommitRequest,
+  GitCommitResponse,
   GitDiffResponse,
+  GitPushRequest,
+  GitPushResponse,
+  GitStageRequest,
+  GitStageResponse,
+  GitWorktreeMutationRequest,
+  GitWorktreesResponse,
   HealthInfo,
   HostLocaleResponse,
   HostPluginAction,
@@ -468,6 +476,44 @@ export function getGitDiff(
     `/api/v1/git/diff${buildQuery({ root: params.root, path: params.path })}`,
     { signal },
   );
+}
+
+export function getGitWorktrees(
+  params: { root: string },
+  signal?: AbortSignal,
+): Promise<GitWorktreesResponse> {
+  return apiRequest<GitWorktreesResponse>(
+    `/api/v1/git/worktrees${buildQuery({ root: params.root })}`,
+    { signal },
+  );
+}
+
+export function gitStage(req: GitStageRequest): Promise<GitStageResponse> {
+  return apiRequest<GitStageResponse>('/api/v1/git/stage', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitCommit(req: GitCommitRequest): Promise<GitCommitResponse> {
+  return apiRequest<GitCommitResponse>('/api/v1/git/commit', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitPush(req: GitPushRequest): Promise<GitPushResponse> {
+  return apiRequest<GitPushResponse>('/api/v1/git/push', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitWorktree(req: GitWorktreeMutationRequest): Promise<GitWorktreesResponse> {
+  return apiRequest<GitWorktreesResponse>('/api/v1/git/worktree', {
+    method: 'POST',
+    body: req,
+  });
 }
 
 export function listArtifacts(sessionId: string, signal?: AbortSignal): Promise<ArtifactsListResponse> {
@@ -1068,6 +1114,11 @@ export const apiClient = {
   readFsFile,
   writeFsFile,
   getGitDiff,
+  getGitWorktrees,
+  gitStage,
+  gitCommit,
+  gitPush,
+  gitWorktree,
   listArtifacts,
   readArtifact,
   getArtifactRawUrl,

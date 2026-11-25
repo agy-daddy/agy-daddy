@@ -517,6 +517,8 @@ export interface DiffFile {
   status: DiffFileStatus;
   additions: number;
   deletions: number;
+  staged?: boolean;
+  unstaged?: boolean;
 }
 
 export interface GitDiffResponse {
@@ -525,6 +527,78 @@ export interface GitDiffResponse {
   branch: string;
   files: DiffFile[];
   diffText: string;
+}
+
+export interface GitWorktreeItem {
+  path: string;
+  head: string;
+  branch: string;
+  bare: boolean;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  isCurrent: boolean;
+  allowed?: boolean;
+}
+
+export interface GitWorktreesResponse {
+  ok: boolean;
+  isGitRepo: boolean;
+  worktrees: GitWorktreeItem[];
+  action?: string;
+  targetPath?: string;
+}
+
+export interface GitStageRequest {
+  root: string;
+  paths?: string[];
+  unstage?: boolean;
+  all?: boolean;
+}
+
+export interface GitStageResponse {
+  ok: boolean;
+  staged: boolean;
+  all?: boolean;
+  paths: string[];
+}
+
+export interface GitCommitRequest {
+  root: string;
+  message: string;
+}
+
+export interface GitCommitResponse {
+  ok: boolean;
+  commitSha: string;
+  branch: string;
+  message: string;
+  stdout: string;
+}
+
+export interface GitPushRequest {
+  root: string;
+  remote?: string;
+  branch?: string;
+  setUpstream?: boolean;
+}
+
+export interface GitPushResponse {
+  ok: boolean;
+  remote: string;
+  branch: string;
+  stdout: string;
+  stderr: string;
+}
+
+export type GitWorktreeAction = 'list' | 'add' | 'create' | 'remove' | 'prune';
+
+export interface GitWorktreeMutationRequest {
+  root: string;
+  action: GitWorktreeAction;
+  path?: string;
+  branch?: string;
+  createBranch?: boolean;
 }
 
 export interface ArtifactItem {

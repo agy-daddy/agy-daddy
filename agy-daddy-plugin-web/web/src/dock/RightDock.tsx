@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n, type I18nKey } from '../i18n';
-import type { SessionSummary } from '../types';
+import type { ModelItem, SessionSummary, SideChatSelectionContext } from '../types';
 import { ArtifactsPanel } from './ArtifactsPanel';
-import { normalizeWorkspacePath } from './dockUtils';
+import { normalizeWorkspacePath, truncateSelectionSnippet } from './dockUtils';
 import { FileTreePanel } from './FileTreePanel';
 import { GitDiffPanel } from './GitDiffPanel';
+import { SideChatPanel } from './SideChatPanel';
+import { TerminalPanel } from './TerminalPanel';
 import styles from './RightDock.module.css';
 
-export type RightDockTab = 'files' | 'diff' | 'artifacts';
+export type RightDockTab = 'files' | 'diff' | 'artifacts' | 'terminal' | 'sideChat';
 
 export interface RightDockProps {
   activeSessionId?: string | null;
@@ -25,6 +27,11 @@ export interface RightDockProps {
   diffBadgeCount?: number;
   focusedDiffFile?: { path: string; nonce: number } | null;
   focusedFilePath?: { path: string; nonce: number } | null;
+  channel?: string;
+  permissionLevel?: string;
+  models?: ModelItem[];
+  activeModelId?: string | null;
+  onInsertToComposer?: (text: string) => void;
 }
 
 interface RootOption {
@@ -37,7 +44,61 @@ const TAB_KEYS: Array<{ id: RightDockTab; labelKey: I18nKey }> = [
   { id: 'files', labelKey: 'dock.tab.files' },
   { id: 'diff', labelKey: 'dock.tab.diff' },
   { id: 'artifacts', labelKey: 'dock.tab.artifacts' },
+  { id: 'terminal', labelKey: 'dock.tab.terminal' },
+  { id: 'sideChat', labelKey: 'dock.tab.sideChat' },
 ];
+
+function TabIcon({ id }: { id: RightDockTab }) {
+  const props = {
+    width: 13,
+    height: 13,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.4,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true as const,
+  };
+  if (id === 'files') {
+    return (
+      <svg {...props}>
+        <path d="M2.5 4.2h4.1l1.2 1.4h5.7v6.7H2.5z" />
+      </svg>
+    );
+  }
+  if (id === 'diff') {
+    return (
+      <svg {...props}>
+        <circle cx="4.5" cy="4.2" r="1.4" />
+        <circle cx="4.5" cy="11.8" r="1.4" />
+        <circle cx="11.5" cy="8" r="1.4" />
+        <path d="M4.5 5.6v4.8M5.9 4.7c2.4.2 4.2 1.2 4.6 2.1" />
+      </svg>
+    );
+  }
+  if (id === 'artifacts') {
+    return (
+      <svg {...props}>
+        <rect x="3" y="2.5" width="10" height="11" rx="1.6" />
+        <path d="M5.5 6h5M5.5 8.8h5M5.5 11.4h3" />
+      </svg>
+    );
+  }
+  if (id === 'terminal') {
+    return (
+      <svg {...props}>
+        <rect x="2" y="3" width="12" height="10" rx="1.6" />
+        <path d="m4.8 6.4 2.1 1.6-2.1 1.6M8.3 9.8h3" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...props}>
+      <path d="M3 3.5h10v7.2H6.6L3.6 13v-2.3H3z" />
+    </svg>
+  );
+}
 
 function formatRootLabel(rootPath: string, fromSession: boolean, sessionSuffix: string): string {
   const parts = rootPath.split('/').filter(Boolean);
@@ -71,6 +132,11 @@ export function RightDock({
   diffBadgeCount = 0,
   focusedDiffFile = null,
   focusedFilePath = null,
+  channel = 'loopback',
+  permissionLevel = 'L2',
+  models = [],
+  activeModelId = null,
+  onInsertToComposer,
 }: RightDockProps) {
   const { t } = useI18n();
   const [uncontrolledTab, setUncontrolledTab] = useState<RightDockTab>(defaultTab);
@@ -220,6 +286,70 @@ export function RightDock({
   );
 
   const resolvedOnAuthorizeRoot = onAuthorizeRoot ? handleAuthorizeRoot : undefined;
+  const [fileSelection, setFileSelection] = useState<SideChatSelectionContext | null>(null);
+  const [diffSelection, setDiffSelection] = useState<SideChatSelectionContext | null>(null);
+  const [preferredSelectionKind, setPreferredSelectionKind] = useState<'file' | 'diff' | null>(null);
+
+  useEffect(() => {
+    setFileSelection(null);
+    setDiffSelection(null);
+    setPreferredSelectionKind(null);
+  }, [currentRoot]);
+
+  useEffect(() => {
+    if (focusedDiffFile?.path) {
+      setPreferredSelectionKind('diff');
+    }
+  }, [focusedDiffFile?.path, focusedDiffFile?.nonce]);
+
+  useEffect(() => {
+    if (focusedFilePath?.path) {
+      setPreferredSelectionKind('file');
+    }
+  }, [focusedFilePath?.path, focusedFilePath?.nonce]);
+
+  const handleFileSelectionChange = useCallback((next: SideChatSelectionContext | null) => {
+    setFileSelection(next);
+    if (next) {
+      setPreferredSelectionKind('file');
+    }
+  }, []);
+
+  const handleDiffSelectionChange = useCallback((next: SideChatSelectionContext | null) => {
+    setDiffSelection(next);
+    if (next) {
+      setPreferredSelectionKind('diff');
+    }
+  }, []);
+
+  const activeSelectionContext = useMemo<SideChatSelectionContext | null>(() => {
+    const primary =
+      preferredSelectionKind === 'diff'
+        ? diffSelection
+        : preferredSelectionKind === 'file'
+          ? fileSelection
+          : null;
+    const picked = primary || diffSelection || fileSelection;
+    if (picked) {
+      return {
+        ...picked,
+        snippet: truncateSelectionSnippet(picked.snippet),
+      };
+    }
+    const filePath = focusedDiffFile?.path || focusedFilePath?.path;
+    if (!filePath) return null;
+    return {
+      path: filePath,
+      snippet: '',
+      kind: focusedDiffFile?.path ? 'diff' : 'file',
+    };
+  }, [
+    preferredSelectionKind,
+    diffSelection,
+    fileSelection,
+    focusedDiffFile?.path,
+    focusedFilePath?.path,
+  ]);
 
   return (
     <div className={styles.dock} data-testid="right-dock">
@@ -227,17 +357,23 @@ export function RightDock({
         <div className={styles.tabBar} role="tablist" aria-label={t('dock.panelAria')}>
           {TAB_KEYS.map((tab) => {
             const active = currentTab === tab.id;
+            const label = t(tab.labelKey);
             return (
               <button
                 key={tab.id}
                 type="button"
                 role="tab"
                 aria-selected={active}
+                aria-label={label}
+                title={label}
                 className={`${styles.tabBtn} ${active ? styles.tabBtnActive : ''}`}
                 onClick={() => handleSelectTab(tab.id)}
                 data-testid={`dock-tab-${tab.id}`}
               >
-                <span>{t(tab.labelKey)}</span>
+                <span className={styles.tabIcon}>
+                  <TabIcon id={tab.id} />
+                </span>
+                <span className={styles.tabLabel}>{label}</span>
                 {tab.id === 'diff' && diffBadgeCount > 0 && (
                   <span className={styles.tabBadge} data-testid="dock-diff-badge">
                     {diffBadgeCount}
@@ -292,6 +428,7 @@ export function RightDock({
             onFileSaved={() => setDiffBumpCount((n) => n + 1)}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedFilePath}
+            onSelectionChange={handleFileSelectionChange}
           />
         )}
         {currentTab === 'diff' && (
@@ -300,11 +437,31 @@ export function RightDock({
             refreshKey={diffRefreshKey}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedDiffFile}
+            onSelectionChange={handleDiffSelectionChange}
           />
         )}
         {currentTab === 'artifacts' && (
           <ArtifactsPanel sessionId={effectiveSessionId} refreshKey={combinedRefreshKey} />
         )}
+        <div className={styles.keepalivePane} hidden={currentTab !== 'terminal'}>
+          <TerminalPanel
+            activeRoot={currentRoot}
+            channel={channel}
+            permissionLevel={permissionLevel}
+            refreshKey={combinedRefreshKey}
+          />
+        </div>
+        <div className={styles.keepalivePane} hidden={currentTab !== 'sideChat'}>
+          <SideChatPanel
+            activeSessionId={effectiveSessionId}
+            models={models}
+            activeModelId={activeModelId}
+            channel={channel}
+            permissionLevel={permissionLevel}
+            activeSelectionContext={activeSelectionContext}
+            onInsertToComposer={onInsertToComposer}
+          />
+        </div>
       </div>
     </div>
   );

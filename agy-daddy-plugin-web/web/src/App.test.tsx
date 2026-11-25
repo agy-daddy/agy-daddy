@@ -10,6 +10,8 @@ const mockSseCallbacks: {
   onHeartbeat?: () => void;
   onDelta?: (delta: SseDeltaPayload) => void;
   onResync?: () => void;
+  onStatePatch?: (patch: { key: string; value: unknown }) => void;
+  onTaskUpdated?: (payload: { runningCount: number }) => void;
 } = {};
 
 const mocks = vi.hoisted(() => ({
@@ -26,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   getRemoteStatus: vi.fn(),
   getWebAccessStatus: vi.fn(),
   authenticateWithToken: vi.fn(),
+  listBackgroundTasks: vi.fn(),
   getSessionDetail: vi.fn(),
   sendMessage: vi.fn(),
   cancelSession: vi.fn(),
@@ -91,6 +94,19 @@ vi.mock('./api/client', () => {
       getTopbar: mocks.getTopbar,
       getRemoteStatus: mocks.getRemoteStatus,
       getWebAccessStatus: mocks.getWebAccessStatus,
+      listBackgroundTasks: mocks.listBackgroundTasks,
+      stopBackgroundTask: vi.fn().mockResolvedValue({ ok: true, alreadyFinished: false }),
+      listTerminalSessions: vi.fn().mockResolvedValue({
+        ok: true,
+        runtimeAvailable: true,
+        writable: true,
+        requiredPermission: 'L2',
+        maxSessions: 8,
+        sessions: [],
+      }),
+      subscribeTerminalStream: vi.fn(() => () => {}),
+      streamSideChatCompletion: vi.fn().mockResolvedValue(undefined),
+      cancelSideChat: vi.fn().mockResolvedValue({ ok: true, cancelled: true }),
       authenticateWithToken: mocks.authenticateWithToken,
       getComposerState: mocks.getComposerState,
       optimizePrompt: vi.fn().mockResolvedValue({ ok: true, optimizedText: '' }),
@@ -242,6 +258,16 @@ describe('App optimistic send flow', () => {
     mockSseCallbacks.onHeartbeat = undefined;
     mockSseCallbacks.onDelta = undefined;
     mockSseCallbacks.onResync = undefined;
+    mockSseCallbacks.onStatePatch = undefined;
+    mockSseCallbacks.onTaskUpdated = undefined;
+
+    mocks.listBackgroundTasks.mockResolvedValue({
+      ok: true,
+      runningCount: 0,
+      running: [],
+      recent: [],
+      serverTime: Date.now(),
+    });
 
     mocks.getHealth.mockResolvedValue({
       ok: true,
@@ -635,5 +661,165 @@ describe('App optimistic send flow', () => {
         configurable: true,
       });
     }
+  });
+
+  it('renders single-layer topbar without redundant sessionHeader/activeModelBadge and syncs Context capsule <-> ComposerContextBar via state.patch', async () => {
+    mocks.getTopbar.mockResolvedValue({
+      ok: true,
+      panels: {
+        context: {
+          available: true,
+          source: 'service',
+          settings: { displayLocation: 'topbar', showSpeed: false, compactPolicy: 'remind' },
+          data: { hasSession: true, used: 120_000, budget: 1_000_000, percent: 12 },
+        },
+        usage: { available: false },
+        quota: { available: false },
+      },
+    });
+    mocks.getSessionDetail.mockResolvedValue({
+      ok: true,
+      session: {
+        cascadeId: 'sess-1',
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 1,
+        source: null,
+        metadata: null,
+        generatorMetadata: [],
+      },
+      events: [makeUserEvent(0, 'Hello')],
+    });
+    mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+      mockSseCallbacks.onStatePatch = cbs.onStatePatch;
+      mockSseCallbacks.onTaskUpdated = cbs.onTaskUpdated;
+      return () => {};
+    });
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Demo Session');
+    });
+
+    // AC-1: zero secondary sessionHeader, session-header-dock-toggle, or activeModelBadge
+    expect(screen.queryByTestId('session-header-dock-toggle')).toBeNull();
+    expect(screen.queryByTestId('active-model-badge')).toBeNull();
+
+    // Context starts in topbar
+    expect(document.querySelector('[data-capsule="context"]')).toBeInTheDocument();
+    expect(screen.queryByTestId('composer-context-bar')).toBeNull();
+
+    // SSE state.patch moves Context to composer and hides topbar Context capsule
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:context.snapshot@1',
+        value: {
+          hasSession: true,
+          used: 150_000,
+          budget: 1_000_000,
+          percent: 15,
+          displayLocation: 'composer',
+          showSpeed: true,
+          speed: { tps: 60 },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-capsule="context"]')).toBeNull();
+      expect(screen.getByTestId('composer-context-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('composer-context-speed')).toHaveTextContent('60 tok/s');
+    });
+  });
+
+  it('syncs agy-daddy.web, agy-daddy.context, and agy-daddy.composer when SSE state:plugin.settings@1 carries values', async () => {
+    mocks.getTopbar.mockResolvedValue({
+      ok: true,
+      panels: {
+        context: {
+          available: true,
+          source: 'service',
+          settings: { displayLocation: 'topbar', showSpeed: false, compactPolicy: 'remind' },
+          data: { hasSession: true, used: 120_000, budget: 1_000_000, percent: 12 },
+        },
+        usage: { available: false },
+        quota: { available: false },
+      },
+    });
+    mocks.getSessionDetail.mockResolvedValue({
+      ok: true,
+      session: {
+        cascadeId: 'sess-1',
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 1,
+        source: null,
+        metadata: null,
+        generatorMetadata: [],
+      },
+      events: [makeUserEvent(0, 'Hello')],
+    });
+    mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+      mockSseCallbacks.onStatePatch = cbs.onStatePatch;
+      mockSseCallbacks.onTaskUpdated = cbs.onTaskUpdated;
+      return () => {};
+    });
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Demo Session');
+    });
+
+    const initialTopbarCalls = mocks.getTopbar.mock.calls.length;
+    const initialComposerCalls = mocks.getComposerState.mock.calls.length;
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.web',
+          values: { theme: 'light', drawerSpeed: 'fast' },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('light');
+      expect(document.documentElement.dataset.drawerSpeed).toBe('fast');
+    });
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.context',
+          values: { displayLocation: 'composer', showSpeed: true },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mocks.getTopbar.mock.calls.length).toBeGreaterThan(initialTopbarCalls);
+      expect(document.querySelector('[data-capsule="context"]')).toBeNull();
+      expect(screen.getByTestId('composer-context-bar')).toBeInTheDocument();
+    });
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.composer',
+          values: { ghostSuggest: false, showQuickBar: true },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mocks.getComposerState.mock.calls.length).toBeGreaterThan(initialComposerCalls);
+    });
   });
 });

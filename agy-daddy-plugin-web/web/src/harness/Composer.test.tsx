@@ -279,4 +279,68 @@ describe('Composer', () => {
     });
     expect(textarea.value).toBe('Next draft in progress');
   });
+
+  it('renders ComposerContextBar below composer only in composer displayLocation and patches draft without auto-sending', () => {
+    const onSend = vi.fn();
+    const onRunCompact = vi.fn();
+    const { rerender } = render(
+      <I18nProvider defaultLocale="en">
+        <Composer
+          models={MODELS}
+          onSend={onSend}
+          contextDisplayLocation="composer"
+          contextShowSpeed={true}
+          onRunCompact={onRunCompact}
+          contextPanel={{
+            available: true,
+            settings: {
+              displayLocation: 'composer',
+              showSpeed: true,
+              compactPolicy: 'idle_and_cliff',
+            },
+            data: {
+              hasSession: true,
+              used: 250_000,
+              budget: 1_000_000,
+              percent: 82,
+              cacheHitRate: 82,
+              cacheCliffRisk: 'warn',
+              speed: { tps: 54 },
+            },
+          }}
+        />
+      </I18nProvider>,
+    );
+
+    const contextBar = screen.getByTestId('composer-context-bar');
+    expect(contextBar).toBeInTheDocument();
+    expect(contextBar).toHaveTextContent('54 tok/s');
+
+    fireEvent.click(screen.getByTestId('composer-context-trigger'));
+    expect(screen.getByTestId('topbar-popover-context')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('composer-context-compact-btn'));
+    expect(onRunCompact).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <I18nProvider defaultLocale="en">
+        <Composer
+          models={MODELS}
+          onSend={onSend}
+          contextDisplayLocation="topbar"
+          externalDraftPatch={{ text: 'Patched from side chat', nonce: 1 }}
+          contextPanel={{
+            available: true,
+            data: { hasSession: true, used: 180_000, budget: 1_000_000, percent: 18 },
+          }}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByTestId('composer-context-bar')).not.toBeInTheDocument();
+    expect((screen.getByTestId('composer-textarea') as HTMLTextAreaElement).value).toBe(
+      'Patched from side chat',
+    );
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });

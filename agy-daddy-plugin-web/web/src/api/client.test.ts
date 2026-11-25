@@ -3,9 +3,13 @@ import {
   ApiError,
   apiRequest,
   getAppBasePrefix,
+  listBackgroundTasks,
   markSessionRead,
   resolveApiUrl,
+  sendTerminalInput,
   setConfirmWriteHandler,
+  stopBackgroundTask,
+  streamSideChatCompletion,
 } from './client';
 
 describe('apiRequest Cloudflare write confirmation gate', () => {
@@ -193,6 +197,92 @@ describe('apiRequest Cloudflare write confirmation gate', () => {
           path: '/api/v1/sessions',
         }),
       );
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: origLocation,
+        configurable: true,
+      });
+    }
+  });
+
+  it('renews expired PTY_WRITE lease token via confirmWriteHandler and streams Side Chat under /pc/', async () => {
+    const origLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/pc/' },
+      configurable: true,
+    });
+    try {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error: 'CONFIRMATION_REQUIRED',
+              channel: 'cloudflare',
+              action: 'PTY_WRITE:term-1',
+              confirmToken: 'tok-renewed-5m',
+            }),
+            { status: 403, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true, sessionId: 'term-1' }), { status: 200 }),
+        );
+
+      const handler = vi.fn().mockResolvedValue(true);
+      setConfirmWriteHandler(handler);
+      const renewedTokens: string[] = [];
+
+      const inputRes = await sendTerminalInput('term-1', 'ls\n', {
+        confirmToken: 'tok-expired',
+        onConfirmTokenRenewed: (t) => renewedTokens.push(t),
+      });
+      expect(inputRes).toEqual({ ok: true, sessionId: 'term-1' });
+      expect(renewedTokens).toEqual(['tok-renewed-5m']);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('/pc/api/v1/terminal/sessions/term-1/input');
+
+      const sseBody = [
+        'event: meta\ndata: {"requestId":"req-1","model":"gemini-4-flash","label":"Flash","contextScope":"none"}\n\n',
+        'event: delta\ndata: {"delta":"Hello "}\n\n',
+        'event: done\ndata: {"requestId":"req-1","text":"Hello ","model":"gemini-4-flash","label":"Flash","durationMs":12}\n\n',
+      ].join('');
+      fetchMock.mockResolvedValueOnce(
+        new Response(sseBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      );
+
+      const deltas: string[] = [];
+      let doneText = '';
+      await streamSideChatCompletion(
+        { prompt: 'hi' },
+        {
+          onDelta: (d) => deltas.push(d.delta),
+          onDone: (d) => {
+            doneText = d.text;
+          },
+        },
+      );
+      expect(deltas).toEqual(['Hello ']);
+      expect(doneText).toBe('Hello ');
+      expect(fetchMock.mock.calls[2]?.[0]).toBe('/pc/api/v1/side-chat/completions');
+
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ ok: true, runningCount: 0, running: [], recent: [], serverTime: 1 }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ ok: true, taskId: 'session:c1', alreadyFinished: true, status: 'done', exitCode: null }),
+            { status: 200 },
+          ),
+        );
+
+      const tasksRes = await listBackgroundTasks();
+      expect(tasksRes.runningCount).toBe(0);
+      const stopRes = await stopBackgroundTask('session:c1');
+      expect(stopRes.alreadyFinished).toBe(true);
     } finally {
       Object.defineProperty(window, 'location', {
         value: origLocation,

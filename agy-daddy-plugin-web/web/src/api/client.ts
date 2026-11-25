@@ -7,11 +7,15 @@ import type {
   ArtifactsListResponse,
   AssignSessionProjectResponse,
   AuthorizeWorkspaceRootResponse,
+  BackgroundTaskDetailResponse,
+  BackgroundTasksListResponse,
   CancelSessionResponse,
   ComposerStateResponse,
   CreateProjectRequest,
   CreateSessionRequest,
   CreateSessionResponse,
+  CreateTerminalSessionRequest,
+  CreateTerminalSessionResponse,
   DefaultSessionPathResponse,
   DeleteEntityResponse,
   DoctorReport,
@@ -44,12 +48,26 @@ import type {
   SessionDetailResponse,
   SessionEvent,
   SessionsListResponse,
+  SideChatCancelResponse,
+  SideChatCompletionRequest,
+  SideChatDeltaEvent,
+  SideChatDoneEvent,
+  SideChatErrorEvent,
+  SideChatMetaEvent,
   SseDeltaPayload,
   SseHeartbeatPayload,
   SseHostEventPayload,
   SseResyncPayload,
   SseStatePatchPayload,
+  SseTaskUpdatedPayload,
+  StopBackgroundTaskResponse,
   SwitchTicketResponse,
+  TerminalCloseResponse,
+  TerminalInputResponse,
+  TerminalResizeResponse,
+  TerminalSessionsListResponse,
+  TerminalSseExitEvent,
+  TerminalSseOutputEvent,
   TopbarResponse,
   UpdateProjectGroupRequest,
   UpdateProjectRequest,
@@ -110,6 +128,9 @@ export interface ApiRequestOptions {
   signal?: AbortSignal;
   headers?: Record<string, string>;
   interactiveConfirm?: boolean;
+  confirmToken?: string;
+  onConfirmTokenRenewed?: (token: string) => void;
+  _isConfirmRetry?: boolean;
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -118,6 +139,10 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     Accept: 'application/json',
     ...(options.headers || {}),
   };
+
+  if (options.confirmToken && !headers['X-Agy-Confirm']) {
+    headers['X-Agy-Confirm'] = options.confirmToken;
+  }
 
   if (CSRF_METHODS.has(method)) {
     headers['X-Agy-Csrf'] = '1';
@@ -158,10 +183,11 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     response.status === 403 && dataObj?.error === 'CONFIRMATION_REQUIRED'
       ? dataObj.confirmToken
       : null;
+  const canPromptConfirm = !options._isConfirmRetry && (!options.headers?.['X-Agy-Confirm']);
   if (
     typeof confirmToken === 'string' &&
     confirmToken &&
-    !headers['X-Agy-Confirm'] &&
+    canPromptConfirm &&
     options.interactiveConfirm !== false &&
     confirmWriteHandler
   ) {
@@ -202,8 +228,12 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
       }
     }
 
+    options.onConfirmTokenRenewed?.(tokenToUse);
+
     return apiRequest<T>(path, {
       ...options,
+      confirmToken: undefined,
+      _isConfirmRetry: true,
       headers: { ...(options.headers || {}), 'X-Agy-Confirm': tokenToUse },
     });
   }
@@ -679,6 +709,7 @@ export interface SessionStreamHandlers {
   onDelta?: (payload: SseDeltaPayload, lastEventId?: string) => void;
   onStatePatch?: (payload: SseStatePatchPayload, lastEventId?: string) => void;
   onHostEvent?: (payload: SseHostEventPayload, lastEventId?: string) => void;
+  onTaskUpdated?: (payload: SseTaskUpdatedPayload, lastEventId?: string) => void;
   onResync?: (payload: SseResyncPayload) => void;
   onHeartbeat?: (payload: SseHeartbeatPayload) => void;
   onOpen?: () => void;
@@ -724,6 +755,11 @@ export function subscribeSessionStream(
     if (payload) handlers.onHostEvent?.(payload, (ev as MessageEvent).lastEventId);
   });
 
+  es.addEventListener('task.updated', (ev) => {
+    const payload = parseSseJson<SseTaskUpdatedPayload>(ev);
+    if (payload) handlers.onTaskUpdated?.(payload, (ev as MessageEvent).lastEventId);
+  });
+
   es.addEventListener('session.resync', (ev) => {
     const payload = parseSseJson<SseResyncPayload>(ev);
     if (payload) handlers.onResync?.(payload);
@@ -759,6 +795,252 @@ export function exportSessionMarkdown(
     method: 'POST',
     body: { cascadeId, title, events },
   });
+}
+
+export function listTerminalSessions(signal?: AbortSignal): Promise<TerminalSessionsListResponse> {
+  return apiRequest<TerminalSessionsListResponse>('/api/v1/terminal/sessions', { signal });
+}
+
+export function createTerminalSession(
+  req: CreateTerminalSessionRequest = {},
+): Promise<CreateTerminalSessionResponse> {
+  return apiRequest<CreateTerminalSessionResponse>('/api/v1/terminal/sessions', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export interface TerminalStreamHandlers {
+  afterSeq?: number;
+  onOutput?: (payload: TerminalSseOutputEvent, lastEventId?: string) => void;
+  onExit?: (payload: TerminalSseExitEvent) => void;
+  onOpen?: () => void;
+  onError?: (event: Event) => void;
+}
+
+export function subscribeTerminalStream(
+  sessionId: string,
+  handlers: TerminalStreamHandlers,
+): () => void {
+  const query = buildQuery({ afterSeq: handlers.afterSeq });
+  const url = resolveApiUrl(`/api/v1/terminal/sessions/${encodeURIComponent(sessionId)}/stream${query}`);
+  const es = new EventSource(url, { withCredentials: true });
+
+  if (handlers.onOpen) {
+    es.addEventListener('open', () => handlers.onOpen?.());
+  }
+  if (handlers.onError) {
+    es.addEventListener('error', (ev) => handlers.onError?.(ev));
+  }
+  es.addEventListener('pty.output', (ev) => {
+    const payload = parseSseJson<TerminalSseOutputEvent>(ev);
+    if (payload) handlers.onOutput?.(payload, (ev as MessageEvent).lastEventId);
+  });
+  es.addEventListener('pty.exit', (ev) => {
+    const payload = parseSseJson<TerminalSseExitEvent>(ev);
+    if (payload) handlers.onExit?.(payload);
+  });
+
+  return () => {
+    es.close();
+  };
+}
+
+export function sendTerminalInput(
+  sessionId: string,
+  data: string,
+  opts?: { confirmToken?: string; onConfirmTokenRenewed?: (token: string) => void },
+): Promise<TerminalInputResponse> {
+  return apiRequest<TerminalInputResponse>(
+    `/api/v1/terminal/sessions/${encodeURIComponent(sessionId)}/input`,
+    {
+      method: 'POST',
+      body: { data },
+      confirmToken: opts?.confirmToken,
+      onConfirmTokenRenewed: opts?.onConfirmTokenRenewed,
+    },
+  );
+}
+
+export function resizeTerminalSession(
+  sessionId: string,
+  cols: number,
+  rows: number,
+  opts?: { confirmToken?: string; onConfirmTokenRenewed?: (token: string) => void },
+): Promise<TerminalResizeResponse> {
+  return apiRequest<TerminalResizeResponse>(
+    `/api/v1/terminal/sessions/${encodeURIComponent(sessionId)}/resize`,
+    {
+      method: 'POST',
+      body: { cols, rows },
+      confirmToken: opts?.confirmToken,
+      onConfirmTokenRenewed: opts?.onConfirmTokenRenewed,
+    },
+  );
+}
+
+export function closeTerminalSession(sessionId: string): Promise<TerminalCloseResponse> {
+  return apiRequest<TerminalCloseResponse>(
+    `/api/v1/terminal/sessions/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export interface SideChatStreamHandlers {
+  signal?: AbortSignal;
+  onMeta?: (payload: SideChatMetaEvent) => void;
+  onDelta?: (payload: SideChatDeltaEvent) => void;
+  onDone?: (payload: SideChatDoneEvent) => void;
+  onError?: (payload: SideChatErrorEvent) => void;
+}
+
+export async function streamSideChatCompletion(
+  req: SideChatCompletionRequest,
+  handlers: SideChatStreamHandlers,
+  extraHeaders: Record<string, string> = {},
+): Promise<void> {
+  const path = '/api/v1/side-chat/completions';
+  const headers: Record<string, string> = {
+    Accept: 'text/event-stream',
+    'Content-Type': 'application/json',
+    'X-Agy-Csrf': '1',
+    ...extraHeaders,
+  };
+
+  const response = await fetch(resolveApiUrl(path), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    body: JSON.stringify(req),
+    signal: handlers.signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const raw = JSON.parse(text);
+      if (raw && typeof raw === 'object') parsed = raw as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+
+    const confirmToken =
+      response.status === 403 && parsed?.error === 'CONFIRMATION_REQUIRED'
+        ? parsed.confirmToken
+        : null;
+    if (
+      typeof confirmToken === 'string' &&
+      confirmToken &&
+      !headers['X-Agy-Confirm'] &&
+      confirmWriteHandler
+    ) {
+      const challenge: WriteConfirmChallenge = {
+        action: typeof parsed?.action === 'string' && parsed.action ? parsed.action : `POST ${path}`,
+        channel: typeof parsed?.channel === 'string' && parsed.channel ? parsed.channel : 'cloudflare',
+        confirmToken,
+        confirmHint: typeof parsed?.confirmHint === 'string' ? parsed.confirmHint : undefined,
+        method: 'POST',
+        path,
+      };
+      const approved = await confirmWriteHandler(challenge);
+      if (!approved) {
+        throw new ApiError('CONFIRMATION_CANCELLED', 403, 'CONFIRMATION_CANCELLED', parsed);
+      }
+      return streamSideChatCompletion(req, handlers, {
+        ...extraHeaders,
+        'X-Agy-Confirm': confirmToken,
+      });
+    }
+
+    const code = typeof parsed?.error === 'string' ? parsed.error : `HTTP_${response.status}`;
+    const msg = typeof parsed?.message === 'string' ? parsed.message : code;
+    throw new ApiError(msg, response.status, code, parsed);
+  }
+
+  const processBlock = (rawBlock: string) => {
+    const lines = rawBlock.split('\n').filter((l) => l && !l.startsWith(':'));
+    if (lines.length === 0) return;
+    let eventName = 'message';
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    const rawData = dataLines.join('\n');
+    if (!rawData) return;
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      return;
+    }
+    if (eventName === 'meta' && parsed) handlers.onMeta?.(parsed as SideChatMetaEvent);
+    else if (eventName === 'delta' && parsed) handlers.onDelta?.(parsed as SideChatDeltaEvent);
+    else if (eventName === 'done' && parsed) handlers.onDone?.(parsed as SideChatDoneEvent);
+    else if (eventName === 'error' && parsed) handlers.onError?.(parsed as SideChatErrorEvent);
+  };
+
+  if (!response.body) {
+    const full = await response.text();
+    for (const block of full.split('\n\n')) processBlock(block);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        processBlock(block);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      for (const block of buffer.split('\n\n')) processBlock(block);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+}
+
+export function cancelSideChat(requestId: string): Promise<SideChatCancelResponse> {
+  return apiRequest<SideChatCancelResponse>('/api/v1/side-chat/cancel', {
+    method: 'POST',
+    body: { requestId },
+    interactiveConfirm: false,
+  });
+}
+
+export function listBackgroundTasks(signal?: AbortSignal): Promise<BackgroundTasksListResponse> {
+  return apiRequest<BackgroundTasksListResponse>('/api/v1/tasks', { signal });
+}
+
+export function getBackgroundTaskDetail(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<BackgroundTaskDetailResponse> {
+  return apiRequest<BackgroundTaskDetailResponse>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+}
+
+export function stopBackgroundTask(taskId: string): Promise<StopBackgroundTaskResponse> {
+  return apiRequest<StopBackgroundTaskResponse>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/stop`,
+    {
+      method: 'POST',
+      body: {},
+    },
+  );
 }
 
 export const apiClient = {
@@ -814,5 +1096,16 @@ export const apiClient = {
   optimizePrompt,
   exportSessionMarkdown,
   subscribeSessionStream,
+  listTerminalSessions,
+  createTerminalSession,
+  subscribeTerminalStream,
+  sendTerminalInput,
+  resizeTerminalSession,
+  closeTerminalSession,
+  streamSideChatCompletion,
+  cancelSideChat,
+  listBackgroundTasks,
+  getBackgroundTaskDetail,
+  stopBackgroundTask,
   setConfirmWriteHandler,
 };

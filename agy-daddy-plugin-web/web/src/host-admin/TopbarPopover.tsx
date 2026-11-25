@@ -9,6 +9,7 @@ export interface TopbarPopoverProps {
   slot?: TopbarPanelSlot;
   loading?: boolean;
   anchorLeft?: number;
+  placement?: 'bottom' | 'top';
   onRefresh?: () => void;
   onRunCompact?: () => void;
   onClose: () => void;
@@ -766,6 +767,7 @@ export function TopbarPopover({
   slot,
   loading = false,
   anchorLeft = 0,
+  placement = 'bottom',
   onRefresh,
   onRunCompact,
   onClose,
@@ -785,10 +787,11 @@ export function TopbarPopover({
 
   return (
     <div
-      className={styles.popover}
+      className={`${styles.popover} ${placement === 'top' ? styles.popoverTop : ''}`.trim()}
       style={{ left: `${Math.max(0, anchorLeft)}px` }}
       role="dialog"
       aria-label={title}
+      data-placement={placement}
       data-testid={`topbar-popover-${kind}`}
     >
       <div className={styles.header}>

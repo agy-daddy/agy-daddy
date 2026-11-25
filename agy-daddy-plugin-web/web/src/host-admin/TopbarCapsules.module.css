@@ -3,9 +3,121 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
+}
+
+.leftGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.brandMark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sessionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 260px;
+}
+
+.sessionStatusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.sessionStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.sessionStatusRunning {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sessionStatusRunning .sessionStatusDot {
+  background: var(--accent);
+}
+
+.workspaceChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.workspaceName {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.branchTag {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.diffBadgeBtn {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.diffBadgeBtn:hover {
+  background: var(--accent-soft-hover);
 }
 
 .capsules {
@@ -13,13 +125,7 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
-  flex: 0 1 auto;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.capsules::-webkit-scrollbar {
-  display: none;
+  flex: 0 0 auto;
 }
 
 .capsule {
@@ -97,15 +203,10 @@
 .rightGroup {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 1;
+  gap: 5px;
+  flex-shrink: 0;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.rightGroup::-webkit-scrollbar {
-  display: none;
+  overflow: visible;
 }
 
 .statusPill {
@@ -121,6 +222,11 @@
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.statusPillAlert {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: var(--status-danger-soft);
 }
 
 .statusDot {
@@ -176,11 +282,36 @@
   align-items: center;
 }
 
+.tasksBtnLabel {
+  white-space: nowrap;
+}
+
+.tasksCountBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--bg-surface);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.menuTriggerBtn {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
 @media (max-width: 1480px) {
   .capsuleLabel {
     display: none;
   }
-  .statusLabelText {
+  .statusPill:not([data-alert='true']) .statusLabelText {
     display: none;
   }
   .kbd {
@@ -188,6 +319,27 @@
   }
   .localeSelect {
     max-width: 68px;
+  }
+}
+
+@media (max-width: 1279px) {
+  .workspaceChip {
+    display: none;
+  }
+}
+
+@media (max-width: 1099px) {
+  .diffBadgeBtn {
+    display: none;
+  }
+  .tasksBtnLabel {
+    display: none;
+  }
+}
+
+@media (max-width: 959px) {
+  .capsules {
+    display: none;
   }
 }
 

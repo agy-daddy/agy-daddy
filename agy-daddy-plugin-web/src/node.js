@@ -9,6 +9,9 @@ const { createWorkspaceService, normalizeInputRoot, isForbiddenSystemRoot } = re
 const { createWorkspaceMetaStore, normalizeLocalPath } = require('./workspace-meta-store');
 const { createSessionOrgBridge } = require('./session-org-bridge');
 const { createHostProxy } = require('./host-proxy');
+const { createPtyManager } = require('./pty-manager');
+const { createSideChatService } = require('./side-chat-service');
+const { createTaskManager } = require('./task-manager');
 const { createWebServer } = require('./web-server');
 const {
   normalizeBindHostMode,
@@ -234,6 +237,9 @@ async function activate(host) {
   const harnessAdapter = createHarnessAdapter({ rpc: host.rpc });
   const workspaceService = createWorkspaceService({ getAllowedRoots, brainDir });
   const sessionOrgBridge = createSessionOrgBridge();
+  let ptyManager = null;
+  let sideChatService = null;
+  let taskManager = null;
 
   const runtime = {
     host,
@@ -254,6 +260,9 @@ async function activate(host) {
     workspaceService,
     workspaceMetaStore,
     sessionOrgBridge,
+    ptyManager: null,
+    sideChatService: null,
+    taskManager: null,
     hostProxy: null,
     webServer: null,
     disposeOnAny: null,
@@ -645,6 +654,26 @@ async function activate(host) {
 
   await syncWithRemoteService();
 
+  ptyManager = createPtyManager({
+    allowedRoots: getAllowedRoots,
+    defaultCwd: () => workspaceMetaStore.getState().defaultSessionPath || getAllowedRoots()[0] || '',
+    onTaskUpdated: (ev) => {
+      runtime.webServer?.broadcast('task.updated', ev);
+    }
+  });
+  sideChatService = createSideChatService({
+    rpc: host.rpc,
+    harnessAdapter
+  });
+  taskManager = createTaskManager({
+    rpc: host.rpc,
+    harnessAdapter,
+    ptyManager
+  });
+  runtime.ptyManager = ptyManager;
+  runtime.sideChatService = sideChatService;
+  runtime.taskManager = taskManager;
+
   runtime.webServer = createWebServer({
     host: resolveBindHost({ channels: runtimeAccess.channels, mode: runtimeAccess.bindHostMode }),
     bindHostMode: runtimeAccess.bindHostMode,
@@ -670,6 +699,9 @@ async function activate(host) {
     workspaceService,
     workspaceMetaStore,
     sessionOrgBridge,
+    ptyManager,
+    sideChatService,
+    taskManager,
     refreshSessionRoots,
     onReadStateChanged: () => {
       if (typeof host?.state?.set === 'function') {
@@ -805,6 +837,13 @@ async function deactivate() {
     }
   } catch {}
   runtime.disposeService = null;
+
+  try {
+    if (runtime.ptyManager) {
+      runtime.ptyManager.disposeAll();
+    }
+  } catch {}
+  runtime.ptyManager = null;
 
   try {
     if (runtime.webServer) {

@@ -374,6 +374,7 @@ describe('TopbarCapsules & HostAdminModal (Modules 2 & 5)', () => {
       </I18nProvider>,
     );
 
+    await user.click(screen.getByTestId('topbar-custom-menu-btn'));
     const select = screen.getByTestId('topbar-locale-select') as HTMLSelectElement;
     expect(select.options).toHaveLength(10);
     expect(select.value).toBe('en');

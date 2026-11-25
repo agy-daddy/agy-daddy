@@ -920,17 +920,56 @@ function createHostProxy({ host, commands } = {}) {
     return await invokeControl('/host/health', {});
   }
 
+  function buildContextSettings(data, extraSettings) {
+    const rawDisplay = data?.displayLocation ?? extraSettings?.displayLocation;
+    const displayLocation = rawDisplay === 'topbar' ? 'topbar' : 'composer';
+    const rawShowSpeed = data?.showSpeed ?? extraSettings?.showSpeed;
+    const showSpeed = rawShowSpeed === undefined ? true : Boolean(rawShowSpeed);
+    const rawPolicy = data?.compactPolicy ?? extraSettings?.compactPolicy;
+    const compactPolicy = typeof rawPolicy === 'string' && rawPolicy.trim() ? rawPolicy.trim() : 'remind';
+    return {
+      displayLocation,
+      showSpeed,
+      compactPolicy
+    };
+  }
+
+  async function enrichContextSlot(slot) {
+    let extraSettings = null;
+    if (slot?.data?.displayLocation === undefined && host?.services && typeof host.services.call === 'function') {
+      try {
+        const res = await host.services.call('context', 'getSettings', [], { optional: true });
+        if (res?.ok && isPlainObject(res.value)) {
+          extraSettings = res.value;
+        } else if (isPlainObject(res) && !('ok' in res) && res.unavailable !== true) {
+          extraSettings = res;
+        }
+      } catch {
+        // Soft-degrade to defaults when context.getSettings is unavailable
+      }
+    }
+    return {
+      ...slot,
+      settings: buildContextSettings(slot.data, extraSettings)
+    };
+  }
+
   async function fetchTopbarPanel(name) {
+    if (name === 'context' && typeof host?.services?.has === 'function' && host.services.has('context') === false) {
+      return { available: false };
+    }
     const serviceMethods = name === 'usage' ? ['getSummary', 'getSnapshot'] : ['getSnapshot'];
     if (host?.services && typeof host.services.call === 'function') {
       for (const methodName of serviceMethods) {
         try {
           const res = await host.services.call(name, methodName, [], { optional: true });
           if (res && res.ok === true && res.value !== null && res.value !== undefined) {
-            return { available: true, source: 'service', data: res.value };
+            const slot = { available: true, source: 'service', data: res.value };
+            return name === 'context' ? await enrichContextSlot(slot) : slot;
           }
           if (res && typeof res === 'object' && !('ok' in res) && res.unavailable !== true) {
-            return { available: true, source: 'service', data: res };
+            const slot = { available: true, source: 'service', data: res };
+            return name === 'context' ? await enrichContextSlot(slot) : slot;
           }
         } catch {
           // Try next candidate method or fall back to bus state snapshots.
@@ -946,7 +985,8 @@ function createHostProxy({ host, commands } = {}) {
         try {
           const val = unwrapStateEntry(host.state.get(key));
           if (val !== null) {
-            return { available: true, source: 'state', data: val };
+            const slot = { available: true, source: 'state', data: val };
+            return name === 'context' ? await enrichContextSlot(slot) : slot;
           }
         } catch {
           // Ignore individual state lookup errors so other panels still render.
@@ -1246,6 +1286,26 @@ function localExportMarkdown(events = [], opts = {}) {
         }
       } catch {
         // Soft-degrade cleanly when composer plugin is absent
+      }
+    }
+
+    if (!available && host?.state && typeof host.state.get === 'function') {
+      try {
+        const snap = unwrapStateEntry(host.state.get('state:composer.settings@1'));
+        if (isPlainObject(snap) && snap.available === true) {
+          available = true;
+          if (isPlainObject(snap.settings)) {
+            settings = { ...settings, ...snap.settings };
+          }
+          if (Array.isArray(snap.builtins) && snap.builtins.length > 0) {
+            builtins = snap.builtins;
+          }
+          if (Array.isArray(snap.custom)) {
+            custom = snap.custom;
+          }
+        }
+      } catch {
+        // Ignore state lookup failures
       }
     }
 

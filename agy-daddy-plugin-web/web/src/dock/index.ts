@@ -2,6 +2,8 @@ export { RightDock, type RightDockProps, type RightDockTab } from './RightDock';
 export { FileTreePanel, type FileTreePanelProps } from './FileTreePanel';
 export { GitDiffPanel, type GitDiffPanelProps } from './GitDiffPanel';
 export { ArtifactsPanel, type ArtifactsPanelProps } from './ArtifactsPanel';
+export { TerminalPanel, type TerminalPanelProps } from './TerminalPanel';
+export { SideChatPanel, type SideChatPanelProps } from './SideChatPanel';
 export {
   adaptHostPluginPreviewer,
   BUILTIN_ARTIFACT_PREVIEWERS,

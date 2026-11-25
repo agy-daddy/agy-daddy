@@ -657,6 +657,7 @@ export type HostPluginAction = 'enable' | 'disable' | 'install' | 'uninstall' | 
 export interface HostPluginActionResponse {
   ok: boolean;
   needsPermissionConfirm?: boolean;
+  needsNativeUninstallConfirm?: boolean;
   error?: string;
   spec?: string;
   trustPolicy?: Record<string, unknown>;
@@ -790,14 +791,23 @@ export interface DoctorReport {
   legacySuite: Record<string, unknown>;
 }
 
+export type ContextDisplayLocation = 'composer' | 'topbar';
+
+export interface ContextPluginSettingsSummary {
+  displayLocation: ContextDisplayLocation;
+  showSpeed: boolean;
+  compactPolicy?: 'remind' | 'idle_prompt' | 'cliff_auto' | 'idle_and_cliff' | string;
+}
+
 export interface TopbarPanelSlot<T = Record<string, unknown>> {
   available: boolean;
   source?: 'service' | 'state' | string;
   data?: T;
+  settings?: ContextPluginSettingsSummary;
 }
 
 export interface TopbarPanels {
-  context: TopbarPanelSlot;
+  context: TopbarPanelSlot & { settings?: ContextPluginSettingsSummary };
   usage: TopbarPanelSlot;
   quota: TopbarPanelSlot;
   [key: string]: TopbarPanelSlot;
@@ -926,4 +936,189 @@ export interface ExportMarkdownResponse {
   markdown: string;
   filename: string;
   stepCount?: number;
+}
+
+export interface TerminalSessionDto {
+  sessionId: string;
+  title: string;
+  cwd: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  alive: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  createdAt: number;
+  lastActivityAt: number;
+  endedAt: number | null;
+  latestSeq: number;
+}
+
+export interface TerminalSessionsListResponse {
+  ok: boolean;
+  runtimeAvailable: boolean;
+  unavailableReason?: string | null;
+  writable: boolean;
+  requiredPermission: 'L2' | string;
+  maxSessions: number;
+  sessions: TerminalSessionDto[];
+}
+
+export interface CreateTerminalSessionRequest {
+  cwd?: string;
+  sessionId?: string;
+  title?: string;
+  cols?: number;
+  rows?: number;
+}
+
+export interface CreateTerminalSessionResponse {
+  ok: boolean;
+  created: boolean;
+  session: TerminalSessionDto;
+  writeConfirmToken?: string;
+  writeConfirmExpiresAt?: number;
+}
+
+export interface TerminalInputResponse {
+  ok: boolean;
+  sessionId: string;
+}
+
+export interface TerminalResizeResponse {
+  ok: boolean;
+  sessionId: string;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalCloseResponse {
+  ok: boolean;
+  closed: boolean;
+  alreadyClosed?: boolean;
+}
+
+export interface TerminalSseOutputEvent {
+  seq: number;
+  chunk: string;
+  alive: boolean;
+}
+
+export interface TerminalSseExitEvent {
+  exitCode: number | null;
+  signal: string | null;
+  endedAt: number | null;
+}
+
+export type SideChatContextScope = 'none' | 'session_summary' | 'active_selection';
+
+export interface SideChatTurnInput {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface SideChatSelectionContext {
+  path: string;
+  snippet: string;
+  kind: 'file' | 'diff';
+}
+
+export interface SideChatCompletionRequest {
+  prompt: string;
+  history?: SideChatTurnInput[];
+  model?: string;
+  contextScope?: SideChatContextScope;
+  sessionId?: string | null;
+  selectionContext?: SideChatSelectionContext | null;
+}
+
+export interface SideChatMetaEvent {
+  requestId: string;
+  model: string;
+  label: string;
+  contextScope: SideChatContextScope;
+}
+
+export interface SideChatDeltaEvent {
+  delta: string;
+}
+
+export interface SideChatDoneEvent {
+  requestId: string;
+  text: string;
+  model: string;
+  label: string;
+  durationMs: number;
+}
+
+export interface SideChatErrorEvent {
+  error: string;
+  message: string;
+}
+
+export interface SideChatCancelResponse {
+  ok: boolean;
+  cancelled: boolean;
+  requestId?: string;
+}
+
+export type BackgroundTaskKind = 'command' | 'session' | 'subagent' | 'pty';
+export type BackgroundTaskStatus = 'running' | 'pending' | 'stopping' | 'done' | 'error' | 'canceled';
+
+export interface BackgroundTaskStopCapability {
+  canStop: boolean;
+  requiredPermission: 'L1' | 'L2';
+  stopScope: 'pty_session' | 'step_approval_deny' | 'cascade_invocation' | 'none';
+  affectsSessionId?: string | null;
+}
+
+export interface BackgroundTaskDto {
+  taskId: string;
+  kind: BackgroundTaskKind;
+  title: string;
+  commandLine?: string | null;
+  cwd?: string | null;
+  sessionId?: string | null;
+  sessionTitle?: string | null;
+  status: BackgroundTaskStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  stopCapability: BackgroundTaskStopCapability;
+}
+
+export interface BackgroundTaskDetailDto extends BackgroundTaskDto {
+  logText: string;
+  truncated: boolean;
+  totalBytes: number;
+  retainedBytes: number;
+}
+
+export interface BackgroundTasksListResponse {
+  ok: boolean;
+  runningCount: number;
+  running: BackgroundTaskDto[];
+  recent: BackgroundTaskDto[];
+  serverTime: number;
+}
+
+export interface BackgroundTaskDetailResponse {
+  ok: boolean;
+  task: BackgroundTaskDetailDto;
+}
+
+export interface StopBackgroundTaskResponse {
+  ok: boolean;
+  taskId: string;
+  alreadyFinished: boolean;
+  status: BackgroundTaskStatus;
+  exitCode: number | null;
+  task?: BackgroundTaskDto;
+}
+
+export interface SseTaskUpdatedPayload {
+  runningCount: number;
+  taskId?: string;
+  status?: BackgroundTaskStatus;
 }

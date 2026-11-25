@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
+  apiClient,
   getHostDoctor,
   getHostPlugins,
   getPluginSettings,
@@ -51,6 +52,8 @@ export interface HostAdminModalProps {
   onPluginsChanged?: () => void;
   onCommandExecuted?: (res: RunCommandResponse) => void;
   knownCommands?: HostCommandSuggestion[];
+  channel?: string;
+  permissionLevel?: string;
 }
 
 interface CommandHistoryEntry {
@@ -105,6 +108,8 @@ export function HostAdminModal({
   onPluginsChanged,
   onCommandExecuted,
   knownCommands,
+  channel: channelProp,
+  permissionLevel: permissionLevelProp,
 }: HostAdminModalProps) {
   const { locale: ctxLocale, supportedLanguages, setLocale, t } = useI18n();
   const { preference, colorTheme, drawerSpeed, setTheme, setColorTheme, setDrawerSpeed } = useTheme();
@@ -173,10 +178,18 @@ export function HostAdminModal({
   const [pluginFilter, setPluginFilter] = useState('');
   const [busyPluginId, setBusyPluginId] = useState<string | null>(null);
   const [confirmUninstallId, setConfirmUninstallId] = useState<string | null>(null);
+  const [confirmDisableWeb, setConfirmDisableWeb] = useState(false);
+  const [pendingNativeUninstall, setPendingNativeUninstall] = useState<{
+    id: string;
+  } | null>(null);
   const [pendingPermissionInstall, setPendingPermissionInstall] = useState<{
     id: string;
     spec: string;
     permissions?: string[];
+  } | null>(null);
+  const [resolvedAccess, setResolvedAccess] = useState<{
+    channel: string;
+    permissionLevel: string;
   } | null>(null);
 
   const [showDesktopPlugins, setShowDesktopPlugins] = useState(false);
@@ -285,6 +298,43 @@ export function HostAdminModal({
     }
   }, [t]);
 
+  const effectiveChannel = channelProp ?? resolvedAccess?.channel;
+  const effectiveTier = permissionLevelProp ?? resolvedAccess?.permissionLevel;
+  const isPermLocked = Boolean(
+    effectiveChannel &&
+      effectiveChannel !== 'loopback' &&
+      effectiveTier &&
+      effectiveTier !== 'L2',
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    if (initialSelectedPluginId) {
+      setSelectedPluginId(initialSelectedPluginId);
+    }
+  }, [open, initialSelectedPluginId]);
+
+  useEffect(() => {
+    if (!open || (channelProp !== undefined && permissionLevelProp !== undefined)) return;
+    if (typeof apiClient.getWebAccessStatus !== 'function') return;
+    let cancelled = false;
+    void apiClient
+      .getWebAccessStatus()
+      .then((res) => {
+        if (cancelled || !res) return;
+        setResolvedAccess({
+          channel: res.channel || 'loopback',
+          permissionLevel: res.permissionLevel || 'L2',
+        });
+      })
+      .catch(() => {
+        // Ignore when web-access endpoint is unmocked or unavailable in unit tests
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, channelProp, permissionLevelProp]);
+
   useEffect(() => {
     if (!open) return;
     if (currentTab === 'plugins') {
@@ -306,6 +356,10 @@ export function HostAdminModal({
     action: HostPluginAction,
     body: Record<string, unknown> = {},
   ) => {
+    if (isPermLocked) {
+      setPluginsError(t('admin.permLockedL0L1', { tier: effectiveTier || 'L1' }));
+      return;
+    }
     setBusyPluginId(pluginId);
     setPluginsError(null);
     setPluginNotice(null);
@@ -321,7 +375,13 @@ export function HostAdminModal({
         });
         return;
       }
+      if (res.needsNativeUninstallConfirm) {
+        setPendingNativeUninstall({ id: pluginId });
+        return;
+      }
       setPendingPermissionInstall(null);
+      setPendingNativeUninstall(null);
+      setConfirmDisableWeb(false);
       await loadPlugins();
       setPluginNotice(t('admin.actionDone', { id: pluginId, action }));
       onPluginsChanged?.();
@@ -571,9 +631,87 @@ export function HostAdminModal({
         <div className={styles.body}>
           {currentTab === 'plugins' && (
             <>
+              {isPermLocked && (
+                <div
+                  className={styles.bannerError}
+                  role="alert"
+                  data-testid="host-admin-perm-locked"
+                >
+                  {t('admin.permLockedL0L1', { tier: effectiveTier || 'L1' })}
+                </div>
+              )}
               {pluginsError && (
                 <div className={styles.bannerError} role="alert">
                   {pluginsError}
+                </div>
+              )}
+              {confirmDisableWeb && (
+                <div
+                  className={styles.bannerInfo}
+                  role="alertdialog"
+                  data-testid="host-admin-disable-web-confirm"
+                >
+                  <span>
+                    <strong>{t('menu.disableWebTitle')}</strong> {t('menu.disableWebConfirm')}
+                  </span>
+                  <div className={styles.pluginActions}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnDanger}`}
+                      onClick={() => void handlePluginAction('agy-daddy.web', 'disable')}
+                    >
+                      {t('menu.disableWebAction')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.btn}
+                      onClick={() => setConfirmDisableWeb(false)}
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {pendingNativeUninstall && (
+                <div
+                  className={styles.bannerInfo}
+                  role="alertdialog"
+                  data-testid="host-admin-native-uninstall-confirm"
+                >
+                  <span>{t('admin.confirmNativeUninstall')}</span>
+                  <div className={styles.pluginActions}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnDanger}`}
+                      onClick={() =>
+                        void handlePluginAction(pendingNativeUninstall.id, 'uninstall', {
+                          confirmed: true,
+                          removeNativeExtensions: true,
+                        })
+                      }
+                    >
+                      {t('admin.confirmNativeUninstallYes')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.btn}
+                      onClick={() =>
+                        void handlePluginAction(pendingNativeUninstall.id, 'uninstall', {
+                          confirmed: true,
+                          removeNativeExtensions: false,
+                        })
+                      }
+                    >
+                      {t('admin.confirmNativeUninstallNo')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.btn}
+                      onClick={() => setPendingNativeUninstall(null)}
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
                 </div>
               )}
               {pluginNotice && (
@@ -732,10 +870,14 @@ export function HostAdminModal({
                               <button
                                 type="button"
                                 className={styles.btn}
-                                disabled={isBusy}
-                                onClick={() =>
-                                  void handlePluginAction(p.id, p.enabled ? 'disable' : 'enable')
-                                }
+                                disabled={isBusy || isPermLocked}
+                                onClick={() => {
+                                  if (p.id === 'agy-daddy.web' && p.enabled) {
+                                    setConfirmDisableWeb(true);
+                                    return;
+                                  }
+                                  void handlePluginAction(p.id, p.enabled ? 'disable' : 'enable');
+                                }}
                               >
                                 {p.enabled ? t('admin.disable') : t('admin.enable')}
                               </button>
@@ -744,7 +886,7 @@ export function HostAdminModal({
                                 <button
                                   type="button"
                                   className={styles.btn}
-                                  disabled={isBusy}
+                                  disabled={isBusy || isPermLocked}
                                   onClick={() => void handlePluginAction(p.id, 'rollback')}
                                 >
                                   {t('admin.rollback')}
@@ -755,7 +897,7 @@ export function HostAdminModal({
                                 <button
                                   type="button"
                                   className={`${styles.btn} ${confirmingUninstall ? styles.btnDanger : ''}`.trim()}
-                                  disabled={isBusy}
+                                  disabled={isBusy || isPermLocked}
                                   onClick={() => {
                                     if (!confirmingUninstall) {
                                       setConfirmUninstallId(p.id);
@@ -799,7 +941,7 @@ export function HostAdminModal({
                               <button
                                 type="button"
                                 className={`${styles.btn} ${styles.btnPrimary}`}
-                                disabled={busyPluginId === cat.id}
+                                disabled={busyPluginId === cat.id || isPermLocked}
                                 onClick={() =>
                                   void handlePluginAction(cat.id, 'install', {
                                     spec: cat.recommendedSpec,
@@ -873,6 +1015,7 @@ export function HostAdminModal({
                                 values={settingsState?.values || {}}
                                 secretState={settingsState?.secretState}
                                 locale={locale}
+                                readOnly={isPermLocked}
                                 onSave={handleSavePluginSettings}
                                 onRunAction={handleRunSchemaAction}
                               />

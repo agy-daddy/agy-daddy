@@ -160,10 +160,16 @@ function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader, channel =
  */
 function requiredPermissionFor(method, pathname) {
   if (READ_METHODS.has(method)) return 'L0';
-  if (pathname === '/api/v1/web/switch-ticket') return 'L0';
+  if (pathname === '/api/v1/web/switch-ticket' || pathname === '/api/v1/web/auth') return 'L0';
   if (pathname === '/api/v1/confirm') return 'L1';
   if (pathname.startsWith('/api/v1/sessions')) return 'L1';
   if (pathname.startsWith('/api/v1/composer')) return 'L1';
+  if (pathname.startsWith('/api/v1/side-chat')) return 'L1';
+  const taskStopMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/stop$/);
+  if (taskStopMatch) {
+    const taskId = decodeURIComponent(taskStopMatch[1]);
+    return taskId.startsWith('pty:') ? 'L2' : 'L1';
+  }
   return 'L2';
 }
 
@@ -328,6 +334,9 @@ class WebServer {
       ? options.onReadStateChanged
       : null;
     this.hostProxy = options.hostProxy || null;
+    this.ptyManager = options.ptyManager || null;
+    this.sideChatService = options.sideChatService || null;
+    this.taskManager = options.taskManager || null;
     this.getHealthOverride = typeof options.getHealth === 'function' ? options.getHealth : null;
     this.pluginVersion = String(options.pluginVersion || '1.0.0');
     this.staticDir = options.staticDir ? path.resolve(options.staticDir) : '';
@@ -632,6 +641,7 @@ class WebServer {
 
   async stop() {
     this._stopAllSessionPollers();
+    try { this.ptyManager?.disposeAll?.(); } catch {}
     for (const client of Array.from(this._sseClients)) {
       client.close();
     }
@@ -907,19 +917,32 @@ class WebServer {
       required !== 'L0' &&
       channel === 'cloudflare' &&
       pathname !== '/api/v1/confirm' &&
-      pathname !== '/api/v1/web/switch-ticket'
+      pathname !== '/api/v1/web/switch-ticket' &&
+      pathname !== '/api/v1/side-chat/cancel'
     ) {
+      const termWriteMatch = method === 'POST'
+        ? pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)\/(input|resize)$/)
+        : null;
+      const ptyLeaseAction = termWriteMatch
+        ? `PTY_WRITE:${decodeURIComponent(termWriteMatch[1])}`
+        : null;
       const action = this._confirmActionId(method, pathname);
       const provided = String(req.headers['x-agy-confirm'] || '').trim();
-      if (provided && verifyConfirmToken(provided, this.confirmSecret, { action })) {
+      const verified = provided && (
+        verifyConfirmToken(provided, this.confirmSecret, { action })
+        || (ptyLeaseAction && verifyConfirmToken(provided, this.confirmSecret, { action: ptyLeaseAction }))
+      );
+      if (verified) {
         return true;
       }
+      const promptAction = ptyLeaseAction || action;
+      const ttlMs = ptyLeaseAction ? 300_000 : DEFAULT_CONFIRM_TTL_MS;
       sendJson(res, 403, {
         ok: false,
         error: 'CONFIRMATION_REQUIRED',
         channel,
-        action,
-        confirmToken: createConfirmToken(this.confirmSecret, { action }),
+        action: promptAction,
+        confirmToken: createConfirmToken(this.confirmSecret, { action: promptAction, ttlMs }),
         confirmHint: '公网 Cloudflare 通道执行写操作需要二次确认'
       });
       return false;
@@ -1616,6 +1639,12 @@ class WebServer {
         const action = decodeURIComponent(match[2]);
         const body = await readJsonBody(req, this.maxBodyBytes);
         const result = await proxy.pluginAction(pluginId, action, body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { pluginId, action, updatedAt: Date.now() }
+          });
+        }
         sendActionResult(res, result);
         return;
       }
@@ -1661,6 +1690,16 @@ class WebServer {
           return;
         }
         const result = await proxy.setPluginSettings(pluginId, patch);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:plugin.settings@1',
+            value: {
+              pluginId,
+              values: result?.values ?? patch,
+              updatedAt: Date.now()
+            }
+          });
+        }
         sendActionResult(res, result);
         return;
       }
@@ -1727,6 +1766,191 @@ class WebServer {
           title: body.title,
           events: events || []
         });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/terminal/sessions') {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const runtime = await mgr.checkRuntime();
+        const writable = channel === 'loopback' || isPermissionAtLeast(this._resolvePermissionLevel(), 'L2');
+        sendJson(res, 200, {
+          ok: true,
+          runtimeAvailable: runtime.available,
+          ...(runtime.reason ? { unavailableReason: runtime.reason } : {}),
+          writable,
+          requiredPermission: 'L2',
+          maxSessions: mgr.maxSessions,
+          sessions: mgr.listSessions()
+        });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/terminal/sessions') {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await mgr.createOrGetSession(body);
+        if (result.ok && channel === 'cloudflare' && result.session?.sessionId) {
+          const ttlMs = 300_000;
+          result.writeConfirmToken = createConfirmToken(this.confirmSecret, {
+            action: `PTY_WRITE:${result.session.sessionId}`,
+            ttlMs
+          });
+          result.writeConfirmExpiresAt = Date.now() + ttlMs;
+        }
+        sendActionResult(res, result, result.created ? 201 : 200);
+        return;
+      }
+
+      if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)\/stream$/))) {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const sessionId = decodeURIComponent(match[1]);
+        const rawAfterSeq = req.headers['last-event-id'] ?? urlObj.searchParams.get('afterSeq');
+        const afterSeq = rawAfterSeq !== undefined && rawAfterSeq !== null && String(rawAfterSeq).trim() !== ''
+          ? Number(rawAfterSeq)
+          : null;
+
+        let headersWritten = false;
+        let closed = false;
+        let heartbeatTimer = null;
+        const closeListeners = [];
+
+        const ensureHeaders = () => {
+          if (headersWritten) return;
+          headersWritten = true;
+          req.setTimeout?.(0);
+          res.setTimeout?.(0);
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+            ...SECURITY_HEADERS
+          });
+          res.write(': connected\n\n');
+          heartbeatTimer = setInterval(() => {
+            if (!closed && !res.writableEnded) {
+              try { res.write(formatSseFrame({ event: 'heartbeat', data: { ts: Date.now() } })); } catch { client.close(); }
+            }
+          }, this.heartbeatIntervalMs);
+          heartbeatTimer.unref?.();
+        };
+
+        const client = {
+          sendOutput(seq, chunk, alive) {
+            ensureHeaders();
+            if (!closed && !res.writableEnded) {
+              try {
+                res.write(formatSseFrame({ id: seq, event: 'pty.output', data: { seq, chunk, alive } }));
+              } catch {
+                client.close();
+              }
+            }
+          },
+          sendExit(payload) {
+            ensureHeaders();
+            if (!closed && !res.writableEnded) {
+              try {
+                res.write(formatSseFrame({ event: 'pty.exit', data: payload }));
+              } catch {}
+            }
+          },
+          onClose(fn) {
+            if (typeof fn === 'function') closeListeners.push(fn);
+          },
+          close() {
+            if (closed) return;
+            closed = true;
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer);
+              heartbeatTimer = null;
+            }
+            for (const fn of closeListeners) {
+              try { fn(); } catch {}
+            }
+            try { if (headersWritten && !res.writableEnded) res.end(); } catch {}
+          }
+        };
+
+        const attachRes = mgr.attachSseClient(sessionId, client, { afterSeq });
+        if (!attachRes.ok) {
+          sendActionResult(res, attachRes);
+          return;
+        }
+        ensureHeaders();
+        req.on('close', () => client.close());
+        res.on('close', () => client.close());
+        res.on('error', () => client.close());
+        return;
+      }
+
+      if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)\/input$/))) {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const sessionId = decodeURIComponent(match[1]);
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = mgr.writeInput(sessionId, body.data);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)\/resize$/))) {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const sessionId = decodeURIComponent(match[1]);
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = mgr.resizeSession(sessionId, body.cols, body.rows);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)$/))) {
+        const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
+        const sessionId = decodeURIComponent(match[1]);
+        const result = mgr.closeSession(sessionId);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/side-chat/completions') {
+        const svc = this._requireDep(this.sideChatService, 'SIDE_CHAT_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        await svc.handleCompletionStream(req, res, body);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/side-chat/cancel') {
+        const svc = this._requireDep(this.sideChatService, 'SIDE_CHAT_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = svc.cancel(body.requestId);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/tasks') {
+        const mgr = this._requireDep(this.taskManager, 'TASK_MANAGER');
+        const result = await mgr.listTasks();
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/tasks\/([^/]+)$/))) {
+        const mgr = this._requireDep(this.taskManager, 'TASK_MANAGER');
+        const taskId = decodeURIComponent(match[1]);
+        const result = await mgr.getTaskDetail(taskId);
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/stop$/))) {
+        const mgr = this._requireDep(this.taskManager, 'TASK_MANAGER');
+        const taskId = decodeURIComponent(match[1]);
+        const result = await mgr.stopTask(taskId);
+        if (result?.ok) {
+          const listRes = await mgr.listTasks().catch(() => null);
+          this.broadcast('task.updated', {
+            runningCount: listRes?.runningCount ?? 0,
+            taskId,
+            status: result.status
+          });
+        }
         sendActionResult(res, result);
         return;
       }

@@ -3973,7 +3973,14 @@
     "Browser Subagent": "ブラウザーサブエージェント",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "ブラウザーサブエージェントに許可・拒否する URL を設定します。組み込みブラウザーで動作するため、別途ブラウザーをインストールする必要はありません。",
     "Manage project folders and settings.": "プロジェクトフォルダーと設定を管理します。",
-    "Font": "フォント"
+    "Font": "フォント",
+    "Side Chat": "サイドチャット",
+    "Side Conversation": "サイド会話",
+    "Insert into Composer": "入力欄に挿入",
+    "Clear Side Chat": "サイドチャットをクリア",
+    "Independent Side Chat": "独立サイドチャット",
+    "Custom Menu": "カスタムメニュー",
+    "Plugin Management": "プラグイン管理"
   },
   "patterns": [
     {

@@ -3973,7 +3973,14 @@
     "Browser Subagent": "瀏覽器子代理程式",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "為瀏覽器子代理程式組態允許與拒絕存取的 URL。它執行於內建瀏覽器中，無需單獨安裝瀏覽器。",
     "Manage project folders and settings.": "管理專案資料夾與設定。",
-    "Font": "字型"
+    "Font": "字型",
+    "Side Chat": "旁路對話",
+    "Side Conversation": "旁路會話",
+    "Insert into Composer": "填入主輸入框",
+    "Clear Side Chat": "清空旁路對話",
+    "Independent Side Chat": "獨立旁路對話",
+    "Custom Menu": "自訂選單",
+    "Plugin Management": "外掛管理"
   },
   "patterns": [
     {

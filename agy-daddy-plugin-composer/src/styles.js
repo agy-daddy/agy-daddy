@@ -164,6 +164,7 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
   position: sticky;
   right: 0;
   z-index: 6;
+  margin-left: auto;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -214,6 +215,10 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
   display: none !important;
 }
 
+#agy-quick-capsule-bar[data-toast-visible="true"] #agy-next-step-ghost {
+  display: none !important;
+}
+
 #agy-next-step-ghost .agy-ns-accept {
   display: inline-flex;
   align-items: center;
@@ -254,7 +259,7 @@ html[data-agy-theme="light"] #agy-quick-capsule-bar button.agy-qcap-btn:active:n
 }
 
 #agy-next-step-ghost .agy-ns-text {
-  max-width: 140px;
+  max-width: clamp(96px, 22vw, 200px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

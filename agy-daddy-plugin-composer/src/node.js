@@ -47,6 +47,7 @@ const DEFAULT_QUICK_POOL_STATE = Object.freeze(
 );
 
 let disposers = [];
+let activeHost = null;
 
 function normalizeHostedSettings(raw = {}) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw && typeof raw === 'object' ? raw : {}) };
@@ -70,6 +71,7 @@ function normalizeHostedSettings(raw = {}) {
 }
 
 async function activate(host) {
+  activeHost = host;
   let hostedSettings = normalizeHostedSettings(host.settings?.get?.() || {});
   let modelCache = { candidates: [], fetchedAt: 0 };
   let summarizeInFlight = null;
@@ -110,6 +112,15 @@ async function activate(host) {
       quickPoolState: { ...quickPoolState },
       customQuickPrompts: [...customQuickPrompts]
     };
+  }
+
+  function publishComposerState() {
+    host.state?.set?.('state:composer.settings@1', {
+      available: true,
+      settings: getCombinedSettings(),
+      ...serviceMethods.listQuickPrompts(),
+      updatedAt: Date.now()
+    });
   }
 
   async function resolveFastModelCandidates(opts = {}) {
@@ -174,6 +185,7 @@ async function activate(host) {
         const res = await host.settings.update(schemaPatch);
         hostedSettings = normalizeHostedSettings(res?.values || host.settings.get());
       }
+      publishComposerState();
       return getCombinedSettings();
     },
     listQuickPrompts() {
@@ -200,6 +212,7 @@ async function activate(host) {
       };
       customQuickPrompts = customQuickPrompts.filter((c) => c.id !== id).concat([entry]);
       persistQuickPrompts();
+      publishComposerState();
       return { ok: true, item: entry, custom: [...customQuickPrompts] };
     },
     removeCustomPrompt(id) {
@@ -207,6 +220,7 @@ async function activate(host) {
       const before = customQuickPrompts.length;
       customQuickPrompts = customQuickPrompts.filter((c) => c.id !== targetId);
       persistQuickPrompts();
+      publishComposerState();
       return { ok: true, removed: customQuickPrompts.length < before, custom: [...customQuickPrompts] };
     },
     async optimizePrompt(rawText = '', opts = {}) {
@@ -418,6 +432,7 @@ async function activate(host) {
   const stopSettings = host.settings?.onChange?.((nextValues) => {
     const prevAuto = hostedSettings.autoSummarizeFrequentPrompts;
     hostedSettings = normalizeHostedSettings(nextValues);
+    publishComposerState();
     if (!prevAuto && hostedSettings.autoSummarizeFrequentPrompts && host.rpc) {
       void serviceMethods.summarizeFrequentPrompts({ trigger: 'auto' }).catch(() => {});
     }
@@ -484,6 +499,8 @@ async function activate(host) {
     stopCmdListFrequent,
     stopCmdSummarizeFrequent
   );
+
+  publishComposerState();
 }
 
 async function deactivate() {
@@ -491,6 +508,14 @@ async function deactivate() {
     try { if (typeof fn === 'function') fn(); } catch {}
   }
   disposers = [];
+  const host = activeHost;
+  activeHost = null;
+  try {
+    host?.state?.set?.('state:composer.settings@1', {
+      available: false,
+      updatedAt: Date.now()
+    });
+  } catch {}
 }
 
 module.exports = {

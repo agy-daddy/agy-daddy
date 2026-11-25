@@ -714,9 +714,21 @@ async function mount(ctx, options = {}) {
     return { message, title };
   }
 
+  function syncQuickBarToastVisible(toastVisible) {
+    if (!quickBarEl) return;
+    const val = toastVisible ? 'true' : 'false';
+    quickBarEl.setAttribute?.('data-toast-visible', val);
+    if (quickBarEl.dataset) {
+      quickBarEl.dataset.toastVisible = val;
+    }
+  }
+
   function applyToastElementState(el, stateObj) {
     if (!el) return;
     const msg = stateObj && typeof stateObj.message === 'string' ? stateObj.message.trim() : '';
+    if (el === toastEl) {
+      syncQuickBarToastVisible(Boolean(msg));
+    }
     if (!msg) {
       el.textContent = '';
       el.hidden = true;
@@ -777,6 +789,7 @@ async function mount(ctx, options = {}) {
     if (!msg) {
       activeToastState = null;
       applyToastElementState(toastEl, null);
+      syncQuickBarToastVisible(false);
       applyToastElementState(optStatusEl, null);
       removeFloatToast();
       optBtnEl?.removeAttribute?.('data-error');
@@ -820,9 +833,11 @@ async function mount(ctx, options = {}) {
     }
 
     if (!shownInQuick && !shownInOpt) {
+      syncQuickBarToastVisible(false);
       const fEl = ensureFloatToastEl();
       applyToastElementState(fEl, stateObj);
     } else {
+      syncQuickBarToastVisible(shownInQuick);
       removeFloatToast();
     }
 
@@ -1185,7 +1200,7 @@ async function mount(ctx, options = {}) {
       return;
     }
     const fullText = ghostCandidates[ghostIndex % ghostCandidates.length] || '';
-    const shortText = truncateGhostLabel(fullText, 8);
+    const shortText = truncateGhostLabel(fullText, 20);
     ghostEl.hidden = false;
     if (typeof ghostEl.removeAttribute === 'function') ghostEl.removeAttribute('hidden');
     if (ghostEl.style) ghostEl.style.display = '';
@@ -1530,6 +1545,7 @@ async function mount(ctx, options = {}) {
       quickBarEl.id = 'agy-quick-capsule-bar';
       quickBarEl.className = 'agy-quick-capsule-bar';
       quickBarEl.setAttribute?.('data-position', 'above-composer');
+      syncQuickBarToastVisible(false);
       quickBarEl.addEventListener?.('mousedown', (e) => {
         e?.preventDefault?.();
       });
@@ -1764,6 +1780,8 @@ async function mount(ctx, options = {}) {
     appendOwnNode(toastEl);
     if (activeToastState && Date.now() < activeToastState.expiresAt && !(activeToastState.target === 'optimizer' && optStatusEl)) {
       applyToastElementState(toastEl, activeToastState);
+    } else {
+      syncQuickBarToastVisible(false);
     }
 
     syncPromptOptimizerUI();

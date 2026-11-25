@@ -3973,7 +3973,14 @@
     "Browser Subagent": "브라우저 하위 에이전트",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "브라우저 하위 에이전트에 허용 및 거부할 URL을 구성합니다. 내장 브라우저에서 실행되므로 별도의 브라우저 설치가 필요하지 않습니다.",
     "Manage project folders and settings.": "프로젝트 폴더 및 설정을 관리합니다.",
-    "Font": "글꼴"
+    "Font": "글꼴",
+    "Side Chat": "사이드 대화",
+    "Side Conversation": "사이드 대화창",
+    "Insert into Composer": "입력창에 삽입",
+    "Clear Side Chat": "사이드 대화 지우기",
+    "Independent Side Chat": "독립 사이드 대화",
+    "Custom Menu": "사용자 지정 메뉴",
+    "Plugin Management": "플러그인 관리"
   },
   "patterns": [
     {

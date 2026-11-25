@@ -82,6 +82,7 @@ function readTranscriptStepTimestampsCached(cascadeId, brainDirs = null) {
 }
 
 let disposers = [];
+let activeHost = null;
 
 function pickTargetCascadeId(requestedId, summariesObj = {}) {
   if (requestedId) return requestedId;
@@ -118,6 +119,7 @@ function buildAlerts(snapshot, settings = {}) {
 }
 
 async function activate(host) {
+  activeHost = host;
   const availableModels = new Map();
   const seenCallIds = new Set();
   const recentCalls = [];
@@ -152,9 +154,45 @@ async function activate(host) {
     };
   }
 
-  function recomputeAlertsFromSettings() {
-    if (!latestSnapshot || !latestSnapshot.hasSession) return;
+  function buildEmptySnapshot(settings = loadSettings()) {
+    return {
+      ok: true,
+      hasSession: false,
+      cascadeId: null,
+      status: 'idle',
+      used: null,
+      budget: null,
+      percent: null,
+      remainPercent: null,
+      model: null,
+      speed: null,
+      sessionUsage: summarizeSessionGeneratorCalls([]),
+      groups: null,
+      attachments: { items: [], totals: { count: 0, chars: 0, bytes: 0, low: 0, high: 0 } },
+      alerts: [],
+      referenceCost: null,
+      displayLocation: settings.displayLocation,
+      showSpeed: settings.showSpeed,
+      compactPolicy: settings.compactPolicy,
+      updatedAt: Date.now()
+    };
+  }
+
+  function syncSnapshotFromSettings() {
     const settings = loadSettings();
+    if (!latestSnapshot || !latestSnapshot.hasSession) {
+      latestSnapshot = {
+        ...(latestSnapshot || buildEmptySnapshot(settings)),
+        displayLocation: settings.displayLocation,
+        showSpeed: settings.showSpeed,
+        compactPolicy: settings.compactPolicy,
+        warnThreshold: settings.warnThreshold,
+        cliffThreshold: settings.cliffThreshold,
+        updatedAt: Date.now()
+      };
+      host.state?.set?.('state:context.snapshot@1', latestSnapshot);
+      return;
+    }
     const used = Number(latestSnapshot.used || 0);
     const warnTokens = resolveThresholdTokens(settings.warnThreshold, latestSnapshot.budget, 240000);
     const cliffTokens = resolveThresholdTokens(settings.cliffThreshold, latestSnapshot.budget, 328000);
@@ -163,6 +201,9 @@ async function activate(host) {
       : (used >= warnTokens ? 'warn' : 'none');
     latestSnapshot = {
       ...latestSnapshot,
+      displayLocation: settings.displayLocation,
+      showSpeed: settings.showSpeed,
+      compactPolicy: settings.compactPolicy,
       warnThreshold: settings.warnThreshold,
       cliffThreshold: settings.cliffThreshold,
       warnThresholdTokens: warnTokens,
@@ -172,7 +213,7 @@ async function activate(host) {
       updatedAt: Date.now()
     };
     host.storage.writeJson('latest-snapshot.json', latestSnapshot);
-    host.state.set('state:context.snapshot@1', latestSnapshot);
+    host.state?.set?.('state:context.snapshot@1', latestSnapshot);
   }
 
   function recordNewGeneratorCalls(rows, cascadeId, parseOptions = {}) {
@@ -228,26 +269,9 @@ async function activate(host) {
     }
 
     if (!cascadeId) {
-      const emptySnap = {
-        ok: true,
-        hasSession: false,
-        cascadeId: null,
-        status: 'idle',
-        used: null,
-        budget: null,
-        percent: null,
-        remainPercent: null,
-        model: null,
-        speed: null,
-        sessionUsage: summarizeSessionGeneratorCalls([]),
-        groups: null,
-        attachments: { items: [], totals: { count: 0, chars: 0, bytes: 0, low: 0, high: 0 } },
-        alerts: [],
-        referenceCost: null,
-        updatedAt: Date.now()
-      };
+      const emptySnap = buildEmptySnapshot(settings);
       latestSnapshot = emptySnap;
-      host.state.set('state:context.snapshot@1', emptySnap);
+      host.state?.set?.('state:context.snapshot@1', emptySnap);
       return emptySnap;
     }
 
@@ -380,6 +404,9 @@ async function activate(host) {
       attachments: attachmentAudit,
       referenceCost,
       alerts: [],
+      displayLocation: settings.displayLocation,
+      showSpeed: settings.showSpeed,
+      compactPolicy: settings.compactPolicy,
       updatedAt: Date.now()
     };
     snapshot.alerts = buildAlerts(snapshot, settings);
@@ -391,6 +418,9 @@ async function activate(host) {
   }
 
   const serviceMethods = {
+    getSettings() {
+      return loadSettings();
+    },
     async getSnapshot(opts = {}) {
       if (!opts.force && latestSnapshot && (!opts.cascadeId || opts.cascadeId === latestSnapshot.cascadeId) && Date.now() - latestSnapshot.updatedAt < 1000) {
         return latestSnapshot;
@@ -451,8 +481,16 @@ async function activate(host) {
     },
     ingestRendererSnapshot(payload = {}) {
       if (!payload || typeof payload !== 'object') return { ok: false };
-      latestSnapshot = { ...(latestSnapshot || {}), ...payload, updatedAt: Date.now() };
-      host.state.set('state:context.snapshot@1', latestSnapshot);
+      const settings = loadSettings();
+      latestSnapshot = {
+        ...(latestSnapshot || {}),
+        ...payload,
+        displayLocation: payload.displayLocation ?? settings.displayLocation,
+        showSpeed: payload.showSpeed ?? settings.showSpeed,
+        compactPolicy: payload.compactPolicy ?? settings.compactPolicy,
+        updatedAt: Date.now()
+      };
+      host.state?.set?.('state:context.snapshot@1', latestSnapshot);
       return { ok: true, snapshot: latestSnapshot };
     }
   };
@@ -463,17 +501,8 @@ async function activate(host) {
   const stopAuditRoute = await host.bridge.registerRoute('/audit-attachments', async (body) => serviceMethods.auditAttachments(body?.media || []));
   const stopIngestRoute = await host.bridge.registerRoute('/ingest-renderer-snapshot', async (body) => serviceMethods.ingestRendererSnapshot(body || {}));
   const stopSettingsSub = typeof host.settings?.onChange === 'function'
-    ? host.settings.onChange((_nextValues, changedKeys) => {
-        const keys = Array.isArray(changedKeys) ? changedKeys : [];
-        if (
-          keys.length === 0 ||
-          keys.includes('warnThreshold') ||
-          keys.includes('cliffThreshold') ||
-          keys.includes('warnThresholdTokens') ||
-          keys.includes('cliffThresholdTokens')
-        ) {
-          recomputeAlertsFromSettings();
-        }
+    ? host.settings.onChange(() => {
+        syncSnapshotFromSettings();
       })
     : () => {};
   const stopRescanCmd = typeof host.commands?.register === 'function'
@@ -496,6 +525,11 @@ async function deactivate() {
     try { if (typeof fn === 'function') fn(); } catch {}
   }
   disposers = [];
+  const host = activeHost;
+  activeHost = null;
+  try {
+    host?.state?.set?.('state:context.snapshot@1', null);
+  } catch {}
 }
 
 module.exports = {

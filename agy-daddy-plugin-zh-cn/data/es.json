@@ -3973,7 +3973,14 @@
     "Browser Subagent": "Subagente de navegador",
     "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "Configura las URL permitidas y denegadas para el subagente de navegador. Se ejecuta en el navegador integrado, por lo que no requiere instalar otro navegador.",
     "Manage project folders and settings.": "Administra las carpetas y la configuración del proyecto.",
-    "Font": "Fuente"
+    "Font": "Fuente",
+    "Side Chat": "Chat lateral",
+    "Side Conversation": "Conversación lateral",
+    "Insert into Composer": "Insertar en el compositor",
+    "Clear Side Chat": "Limpiar chat lateral",
+    "Independent Side Chat": "Chat lateral independiente",
+    "Custom Menu": "Menú personalizado",
+    "Plugin Management": "Gestión de complementos"
   },
   "patterns": [
     {

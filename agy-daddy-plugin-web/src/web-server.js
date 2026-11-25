@@ -154,11 +154,27 @@ function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader, channel =
   return true;
 }
 
+function safeDecodeURIComponent(raw) {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return String(raw || '');
+  }
+}
+
 /**
  * Required permission tier per route for non-loopback channels.
  *   L0 read-only · L1 chat/session lifecycle · L2 workspace + host admin
  */
 function requiredPermissionFor(method, pathname) {
+  if (/^\/api\/v1\/terminal\/sessions\/[^/]+\/stream$/.test(pathname)) {
+    return 'L2';
+  }
+  const taskDetailMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)$/);
+  if (taskDetailMatch) {
+    const taskId = safeDecodeURIComponent(taskDetailMatch[1]);
+    if (taskId.startsWith('pty:')) return 'L2';
+  }
   if (READ_METHODS.has(method)) return 'L0';
   if (pathname === '/api/v1/web/switch-ticket' || pathname === '/api/v1/web/auth') return 'L0';
   if (pathname === '/api/v1/confirm') return 'L1';
@@ -167,7 +183,7 @@ function requiredPermissionFor(method, pathname) {
   if (pathname.startsWith('/api/v1/side-chat')) return 'L1';
   const taskStopMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/stop$/);
   if (taskStopMatch) {
-    const taskId = decodeURIComponent(taskStopMatch[1]);
+    const taskId = safeDecodeURIComponent(taskStopMatch[1]);
     return taskId.startsWith('pty:') ? 'L2' : 'L1';
   }
   return 'L2';
@@ -914,6 +930,7 @@ class WebServer {
     }
     // Minting a confirm token or a same-user channel switch ticket cannot itself require one.
     if (
+      !READ_METHODS.has(method) &&
       required !== 'L0' &&
       channel === 'cloudflare' &&
       pathname !== '/api/v1/confirm' &&

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { apiClient } from '../api/client';
 import { useI18n, type I18nKey } from '../i18n';
 import type { ModelItem, SessionSummary, SideChatSelectionContext } from '../types';
 import { ArtifactsPanel } from './ArtifactsPanel';
@@ -114,6 +115,14 @@ function isRootInsideAllowed(candidate: string, allowedRoots: string[]): boolean
     const lowerAllowed = allowed.toLowerCase();
     return lowerCandidate === lowerAllowed || lowerCandidate.startsWith(`${lowerAllowed}/`);
   });
+}
+
+function toRelativeWorkspacePath(rawTarget: string, root: string): string | null {
+  const cleaned = rawTarget.trim().replace(/^file:\/\//i, '').replace(/\/+$/, '');
+  const normRoot = root.replace(/\/+$/, '');
+  if (!cleaned || !normRoot || cleaned === normRoot) return null;
+  const relPath = cleaned.startsWith(`${normRoot}/`) ? cleaned.slice(normRoot.length + 1) : cleaned;
+  return relPath && !relPath.startsWith('/') ? relPath : null;
 }
 
 export function RightDock({
@@ -297,16 +306,50 @@ export function RightDock({
   }, [currentRoot]);
 
   useEffect(() => {
-    if (focusedDiffFile?.path) {
-      setPreferredSelectionKind('diff');
-    }
-  }, [focusedDiffFile?.path, focusedDiffFile?.nonce]);
+    if (!focusedDiffFile?.path) return;
+    setPreferredSelectionKind('diff');
+    if (currentTab === 'diff' || !currentRoot) return;
+    const relPath = toRelativeWorkspacePath(focusedDiffFile.path, currentRoot);
+    if (!relPath) return;
+    const controller = new AbortController();
+    void apiClient
+      .getGitDiff({ root: currentRoot }, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted || !res.isGitRepo || !res.diffText?.trim()) return;
+        const blocks = res.diffText.split(/(?=^diff --git )/m);
+        const matched = blocks.find((b) => {
+          const m = /^diff --git a\/(.+?) b\/(.+)$/m.exec(b);
+          return m && (m[2] === relPath || m[2].endsWith(`/${relPath}`));
+        });
+        const snippet = truncateSelectionSnippet((matched || res.diffText).trim());
+        if (snippet) {
+          setDiffSelection({ path: relPath, snippet, kind: 'diff' });
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [focusedDiffFile?.path, focusedDiffFile?.nonce, currentTab, currentRoot]);
 
   useEffect(() => {
-    if (focusedFilePath?.path) {
-      setPreferredSelectionKind('file');
-    }
-  }, [focusedFilePath?.path, focusedFilePath?.nonce]);
+    if (!focusedFilePath?.path) return;
+    setPreferredSelectionKind('file');
+    if (currentTab === 'files' || !currentRoot) return;
+    const relPath = toRelativeWorkspacePath(focusedFilePath.path, currentRoot);
+    if (!relPath) return;
+    const controller = new AbortController();
+    void apiClient
+      .readFsFile({ root: currentRoot, path: relPath }, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setFileSelection({
+          path: relPath,
+          snippet: truncateSelectionSnippet(res.content || ''),
+          kind: 'file',
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [focusedFilePath?.path, focusedFilePath?.nonce, currentTab, currentRoot]);
 
   const handleFileSelectionChange = useCallback((next: SideChatSelectionContext | null) => {
     setFileSelection(next);

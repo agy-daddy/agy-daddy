@@ -821,5 +821,22 @@ describe('App optimistic send flow', () => {
     await waitFor(() => {
       expect(mocks.getComposerState.mock.calls.length).toBeGreaterThan(initialComposerCalls);
     });
+
+    // Fallback to `settings` when `values` is absent or non-plain-object
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.web',
+          values: [],
+          settings: { theme: 'dark', drawerSpeed: 'normal' },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('dark');
+      expect(document.documentElement.dataset.drawerSpeed).toBe('normal');
+    });
   });
 });

@@ -1172,10 +1172,12 @@ export function App() {
               ? (patch.value as Record<string, unknown>)
               : null;
           const targetPlugin = typeof valObj?.pluginId === 'string' ? valObj.pluginId : '';
-          const rawSettings = valObj?.values ?? valObj?.settings;
-          const pSettings =
-            rawSettings && typeof rawSettings === 'object' && !Array.isArray(rawSettings)
-              ? (rawSettings as Record<string, unknown>)
+          const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+            Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+          const pSettings = isPlainRecord(valObj?.values)
+            ? valObj.values
+            : isPlainRecord(valObj?.settings)
+              ? valObj.settings
               : null;
           if (targetPlugin === 'agy-daddy.context' && pSettings) {
             if (pSettings.displayLocation === 'composer' || pSettings.displayLocation === 'topbar') {

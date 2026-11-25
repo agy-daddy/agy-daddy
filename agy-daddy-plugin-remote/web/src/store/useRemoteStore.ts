@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type {
   AppearanceMode,
   BootstrapResponse,
@@ -322,11 +322,52 @@ function normalizeComparableUserText(ev: SessionEvent): string {
   return raw.trim().replace(/\s+/g, ' ');
 }
 
+function mergeSameSeqEvent(existing: SessionEvent, incoming: SessionEvent): SessionEvent {
+  if (existing.kind === incoming.kind && existing.payload && incoming.payload) {
+    // In-place merge preserving any fields omitted in lightweight delta patches
+    return {
+      ...existing,
+      ...incoming,
+      payload: {
+        ...existing.payload,
+        ...incoming.payload
+      }
+    };
+  }
+  return incoming;
+}
+
 export function mergeEvents(prev: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
   if (!incoming || incoming.length === 0) return prev;
   if (prev.length === 0) {
     return incoming.slice().sort(compareSessionEvents);
   }
+
+  // O(K) streaming tail fast path: prev has no pending negative optimistic events,
+  // and incoming is non-decreasing at or after the tail of prev.
+  const lastPrev = prev[prev.length - 1];
+  if (prev[0].seq >= 0 && lastPrev.seq >= 0 && incoming[0].seq >= lastPrev.seq) {
+    let isAscending = true;
+    for (let i = 1; i < incoming.length; i++) {
+      if (incoming[i].seq < incoming[i - 1].seq) {
+        isAscending = false;
+        break;
+      }
+    }
+    if (isAscending) {
+      const next = prev.slice();
+      for (const ev of incoming) {
+        const tail = next[next.length - 1];
+        if (tail && ev.seq === tail.seq) {
+          next[next.length - 1] = mergeSameSeqEvent(tail, ev);
+        } else {
+          next.push(ev);
+        }
+      }
+      return next;
+    }
+  }
+
   const prevSeqs = new Set<number>();
   const bySeq = new Map<number, SessionEvent>();
   const optimisticUsers: SessionEvent[] = [];
@@ -356,19 +397,7 @@ export function mergeEvents(prev: SessionEvent[], incoming: SessionEvent[]): Ses
     }
 
     const existing = bySeq.get(ev.seq);
-    if (existing && existing.kind === ev.kind && existing.payload && ev.payload) {
-      // In-place merge preserving any fields omitted in lightweight delta patches
-      bySeq.set(ev.seq, {
-        ...existing,
-        ...ev,
-        payload: {
-          ...existing.payload,
-          ...ev.payload
-        }
-      });
-    } else {
-      bySeq.set(ev.seq, ev);
-    }
+    bySeq.set(ev.seq, existing ? mergeSameSeqEvent(existing, ev) : ev);
   }
   return Array.from(bySeq.values()).sort(compareSessionEvents);
 }
@@ -1175,48 +1204,80 @@ export class RemoteStoreController {
       typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : undefined;
     const incomingEvents = Array.isArray(payload.events) ? (payload.events as SessionEvent[]) : [];
 
+    const patch: Partial<RemoteState> = {};
+
     if (cascadeId) {
-      const nextSessions = this.state.sessions.map((s) =>
-        s.cascadeId === cascadeId
-          ? {
-              ...s,
-              status: status || s.status,
-              stepCount: totalSteps !== undefined ? totalSteps : s.stepCount
-            }
-          : s
-      );
-      this.setState({ sessions: nextSessions });
+      let sessionsChanged = false;
+      const nextSessions = this.state.sessions.map((s) => {
+        if (s.cascadeId !== cascadeId) return s;
+        const nextStatus = status || s.status;
+        const nextStepCount = totalSteps !== undefined ? totalSteps : s.stepCount;
+        if (nextStatus === s.status && nextStepCount === s.stepCount) {
+          return s;
+        }
+        sessionsChanged = true;
+        return {
+          ...s,
+          status: nextStatus,
+          stepCount: nextStepCount
+        };
+      });
+      if (sessionsChanged) {
+        patch.sessions = nextSessions;
+      }
     }
 
-    if (cascadeId && cascadeId === this.state.activeSessionId) {
-      const merged = mergeEvents(this.state.events, incomingEvents);
-      const nextDetail: SessionDetail | null = this.state.activeSession
-        ? {
-            ...this.state.activeSession,
-            status: status || this.state.activeSession.status,
-            numTotalSteps:
-              totalSteps !== undefined ? totalSteps : this.state.activeSession.numTotalSteps
-          }
-        : sessObj
-          ? {
-              cascadeId,
-              trajectoryId: typeof sessObj.trajectoryId === 'string' ? sessObj.trajectoryId : null,
-              status: status || 'IDLE',
-              numTotalSteps: totalSteps ?? merged.length,
-              metadata:
-                sessObj.metadata && typeof sessObj.metadata === 'object'
-                  ? (sessObj.metadata as Record<string, unknown>)
-                  : null
-            }
-          : null;
+    const isActive = Boolean(cascadeId && cascadeId === this.state.activeSessionId);
+    let mergedEvents = this.state.events;
+    let nextDetail = this.state.activeSession;
 
-      this.setState({ events: merged, activeSession: nextDetail });
+    if (isActive) {
+      mergedEvents = mergeEvents(this.state.events, incomingEvents);
+      if (mergedEvents !== this.state.events) {
+        patch.events = mergedEvents;
+      }
+
+      if (this.state.activeSession) {
+        const nextStatus = status || this.state.activeSession.status;
+        const nextNumTotalSteps =
+          totalSteps !== undefined ? totalSteps : this.state.activeSession.numTotalSteps;
+        if (
+          nextStatus !== this.state.activeSession.status ||
+          nextNumTotalSteps !== this.state.activeSession.numTotalSteps
+        ) {
+          nextDetail = {
+            ...this.state.activeSession,
+            status: nextStatus,
+            numTotalSteps: nextNumTotalSteps
+          };
+          patch.activeSession = nextDetail;
+        }
+      } else if (sessObj) {
+        nextDetail = {
+          cascadeId,
+          trajectoryId: typeof sessObj.trajectoryId === 'string' ? sessObj.trajectoryId : null,
+          status: status || 'IDLE',
+          numTotalSteps: totalSteps ?? mergedEvents.length,
+          metadata:
+            sessObj.metadata && typeof sessObj.metadata === 'object'
+              ? (sessObj.metadata as Record<string, unknown>)
+              : null
+        };
+        patch.activeSession = nextDetail;
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      this.setState(patch);
+    }
+
+    if (isActive) {
       const activeSummaryStatus =
         this.state.sessions.find((s) => s.cascadeId === cascadeId)?.status || '';
       const effectiveStatus = (status || nextDetail?.status || activeSummaryStatus).toUpperCase();
       const isStreaming =
         effectiveStatus.includes('RUNNING') || effectiveStatus.includes('GENERATING');
-      const confirmedEvents = merged.filter((ev) => ev.seq >= 0);
+      const confirmedEvents = mergedEvents.filter((ev) => ev.seq >= 0);
       if (isStreaming) {
         scheduleSnapshotSave(cascadeId, nextDetail, confirmedEvents);
       } else {
@@ -1885,6 +1946,60 @@ export class RemoteStoreController {
 }
 
 export const remoteStore = new RemoteStoreController();
+
+export function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+    return false;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!Object.is(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const keysA = Object.keys(a as Record<string, unknown>);
+  const keysB = Object.keys(b as Record<string, unknown>);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (
+      !Object.prototype.hasOwnProperty.call(b, key) ||
+      !Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function useRemoteSelector<T>(
+  selector: (s: RemoteState) => T,
+  isEqual: (a: T, b: T) => boolean = shallowEqual
+): T {
+  const selectorRef = useRef(selector);
+  const isEqualRef = useRef(isEqual);
+  selectorRef.current = selector;
+  isEqualRef.current = isEqual;
+
+  const [slice, setSlice] = useState<T>(() => selector(remoteStore.getState()));
+  const sliceRef = useRef(slice);
+  sliceRef.current = slice;
+
+  useEffect(() => {
+    const syncIfChanged = () => {
+      const next = selectorRef.current(remoteStore.getState());
+      if (!isEqualRef.current(sliceRef.current, next)) {
+        sliceRef.current = next;
+        setSlice(() => next);
+      }
+    };
+    syncIfChanged();
+    return remoteStore.subscribe(syncIfChanged);
+  }, []);
+
+  return slice;
+}
 
 export function useRemoteStore(): RemoteState {
   const [snap, setSnap] = useState<RemoteState>(remoteStore.getState);

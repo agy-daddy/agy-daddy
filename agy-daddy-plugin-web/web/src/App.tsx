@@ -293,6 +293,32 @@ export function mergeEventsBySeq(prev: SessionEvent[], incoming: SessionEvent[])
   if (prev.length === 0) {
     return incoming.slice().sort(compareSessionEvents);
   }
+
+  // O(K) streaming tail fast path: prev has no pending negative optimistic events,
+  // and incoming is non-decreasing at or after the tail of prev.
+  const lastPrev = prev[prev.length - 1];
+  if (prev[0].seq >= 0 && lastPrev.seq >= 0 && incoming[0].seq >= lastPrev.seq) {
+    let isAscending = true;
+    for (let i = 1; i < incoming.length; i++) {
+      if (incoming[i].seq < incoming[i - 1].seq) {
+        isAscending = false;
+        break;
+      }
+    }
+    if (isAscending) {
+      const next = prev.slice();
+      for (const ev of incoming) {
+        const tail = next[next.length - 1];
+        if (tail && ev.seq === tail.seq) {
+          next[next.length - 1] = ev;
+        } else {
+          next.push(ev);
+        }
+      }
+      return next;
+    }
+  }
+
   const prevSeqs = new Set<number>();
   const bySeq = new Map<number, SessionEvent>();
   const optimisticUsers: SessionEvent[] = [];

@@ -1,5 +1,58 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const renderCounters = vi.hoisted(() => ({
+  composer: 0,
+  virtualChatList: 0,
+  leftDrawer: 0,
+  topBar: 0
+}));
+
+vi.mock('./chat/Composer', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./chat/Composer')>();
+  return {
+    ...mod,
+    Composer: (props: Parameters<typeof mod.Composer>[0]) => {
+      renderCounters.composer += 1;
+      return h(mod.Composer, props);
+    }
+  };
+});
+
+vi.mock('./chat/VirtualChatList', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./chat/VirtualChatList')>();
+  return {
+    ...mod,
+    VirtualChatList: (props: Parameters<typeof mod.VirtualChatList>[0]) => {
+      renderCounters.virtualChatList += 1;
+      return h(mod.VirtualChatList, props);
+    }
+  };
+});
+
+vi.mock('./drawers/LeftDrawer', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./drawers/LeftDrawer')>();
+  return {
+    ...mod,
+    LeftDrawer: (props: Parameters<typeof mod.LeftDrawer>[0]) => {
+      renderCounters.leftDrawer += 1;
+      return h(mod.LeftDrawer, props);
+    }
+  };
+});
+
+vi.mock('./layout/TopBar', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./layout/TopBar')>();
+  return {
+    ...mod,
+    TopBar: (props: Parameters<typeof mod.TopBar>[0]) => {
+      renderCounters.topBar += 1;
+      return h(mod.TopBar, props);
+    }
+  };
+});
+
 import { App } from './App';
 import { Composer } from './chat/Composer';
 import { StepCard } from './chat/StepCard';
@@ -14,7 +67,8 @@ import {
   RemoteStoreController,
   remoteStore,
   resolveUnifiedModelName,
-  sanitizePresets
+  sanitizePresets,
+  shallowEqual
 } from './store/useRemoteStore';
 import type { ComposerPreset, SessionEvent, SessionEventKind } from './types';
 
@@ -1094,5 +1148,219 @@ describe('Optimistic UI: mergeEvents, StepCard & App send lifecycle', () => {
       vi.useRealTimers();
       __resetIdbForTests();
     }
+  });
+});
+
+describe('T6 performance: selector isolation, batched delta setState, and O(K) tail merge', () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    __resetIdbForTests();
+  });
+
+  afterEach(() => {
+    remoteStore.logoutToken();
+    remoteStore.destroy();
+    vi.unstubAllGlobals();
+    __resetIdbForTests();
+  });
+
+  it('isolates Composer typing re-renders so VirtualChatList, LeftDrawer, and TopBar have 0 extra renders', async () => {
+    window.history.replaceState(null, '', '/?t=tok-iso-1');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+    const { fetchMock } = createAppSessionFetchMock('s-iso');
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    const textarea = (await screen.findByTestId('composer-textarea')) as HTMLTextAreaElement;
+    await waitFor(() => expect(remoteStore.getState().sseStatus).toBe('connected'));
+
+    const baseline = { ...renderCounters };
+
+    act(() => {
+      remoteStore.setComposerText('a');
+    });
+    act(() => {
+      remoteStore.setComposerText('ab');
+    });
+    act(() => {
+      remoteStore.setComposerText('abc');
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe('abc');
+    });
+
+    expect(renderCounters.composer - baseline.composer).toBe(3);
+    expect(renderCounters.virtualChatList - baseline.virtualChatList).toBe(0);
+    expect(renderCounters.leftDrawer - baseline.leftDrawer).toBe(0);
+    expect(renderCounters.topBar - baseline.topBar).toBe(0);
+  });
+
+  it('triggers listener once per handleSessionDelta and preserves state.sessions identity when status & stepCount are unchanged', () => {
+    const store = new RemoteStoreController();
+    (store as unknown as { setState: (p: Record<string, unknown>) => void }).setState({
+      activeSessionId: 's-run',
+      sessions: [
+        {
+          cascadeId: 's-run',
+          title: 'Running Session',
+          summary: '',
+          status: 'CASCADE_RUN_STATUS_RUNNING',
+          stepCount: 2,
+          lastModifiedTime: null,
+          workspaceUri: '/repo',
+          branchName: 'main'
+        }
+      ],
+      activeSession: {
+        cascadeId: 's-run',
+        status: 'CASCADE_RUN_STATUS_RUNNING',
+        numTotalSteps: 2
+      },
+      events: [
+        {
+          seq: 0,
+          kind: 'user',
+          status: 'done',
+          rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+          payload: { text: 'hello' }
+        },
+        {
+          seq: 1,
+          kind: 'thinking_and_text',
+          status: 'pending',
+          rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          payload: { response: 'hel', thinking: 'ponder' }
+        }
+      ]
+    });
+
+    const prevSessionsRef = store.getState().sessions;
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    const handleDelta = (
+      store as unknown as { handleSessionDelta: (payload: Record<string, unknown>) => void }
+    ).handleSessionDelta.bind(store);
+
+    // 1. Tail text patch with unchanged status & stepCount -> 1 notification, identical sessions ref
+    handleDelta({
+      cascadeId: 's-run',
+      status: 'CASCADE_RUN_STATUS_RUNNING',
+      totalSteps: 2,
+      events: [
+        {
+          seq: 1,
+          kind: 'thinking_and_text',
+          status: 'pending',
+          rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          payload: { response: 'hello world' }
+        }
+      ]
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getState().sessions).toBe(prevSessionsRef);
+    expect(store.getState().events[1].payload.response).toBe('hello world');
+    expect(store.getState().events[1].payload.thinking).toBe('ponder');
+
+    // 2. Delta that changes both stepCount and events -> still only 1 batched notification
+    listener.mockClear();
+    handleDelta({
+      cascadeId: 's-run',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      totalSteps: 3,
+      events: [
+        {
+          seq: 2,
+          kind: 'thinking_and_text',
+          status: 'done',
+          rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          payload: { response: 'final step' }
+        }
+      ]
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getState().sessions).not.toBe(prevSessionsRef);
+    expect(store.getState().sessions[0].status).toBe('CASCADE_RUN_STATUS_IDLE');
+    expect(store.getState().sessions[0].stepCount).toBe(3);
+    store.destroy();
+  });
+
+  it('merges 200-step tail increments via O(K) fast path identically to full Map merge and handles shallowEqual', () => {
+    const history: SessionEvent[] = Array.from({ length: 200 }, (_, seq) => ({
+      seq,
+      kind: seq % 2 === 0 ? 'user' : 'thinking_and_text',
+      status: seq === 199 ? 'pending' : 'done',
+      rawType: seq % 2 === 0 ? 'CORTEX_STEP_TYPE_USER_INPUT' : 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      payload: seq % 2 === 0 ? { text: `u-${seq}` } : { response: `a-${seq}`, thinking: `t-${seq}` }
+    }));
+
+    // Tail patch (seq 199) + tail append (seq 200)
+    const tailPatch: SessionEvent = {
+      seq: 199,
+      kind: 'thinking_and_text',
+      status: 'done',
+      rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      payload: { response: 'a-199-done' }
+    };
+    const tailAppend: SessionEvent = {
+      seq: 200,
+      kind: 'thinking_and_text',
+      status: 'pending',
+      rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      payload: { response: 'a-200' }
+    };
+
+    const fastMerged = mergeEvents(history, [tailPatch, tailAppend]);
+    expect(fastMerged).toHaveLength(201);
+    expect(fastMerged[199]).toEqual({
+      ...history[199],
+      ...tailPatch,
+      payload: { response: 'a-199-done', thinking: 't-199' }
+    });
+    expect(fastMerged[200]).toEqual(tailAppend);
+
+    // Out-of-order incoming falls back to full Map + sort
+    const outOfOrder = mergeEvents(fastMerged, [
+      {
+        seq: 202,
+        kind: 'thinking_and_text',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        payload: { response: 'a-202' }
+      },
+      {
+        seq: 201,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'u-201' }
+      }
+    ]);
+    expect(outOfOrder.slice(200).map((e) => e.seq)).toEqual([200, 201, 202]);
+
+    // Replay of earlier seq falls back properly
+    const replayed = mergeEvents(outOfOrder, [
+      {
+        seq: 100,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'u-100-updated' }
+      }
+    ]);
+    expect(replayed).toHaveLength(203);
+    expect(replayed[100].payload.text).toBe('u-100-updated');
+
+    // shallowEqual checks
+    const sharedArr = [1, 2];
+    expect(shallowEqual({ a: 1, b: sharedArr }, { a: 1, b: sharedArr })).toBe(true);
+    expect(shallowEqual({ a: 1, b: sharedArr }, { a: 2, b: sharedArr })).toBe(false);
+    expect(shallowEqual([1, 2], [1, 2])).toBe(true);
+    expect(shallowEqual([1, 2], [1, 3])).toBe(false);
   });
 });

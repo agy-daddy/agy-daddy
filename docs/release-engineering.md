@@ -1,119 +1,121 @@
-# Agy-Daddy 生产发布工程化方案（Release Engineering）
+English | [简体中文](./release-engineering.zh-CN.md)
 
-本文档定义 Agy-Daddy Monorepo（底座 `@agy-daddy/host`、10 个 `T0` 官方插件、模板 `@agy-daddy/plugin-template` 与注册表 `@agy-daddy/registry`）从构建、门禁、CI/CD 自动化发布到回滚与健康检查的标准化生产发布体系。
+# Agy-Daddy Release Engineering Plan
+
+This document defines the standardized production release system for the Agy-Daddy Monorepo (the microkernel host `@agy-daddy/host`, 10 `T0` official plugins, the template `@agy-daddy/plugin-template`, and the registry `@agy-daddy/registry`), covering build processes, quality gates, CI/CD automated publishing, rollback mechanisms, and health checks.
 
 ---
 
-## 1. 环境与凭证隔离
+## 1. Environment & Credential Isolation
 
-### 1.1 多环境通道矩阵
+### 1.1 Multi-Environment Channel Matrix
 
-| 环境 (`RELEASE_ENV`) | 适用场景 | npm `dist-tag` | 触发来源 | 认证与溯源机制 | 审批门禁 |
+| Environment (`RELEASE_ENV`) | Target Scenario | npm `dist-tag` | Trigger Source | Authentication & Provenance Mechanism | Approval Gate |
 |---|---|---|---|---|---|
-| `development` | 本地预演、本地 Verdaccio 联调 | `dev` | 本地手动 / `--dry-run` | 本地 `npm login` 或无鉴权 | 无 |
-| `staging` | 预发布 / 金丝雀灰度验证 | `next` | `vX.Y.Z-rc.N` tag 或 `workflow_dispatch(staging)` | 纯 OIDC Trusted Publishing（自动附带 Provenance） | GitHub Environment `npm-release` |
-| `production` | 正式生产发布 | `latest` | `vX.Y.Z` / `<pkg>@X.Y.Z` 正式 tag 或 `workflow_dispatch(production)` | 纯 OIDC Trusted Publishing（自动附带 Provenance） | GitHub Environment `npm-release`（可配 Required Reviewers） |
+| `development` | Local rehearsal, local Verdaccio integration | `dev` | Local manual / `--dry-run` | Local `npm login` or unauthenticated | None |
+| `staging` | Staging / canary grayscale validation | `next` | `vX.Y.Z-rc.N` tag or `workflow_dispatch(staging)` | Pure OIDC Trusted Publishing (automatically includes Provenance) | GitHub Environment `npm-release` |
+| `production` | Official production release | `latest` | `vX.Y.Z` / `<pkg>@X.Y.Z` official tag or `workflow_dispatch(production)` | Pure OIDC Trusted Publishing (automatically includes Provenance) | GitHub Environment `npm-release` (Required Reviewers configurable) |
 
-### 1.2 环境变量与敏感凭证规范
+### 1.2 Environment Variables and Sensitive Credential Specifications
 
-所有发布相关环境变量模板定义在根目录 [`.env.release.example`](../.env.release.example)（本地覆盖文件 `.env.release.local` 与快照目录 `.release-artifacts/` 均已在 `.gitignore` 中忽略，严禁提交）：
+All release-related environment variable templates are defined in the root [`.env.release.example`](../.env.release.example) (the local override file `.env.release.local` and snapshot directory `.release-artifacts/` are ignored in `.gitignore` and must never be committed):
 
-- **纯 OIDC 免 Token 认证（CI 默认）**：`release.yml` 的 `publish-npm` job 使用 GitHub Environment `npm-release` 与 `permissions: { id-token: write }`，且要求 `npm >= 11.5.1`。执行发布时主动剥离 `NODE_AUTH_TOKEN` 与 `NPM_TOKEN`（不在 `setup-node` 传 `registry-url`，避免生成 token 占位配置），由 GitHub OIDC 与 npm Trusted Publishing 直接换取临时发布凭据并自动附带 Provenance 溯源签名。
-- **首版手动交互式 2FA**：新包在 npmjs.com 首次创建前无法配置 Trusted Publisher，需先通过本机 `npm login` 并使用 `node scripts/release.js publish --env production --target all --execute --interactive` 完成首版交互式 2FA 发布，随后在 npmjs.com 各包的 **Settings → Trusted Publisher** 绑定 `agy-daddy/agy-daddy` + `release.yml` + `npm-release`。
-- **构建期配置**：`VITE_PUBLIC_BASE`（控制前端静态资源公共路径，默认 `/`）、`VITE_SOURCEMAP`（生产默认 `false` 避免源码暴露）。
-- **零外部运行依赖约束**：全部 13 个可发布子包的 `dependencies` 必须保持为空，构建期工具（Vite、TypeScript、Vitest）仅隔离在 `agy-daddy-plugin-remote/web` 和 `agy-daddy-plugin-web/web` 的 `devDependencies` 中。
-
----
-
-## 2. 构建与打包优化
-
-### 2.1 底座与插件构建分层
-
-1. **底座渲染包（`@agy-daddy/host`）**：`scripts/build-renderer.js` 将 `src/renderer/{styles.css,lightdom-styles.css,theme.js,host-runtime.js}` 聚合编译为 `dist/host-renderer.js` 并通过 `vm.Script` 语法校验。`agy-daddy-host/package.json` 已配置 `"prepublishOnly": "npm run build:renderer"`，防止发布时遗漏未入库的 `dist/host-renderer.js`。
-2. **Web UI 静态资源（`plugin-remote/web` & `plugin-web/web`）**：
-   - **代码压缩与产物分包**：`vite.config.ts` 开启 `minify: 'esbuild'`、`cssMinify: true`、`target: 'es2022'`；将 `xterm`、`preact-vendor`（Remote PWA）与 `react-vendor`（PC Web Harness）拆分为独立 vendor chunk，配合页面级路由/懒加载组件实现增量缓存。
-   - **静态资源哈希（Cache Busting）**：显式锁定 `assets/[name]-[hash].js` 与 `assets/[name]-[hash][extname]`，所有 `assets/*` 资源在 `pwa-server.js` 与 `web-server.js` 中统一返回 `Cache-Control: public, max-age=31536000, immutable`；入口 `index.html`、`sw.js` 与全部 `/api/v1/*` 接口严格保持 `Cache-Control: no-store`。
-3. **Tarball 白名单瘦身**：13 个可发布子包均已配置 `"files"` 白名单与 `"publishConfig": { "access": "public" }`，彻底剔除 `test/`、`web/src/`、`web/node_modules/` 等开发文件，并通过 `npm run verify:gates` 第 8 项静态门禁强制校验。
-4. **体积分析**：运行 `npm run analyze` 统计 `host-renderer.js` 及两个 Web UI 各 chunk 的原始/Gzip 体积（单 JS chunk Gzip 超 `250 KB` 触发预算告警），并执行全部 13 个子包的 `npm pack --dry-run --json` 泄露扫描。
-
-### 2.2 静态资源 CDN/OSS 部署与路径回退策略
-
-- **注入外部 CDN/OSS 路径**：构建前端 UI 时设置 `VITE_PUBLIC_BASE=https://cdn.example.com/agy-daddy/remote/`（或对象存储静态托管子路径），Vite 会自动重写 `index.html` 与异步 chunk 的资源前缀；同步将 `dist/web/assets/` 上传至 CDN/OSS 并保留 `index.html` 在源站或短 TTL 入口。
-- **零配置本地回退**：若未设置 `VITE_PUBLIC_BASE`（默认 `/`），产物直接引用同源 `/assets/*`，由插件内置 `pwa-server.js` / `web-server.js` 离线或本地回环直接托管，CDN 不可用时只需不传 `VITE_PUBLIC_BASE` 重新构建即可无痛回退。
+- **Pure OIDC Tokenless Authentication (CI Default)**: The `publish-npm` job in `release.yml` uses the GitHub Environment `npm-release` with `permissions: { id-token: write }` and requires `npm >= 11.5.1`. During execution, `NODE_AUTH_TOKEN` and `NPM_TOKEN` are explicitly stripped (omitting `registry-url` in `setup-node` to avoid generating placeholder token configs). GitHub OIDC and npm Trusted Publishing directly exchange ephemeral publishing credentials and automatically attach cryptographic Provenance signatures.
+- **Initial Version Manual Interactive 2FA**: Before newly created packages exist on npmjs.com, Trusted Publisher cannot be configured. An initial interactive 2FA publication must be performed locally via `npm login` and `node scripts/release.js publish --env production --target all --execute --interactive`. Subsequently, configure **Settings → Trusted Publisher** on npmjs.com for each package, binding `agy-daddy/agy-daddy` + `release.yml` + `npm-release`.
+- **Build-Time Configuration**: `VITE_PUBLIC_BASE` (controls the public path for frontend static assets, default `/`), `VITE_SOURCEMAP` (defaults to `false` in production to prevent source code exposure).
+- **Zero External Runtime Dependency Constraint**: All 13 publishable packages must keep `dependencies` completely empty (`dependencies: {}`). Build-time tooling (Vite, TypeScript, Vitest) is strictly isolated within the `devDependencies` of `agy-daddy-plugin-remote/web` and `agy-daddy-plugin-web/web`.
 
 ---
 
-## 3. CI/CD 自动化流水线
+## 2. Build & Bundle Optimization
 
-### 3.1 持续集成（`.github/workflows/ci.yml`）
+### 2.1 Host and Plugin Build Stratification
 
-- **并发控制**：同一分支/PR 新提交自动取消旧流水线 (`cancel-in-progress: true`)。
-- **`verify` Job**：执行 `npm run verify`（构建 + 8 项静态/注册表门禁 + 全量包与脚本单测）与 `npm run analyze`，将体积与包清单摘要写入 GitHub Actions Step Summary。
-- **`web-ui-checks` Job**：通过 matrix 并行检验 `agy-daddy-plugin-remote/web` 与 `agy-daddy-plugin-web/web` 的 `npm ci` -> `typecheck` -> `vitest` -> `vite build`。
+1. **Host Renderer Bundle (`@agy-daddy/host`)**: `scripts/build-renderer.js` aggregates and compiles `src/renderer/{styles.css,lightdom-styles.css,theme.js,host-runtime.js}` into `dist/host-renderer.js` and validates syntax via `vm.Script`. `agy-daddy-host/package.json` configures `"prepublishOnly": "npm run build:renderer"` to prevent publishing without an up-to-date `dist/host-renderer.js`.
+2. **Web UI Static Assets (`plugin-remote/web` & `plugin-web/web`)**:
+   - **Code Minification and Chunk Splitting**: `vite.config.ts` enables `minify: 'esbuild'`, `cssMinify: true`, and `target: 'es2022'`. `xterm`, `preact-vendor` (Remote PWA), and `react-vendor` (PC Web Harness) are split into dedicated vendor chunks, leveraging route-level code splitting and lazy loading for incremental browser caching.
+   - **Static Asset Hashing (Cache Busting)**: Explicitly outputs `assets/[name]-[hash].js` and `assets/[name]-[hash][extname]`. All `assets/*` files served by `pwa-server.js` and `web-server.js` return `Cache-Control: public, max-age=31536000, immutable`, while entry `index.html`, `sw.js`, and all `/api/v1/*` endpoints strictly enforce `Cache-Control: no-store`.
+3. **Tarball Whitelist Slimming**: All 13 publishable packages configure a `"files"` whitelist and `"publishConfig": { "access": "public" }`, completely excluding `test/`, `web/src/`, `web/node_modules/`, and other development files, strictly verified by Gate 8 of `npm run verify:gates`.
+4. **Bundle Size Analysis**: Running `npm run analyze` reports raw and Gzip sizes for `host-renderer.js` and all Web UI chunks (triggering budget alerts if any single JS chunk exceeds `250 KB` Gzip), and runs `npm pack --dry-run --json` leak detection across all 13 subpackages.
 
-### 3.2 持续发布（`.github/workflows/release.yml`）
+### 2.2 Static Asset CDN/OSS Deployment & Path Fallback Strategy
 
-- **双触发机制**：
-  - **Tag 驱动**：推送协调全量 tag `vX.Y.Z`（含 `-rc.N` 自动路由到 `staging`）或单包 tag `host@X.Y.Z`、`plugin-<name>@X.Y.Z`、`registry@X.Y.Z`。
-  - **手动演练/发布 (`workflow_dispatch`)**：可选 `staging` / `production`、`target`（`all` 或指定包/tag），默认 `dry_run: true` 防误操作。
-- **4 阶段流水线**：
-  1. `preflight-verify`：Web UI 构建校验 + `npm run verify` + `scripts/release.js plan` 版本与 `registry.json` SHA-512 一致性检查。
-  2. `pack-snapshot`：运行 `scripts/release.js pack` 生成全部 `.tgz` 与带 `sha512` 校验和的 `release-manifest.json`，上传为 30 天保留期的 GitHub Artifact 快照。
-  3. `publish-npm`：绑定单一 GitHub Environment `npm-release` 与 `id-token: write`，确保 `npm >= 11.5.1` 并剥离 `NODE_AUTH_TOKEN` / `NPM_TOKEN`，以纯 OIDC Trusted Publishing 幂等跳过已存在版本并执行 `npm publish --access public --tag <distTag>`（自动生成 Provenance）。
-  4. `post-release-verify`：执行本地与远端 npm 元数据健康检查；Tag 正式发布成功后自动创建 GitHub Release 并附带 `release-manifest.json`。
+- **External CDN/OSS Injection**: Building the frontend UI with `VITE_PUBLIC_BASE=https://cdn.example.com/agy-daddy/remote/` (or an object storage static hosting subpath) automatically rewrites the asset prefix for `index.html` and asynchronous chunks. Simultaneously upload `dist/web/assets/` to CDN/OSS while serving `index.html` from the origin or behind a short-TTL cache.
+- **Zero-Config Local Fallback**: When `VITE_PUBLIC_BASE` is omitted (default `/`), assets reference the same-origin `/assets/*` path served directly by the built-in `pwa-server.js` / `web-server.js` offline or on localhost. If the CDN becomes unavailable, rebuilding without `VITE_PUBLIC_BASE` provides a painless, immediate fallback.
 
-### 3.3 首版交互式 2FA 发布与 Trusted Publishing 绑定
+---
 
-1. **首版 1.0.0 本机交互式发布**（创建 13 个包）：
+## 3. CI/CD Automated Pipelines
+
+### 3.1 Continuous Integration (`.github/workflows/ci.yml`)
+
+- **Concurrency Control**: New commits on the same branch/PR automatically cancel in-progress runs (`cancel-in-progress: true`).
+- **`verify` Job**: Executes `npm run verify` (build + 8 static/registry quality gates + all unit tests across packages and scripts) and `npm run analyze`, outputting bundle size and package manifests directly to the GitHub Actions Step Summary.
+- **`web-ui-checks` Job**: Uses a parallel matrix to validate `agy-daddy-plugin-remote/web` and `agy-daddy-plugin-web/web` through `npm ci` -> `typecheck` -> `vitest` -> `vite build`.
+
+### 3.2 Continuous Delivery (`.github/workflows/release.yml`)
+
+- **Dual Trigger Mechanism**:
+  - **Tag-Driven**: Pushing coordinated full-release tags `vX.Y.Z` (with `-rc.N` automatically routed to `staging`) or single-package tags `host@X.Y.Z`, `plugin-<name>@X.Y.Z`, `registry@X.Y.Z`.
+  - **Manual Run/Rehearsal (`workflow_dispatch`)**: Selectable `staging` / `production`, target scope (`all` or specific package/tag), defaulting to `dry_run: true` to prevent accidental execution.
+- **4-Stage Pipeline**:
+  1. `preflight-verify`: Web UI build validation + `npm run verify` + `scripts/release.js plan` version and `registry.json` SHA-512 consistency checks.
+  2. `pack-snapshot`: Runs `scripts/release.js pack` to generate all `.tgz` archives and `release-manifest.json` containing `sha512` checksums, uploaded as a GitHub Artifact snapshot retained for 30 days.
+  3. `publish-npm`: Binds to the single GitHub Environment `npm-release` with `id-token: write`, verifies `npm >= 11.5.1`, strips `NODE_AUTH_TOKEN` / `NPM_TOKEN`, and performs idempotent publishing with `npm publish --access public --tag <distTag>` via pure OIDC Trusted Publishing (automatically generating Provenance).
+  4. `post-release-verify`: Executes local and remote npm metadata health checks. Upon successful tag-based release, automatically generates a GitHub Release with `release-manifest.json` attached.
+
+### 3.3 Initial Interactive 2FA Release & Trusted Publishing Binding
+
+1. **Initial 1.0.0 Local Interactive Release** (creating 13 packages):
    ```bash
    npm login
    npm run verify
    node scripts/release.js publish --env production --target all --execute --interactive --skip-verify
    ```
-2. **绑定 Trusted Publisher**：在 npmjs.com 依次打开 13 个包的 `https://www.npmjs.com/package/<encoded-name>/access`，选择 **GitHub Actions**，填入：
-   - Organization or user：`agy-daddy`
-   - Repository：`agy-daddy`
-   - Workflow filename：`release.yml`
-   - Environment name：`npm-release`
-3. **后续纯 OIDC 自动发版**：在 GitHub Repository Settings → Environments 创建 `npm-release` 后，推送 tag（如 `v1.0.1`）或手动运行 `Release & Publish npm Packages` 即可免 `NPM_TOKEN` 自动发布。
+2. **Bind Trusted Publisher**: On npmjs.com, navigate to `https://www.npmjs.com/package/<encoded-name>/access` for each of the 13 packages, select **GitHub Actions**, and provide:
+   - Organization or user: `agy-daddy`
+   - Repository: `agy-daddy`
+   - Workflow filename: `release.yml`
+   - Environment name: `npm-release`
+3. **Subsequent Pure OIDC Automated Releases**: Once `npm-release` is created in GitHub Repository Settings → Environments, pushing a tag (e.g., `v1.0.1`) or manually triggering `Release & Publish npm Packages` will publish automatically without requiring `NPM_TOKEN`.
 
 ---
 
-## 4. 发布可靠性、回滚与监控告警
+## 4. Release Reliability, Rollback & Monitoring
 
-### 4.1 平滑发布（金丝雀 `next` -> 生产 `latest`）
+### 4.1 Phased Rollout (Canary `next` -> Production `latest`)
 
-1. 先打预发布 tag（如 `v1.1.0-rc.1`）或在 Actions 选择 `environment=staging, dry_run=false` 发布到 `next` 通道；
-2. 内测用户通过 `npm install -g @agy-daddy/host@next` 与 `agy-daddy plugin install npm:@agy-daddy/plugin-proxy@next` 验证；
-3. 确认稳定后合入正式版本并推送 `v1.1.0`（或通过 `workflow_dispatch` 选 `production`）晋升到 `latest`。
+1. Push a pre-release tag (e.g., `v1.1.0-rc.1`) or select `environment=staging, dry_run=false` in GitHub Actions to publish to the `next` channel;
+2. Early adopters test via `npm install -g @agy-daddy/host@next` and `agy-daddy plugin install npm:@agy-daddy/plugin-proxy@next`;
+3. Once verified stable, merge the release and push `v1.1.0` (or trigger `workflow_dispatch` selecting `production`) to promote to `latest`.
 
-### 4.2 版本快照与快速回滚
+### 4.2 Version Snapshot & Rapid Rollback
 
-由于 npm 不允许覆盖或删除已发布逾时的正式版本，回滚采用 **“dist-tag 指针秒级切回 + 异常版本 deprecate 标记”** 策略：
+Because npm prohibits overwriting or unpublishing packages after a grace window, rollback uses a **"second-level dist-tag pointer switch + deprecation marking for problematic versions"** strategy:
 
 ```bash
-# 1. 预览回滚命令（默认 dry-run）
+# 1. Preview rollback commands (default dry-run)
 node scripts/release.js rollback --env production --target all --to-version 1.0.0 --deprecate-version 1.0.1
 
-# 2. 实际执行回滚（将 latest 指回 1.0.0 并标记 1.0.1 弃用）
+# 2. Execute rollback (points latest back to 1.0.0 and marks 1.0.1 deprecated)
 node scripts/release.js rollback --env production --target all --to-version 1.0.0 --deprecate-version 1.0.1 --execute
 ```
 
-同时每次发布均在 `release-manifest.json` 留存 git commit、tarball 文件名与 `sha512`，支持从 GitHub Artifact 快照离线还原或重发。
+Additionally, every release records the git commit, tarball filename, and `sha512` in `release-manifest.json`, enabling offline restoration or republishing directly from GitHub Artifact snapshots.
 
-### 4.3 健康检查与监控告警
+### 4.3 Health Checks & Monitoring Alerts
 
-- **本地基线检查**：`npm run release:healthcheck`（即 `node scripts/release.js healthcheck --mode local`）校验 `host-renderer.js` 编译语法、两个 `dist/web/index.html`、`registry.json` 矩阵及 `agy-daddy doctor --json`。
-- **远端发布后检查**：`node scripts/release.js healthcheck --mode npm --env <env> --target <target> --retries 6 --retry-delay-ms 5000` 校验目标版本已进入 npm registry、对应 `dist-tag` 指针准确且 `dist.integrity` 存在。
-- **失败告警**：`release.yml` 在 `post-release-verify` 失败时打印精确的 `rollback` 执行命令，并在配置了 `secrets.RELEASE_ALERT_WEBHOOK_URL` 时自动向外部通知端点发送结构化 JSON 告警。
+- **Local Baseline Health Check**: `npm run release:healthcheck` (i.e. `node scripts/release.js healthcheck --mode local`) validates `host-renderer.js` compilation syntax, both `dist/web/index.html` files, the `registry.json` matrix, and `agy-daddy doctor --json`.
+- **Post-Release Remote Check**: `node scripts/release.js healthcheck --mode npm --env <env> --target <target> --retries 6 --retry-delay-ms 5000` verifies that target versions appear on the npm registry, corresponding `dist-tag` pointers are accurate, and `dist.integrity` is present.
+- **Failure Alerts**: If `post-release-verify` fails, `release.yml` prints the exact `rollback` command and automatically dispatches structured JSON alerts to external notification endpoints when `secrets.RELEASE_ALERT_WEBHOOK_URL` is configured.
 
 ---
 
-## 5. 生产发布前执行清单（Checklist）
+## 5. Pre-Release Checklist
 
-- [ ] **首版发布与 Trusted Publishing 绑定**：13 个包已完成首版 `1.0.0` 交互式发布，并在 npmjs.com 各包的 **Settings → Trusted Publisher** 配置为 `GitHub Actions`（Owner: `agy-daddy`、Repository: `agy-daddy`、Workflow: `release.yml`、Environment: `npm-release`），且在 GitHub Repository Settings → Environments 创建 `npm-release`（不配置多余 `NPM_TOKEN`，可选开启人工审批）。
-- [ ] **版本与哈希同步**：若修改过任何插件的 `agy-plugin.json`，已同步更新 `agy-daddy-registry/registry.json` 的 `version` 与 `manifestSha512`。
-- [ ] **前端静态构建**：修改过 `plugin-remote/web` 或 `plugin-web/web` 源码后，已执行 `npm run typecheck && npm test && npm run build` 刷新预编译产物。
-- [ ] **全量门禁与体积检查**：根目录运行 `npm run verify`（8 项 gate 全绿、测试 `Failed: 0`）与 `npm run analyze`（确认 tarball 无 `test/` / `web/src/` 泄露）。
-- [ ] **本地发布预演**：运行 `npm run release:plan -- --env staging --target all` 与 `npm run release:dry-run -- --env production --target all` 均通过。
-- [ ] **灰度与健康验收**：先发布 `staging (next)` 并执行 `node scripts/release.js healthcheck --mode npm --env staging`，确认无误后再推正式 tag 发布 `production (latest)`。
+- [ ] **Initial Release & Trusted Publishing Binding**: All 13 packages have completed their initial `1.0.0` interactive release, each package's **Settings → Trusted Publisher** on npmjs.com is configured for `GitHub Actions` (Owner: `agy-daddy`, Repository: `agy-daddy`, Workflow: `release.yml`, Environment: `npm-release`), and `npm-release` is created under GitHub Repository Settings → Environments (no extraneous `NPM_TOKEN`, optional manual approval enabled).
+- [ ] **Version and Hash Synchronization**: If any plugin's `agy-plugin.json` was modified, `version` and `manifestSha512` in `agy-daddy-registry/registry.json` have been synchronized.
+- [ ] **Frontend Static Builds**: After modifying source code in `plugin-remote/web` or `plugin-web/web`, `npm run typecheck && npm test && npm run build` has been executed to refresh precompiled assets.
+- [ ] **Complete Quality Gates and Size Checks**: Ran `npm run verify` in the repository root (all 8 gates passing, `Failed: 0` tests) and `npm run analyze` (confirmed no `test/` or `web/src/` leaks in tarballs).
+- [ ] **Local Release Rehearsal**: Both `npm run release:plan -- --env staging --target all` and `npm run release:dry-run -- --env production --target all` succeed.
+- [ ] **Canary & Health Validation**: Deploy to `staging (next)` first and execute `node scripts/release.js healthcheck --mode npm --env staging`. Once validated, push the official tag to publish to `production (latest)`.

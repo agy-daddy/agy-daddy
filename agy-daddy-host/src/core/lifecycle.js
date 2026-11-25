@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require('child_process');
 const { resolveRuntime } = require('./runtime-resolver');
 const { getStateDir, isTestMode } = require('./paths');
 const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
+const { makeHostRelaunchRecord, writeHostRelaunch } = require('./storage');
 const {
   ensureMacTrayAppBundle,
   resolveDefaultMacApplicationsDir,
@@ -18,6 +19,30 @@ const LAUNCHER_MAC_BUNDLE_NAME = 'Agy-Daddy Launcher.app';
 const LAUNCHER_BUNDLE_ID = 'dev.agy-daddy.launcher';
 const LAUNCHER_ICON_NAME = 'AgyDaddyLauncher';
 const LAUNCHER_ASSETS_DIR = path.resolve(__dirname, '..', '..', 'assets', 'icons');
+const SESSION_ID_KEYS = ['ANTIGRAVITY_AGENT', 'ANTIGRAVITY_SESSION', 'AGY_SESSION_ID'];
+const SESSION_ENV_KEYS = [...SESSION_ID_KEYS, 'VSCODE_IPC_HOOK_CLI', 'TERM_PROGRAM'];
+const SESSION_ENV_AUDIT = 'AGY_DADDY_INHERITED_SESSION_VARS';
+
+function inheritedSessionVars(env = process.env) {
+  const audit = String(env[SESSION_ENV_AUDIT] || '').split(',');
+  return SESSION_ENV_KEYS.filter((name) => audit.includes(name) || env[name] !== undefined);
+}
+
+function isolateResidentEnv(env = process.env) {
+  const names = inheritedSessionVars(env);
+  for (const name of SESSION_ENV_KEYS) delete env[name];
+  if (names.length > 0) env[SESSION_ENV_AUDIT] = names.join(',');
+  else delete env[SESSION_ENV_AUDIT];
+  return env;
+}
+
+const ISOLATE_SESSION_SHELL = [
+  ...SESSION_ENV_KEYS.map((name) => 'if [ "${' + name + '+x}" ]; then '
+    + SESSION_ENV_AUDIT + '="${' + SESSION_ENV_AUDIT + ':-},' + name + '"; fi'),
+  'export ' + SESSION_ENV_AUDIT,
+  'unset ' + SESSION_ENV_KEYS.join(' ')
+].join('\n');
+
 
 function getLauncherIconPaths(assetsDir = LAUNCHER_ASSETS_DIR) {
   const dir = path.resolve(assetsDir);
@@ -66,16 +91,18 @@ function generateMacLaunchAgentPlist(options = {}) {
   const portFile = options.portFile || path.join(home, 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort');
   const lockFile = options.lockFile || path.join(home, 'Library', 'Application Support', 'Antigravity', 'SingletonLock');
   const runtimeInfo = options.runtimeInfo || resolveRuntime();
-  const programArgs = runtimeInfo?.runtime
+  const command = runtimeInfo?.runtime
     ? [runtimeInfo.runtime, cliPath, 'live']
     : ['/usr/bin/env', 'node', cliPath, 'live'];
 
-  const envEntries = {
+  const programArgs = ['/bin/sh', '-c', ISOLATE_SESSION_SHELL + '\nexec "$@"', 'agy-daddyd', ...command];
+
+  const envEntries = isolateResidentEnv({
     PATH: options.pathEnv || `${path.join(home, '.local', 'bin')}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     AGY_DADDY_LAUNCHD: '1',
     ...(runtimeInfo?.isElectron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     ...(options.env || {})
-  };
+  });
 
   const argsXml = programArgs.map((a) => `    <string>${escapeXml(a)}</string>`).join('\n');
   const envXml = Object.entries(envEntries)
@@ -125,8 +152,13 @@ function generateWindowsLauncherBat(options = {}) {
   const launchFlags = mode === 'launcher' && options.launchApp ? ' --launch-app' : '';
   const lines = [
     '@echo off',
+    'setlocal',
     `title ${LAUNCHER_APP_NAME}`,
     `rem ${LAUNCHER_APP_NAME} (${LAUNCHER_BUNDLE_ID})`,
+    ...SESSION_ENV_KEYS.flatMap((name) => [
+      `if defined ${name} set "${SESSION_ENV_AUDIT}=%${SESSION_ENV_AUDIT}%,${name}"`,
+      `set "${name}="`
+    ]),
     'set ELECTRON_RUN_AS_NODE=1',
     proxyUrl ? `set HTTP_PROXY=${proxyUrl}\r\nset HTTPS_PROXY=${proxyUrl}` : 'rem no proxy override',
     mode === 'live'
@@ -160,9 +192,13 @@ function generateLinuxSystemdUnit(options = {}) {
   const runtimeInfo = options.runtimeInfo || (options.runtimePath
     ? { runtime: options.runtimePath, isElectron: Boolean(options.isElectron) }
     : resolveRuntime());
-  const execStart = runtimeInfo && runtimeInfo.runtime
-    ? `"${runtimeInfo.runtime}" "${cliPath}" live`
-    : `/usr/bin/env node "${cliPath}" live`;
+  const command = runtimeInfo?.runtime
+    ? [runtimeInfo.runtime, cliPath, 'live']
+    : ['/usr/bin/env', 'node', cliPath, 'live'];
+  // The ':' prefix leaves shell parameter expansion to the audit wrapper.
+  const execStart = ':/bin/sh -c ' + [
+    ISOLATE_SESSION_SHELL + '\nexec "$@"', 'agy-daddyd', ...command
+  ].map((value) => JSON.stringify(value.replaceAll('%', '%%'))).join(' ');
   const envLine = runtimeInfo && runtimeInfo.isElectron
     ? 'Environment=ELECTRON_RUN_AS_NODE=1\n'
     : '';
@@ -353,6 +389,7 @@ function installMacLauncherApp(options = {}) {
   const launchFlag = options.launchApp ? ' --launch-app' : '';
   const script = `#!/usr/bin/env zsh
 set -euo pipefail
+${ISOLATE_SESSION_SHELL}
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\${PATH:-}"
 APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
 export AGY_DADDY_TRAY_APP="$APP_BUNDLE"
@@ -544,7 +581,7 @@ function installLauncherApp(options = {}) {
 
 function detectInsideAntigravitySession(env = process.env) {
   if (!env || typeof env !== 'object') return false;
-  if (env.ANTIGRAVITY_AGENT || env.ANTIGRAVITY_SESSION || env.AGY_SESSION_ID) return true;
+  if (SESSION_ID_KEYS.some((name) => env[name])) return true;
   if (String(env.TERM_PROGRAM || '').toLowerCase().includes('antigravity')) return true;
   if (String(env.VSCODE_IPC_HOOK_CLI || '').toLowerCase().includes('antigravity')) return true;
   return false;
@@ -679,6 +716,14 @@ function defaultIsPidAlive(pid) {
 }
 
 async function relaunchAntigravityWithCdp(options = {}) {
+  const result = await performAntigravityRelaunch(options);
+  if ((!isTestMode() || options.stateDir) && !result.skipped && result.reason !== 'ALREADY_HAS_DEBUG_SWITCH') {
+    writeHostRelaunch(getStateDir(options), makeHostRelaunchRecord(result, options.now?.()));
+  }
+  return result;
+}
+
+async function performAntigravityRelaunch(options) {
   const platform = options.platform || process.platform;
   if (!['darwin', 'win32', 'linux'].includes(platform)) {
     return {
@@ -709,13 +754,19 @@ async function relaunchAntigravityWithCdp(options = {}) {
     return { ...plan, relaunched: false };
   }
 
-  const inspectHost = options.inspectHostProcess || (() => inspectAntigravityHostProcess({ platform, env }));
+  const inspectHost = options.inspectHostProcess || (() => inspectAntigravityHostProcess({ platform, env, appPath: resolvedAppPath }));
   const resolveCdp = options.resolveCdpTarget || ((opts) => resolveActiveCdpTarget(opts));
   const isPidAliveFn = options.isPidAliveFn || defaultIsPidAlive;
   const killProcess = options.killProcess || ((pid, sig) => process.kill(pid, sig));
   const runOsascript = options.runOsascript || (() => spawnSync(
     'osascript',
-    ['-e', 'tell application "Antigravity" to quit'],
+    [
+      '-e', 'on run argv',
+      '-e', 'set bundlePath to item 1 of argv',
+      '-e', 'tell application bundlePath to quit',
+      '-e', 'end run',
+      resolvedAppPath
+    ],
     { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }
   ));
   const gracefulQuit = options.gracefulQuit || ((pid) => {
@@ -757,6 +808,9 @@ async function relaunchAntigravityWithCdp(options = {}) {
   const now = options.now || (() => Date.now());
 
   const hostProc = inspectHost() || { running: false, pid: null, hasDebugSwitch: false };
+  if (options.expectedPid && hostProc.pid !== options.expectedPid) {
+    return { ok: false, skipped: true, relaunched: false, reason: 'HOST_PROCESS_CHANGED' };
+  }
   if (options.onlyIfBare && hostProc.running && hostProc.hasDebugSwitch) {
     return {
       ok: true,
@@ -845,16 +899,17 @@ async function relaunchAntigravityWithCdp(options = {}) {
   }
 
   const waitStart = now();
-  let lastPort = null;
+  let discovery = null;
   while (true) {
     try {
       const cdpRes = await resolveCdp({ timeoutMs: 1200 });
-      if (cdpRes?.port) lastPort = cdpRes.port;
+      if (cdpRes?.port || !discovery) discovery = cdpRes;
       if (Array.isArray(cdpRes?.targets) && cdpRes.targets.length > 0) {
         return {
           ok: true,
           relaunched: true,
-          port: cdpRes.port || lastPort,
+          port: cdpRes.port || discovery?.port || null,
+          discovery: cdpRes,
           targets: cdpRes.targets,
           targetsCount: cdpRes.targets.length
         };
@@ -869,7 +924,8 @@ async function relaunchAntigravityWithCdp(options = {}) {
     ok: false,
     relaunched: true,
     reason: 'CDP_WAIT_TIMEOUT',
-    port: lastPort,
+    port: discovery?.port || null,
+    discovery,
     targets: [],
     targetsCount: 0,
     message: '已重启 Antigravity，但等待 CDP 窗口就绪超时'
@@ -915,6 +971,8 @@ module.exports = {
   installMacLauncherApp,
   installLauncherApp,
   detectInsideAntigravitySession,
+  inheritedSessionVars,
+  isolateResidentEnv,
   planAntigravityRestart,
   findMacAntigravityApp,
   findAntigravityApp,

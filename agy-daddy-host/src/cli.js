@@ -31,6 +31,7 @@ const {
   removeAutoStart,
   installMacLauncherApp,
   installLauncherApp,
+  isolateResidentEnv,
   planAntigravityRestart,
   relaunchAntigravityWithCdp,
   checkAndPullGitUpdate
@@ -149,15 +150,34 @@ async function main(argv = process.argv.slice(2)) {
       else console.log(`✅ 已导出脱敏诊断包: ${outPath}`);
       return;
     }
-    const report = await runDoctor();
+    const report = await runDoctor({ skipCdp: Boolean(flags['skip-cdp']) });
+    const { daemon, antigravity, cdp, injection, plugins, fault } = report.hostHealth;
     if (flags.json) {
-      console.log(JSON.stringify(report, null, 2));
+      console.log(JSON.stringify(report.hostHealth, null, 2));
     } else {
       console.log(`Agy-Daddy Host v${report.hostApiVersion}`);
       console.log(`- 运行时: ${report.runtime.ok ? `${report.runtime.runtime} (${report.runtime.source}, Node ${report.runtime.nodeVersion})` : '❌ 未找到可用运行时'}`);
-      console.log(`- 宿主窗口: ${report.antigravity.cdpTargetsCount > 0 ? `✅ CDP 已连接 (端口 ${report.antigravity.cdpPort})` : '⚪ 未检测到活跃 CDP 窗口'}`);
-      console.log(`- 锚点注册表: ${report.anchors.count} 个具名锚点`);
-      console.log(`- 已装插件: ${report.plugins.count} 个`);
+      console.log(`- Daemon: PID ${daemon.pid ?? '—'}, Bridge ${daemon.bridgePort ?? '—'}, 已运行 ${daemon.uptimeMs} ms, 会话变量 ${daemon.inheritedSessionVars.join(', ') || '无'}, 污染 ${daemon.hasSessionEnvPollution ? '是' : '否'}`);
+      console.log(`- Antigravity: ${antigravity.version ?? '未知版本'}, PID ${antigravity.pid ?? '—'}, 调试参数 ${antigravity.hasDebugSwitch ? '有' : '无'}, 上次注入 ${antigravity.lastInjectedVersion ?? '—'}`);
+      if (antigravity.lastRelaunch.status) console.log(`  补参 ${antigravity.lastRelaunch.status} ${antigravity.lastRelaunch.reason || ''}`);
+      for (const event of antigravity.upgradeEvents) {
+        console.log(`  ${event.at} ${event.fromVersion} → ${event.toVersion} (PID ${event.pid}) ${event.outcome} ${event.reason || ''}`);
+      }
+      console.log(`- CDP: 端口 ${cdp.port ?? '—'}, 已探测 ${cdp.portsTried.join(', ') || '无'}, 可达 ${cdp.reachable ? '是' : '否'}, 匹配 ${cdp.targets.matched.length}，过滤 ${cdp.targets.filtered.length}`);
+      for (const target of [...cdp.targets.matched, ...cdp.targets.filtered]) {
+        console.log(`  ${target.url ?? '—'}${target.filterReason ? ` [${target.filterReason}]` : ''}`);
+      }
+      console.log(`- 注入: ${injection.injectedCount} 个窗口, 探活 ${injection.probeSource}, 锚点 ${injection.anchors.healthyCount}/${injection.anchors.total}`);
+      if (injection.lastInjectError) console.log(`  ${injection.lastInjectError}`);
+      for (const anchor of injection.anchors.items) {
+        console.log(`  ${anchor.name} ${anchor.matchedSelector || 'MISSING'}${anchor.affectedPlugins.length ? ` (${anchor.affectedPlugins.join(', ')})` : ''}`);
+      }
+      console.log(`- 插件: ${plugins.length} 个`);
+      for (const plugin of plugins) {
+        console.log(`  ${plugin.name} (${plugin.id}) ${plugin.nodeState}, 渲染 ${plugin.rendererMounted ? '已挂载' : '未挂载'}`);
+        if (plugin.lastErrorStack || plugin.lastError) console.log(`  ${plugin.lastErrorStack || plugin.lastError}`);
+      }
+      if (fault.active) console.log(`- 故障: ${fault.code} — ${fault.reason} (${fault.durationMs} ms)`);
     }
     return;
   }
@@ -241,6 +261,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (cmd === 'launcher') {
+    isolateResidentEnv();
     const stateDir = getStateDir();
     if (!flags.once) {
       const existingLauncher = readLauncherLock(stateDir);
@@ -579,6 +600,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (cmd === 'live') {
+    if (!flags.once) isolateResidentEnv();
     let watchdog = null;
     const daemon = new AgyDaddyDaemon({
       onRestartDaemon: async () => {
@@ -599,7 +621,7 @@ async function main(argv = process.argv.slice(2)) {
         const child = spawn(process.execPath, args, {
           detached: true,
           stdio: 'ignore',
-          env: { ...process.env }
+          env: isolateResidentEnv({ ...process.env })
         });
         child.unref();
       }
@@ -717,22 +739,38 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (sub === 'start') {
+      isolateResidentEnv();
+      let watchdog = null;
       const daemon = new AgyDaddyDaemon({
         onRestartDaemon: async () => {
+          watchdog?.stop();
           await daemon.stop().catch(() => {});
           const child = spawn(process.execPath, [__filename, 'daemon', 'start'], {
             detached: true,
             stdio: 'ignore',
-            env: { ...process.env }
+            env: isolateResidentEnv({ ...process.env })
           });
           child.unref();
           process.exit(0);
         }
       });
       const info = await daemon.start();
+      if (!isTestMode()) {
+        watchdog = createLiveWatchdog(daemon, {
+          autoRelaunch: !flags['no-auto-relaunch'],
+          silent: true
+        });
+        watchdog.start();
+        void watchdog.tick().catch(() => {});
+      }
       console.log(JSON.stringify({ ok: true, ...info }, null, 2));
-      process.on('SIGTERM', async () => { await daemon.stop(); process.exit(0); });
-      process.on('SIGINT', async () => { await daemon.stop(); process.exit(0); });
+      const shutdown = async () => {
+        watchdog?.stop();
+        await daemon.stop();
+        process.exit(0);
+      };
+      process.on('SIGTERM', shutdown);
+      process.on('SIGINT', shutdown);
       return;
     }
     throw new Error(`Unknown daemon subcommand: ${sub}`);

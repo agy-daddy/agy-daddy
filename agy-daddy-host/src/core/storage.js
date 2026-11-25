@@ -210,6 +210,43 @@ function withFileLockSync(targetPath, fn, timeoutMs = 15000) {
   }
 }
 
+function readHostHealthState(stateDir) {
+  const { data } = safeReadJsonSync(path.join(stateDir, 'host-health.json'), null, { quarantineCorrupt: false });
+  return {
+    lastInjectedVersion: typeof data?.lastInjectedVersion === 'string' ? data.lastInjectedVersion : null,
+    upgradeEvents: Array.isArray(data?.upgradeEvents)
+      ? data.upgradeEvents.filter((event) => typeof event?.fromVersion === 'string' &&
+        typeof event.toVersion === 'string' && typeof event.outcome === 'string').slice(-20)
+      : []
+  };
+}
+
+function makeHostRelaunchRecord(result, timestamp = Date.now()) {
+  const blockedBy = result.blocked || result.reason === 'INSIDE_ANTIGRAVITY_SESSION' ? result.reason : null;
+  return {
+    at: new Date(timestamp).toISOString(),
+    status: result.ok ? 'succeeded' : (result.skipped ? 'deferred' : (blockedBy ? 'blocked' : 'failed')),
+    reason: result.reason || result.error || null,
+    blockedBy: blockedBy || null
+  };
+}
+
+function readHostRelaunch(stateDir) {
+  const { data } = safeReadJsonSync(path.join(stateDir, 'last-host-relaunch.json'), null, { quarantineCorrupt: false });
+  return typeof data?.at === 'string' ? data : null;
+}
+
+function writeHostRelaunch(stateDir, result) {
+  return safeWriteJsonSync(path.join(stateDir, 'last-host-relaunch.json'), result);
+}
+
+function writeHostHealthState(stateDir, data) {
+  return safeWriteJsonSync(path.join(stateDir, 'host-health.json'), {
+    lastInjectedVersion: data.lastInjectedVersion,
+    upgradeEvents: data.upgradeEvents.slice(-20)
+  });
+}
+
 function copyDirRecursiveSync(srcDir, dstDir) {
   fs.mkdirSync(dstDir, { recursive: true });
   if (!fs.existsSync(srcDir)) return;
@@ -324,6 +361,11 @@ class PluginDataStore {
 }
 
 module.exports = {
+  readHostHealthState,
+  writeHostHealthState,
+  makeHostRelaunchRecord,
+  readHostRelaunch,
+  writeHostRelaunch,
   safeWriteJsonSync,
   safeReadJsonSync,
   withFileLockSync,

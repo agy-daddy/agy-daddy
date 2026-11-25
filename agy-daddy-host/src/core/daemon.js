@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { fork, spawn } = require('child_process');
+const { EventEmitter } = require('events');
 const { getStateDir, getPluginsDir, assertSafePluginId, getHostSettingsPath, isTestMode } = require('./paths');
 const { PluginDataStore, safeReadJsonSync, safeWriteJsonSync, withFileLockSync } = require('./storage');
 const { FourRealmBus } = require('./bus');
@@ -11,6 +12,7 @@ const { createRpcTransport, createScopedRpcClient } = require('./rpc');
 const { loadAnchorsRegistry } = require('./anchors');
 const { CdpInjector, DEFAULT_HOST_BUNDLE_PATH } = require('./injector');
 const {
+  getInstalledIndexPath,
   readInstalledIndex,
   readManifestFromDir,
   sortPluginsByDependency,
@@ -34,7 +36,10 @@ const {
   redactWriteOnlySettings
 } = require('../contracts/manifest-validator');
 const { createScopedNetFetch } = require('./plugin-worker');
-const { runDoctor, exportDiagnosticBundle } = require('./doctor');
+const { runDoctor, exportDiagnosticBundle, sanitizeHostHealth } = require('./doctor');
+const { inspectAntigravityHostProcess } = require('./cdp');
+const { isolateResidentEnv } = require('./lifecycle');
+const { HostHealth } = require('./health-snapshot');
 const { MarketplaceStatsService } = require('./marketplace-stats');
 const { TrayManager } = require('./tray-manager');
 
@@ -103,6 +108,7 @@ function classifyPluginError(err, stage = 'activate') {
     code,
     stage,
     message,
+    stack: typeof err?.stack === 'string' ? err.stack : null,
     suggestion,
     at: Date.now()
   };
@@ -326,8 +332,9 @@ function releaseDaemonLock(lockPath, pid = process.pid) {
   } catch {}
 }
 
-class AgyDaddyDaemon {
+class AgyDaddyDaemon extends EventEmitter {
   constructor(options = {}) {
+    super();
     this.options = options;
     this.stateDir = getStateDir(options);
     this.lockPath = path.join(this.stateDir, 'daemon.lock');
@@ -368,6 +375,17 @@ class AgyDaddyDaemon {
     this.settingsListeners = new Map(); // pluginId -> Set<fn>
     this.crashTracker = new Map();  // pluginId -> number[] timestamps
     this.pluginErrors = new Map();  // pluginId -> { code, stage, message, suggestion, at }
+    this.health = new HostHealth({
+      ...options,
+      stateDir: this.stateDir,
+      getBridgePort: () => this.bridge.port,
+      getSession: (id) => this.injector.sessions?.get(id),
+      getPlugins: () => this.getHostHealthPlugins(),
+      emit: (event, data) => this.emit(event, data),
+      onHistoryError: (result) => this.emit('host-health:persistence-error', result)
+    });
+    this.injector.on?.('reinjectionFailed', (error) => this.health.recordInjection(error));
+    this.injector.on?.('reinjected', ({ targetId }) => this.health.recordInjection({ targetId }));
     this._liveWorkers = new Set();  // tracks all forked plugin workers including in-flight init
     this._activatingInactivePromise = null;
     this.crashWindowMs = Number(options.crashWindowMs) > 0 ? Number(options.crashWindowMs) : 60000;
@@ -387,6 +405,58 @@ class AgyDaddyDaemon {
     }
     this.running = false;
     this.lockAcquired = false;
+  }
+
+  getHostHealthPlugins() {
+    const installed = this.options.plugins || Object.values(safeReadJsonSync(
+      getInstalledIndexPath(this.options), null, { quarantineCorrupt: false }
+    ).data?.plugins || {});
+    const records = new Map(installed
+      .filter((p) => p?.id).map((p) => [p.id, p]));
+    for (const [id, plugin] of this.activePlugins) {
+      if (!records.has(id)) records.set(id, plugin.record);
+    }
+    return Array.from(records, ([id, record]) => {
+      const active = this.activePlugins.get(id);
+      const diagnostic = this.pluginErrors.get(id);
+      let manifest = active?.manifest;
+      if (!manifest && record?.installPath) {
+        try { manifest = readManifestFromDir(record.installPath); } catch {}
+      }
+      const enabled = record?.enabled !== false;
+      let nodeState = 'disabled';
+      if (enabled) {
+        if (manifest && !manifest.main) nodeState = 'not_applicable';
+        else if (active) nodeState = 'active';
+        else nodeState = diagnostic ? 'error' : 'inactive';
+      }
+      return {
+        id,
+        name: this.pickLocaleText(manifest?.displayName, id),
+        enabled,
+        manifest,
+        nodeState,
+        lastError: diagnostic?.message || active?.lastError || null,
+        lastErrorStack: diagnostic?.stack || null,
+        lastErrorAt: diagnostic?.at || null
+      };
+    });
+  }
+
+  getHostHealth() {
+    return this.health.snapshot();
+  }
+
+  getDiagnosticHealth() {
+    const extraSecrets = [
+      this.bridge.hostToken,
+      ...(this.bridge.pluginTokens?.values() || []),
+      ...(this.options.extraSecrets || [])
+    ];
+    return sanitizeHostHealth(this.getHostHealth(), {
+      ...this.options,
+      extraSecrets
+    });
   }
 
   async openPluginSettings(opts = {}) {
@@ -1446,9 +1516,18 @@ class AgyDaddyDaemon {
   }
 
   registerDefaultHostRoutes() {
-    this.bridge.registerHostRoute('/host/health', async () => {
-      return await runDoctor({ ...this.options, skipCdp: true });
+    this.bridge.registerHostRoute('/host/health', (_body, ctx) => {
+      // Existing host.control consumers expect the doctor envelope.
+      return ctx?.via === 'host.control'
+        ? runDoctor({ ...this.options, hostHealth: this.getDiagnosticHealth() })
+        : this.getHostHealth();
     });
+    this.bridge.registerHostRoute('/host/health/runtime-report', (body) => {
+      const result = this.health.acceptRuntimeReport(body);
+      this.getHostHealth();
+      return result;
+    });
+    this.bridge.registerDiagnosticsHealth?.(() => this.getDiagnosticHealth());
     this.bridge.registerHostRoute('/host/plugins', async () => {
       return this.buildPluginManagePayload();
     });
@@ -1726,6 +1805,7 @@ class AgyDaddyDaemon {
       const exp = await exportDiagnosticBundle(outPath, {
         ...this.options,
         stateDir: this.stateDir,
+        hostHealth: this.getHostHealth(),
         ...(hasLiveCdp ? { cdpSnapshot } : {})
       });
       return {
@@ -1791,6 +1871,8 @@ class AgyDaddyDaemon {
   }
 
   async injectActiveTargets(opts = {}) {
+    const host = (this.options.inspectHostProcess || inspectAntigravityHostProcess)(this.options);
+    if (host?.version) this.injector.antigravityVersion = host.version;
     if (opts.skipActivateInactive !== true) {
       await this.ensureEnabledPluginsActivated({
         resetCircuit: Boolean(opts.resetCircuitOnLaunch),
@@ -1798,6 +1880,15 @@ class AgyDaddyDaemon {
       }).catch(() => {});
     }
     const res = await this.injector.injectAllActiveTargets(Array.from(this.activePlugins.values()), opts);
+    if (host) this.health.observe(host, res.discovery);
+    if (res.targetsInjected > 0) this.health.recordInjectedVersion(host?.version);
+    for (const { targetId } of res.results || []) this.health.recordInjection({ targetId });
+    for (const error of res.errors || []) {
+      if (!error.pluginId) this.health.recordInjection(error);
+    }
+    this.getHostHealth();
+    await this.injector.refreshHealthProbes?.(res.discovery?.targets || []);
+    this.getHostHealth();
     if (!this.options.origin && opts.lockOrigin === true && Array.isArray(res.results) && res.results.length > 0) {
       for (const r of res.results) {
         try {
@@ -2221,7 +2312,7 @@ class AgyDaddyDaemon {
         const child = spawn(process.execPath, [cliPath, 'live', '--replace'], {
           detached: true,
           stdio: 'ignore',
-          env: { ...process.env }
+          env: isolateResidentEnv({ ...process.env })
         });
         child.unref();
       } catch {}
@@ -2262,8 +2353,11 @@ class AgyDaddyDaemon {
     acquireDaemonLock(this.lockPath);
     this.lockAcquired = true;
     this.running = true;
+    this.health.reset({ pid: process.pid, startedAt: this.health.now() });
 
     try {
+      const host = (this.options.inspectHostProcess || inspectAntigravityHostProcess)(this.options);
+      if (host) this.health.observe(host);
       this.registerDefaultHostRoutes();
       const bridgeInfo = await this.bridge.start(0);
 
@@ -2317,6 +2411,7 @@ class AgyDaddyDaemon {
 
   async stop() {
     this.running = false;
+    this.health.reset();
     try {
       await this.injector.disposeAll();
     } catch {}

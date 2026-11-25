@@ -633,7 +633,7 @@ test('CLI 端到端烟雾测试：doctor (14 锚点) / status / plugin 生命周
     assert.equal(docRes.status, 0, docRes.stderr);
     const docJson = JSON.parse(docRes.stdout);
     assert.equal(docJson.ok, true);
-    assert.equal(docJson.anchors.count, 14);
+    assert.equal(docJson.injection.anchors.total, 14);
     assert.equal(docJson.legacySuite, undefined);
 
     // 2. status --skip-cdp

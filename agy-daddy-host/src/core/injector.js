@@ -5,7 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { resolveActiveCdpTarget, CdpClient } = require('./cdp');
-const { loadAnchorsRegistry, buildResolvedAnchorsMap } = require('./anchors');
+const { loadAnchorsRegistry, loadHealthAnchorsRegistry, buildResolvedAnchorsMap } = require('./anchors');
 
 const DEFAULT_HOST_BUNDLE_PATH = path.resolve(__dirname, '..', '..', 'dist', 'host-renderer.js');
 const HOST_PKG_VERSION = require('../../package.json').version;
@@ -1197,6 +1197,7 @@ class CdpInjector extends EventEmitter {
     this.hostTokenOption = options.hostToken || '';
     this.stateDir = options.stateDir;
     this.anchorsPath = options.anchorsPath;
+    this.healthAnchors = loadHealthAnchorsRegistry(options);
     this.antigravityVersion = options.antigravityVersion || '2.33.0';
     this.bus = options.bus || null;
     this.WebSocketCtor = options.WebSocket || globalThis.WebSocket;
@@ -1257,6 +1258,39 @@ class CdpInjector extends EventEmitter {
     return buildResolvedAnchorsMap(raw, this.antigravityVersion);
   }
 
+  async refreshHealthProbes(targets = []) {
+    if (targets.length === 0) return;
+    const registry = buildResolvedAnchorsMap(this.healthAnchors, this.antigravityVersion);
+    const anchorSelectors = Object.fromEntries(Object.entries(registry.anchors).map(([name, def]) => [
+      name, def.versions[0].selectors
+    ]));
+    const probes = targets.map(async (target) => {
+      const session = this.sessions.get(target.id || target.webSocketDebuggerUrl);
+      if (!session?.readyForNavEvents || session.closed || session.reinjectInFlight ||
+          session.target.webSocketDebuggerUrl !== target.webSocketDebuggerUrl) return;
+      const reportId = session.xworldNonce;
+      const result = await session.client.evaluate(`(() => {
+        const host = globalThis.__AGYDaddyHost;
+        if (!host || !document.body) return null;
+        const items = Object.entries(${JSON.stringify(anchorSelectors)}).map(([name, selectors]) => {
+          const matchedSelector = selectors.find((selector) => {
+            try {
+              return Array.from(document.querySelectorAll(selector)).some((el) =>
+                !el.closest('#agy-daddy-host,#agy-native-settings-mount,#agy-settings-modal,#agy-popover-browser-occluder'));
+            } catch { return false; }
+          }) || null;
+          return { name, matchedSelector };
+        });
+        const settingsExpected = host.getSettingsMode?.() === 'native' ||
+          Boolean(document.querySelector('[data-testid="settings-dialog"],[data-testid="settings-sidebar"],[data-testid="settings-content"]'));
+        return { items, settingsExpected };
+      })()`).catch(() => null);
+      if (session.closed || session.xworldNonce !== reportId) return;
+      session.healthProbe = Array.isArray(result?.items) ? result : null;
+    });
+    await Promise.all(probes);
+  }
+
   readHostBundleSource() {
     if (!fs.existsSync(this.hostBundlePath)) {
       throw new Error(`Missing host renderer bundle at ${this.hostBundlePath}; run npm run build:renderer first`);
@@ -1267,6 +1301,8 @@ class CdpInjector extends EventEmitter {
   async injectHostShell(session, extraBootOptions = {}) {
     session.xworldNonce = crypto.randomBytes(16).toString('hex');
     session.xworldChannelName = `__agy_xworld_${session.xworldNonce}`;
+    session.healthProbe = null;
+    session.runtimeHealthReport = null;
     session.anchorsRegistry = this.getResolvedAnchors();
     const bundleSource = this.readHostBundleSource();
     const hostSettings = this.getHostSettings();
@@ -1277,11 +1313,16 @@ class CdpInjector extends EventEmitter {
       bridgePort: this.getBridgePort(),
       hostToken: this.getHostToken(),
       xworldNonce: session.xworldNonce,
+      healthTargetId: session.targetId,
+      healthReportId: session.xworldNonce,
+      healthAnchors: buildResolvedAnchorsMap(this.healthAnchors, this.antigravityVersion),
       ...(hostSettings ? { hostSettings } : {}),
       pluginMeta,
       ...(extraBootOptions && extraBootOptions.initialView ? { initialView: extraBootOptions.initialView } : {})
     });
-    return session.client.evaluate(bootScript);
+    const result = await session.client.evaluate(bootScript);
+    if (result?.ok === false) throw new Error('Host renderer bootstrap did not mount');
+    return result;
   }
 
   async notifyPluginSettingsChanged(pluginId, values = {}, changedKeys = [], secretState = null) {
@@ -1364,17 +1405,14 @@ class CdpInjector extends EventEmitter {
         initialSettings
       });
       const evalRes = await session.client.evaluate(isoScript, { contextId });
+      if (evalRes?.ok === false) throw new Error(evalRes.error || 'Renderer mount failed');
       session.mountedPlugins.set(activeEntry.id, {
         world: 'isolated',
         contextId,
         version: activeEntry.manifest.version
       });
-      if (evalRes && evalRes.ok === false && evalRes.error) {
-        const mountErr = new Error(evalRes.error);
-        this.onPluginInjectError?.(activeEntry.id, mountErr, session.targetId);
-      } else {
-        this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
-      }
+      session.mountErrors?.delete(activeEntry.id);
+      this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
       return { ok: true, world: 'isolated', contextId, evalRes };
     }
 
@@ -1382,21 +1420,24 @@ class CdpInjector extends EventEmitter {
       pluginToken: activeEntry.pluginToken || ''
     });
     const evalRes = await session.client.evaluate(mainScript);
+    if (evalRes?.ok === false) throw new Error(evalRes.error || 'Renderer mount failed');
     session.mountedPlugins.set(activeEntry.id, {
       world: 'main',
       contextId: null,
       version: activeEntry.manifest.version
     });
-    if (evalRes && evalRes.ok === false && evalRes.error) {
-      const mountErr = new Error(evalRes.error);
-      this.onPluginInjectError?.(activeEntry.id, mountErr, session.targetId);
-    } else {
-      this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
-    }
+    session.mountErrors?.delete(activeEntry.id);
+    this.onPluginInjectSuccess?.(activeEntry.id, session.targetId);
     return { ok: true, world: 'main', evalRes };
   }
 
+  recordMountError(session, pluginId, err) {
+    session.mountErrors.set(pluginId, { message: err?.message || String(err), stack: err?.stack || null, at: Date.now() });
+    this.onPluginInjectError?.(pluginId, err, session.targetId);
+  }
+
   async disposePluginFromSession(session, pluginId) {
+    session.mountErrors?.delete(pluginId);
     const mounted = session.mountedPlugins.get(pluginId);
     session.mountedPlugins.delete(pluginId);
     if (!session.client?.ws) return false;
@@ -1426,6 +1467,7 @@ class CdpInjector extends EventEmitter {
         await this.disposePluginFromSession(session, pid).catch(() => {});
       }
       session.mountedPlugins.clear();
+      session.mountErrors?.clear();
       session.frameId = await session.client.getMainFrameId();
       await this.injectHostShell(session);
       const errors = [];
@@ -1435,7 +1477,7 @@ class CdpInjector extends EventEmitter {
           const res = await this.injectPluginIntoSession(session, entry);
           if (!res.skipped) pluginsInjected++;
         } catch (err) {
-          this.onPluginInjectError?.(entry.id, err, session.targetId);
+          this.recordMountError(session, entry.id, err);
           errors.push({ pluginId: entry.id, error: err?.message || String(err) });
         }
       }
@@ -1460,7 +1502,12 @@ class CdpInjector extends EventEmitter {
     }
     session.reinjectTimer = setTimeout(() => {
       session.reinjectTimer = null;
-      void this.reinjectSession(session);
+      void this.reinjectSession(session).catch((err) => {
+        if (this.sessions.get(session.targetId) === session) {
+          this.emit('reinjectionFailed', { targetId: session.targetId, error: err?.message || String(err) });
+          void this.detachSession(session.targetId).catch(() => {});
+        }
+      });
     }, this.reinjectDebounceMs);
   }
 
@@ -1487,6 +1534,7 @@ class CdpInjector extends EventEmitter {
       xworldChannelName: '',
       anchorsRegistry: null,
       mountedPlugins: new Map(),
+      mountErrors: new Map(),
       activePlugins: Array.from(activePlugins || []),
       reinjectTimer: null,
       reinjectInFlight: false,
@@ -1507,7 +1555,7 @@ class CdpInjector extends EventEmitter {
         clearTimeout(session.reinjectTimer);
         session.reinjectTimer = null;
       }
-      this.sessions.delete(targetId);
+      if (this.sessions.get(targetId) === session) this.sessions.delete(targetId);
     });
 
     try {
@@ -1523,7 +1571,7 @@ class CdpInjector extends EventEmitter {
           const res = await this.injectPluginIntoSession(session, entry);
           if (!res.skipped) pluginsInjected++;
         } catch (err) {
-          this.onPluginInjectError?.(entry.id, err, session.targetId);
+          this.recordMountError(session, entry.id, err);
           errors.push({ pluginId: entry.id, error: err?.message || String(err) });
         }
       }
@@ -1584,11 +1632,12 @@ class CdpInjector extends EventEmitter {
     this.lastActivePlugins = Array.from(activePlugins || []);
     let port = options.port || null;
     let targets = Array.isArray(options.targets) ? options.targets : null;
+    let discovery = options.discovery || null;
 
     if (!targets) {
-      const resolved = await resolveActiveCdpTarget({ ...this.cdpOptions, ...(options.cdpOptions || {}) });
-      port = resolved.port;
-      targets = resolved.targets;
+      discovery = await resolveActiveCdpTarget({ ...this.cdpOptions, ...(options.cdpOptions || {}) });
+      port = discovery.port;
+      targets = discovery.targets;
     }
 
     if (port) {
@@ -1620,6 +1669,7 @@ class CdpInjector extends EventEmitter {
       ok: true,
       port,
       targetsFound: (targets || []).length,
+      discovery: discovery || { port, targets },
       targetsInjected,
       pluginsInjected,
       results,
@@ -1647,7 +1697,7 @@ class CdpInjector extends EventEmitter {
         }
         sessionsUpdated++;
       } catch (err) {
-        this.onPluginInjectError?.(pluginId, err, session.targetId);
+        this.recordMountError(session, pluginId, err);
         errors.push({ targetId: session.targetId, error: err?.message || String(err) });
       }
     }
@@ -1667,6 +1717,7 @@ class CdpInjector extends EventEmitter {
           await this.disposePluginFromSession(session, pid);
         }
         session.mountedPlugins.clear();
+        session.mountErrors?.clear();
         session.activePlugins = Array.from(this.lastActivePlugins);
         try {
           session.frameId = await session.client.getMainFrameId();
@@ -1688,7 +1739,7 @@ class CdpInjector extends EventEmitter {
             }
           } catch (err) {
             const msg = err?.message || String(err);
-            this.onPluginInjectError?.(entry.id, err, session.targetId);
+            this.recordMountError(session, entry.id, err);
             sessionErrors.push({ pluginId: entry.id, error: msg });
             errors.push({ targetId: session.targetId, pluginId: entry.id, error: msg });
           }

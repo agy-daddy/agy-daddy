@@ -21,12 +21,58 @@ class DynamicBridgeServer {
     this.pluginRoutes = new Map(); // `${pluginId}:${subPath}` -> handler
     this.pluginSystemRoutes = new Map(); // subPath (e.g. '/__settings') -> handler
     this.hostRoutes = new Map();   // `/host/...` -> handler
+    this.diagnosticsHealth = null;
+    this.diagnosticsPage = null;
     this.server = null;
     this.port = 0;
   }
 
   setOrigin(origin) {
     this.allowedOrigin = String(origin || '').trim();
+  }
+
+  registerDiagnosticsHealth(handler) {
+    this.diagnosticsHealth = handler;
+  }
+
+  registerDiagnosticsPage(handler) {
+    this.diagnosticsPage = handler;
+    return () => {
+      if (this.diagnosticsPage === handler) this.diagnosticsPage = null;
+    };
+  }
+
+  async handleDiagnostics(req, res, pathname) {
+    const host = `127.0.0.1:${this.port}`;
+    const headers = {
+      'Cache-Control': 'no-store',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY'
+    };
+    if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.host !== host ||
+        (req.headers.origin && req.headers.origin !== `http://${host}`)) {
+      res.writeHead(403, headers).end('Forbidden');
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.writeHead(405, { ...headers, Allow: 'GET' }).end('Method Not Allowed');
+      return;
+    }
+    const isHealth = pathname === '/diagnostics/health';
+    const handler = isHealth ? this.diagnosticsHealth : this.diagnosticsPage;
+    if (!handler) {
+      res.writeHead(404, headers).end('Diagnostics handler is not registered');
+      return;
+    }
+    try {
+      const result = await handler();
+      const body = isHealth ? JSON.stringify(result) : String(result);
+      const type = isHealth ? 'application/json' : 'text/html; charset=utf-8';
+      res.writeHead(200, { ...headers, 'Content-Type': type }).end(body);
+    } catch {
+      res.writeHead(500, headers).end('Diagnostics unavailable');
+    }
   }
 
   issuePluginToken(pluginId) {
@@ -210,6 +256,12 @@ class DynamicBridgeServer {
   }
 
   async handleRequest(req, res) {
+    const reqUrl = String(req.url || '').split('?')[0];
+    if (reqUrl === '/diagnostics' || reqUrl === '/diagnostics/health') {
+      await this.handleDiagnostics(req, res, reqUrl);
+      return;
+    }
+
     const reqOrigin = req.headers.origin;
     if (this.allowedOrigin && this.allowedOrigin !== '*') {
       if (reqOrigin !== this.allowedOrigin) {
@@ -238,8 +290,6 @@ class DynamicBridgeServer {
       res.end(JSON.stringify({ ok: false, error: 'Method Not Allowed' }));
       return;
     }
-
-    const reqUrl = String(req.url || '').split('?')[0];
 
     // 1. 底座管理端点: /host/*
     if (reqUrl.startsWith('/host/')) {

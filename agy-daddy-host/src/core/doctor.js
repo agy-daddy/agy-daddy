@@ -7,9 +7,10 @@ const { HOST_API_VERSION } = require('../contracts/constants');
 const { getStateDir, getPluginsDir } = require('./paths');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./storage');
 const { resolveRuntime } = require('./runtime-resolver');
-const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./cdp');
+const { fetchHttpJsonLoopback, resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./cdp');
 const { loadAnchorsRegistry } = require('./anchors');
-const { listInstalledPlugins } = require('./installer');
+const { listInstalledPlugins, readManifestFromDir } = require('./installer');
+const { HostHealth } = require('./health-snapshot');
 
 function sanitizeString(raw, homeDir, extraSecrets = []) {
   let s = String(raw);
@@ -27,6 +28,8 @@ function sanitizeString(raw, homeDir, extraSecrets = []) {
     }
   }
   s = s.replace(/\b[0-9a-f]{48,64}\b/gi, '<REDACTED_HEX>');
+  s = s.replace(/\b(https?:\/\/)[^\s/@]+@/gi, '$1');
+  s = s.replace(/\b((?:[\w-]*token|api[_-]?key|secret|password|authorization)\s*(?:=|:)\s*)(?:Bearer\s+)?[^\s,&;]+/gi, '$1<REDACTED>');
   return s;
 }
 
@@ -59,21 +62,41 @@ function sanitizeDiagnosticData(input, options = {}) {
   return walk(input);
 }
 
+function sanitizeHostHealth(snapshot, options = {}) {
+  const result = sanitizeDiagnosticData(snapshot, options);
+  for (const target of [...result.cdp.targets.matched, ...result.cdp.targets.filtered]) {
+    if (target.url === null) continue;
+    try {
+      const parsed = new URL(target.url);
+      if (['http:', 'https:'].includes(parsed.protocol)) {
+        target.url = parsed.origin + parsed.pathname;
+      } else {
+        target.url = parsed.protocol + '<REDACTED>';
+      }
+    } catch {
+      target.url = '<REDACTED>';
+    }
+  }
+  return result;
+}
+
+async function readRunningHostHealth(stateDir, lock) {
+  const { data: session } = safeReadJsonSync(path.join(stateDir, '.live-session.json'), null, { quarantineCorrupt: false });
+  if (!Number.isInteger(lock?.pid) || lock.pid <= 0 || lock.pid !== session?.pid ||
+      !Number.isInteger(session?.port) || session.port < 1 || session.port > 65535) return null;
+  try {
+    process.kill(lock.pid, 0);
+    const health = await fetchHttpJsonLoopback(session.port, '/diagnostics/health', 1200);
+    if (health?.daemon?.pid === lock.pid && health.daemon.bridgePort === session.port &&
+        health.antigravity && health.cdp && health.injection && Array.isArray(health.plugins) && health.fault) return health;
+  } catch {}
+  return null;
+}
+
 async function runDoctor(options = {}) {
   const stateDir = getStateDir(options);
   const pluginsDir = getPluginsDir(options);
   const runtime = resolveRuntime(options);
-  const hostProc = inspectAntigravityHostProcess(options);
-  const cdpSnap = options.cdpSnapshot && typeof options.cdpSnapshot === 'object' ? options.cdpSnapshot : null;
-  const hasCdpSnapshot = Boolean(cdpSnap && (cdpSnap.port || Number(cdpSnap.targetsCount) > 0));
-  const cdp = hasCdpSnapshot
-    ? {
-        port: cdpSnap.port ? Number(cdpSnap.port) : null,
-        targetsCount: Number(cdpSnap.targetsCount) || (Array.isArray(cdpSnap.targets) ? cdpSnap.targets.length : 0)
-      }
-    : (options.skipCdp
-        ? { port: null, targets: [] }
-        : await resolveActiveCdpTarget({ timeoutMs: 1200, ...options }).catch(() => ({ port: null, targets: [] })));
   const anchors = loadAnchorsRegistry({ stateDir, anchorsPath: options.anchorsPath });
   const installedPlugins = listInstalledPlugins(options);
 
@@ -81,6 +104,28 @@ async function runDoctor(options = {}) {
   let daemonLock = null;
   if (fs.existsSync(daemonLockPath)) {
     daemonLock = safeReadJsonSync(daemonLockPath, null, { quarantineCorrupt: false }).data;
+  }
+  let hostHealth = options.hostHealth || await readRunningHostHealth(stateDir, daemonLock);
+  let hostProc = hostHealth?.antigravity;
+  if (!hostHealth) {
+    hostProc = inspectAntigravityHostProcess(options);
+    const discovery = options.skipCdp ? {} : await resolveActiveCdpTarget({ timeoutMs: 1200, ...options });
+    const plugins = installedPlugins.map((plugin) => {
+      let manifest;
+      if (plugin.installPath) {
+        try { manifest = readManifestFromDir(plugin.installPath); } catch {}
+      }
+      const display = manifest?.displayName;
+      const enabled = plugin.enabled !== false;
+      return {
+        id: plugin.id, name: (typeof display === 'string' ? display : display?.['zh-CN'] || display?.en) || plugin.id,
+        enabled, manifest, nodeState: enabled ? (manifest && !manifest.main ? 'not_applicable' : 'inactive') : 'disabled',
+        lastError: null, lastErrorStack: null
+      };
+    });
+    const health = new HostHealth({ ...options, stateDir, getPlugins: () => plugins });
+    health.observe(hostProc, discovery);
+    hostHealth = sanitizeHostHealth(health.snapshot(), options);
   }
 
   return {
@@ -94,12 +139,11 @@ async function runDoctor(options = {}) {
       pluginsDir
     },
     runtime,
+    hostHealth,
     antigravity: {
       hostProcess: hostProc,
-      cdpPort: cdp.port || null,
-      cdpTargetsCount: Number.isFinite(cdp.targetsCount)
-        ? cdp.targetsCount
-        : (Array.isArray(cdp.targets) ? cdp.targets.length : 0)
+      cdpPort: options.cdpSnapshot?.port || hostHealth.cdp.port,
+      cdpTargetsCount: options.cdpSnapshot?.targetsCount || hostHealth.cdp.targets.matched.length
     },
     anchors: {
       schemaVersion: anchors.schemaVersion || 1,
@@ -126,13 +170,17 @@ async function runDoctor(options = {}) {
 
 async function exportDiagnosticBundle(outputPath, options = {}) {
   const rawReport = await runDoctor(options);
-  const sanitized = sanitizeDiagnosticData(rawReport, options);
+  const sanitized = {
+    ...sanitizeDiagnosticData(rawReport, options),
+    hostHealth: sanitizeHostHealth(rawReport.hostHealth, options)
+  };
   const writeRes = safeWriteJsonSync(outputPath, sanitized);
   return { ...writeRes, path: writeRes.path || path.resolve(outputPath), bundle: sanitized, report: sanitized };
 }
 
 module.exports = {
   sanitizeDiagnosticData,
+  sanitizeHostHealth,
   runDoctor,
   exportDiagnosticBundle
 };

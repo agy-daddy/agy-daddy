@@ -1,6 +1,7 @@
 'use strict';
 
 const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./cdp');
+const { isNewerVersion } = require('./health-snapshot');
 const {
   detectInsideAntigravitySession,
   findAntigravityApp,
@@ -29,6 +30,9 @@ function createLiveWatchdog(daemon, options = {}) {
   const inspectHostProcess = options.inspectHostProcess || inspectAntigravityHostProcess;
   const relaunchFn = options.relaunchFn || relaunchAntigravityWithCdp;
   const now = options.now || (() => Date.now());
+  const health = daemon?.health;
+  const inspect = () => inspectHostProcess({ platform, env, appPath }) ||
+    { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null };
 
   let initialized = false;
   let initialBarePid = null;
@@ -39,10 +43,11 @@ function createLiveWatchdog(daemon, options = {}) {
   let busy = false;
   let timer = null;
   let stopped = false;
+  let backoff = null;
 
   function init() {
     initialized = true;
-    const hostProc = inspectHostProcess() || { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null };
+    const hostProc = inspect();
     if (
       hostProc.running &&
       !hostProc.hasDebugSwitch &&
@@ -54,6 +59,15 @@ function createLiveWatchdog(daemon, options = {}) {
       initialBarePid = null;
     }
     return { initialBarePid };
+  }
+
+  function observe(host, cdp) {
+    health?.observe(host, cdp);
+    if (host.version && daemon?.injector) daemon.injector.antigravityVersion = host.version;
+  }
+
+  function updateHealth() {
+    if (!stopped && daemon?.running) health?.snapshot();
   }
 
   async function syncTargets(resolved = {}, syncOpts = {}) {
@@ -107,15 +121,19 @@ function createLiveWatchdog(daemon, options = {}) {
     const errors = [];
 
     for (const { target, targetId } of newTargets) {
+      if (stopped || !daemon.running) break;
       try {
         const res = await daemon.injector.attachTarget(target, plugins);
+        health?.recordInjection({ targetId });
         failedTargets.delete(targetId);
         injectedCount++;
+        for (const error of res?.errors || []) errors.push({ targetId, ...error });
         pluginsInjected += Number(res?.pluginsInjected) || 0;
         const cdpPort = port || daemon.injector.lastCdpPort || '?';
         log(`✅ 检测到 Antigravity 窗口并完成注入 (CDP :${cdpPort}, 插件 ${Number(res?.pluginsInjected) || 0} 个)`);
       } catch (err) {
         const errMsg = err?.message || String(err);
+        health?.recordInjection({ targetId, error: errMsg });
         errors.push({ targetId, error: errMsg });
         const prev = failedTargets.get(targetId);
         const ts = now();
@@ -126,6 +144,12 @@ function createLiveWatchdog(daemon, options = {}) {
       }
     }
 
+    if (health && daemon.running && !stopped) {
+      if (injectedCount > 0) health.recordInjectedVersion(health.host.version);
+      updateHealth();
+      await daemon.injector.refreshHealthProbes?.(targets);
+      updateHealth();
+    }
     return { injectedCount, pluginsInjected, errors };
   }
 
@@ -157,20 +181,27 @@ function createLiveWatchdog(daemon, options = {}) {
     }
     busy = true;
     try {
+      let hostProc = inspect();
       let resolved = null;
       try {
-        resolved = await resolveCdpTarget({ timeoutMs: 1200 });
+        resolved = await resolveCdpTarget({ platform, env, ...daemon?.injector?.cdpOptions, timeoutMs: 1200 });
       } catch {
         resolved = { port: null, targets: [] };
       }
+      if (stopped || !daemon.running) return { action: 'stopped' };
+      observe(hostProc, resolved || { port: null, targets: [] });
+      updateHealth();
 
-      if (Array.isArray(resolved?.targets) && resolved.targets.length > 0) {
+      const lastVersion = health?.history.lastInjectedVersion;
+      const upgrade = hostProc.running && hostProc.pid && hostProc.hasDebugSwitch === false &&
+        isNewerVersion(hostProc.version, lastVersion)
+        ? { fromVersion: lastVersion, toVersion: hostProc.version, pid: hostProc.pid }
+        : null;
+      if (!upgrade && Array.isArray(resolved?.targets) && resolved.targets.length > 0) {
         initialBarePid = null;
         const syncRes = await syncTargets(resolved);
         return { action: 'synced', ...syncRes };
       }
-
-      const hostProc = inspectHostProcess() || { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null };
 
       if (!hostProc.running) {
         initialBarePid = null;
@@ -198,38 +229,100 @@ function createLiveWatchdog(daemon, options = {}) {
         hostProc.pid !== initialBarePid
       );
 
+      const priorUpgrade = upgrade && health.history.upgradeEvents.findLast((event) =>
+        event.fromVersion === upgrade.fromVersion && event.toVersion === upgrade.toVersion
+      );
+      const upgradeAttempted = priorUpgrade &&
+        ['attempting', 'succeeded', 'failed'].includes(priorUpgrade.outcome);
+      const blocked = detectInsideAntigravitySession(env);
+      const supported = ['darwin', 'win32', 'linux'].includes(platform);
+      let blockedReason = null;
+      if (blocked) blockedReason = 'INSIDE_ANTIGRAVITY_SESSION';
+      else if (!autoRelaunchEnabled) blockedReason = 'AUTO_RELAUNCH_DISABLED';
+      else if (!supported) blockedReason = 'UNSUPPORTED_PLATFORM';
+      if (upgrade && blockedReason) {
+        if (priorUpgrade?.pid !== hostProc.pid || priorUpgrade?.reason !== blockedReason) {
+          health.recordUpgrade({ ...upgrade, outcome: 'blocked', reason: blockedReason });
+        }
+      }
+      if (blocked && health?.relaunchFailurePid !== hostProc.pid) {
+        health?.recordRelaunch({ ok: false, blocked: true, reason: blockedReason });
+      }
+
       const canAutoRelaunch = (
-        ['darwin', 'win32', 'linux'].includes(platform) &&
-        autoRelaunchEnabled &&
-        !detectInsideAntigravitySession(env) &&
-        isFreshOrNewBare &&
+        !blockedReason &&
+        (upgrade ? !upgradeAttempted : isFreshOrNewBare) &&
         !relaunchAttemptedPids.has(hostProc.pid)
       );
 
       if (canAutoRelaunch) {
+        if (backoff?.pid === hostProc.pid && now() < backoff.nextAttemptAt) return { action: 'cooldown' };
         relaunchAttemptedPids.add(hostProc.pid);
+        if (upgrade && priorUpgrade?.outcome !== 'deferred') {
+          health.recordUpgrade({ ...upgrade, outcome: 'attempting' });
+        }
         log(`🔄 检测到新启动的 Antigravity (PID ${hostProc.pid}) 未开启 CDP 调试端口，正在自动补充 --remote-debugging-port=0 重启并注入...`);
-        const spec = typeof daemon.collectHostLaunchSpec === 'function'
-          ? await daemon.collectHostLaunchSpec(appPath)
-          : { args: [], env: {} };
-        const res = await relaunchFn({
-          appPath,
-          proxyEnv: spec?.env || {},
-          extraArgs: spec?.args || [],
-          onlyIfBare: true,
-          enforceCooldown: true,
-          stateDir: daemon.stateDir,
-          env,
-          platform
-        });
+        let res;
+        try {
+          const runningAppPath = hostProc.appPath || appPath;
+          const spec = await daemon.collectHostLaunchSpec?.(runningAppPath);
+          if (stopped || !daemon.running) return { action: 'stopped' };
+          res = await relaunchFn({
+            appPath: runningAppPath,
+            proxyEnv: spec?.env || {},
+            extraArgs: spec?.args || [],
+            onlyIfBare: true,
+            expectedPid: hostProc.pid,
+            enforceCooldown: true,
+            stateDir: daemon.stateDir,
+            env,
+            platform
+          });
+        } catch (err) {
+          res = { ok: false, reason: 'RELAUNCH_ERROR', error: err?.message || String(err) };
+        }
+
+        const originalPid = hostProc.pid;
+        if (stopped || !daemon.running) return { action: 'stopped' };
+        if (res?.relaunched) {
+          const next = inspect();
+          if (next.running) hostProc = next;
+        }
+        const relaunchCdp = res?.discovery || (res?.port || res?.targets ? { port: res.port, targets: res.targets } : resolved);
+        observe(hostProc, relaunchCdp);
+        health?.recordRelaunch(res || { ok: false, reason: 'UNKNOWN' });
+        updateHealth();
 
         if (res?.ok && Array.isArray(res.targets) && res.targets.length > 0) {
-          const syncRes = await syncTargets({ port: res.port, targets: res.targets }, { freshAppStart: true });
+          backoff = null;
+          const syncRes = await syncTargets(relaunchCdp, { freshAppStart: true });
+          if (upgrade && !stopped && daemon.running) {
+            let reason = null;
+            if (syncRes.errors.length > 0 || !health.sessions().length) reason = 'INJECTION_ERROR';
+            else if (health.fault.code === 'core_anchor_missing') reason = 'CORE_ANCHOR_MISSING';
+            health.recordUpgrade({
+              ...upgrade, pid: hostProc.pid,
+              outcome: reason ? 'failed' : 'succeeded',
+              reason
+            });
+          }
           return { action: 'relaunched-and-injected', res, syncRes };
         }
-        if (res?.reason === 'COOLDOWN_ACTIVE') {
-          relaunchAttemptedPids.delete(hostProc.pid);
+        if (res?.reason === 'COOLDOWN_ACTIVE' || res?.reason === 'HOST_PROCESS_CHANGED' ||
+            res?.reason === 'ALREADY_HAS_DEBUG_SWITCH') {
+          relaunchAttemptedPids.delete(originalPid);
+          const delay = backoff?.pid === originalPid ? Math.min(20000, backoff.delay * 2) : intervalMs;
+          backoff = { pid: originalPid, delay, nextAttemptAt: now() + delay };
+          if (upgrade && priorUpgrade?.outcome !== 'deferred') {
+            health.recordUpgrade({ ...upgrade, outcome: 'deferred', reason: res.reason });
+          }
           return { action: 'cooldown', res };
+        }
+        backoff = null;
+        if (upgrade) {
+          health.recordUpgrade({
+            ...upgrade, pid: hostProc.pid, outcome: 'failed', reason: res?.reason || 'CDP_ZERO_TARGETS'
+          });
         }
         warn(`⚠️ 自动补参重启未完成 (${res?.reason || 'UNKNOWN'}): ${res?.message || res?.error || ''}`);
         return { action: 'relaunch-failed', res };
@@ -239,6 +332,7 @@ function createLiveWatchdog(daemon, options = {}) {
       return { action: 'bare-warned', pid: hostProc.pid };
     } finally {
       busy = false;
+      updateHealth();
     }
   }
 
@@ -247,7 +341,7 @@ function createLiveWatchdog(daemon, options = {}) {
     init();
     if (timer) return;
     timer = setInterval(() => {
-      void tick();
+      void tick().catch((err) => warn(err?.message || String(err)));
     }, intervalMs);
     if (typeof timer.unref === 'function') {
       timer.unref();

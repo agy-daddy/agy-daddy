@@ -108,21 +108,55 @@ async function resolveActiveCdpTarget(options = {}) {
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 1500;
   const ports = Array.isArray(options.ports) ? options.ports : discoverDevToolsPorts(options);
   const fetchJson = options.fetchJson || fetchHttpJsonLoopback;
-  let validCdpPort = null;
+  const discovery = { port: null, portsTried: [], reachable: false, pages: [], targets: [], filtered: [] };
   for (const port of ports) {
+    discovery.portsTried.push(port);
     try {
       const pages = await fetchJson(port, '/json/list', timeoutMs);
       if (!Array.isArray(pages)) continue;
-      if (!validCdpPort) validCdpPort = port;
-      const targets = pages.filter(
-        (p) => p && p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(String(p.url || ''))
-      );
+      discovery.reachable = true;
+      if (discovery.port === null) discovery.port = port;
+      discovery.pages.push(...pages);
+      const targets = [];
+      for (const page of pages) {
+        const filterReason = cdpTargetFilterReason(page);
+        if (filterReason) discovery.filtered.push({ ...page, filterReason });
+        else targets.push(page);
+      }
       if (targets.length > 0) {
-        return { port, pages, targets };
+        return { ...discovery, port, targets };
       }
     } catch {}
   }
-  return { port: validCdpPort, pages: [], targets: [] };
+  return discovery;
+}
+
+function cdpTargetFilterReason(page) {
+  if (!page || typeof page !== 'object') return 'invalid_target';
+  if (page.type !== 'page') return 'unsupported_target_type';
+  if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(String(page.url || ''))) return 'unexpected_url';
+  return null;
+}
+
+function readAntigravityVersion(options = {}) {
+  if ((options.platform || process.platform) !== 'darwin') return null;
+  const candidates = [
+    options.appPath,
+    '/Applications/Antigravity.app',
+    path.join(options.homeDir || os.homedir(), 'Applications', 'Antigravity.app')
+  ];
+  for (const bundle of new Set(candidates.filter(Boolean))) {
+    const plist = path.join(bundle, 'Contents', 'Info.plist');
+    try {
+      if (!(options.fs || fs).existsSync(plist)) continue;
+      const readPlist = options.execFileSync || execFileSync;
+      const version = String(readPlist('/usr/bin/plutil', [
+        '-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', plist
+      ], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] })).trim();
+      if (/^\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.+-]+)?$/.test(version)) return version;
+    } catch {}
+  }
+  return null;
 }
 
 function parsePsElapsedSeconds(raw) {
@@ -154,7 +188,7 @@ function parseWinCreationElapsedSeconds(rawDate, nowMs = Date.now()) {
 }
 
 function inspectAntigravityHostProcess(options = {}) {
-  const empty = { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null, command: '' };
+  const empty = { running: false, pid: null, version: null, hasDebugSwitch: false, elapsedSec: null, command: '' };
   const platform = options.platform || process.platform;
   if (isTestMode() && typeof options.psOutput !== 'string' && options.winProcessJson === undefined) {
     return empty;
@@ -208,6 +242,7 @@ function inspectAntigravityHostProcess(options = {}) {
       return {
         running: true,
         pid,
+        version: null,
         hasDebugSwitch: /--remote-debugging-port(?:=|\s|$)/i.test(cmd),
         elapsedSec: parseWinCreationElapsedSeconds(row?.CreationDate, nowMs),
         command: cmd
@@ -255,22 +290,27 @@ function inspectAntigravityHostProcess(options = {}) {
     const cmd = m[3].trim();
     if (!Number.isInteger(pid) || pid <= 0) continue;
     if (psPlatform === 'darwin') {
-      if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
+      if (!/\/Contents\/MacOS\/Antigravity"?(?:\s|$)/.test(cmd)) continue;
       if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)/i.test(cmd)) continue;
     } else {
       if (!/(?:^|\/)antigravity(?:\.AppImage)?(?:\s|$)/i.test(cmd)) continue;
       if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)|agy-daddy|ELECTRON_RUN_AS_NODE/i.test(cmd)) continue;
     }
+    const runningBundle = psPlatform === 'darwin'
+      ? cmd.match(/^"?(\/.+?\.app)\/Contents\/MacOS\/Antigravity"?(?:\s|$)/)?.[1]
+      : null;
     return {
       running: true,
       pid,
+      appPath: runningBundle || null,
+      version: readAntigravityVersion({ ...options, platform: psPlatform, appPath: runningBundle || options.appPath }),
       hasDebugSwitch: /--remote-debugging-port(?:=|\s|$)/.test(cmd),
       elapsedSec: parsePsElapsedSeconds(etime),
       command: cmd
     };
   }
 
-  return empty;
+  return { ...empty, version: readAntigravityVersion({ ...options, platform }) };
 }
 
 class CdpClient extends EventEmitter {
@@ -414,7 +454,10 @@ class CdpClient extends EventEmitter {
 
 module.exports = {
   discoverDevToolsPorts,
+  fetchHttpJsonLoopback,
   resolveActiveCdpTarget,
+  cdpTargetFilterReason,
+  readAntigravityVersion,
   parsePsElapsedSeconds,
   inspectAntigravityHostProcess,
   CdpClient

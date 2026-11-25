@@ -63,7 +63,7 @@ function checkAnchorHealth(anchorsData, antigravityVersion, queryFn) {
     let hitSelector = null;
     for (const sel of resolved.selectors) {
       try {
-        if (queryFn(sel)) {
+        if (queryFn(sel, anchorName)) {
           hitSelector = sel;
           break;
         }
@@ -79,6 +79,17 @@ function checkAnchorHealth(anchorsData, antigravityVersion, queryFn) {
     healthy: missing.length === 0,
     matched,
     missing
+  };
+}
+
+function loadHealthAnchorsRegistry(options = {}) {
+  const defaults = loadAnchorsRegistry();
+  const active = loadAnchorsRegistry(options);
+  return {
+    ...active,
+    anchors: Object.fromEntries(Object.entries(defaults.anchors).map(([name, definition]) => [
+      name, active.anchors[name] || definition
+    ]))
   };
 }
 
@@ -121,6 +132,7 @@ function buildResolvedAnchorsMap(anchorsData = null, antigravityVersion = '2.33.
 module.exports = {
   DEFAULT_ANCHORS_PATH,
   loadAnchorsRegistry,
+  loadHealthAnchorsRegistry,
   resolveAnchorSelectors,
   checkAnchorHealth,
   checkPluginAnchors,

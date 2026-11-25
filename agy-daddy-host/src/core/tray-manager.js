@@ -16,6 +16,155 @@ const DEFAULT_TRAY_MENU_IDS = Object.freeze({
   QUIT: 'host:quit'
 });
 
+const FAULT_TRAY_MENU_IDS = Object.freeze({
+  FAULT_STATUS: 'host:fault-status',
+  RELAUNCH_ANTIGRAVITY: 'host:relaunch-antigravity',
+  OPEN_DIAGNOSTICS: 'host:open-diagnostics',
+  HEALTH_SUMMARY: 'host:health-summary'
+});
+
+const ALERT_TRAY_TITLE = '⚠️ 未接管';
+
+function truncateTrayText(text, maxLen = 68) {
+  const s = String(text || '').trim();
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(1, maxLen - 3))}...`;
+}
+
+function hasExceededFaultSnapshot(health) {
+  return Boolean(health && health.fault && health.fault.active === true && health.fault.exceeded5s === true);
+}
+
+function buildFaultStatusLabel(fault, health) {
+  const ver = health?.antigravity?.version ? ` ${health.antigravity.version}` : '';
+  const code = fault?.code || '';
+  const reason = String(fault?.reason || '').trim();
+  const blockedBy = health?.antigravity?.lastRelaunch?.blockedBy || '';
+  const relaunchReason = health?.antigravity?.lastRelaunch?.reason || '';
+
+  if (code === 'missing_cdp_switch') {
+    if (blockedBy === 'INSIDE_ANTIGRAVITY_SESSION' || relaunchReason === 'INSIDE_ANTIGRAVITY_SESSION' || reason.includes('INSIDE_ANTIGRAVITY_SESSION')) {
+      return `⚠️ Antigravity${ver} 未开启 CDP（自动补参被环境变量拦截）`;
+    }
+    if (relaunchReason === 'AUTO_RELAUNCH_DISABLED' || reason.includes('AUTO_RELAUNCH_DISABLED')) {
+      return `⚠️ Antigravity${ver} 未开启 CDP（自动补参已禁用）`;
+    }
+    return `⚠️ Antigravity${ver} 未开启 CDP（缺少调试端口参数）`;
+  }
+  if (code === 'relaunch_blocked_or_timeout') {
+    if (blockedBy === 'INSIDE_ANTIGRAVITY_SESSION' || reason.includes('INSIDE_ANTIGRAVITY_SESSION')) {
+      return `⚠️ Antigravity${ver} 未开启 CDP（自动补参被环境变量拦截）`;
+    }
+    if (reason.includes('TIMEOUT')) {
+      return `⚠️ Antigravity${ver} 自动补参重启超时（${truncateTrayText(reason, 36)}）`;
+    }
+    return `⚠️ Antigravity${ver} 自动补参重启受阻（${truncateTrayText(reason || '未知原因', 36)}）`;
+  }
+  if (code === 'cdp_zero_targets') {
+    if (!health?.cdp?.reachable) {
+      return `⚠️ Antigravity${ver} CDP 端口不可达（0 个可注入目标）`;
+    }
+    const total = health?.cdp?.targets?.total ?? 0;
+    const filtered = health?.cdp?.targets?.filtered?.length ?? 0;
+    return `⚠️ Antigravity${ver} CDP 无匹配页面（总计 ${total}，过滤 ${filtered}）`;
+  }
+  if (code === 'injection_error') {
+    return `⚠️ Antigravity${ver} 宿内注入异常（${truncateTrayText(reason || '未知错误', 40)}）`;
+  }
+  if (code === 'core_anchor_missing') {
+    return `⚠️ Antigravity${ver} 核心锚点失效（${truncateTrayText(reason || '未知锚点', 40)}）`;
+  }
+  return `⚠️ Antigravity${ver} 健康异常（${truncateTrayText(reason || code || '未知原因', 40)}）`;
+}
+
+function buildHealthSummaryItem(health) {
+  if (!health || typeof health !== 'object') return null;
+  const d = health.daemon || {};
+  const ag = health.antigravity || {};
+  const cdp = health.cdp || {};
+  const inj = health.injection || {};
+  const anchors = inj.anchors || { total: 14, healthyCount: 0, missingCount: 0, items: [] };
+  const plugins = Array.isArray(health.plugins) ? health.plugins : [];
+  const fault = health.fault || {};
+
+  const enabledPlugins = plugins.filter((p) => p.enabled !== false);
+  const mountedPlugins = enabledPlugins.filter((p) => p.rendererMounted);
+  const erroredPlugins = plugins.filter((p) => p.lastError || p.nodeState === 'error');
+  const missingNames = Array.isArray(anchors.items)
+    ? anchors.items.filter((a) => a.status === 'missing').map((a) => a.name)
+    : [];
+
+  const statusTag = fault.active ? (fault.exceeded5s ? '异常(>5s)' : '检测中') : '正常';
+  const summaryLabel = `健康摘要：${statusTag} · 锚点 ${anchors.healthyCount ?? 0}/${anchors.total ?? 14} · 插件 ${mountedPlugins.length}/${enabledPlugins.length}`;
+
+  const daemonLine = `Daemon: PID ${d.pid ?? '—'} · Bridge :${d.bridgePort ?? '—'}${d.hasSessionEnvPollution ? ' · 会话污染' : ' · 环境已隔离'}`;
+  const agLine = `Antigravity: ${ag.running ? `PID ${ag.pid ?? '—'}` : '未运行'} · ${ag.version || '未知版本'} · CDP ${ag.hasDebugSwitch ? '已开' : '未开'}`;
+  const cdpMatched = cdp.targets?.matched?.length ?? 0;
+  const cdpFiltered = cdp.targets?.filtered?.length ?? 0;
+  const cdpLine = `CDP: 端口 ${cdp.port ?? '—'} · ${cdp.reachable ? '可达' : '不可达'} · 匹配 ${cdpMatched}/过滤 ${cdpFiltered}`;
+  const injLine = `锚点探活(${inj.probeSource || 'static'}): ${anchors.healthyCount ?? 0}/${anchors.total ?? 14} 命中${missingNames.length ? ` · 缺失 ${truncateTrayText(missingNames.slice(0, 3).join(','), 32)}` : ''}`;
+  const plugLine = `插件(${plugins.length}): 启用 ${enabledPlugins.length} · 挂载 ${mountedPlugins.length}${erroredPlugins.length ? ` · 异常 ${erroredPlugins.length}` : ''}`;
+
+  return {
+    id: FAULT_TRAY_MENU_IDS.HEALTH_SUMMARY,
+    type: 'submenu',
+    label: summaryLabel,
+    enabled: true,
+    isBuiltin: true,
+    tooltip: '查看 Daemon / Antigravity / CDP / 14 锚点 / 插件 5 段健康快照摘要',
+    submenu: [
+      { id: 'host:health-daemon', type: 'normal', label: daemonLine, enabled: false },
+      { id: 'host:health-antigravity', type: 'normal', label: agLine, enabled: false },
+      { id: 'host:health-cdp', type: 'normal', label: cdpLine, enabled: false },
+      { id: 'host:health-injection', type: 'normal', label: injLine, enabled: false },
+      { id: 'host:health-plugins', type: 'normal', label: plugLine, enabled: false }
+    ]
+  };
+}
+
+function computeHealthTraySignature(health) {
+  if (!health || typeof health !== 'object') return '';
+  const d = health.daemon || {};
+  const ag = health.antigravity || {};
+  const cdp = health.cdp || {};
+  const inj = health.injection || {};
+  const fault = health.fault || {};
+  const plugins = Array.isArray(health.plugins) ? health.plugins : [];
+  const missingAnchors = Array.isArray(inj.anchors?.items)
+    ? inj.anchors.items.filter((a) => a.status === 'missing').map((a) => a.name).join(',')
+    : '';
+  const pluginSig = plugins
+    .map((p) => `${p.id}:${p.enabled ? 1 : 0}:${p.nodeState || ''}:${p.rendererMounted ? 1 : 0}:${p.lastError || ''}`)
+    .join('|');
+  return [
+    fault.active ? 1 : 0,
+    fault.exceeded5s ? 1 : 0,
+    fault.code || '',
+    fault.reason || '',
+    fault.pid || '',
+    d.pid || '',
+    d.bridgePort || '',
+    d.hasSessionEnvPollution ? 1 : 0,
+    ag.running ? 1 : 0,
+    ag.pid || '',
+    ag.version || '',
+    ag.hasDebugSwitch ? 1 : 0,
+    ag.lastRelaunch?.status || '',
+    ag.lastRelaunch?.reason || '',
+    ag.lastRelaunch?.blockedBy || '',
+    cdp.port || '',
+    cdp.reachable ? 1 : 0,
+    cdp.targets?.matched?.length ?? 0,
+    cdp.targets?.filtered?.length ?? 0,
+    inj.injectedCount ?? 0,
+    inj.probeSource || '',
+    inj.anchors?.healthyCount ?? 0,
+    inj.anchors?.total ?? 14,
+    missingAnchors,
+    pluginSig
+  ].join('::');
+}
+
 const DEFAULT_TRAY_ITEMS = Object.freeze([
   Object.freeze({
     id: DEFAULT_TRAY_MENU_IDS.LAUNCH_ANTIGRAVITY,
@@ -86,6 +235,7 @@ class MemoryTrayBackend {
     this.lastPayload = {
       type: 'update-menu',
       tooltip: initialOptions.tooltip || 'Agy-Daddy Launcher',
+      title: initialOptions.title || '',
       iconPath: initialOptions.iconPath || null,
       isTemplate: initialOptions.isTemplate !== false,
       items: []
@@ -311,6 +461,7 @@ class NativeTrayBackend {
     this.stateDir = options.stateDir || getStateDir(options);
     this.assetsDir = options.assetsDir;
     this.tooltip = options.tooltip || 'Agy-Daddy Launcher';
+    this.title = options.title || '';
     this.iconPath = options.iconPath !== undefined
       ? options.iconPath
       : resolveDefaultTrayIconPath({ platform: this.platform, assetsDir: options.assetsDir });
@@ -622,6 +773,7 @@ class NativeTrayBackend {
       return { ok: true, backend: 'native', alreadyStarted: true };
     }
     if (initialOptions.tooltip) this.tooltip = initialOptions.tooltip;
+    if (initialOptions.title !== undefined) this.title = String(initialOptions.title || '');
     if (initialOptions.iconPath !== undefined) this.iconPath = initialOptions.iconPath;
     if (initialOptions.isTemplate !== undefined) this.isTemplate = Boolean(initialOptions.isTemplate);
 
@@ -636,6 +788,7 @@ class NativeTrayBackend {
     const msg = {
       type: 'update-menu',
       tooltip: payload.tooltip || this.tooltip,
+      title: payload.title !== undefined ? String(payload.title || '') : this.title,
       iconPath: payload.iconPath !== undefined ? payload.iconPath : this.iconPath,
       isTemplate: payload.isTemplate !== undefined ? Boolean(payload.isTemplate) : this.isTemplate,
       items: Array.isArray(payload.items) ? payload.items : []
@@ -821,6 +974,8 @@ class TrayManager {
     this.executeCommand = typeof options.executeCommand === 'function' ? options.executeCommand : null;
 
     this.onLaunchAntigravity = typeof options.onLaunchAntigravity === 'function' ? options.onLaunchAntigravity : null;
+    this.onRelaunchAntigravity = typeof options.onRelaunchAntigravity === 'function' ? options.onRelaunchAntigravity : null;
+    this.onOpenDiagnostics = typeof options.onOpenDiagnostics === 'function' ? options.onOpenDiagnostics : null;
     this.onOpenPluginSettings = typeof options.onOpenPluginSettings === 'function' ? options.onOpenPluginSettings : null;
     this.onRestartDaemon = typeof options.onRestartDaemon === 'function' ? options.onRestartDaemon : null;
     this.onQuit = typeof options.onQuit === 'function' ? options.onQuit : null;
@@ -847,6 +1002,11 @@ class TrayManager {
     this.started = false;
     this.managed = false;
     this.visible = true;
+    this.desiredVisible = true;
+    this.faultOverride = false;
+    this._forceStartRequested = false;
+    this.hostHealth = null;
+    this._lastHealthSignature = '';
     this._visibilityChain = Promise.resolve();
     this.refreshTimer = null;
     this.unsubBackendClick = null;
@@ -856,15 +1016,33 @@ class TrayManager {
 
   setActionHandlers(handlers = {}) {
     if (typeof handlers.onLaunchAntigravity === 'function') this.onLaunchAntigravity = handlers.onLaunchAntigravity;
+    if (typeof handlers.onRelaunchAntigravity === 'function') this.onRelaunchAntigravity = handlers.onRelaunchAntigravity;
+    if (typeof handlers.onOpenDiagnostics === 'function') this.onOpenDiagnostics = handlers.onOpenDiagnostics;
     if (typeof handlers.onOpenPluginSettings === 'function') this.onOpenPluginSettings = handlers.onOpenPluginSettings;
     if (typeof handlers.onRestartDaemon === 'function') this.onRestartDaemon = handlers.onRestartDaemon;
     if (typeof handlers.onQuit === 'function') this.onQuit = handlers.onQuit;
     if (typeof handlers.executeCommand === 'function') this.executeCommand = handlers.executeCommand;
   }
 
-  async start() {
-    this.managed = true;
-    this.visible = true;
+  hasExceededFault(health = this.hostHealth) {
+    return hasExceededFaultSnapshot(health);
+  }
+
+  getTrayPresentation() {
+    if (this.hasExceededFault()) {
+      const statusLabel = buildFaultStatusLabel(this.hostHealth.fault, this.hostHealth);
+      return {
+        title: ALERT_TRAY_TITLE,
+        tooltip: statusLabel
+      };
+    }
+    return {
+      title: '',
+      tooltip: this.appName
+    };
+  }
+
+  async _startInternal() {
     if (this.started) {
       return { ok: true, alreadyStarted: true };
     }
@@ -883,8 +1061,10 @@ class TrayManager {
         }
       });
     }
+    const presentation = this.getTrayPresentation();
     const res = await this.backend.start({
-      tooltip: this.appName,
+      tooltip: presentation.tooltip,
+      title: presentation.title,
       iconPath: this.options.iconPath !== undefined
         ? this.options.iconPath
         : resolveDefaultTrayIconPath({ assetsDir: this.options.assetsDir })
@@ -894,20 +1074,67 @@ class TrayManager {
     return res;
   }
 
+  async start() {
+    this.managed = true;
+    this.desiredVisible = true;
+    this.visible = true;
+    return await this._startInternal();
+  }
+
+  async _applyVisibilityState() {
+    const effectiveVisible = Boolean(this.desiredVisible || this.faultOverride);
+    this.visible = effectiveVisible;
+    if (!effectiveVisible) {
+      if (this.started) {
+        await this.stop();
+      }
+      return { ok: true, visible: false, started: false, faultOverride: false };
+    }
+    if (!this.started && (this.managed || this._forceStartRequested)) {
+      await this._startInternal();
+    } else if (this.started) {
+      await this.refreshMenu(true);
+    }
+    return { ok: true, visible: true, started: Boolean(this.started), faultOverride: this.faultOverride };
+  }
+
   async setVisible(visible, opts = {}) {
     const run = async () => {
-      const nextVisible = Boolean(visible);
-      this.visible = nextVisible;
-      if (!nextVisible) {
-        if (this.started) {
-          await this.stop();
-        }
-        return { ok: true, visible: false, started: false };
+      this.desiredVisible = Boolean(visible);
+      if (opts.forceStart) this._forceStartRequested = true;
+      try {
+        return await this._applyVisibilityState();
+      } finally {
+        this._forceStartRequested = false;
       }
-      if (!this.started && (this.managed || opts.forceStart)) {
-        await this.start();
+    };
+    const next = this._visibilityChain.then(run, run);
+    this._visibilityChain = next.catch(() => {});
+    return next;
+  }
+
+  async applyHostHealth(snapshot) {
+    const nextHealth = snapshot && typeof snapshot === 'object' ? snapshot : null;
+    const nextExceeded = hasExceededFaultSnapshot(nextHealth);
+    const nextSig = nextHealth ? computeHealthTraySignature(nextHealth) : '';
+    const changed = nextSig !== this._lastHealthSignature || nextExceeded !== this.faultOverride;
+    this.hostHealth = nextHealth;
+    this._lastHealthSignature = nextSig;
+    if (!changed) {
+      return { ok: true, changed: false, visible: this.visible, faultOverride: this.faultOverride };
+    }
+    const run = async () => {
+      this.faultOverride = nextExceeded;
+      if (this.managed) {
+        const res = await this._applyVisibilityState();
+        return { ...res, changed: true };
       }
-      return { ok: true, visible: true, started: Boolean(this.started) };
+      const items = this.buildMenuModel();
+      this.lastSnapshot = items;
+      if (this.started) {
+        await this.refreshMenu(true);
+      }
+      return { ok: true, changed: true, visible: this.visible, faultOverride: this.faultOverride };
     };
     const next = this._visibilityChain.then(run, run);
     this._visibilityChain = next.catch(() => {});
@@ -933,6 +1160,10 @@ class TrayManager {
 
   async dispose() {
     this.managed = false;
+    this.desiredVisible = true;
+    this.faultOverride = false;
+    this.hostHealth = null;
+    this._lastHealthSignature = '';
     await this.stop();
     this.pluginItems.clear();
     this.itemErrors.clear();
@@ -1265,6 +1496,44 @@ class TrayManager {
       .map((d, idx) => ({ ...d, seq: idx + 100, isBuiltin: true }));
 
     try {
+      const faultGroup = [];
+      if (this.hasExceededFault()) {
+        const fault = this.hostHealth.fault;
+        const faultLabel = buildFaultStatusLabel(fault, this.hostHealth);
+        faultGroup.push(
+          {
+            id: FAULT_TRAY_MENU_IDS.FAULT_STATUS,
+            type: 'normal',
+            label: faultLabel,
+            enabled: false,
+            isBuiltin: true,
+            order: 1,
+            seq: 1,
+            tooltip: fault?.reason ? `${faultLabel} — ${fault.reason}` : faultLabel
+          },
+          {
+            id: FAULT_TRAY_MENU_IDS.RELAUNCH_ANTIGRAVITY,
+            type: 'normal',
+            label: '一键补参重启 Antigravity',
+            enabled: true,
+            isBuiltin: true,
+            order: 2,
+            seq: 2,
+            tooltip: '使用 --remote-debugging-port=0 重启 Antigravity 并重新注入插件宿主'
+          },
+          {
+            id: FAULT_TRAY_MENU_IDS.OPEN_DIAGNOSTICS,
+            type: 'normal',
+            label: '打开独立诊断面板（浏览器）',
+            enabled: true,
+            isBuiltin: true,
+            order: 3,
+            seq: 3,
+            tooltip: '在系统默认浏览器中打开常驻 Daemon 独立诊断页（不依赖 Antigravity UI）'
+          }
+        );
+      }
+
       const nextClickTargets = new Map();
       const buckets = {
         top: [],
@@ -1273,6 +1542,24 @@ class TrayManager {
         bottom: [],
         lifecycle: [...defaultBottomBuiltIns]
       };
+      if (this.hostHealth) {
+        if (!this.hasExceededFault()) {
+          buckets.primary.push({
+            id: FAULT_TRAY_MENU_IDS.OPEN_DIAGNOSTICS,
+            type: 'normal',
+            label: '打开独立诊断面板（浏览器）',
+            group: 'primary',
+            order: 250,
+            seq: 50,
+            isBuiltin: true,
+            tooltip: '在系统默认浏览器中打开常驻 Daemon 独立诊断页（不依赖 Antigravity UI）'
+          });
+        }
+        const summaryItem = buildHealthSummaryItem(this.hostHealth);
+        if (summaryItem) {
+          buckets.primary.push({ ...summaryItem, group: 'primary', order: 260, seq: 60 });
+        }
+      }
       const anchored = [];
 
       for (const rec of this.pluginItems.values()) {
@@ -1301,6 +1588,7 @@ class TrayManager {
 
       const assembleSection = (arr) => arr.slice();
       const orderedGroups = [
+        assembleSection(faultGroup),
         assembleSection(buckets.top),
         assembleSection(buckets.primary),
         assembleSection(buckets.plugins),
@@ -1386,8 +1674,10 @@ class TrayManager {
     if (!this.started) {
       return { ok: true, items, skippedBackend: true };
     }
+    const presentation = this.getTrayPresentation();
     await this.backend.updateMenu({
-      tooltip: this.appName,
+      tooltip: presentation.tooltip,
+      title: presentation.title,
       items
     });
     return { ok: true, items };
@@ -1415,6 +1705,23 @@ class TrayManager {
     if (!id) return { ok: false, error: 'EMPTY_ITEM_ID' };
 
     // Built-in host actions
+    if (id === FAULT_TRAY_MENU_IDS.RELAUNCH_ANTIGRAVITY) {
+      try {
+        const handler = this.onRelaunchAntigravity || this.onLaunchAntigravity;
+        const result = handler ? await handler() : { ok: false, reason: 'NO_HANDLER' };
+        return { ok: true, id, result };
+      } catch (err) {
+        return { ok: false, id, error: err?.message || String(err) };
+      }
+    }
+    if (id === FAULT_TRAY_MENU_IDS.OPEN_DIAGNOSTICS) {
+      try {
+        const result = this.onOpenDiagnostics ? await this.onOpenDiagnostics() : { ok: false, reason: 'NO_HANDLER' };
+        return { ok: true, id, result };
+      } catch (err) {
+        return { ok: false, id, error: err?.message || String(err) };
+      }
+    }
     if (id === DEFAULT_TRAY_MENU_IDS.LAUNCH_ANTIGRAVITY) {
       try {
         const result = this.onLaunchAntigravity ? await this.onLaunchAntigravity() : { ok: false, reason: 'NO_HANDLER' };
@@ -1529,9 +1836,13 @@ class TrayManager {
 
 module.exports = {
   DEFAULT_TRAY_MENU_IDS,
+  FAULT_TRAY_MENU_IDS,
   DEFAULT_TRAY_ITEMS,
+  ALERT_TRAY_TITLE,
   MAX_ITEMS_PER_PLUGIN,
   MAX_SUBMENU_DEPTH,
+  hasExceededFaultSnapshot,
+  buildFaultStatusLabel,
   resolveDefaultTrayIconPath,
   resolveDefaultMacApplicationsDir,
   registerMacAppBundle,

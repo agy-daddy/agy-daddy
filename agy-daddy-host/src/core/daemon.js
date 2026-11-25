@@ -444,7 +444,11 @@ class AgyDaddyDaemon extends EventEmitter {
   }
 
   getHostHealth() {
-    return this.health.snapshot();
+    const snap = this.health.snapshot();
+    if (this.trayManager && this.trayManager.managed && typeof this.trayManager.applyHostHealth === 'function') {
+      void this.trayManager.applyHostHealth(snap).catch(() => {});
+    }
+    return snap;
   }
 
   getDiagnosticHealth() {

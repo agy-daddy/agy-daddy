@@ -23,6 +23,8 @@ class DynamicBridgeServer {
     this.hostRoutes = new Map();   // `/host/...` -> handler
     this.diagnosticsHealth = null;
     this.diagnosticsPage = null;
+    this.diagnosticsRelaunch = null;
+    this.diagnosticsToken = options.diagnosticsToken || crypto.randomBytes(24).toString('hex');
     this.server = null;
     this.port = 0;
   }
@@ -42,6 +44,13 @@ class DynamicBridgeServer {
     };
   }
 
+  registerDiagnosticsRelaunch(handler) {
+    this.diagnosticsRelaunch = handler;
+    return () => {
+      if (this.diagnosticsRelaunch === handler) this.diagnosticsRelaunch = null;
+    };
+  }
+
   async handleDiagnostics(req, res, pathname) {
     const host = `127.0.0.1:${this.port}`;
     const headers = {
@@ -50,9 +59,35 @@ class DynamicBridgeServer {
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY'
     };
+    const isRelaunch = pathname === '/diagnostics/relaunch';
     if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.host !== host ||
-        (req.headers.origin && req.headers.origin !== `http://${host}`)) {
+        (isRelaunch ? req.headers.origin !== `http://${host}` : (req.headers.origin && req.headers.origin !== `http://${host}`))) {
       res.writeHead(403, headers).end('Forbidden');
+      return;
+    }
+    if (isRelaunch) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { ...headers, Allow: 'POST' }).end('Method Not Allowed');
+        return;
+      }
+      const providedDiagToken = String(req.headers['x-agy-diagnostics-token'] || '');
+      if (!safeTokenEqual(providedDiagToken, this.diagnosticsToken)) {
+        res.writeHead(403, headers).end('Forbidden');
+        return;
+      }
+      if (!this.diagnosticsRelaunch) {
+        res.writeHead(404, headers).end('Diagnostics relaunch handler is not registered');
+        return;
+      }
+      try {
+        const result = await this.diagnosticsRelaunch();
+        const body = JSON.stringify(result === undefined ? { ok: true } : result);
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/json' }).end(body);
+      } catch (err) {
+        res.writeHead(500, { ...headers, 'Content-Type': 'application/json' }).end(
+          JSON.stringify({ ok: false, error: err?.message || 'Relaunch failed' })
+        );
+      }
       return;
     }
     if (req.method !== 'GET') {
@@ -66,7 +101,13 @@ class DynamicBridgeServer {
       return;
     }
     try {
-      const result = await handler();
+      const result = isHealth
+        ? await handler()
+        : await handler({
+            token: this.diagnosticsToken,
+            port: this.port,
+            canRelaunch: typeof this.diagnosticsRelaunch === 'function'
+          });
       const body = isHealth ? JSON.stringify(result) : String(result);
       const type = isHealth ? 'application/json' : 'text/html; charset=utf-8';
       res.writeHead(200, { ...headers, 'Content-Type': type }).end(body);
@@ -257,7 +298,7 @@ class DynamicBridgeServer {
 
   async handleRequest(req, res) {
     const reqUrl = String(req.url || '').split('?')[0];
-    if (reqUrl === '/diagnostics' || reqUrl === '/diagnostics/health') {
+    if (reqUrl === '/diagnostics' || reqUrl === '/diagnostics/health' || reqUrl === '/diagnostics/relaunch') {
       await this.handleDiagnostics(req, res, reqUrl);
       return;
     }

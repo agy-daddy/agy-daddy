@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { apiClient } from '../api/client';
+import { MarkdownContent } from '../harness/MarkdownContent';
 import { useI18n } from '../i18n';
 import type { ModelItem, SideChatContextScope, SideChatSelectionContext } from '../types';
 import styles from './SideChatPanel.module.css';
@@ -37,7 +38,7 @@ export function SideChatPanel({
 
   const [threadsByBucket, setThreadsByBucket] = useState<Record<string, SideChatMessage[]>>({});
   const [selectedModel, setSelectedModel] = useState<string>('');
-  const [contextScope, setContextScope] = useState<SideChatContextScope>('session_summary');
+  const [contextScope, setContextScope] = useState<SideChatContextScope>('none');
   const [prompt, setPrompt] = useState('');
   const [streamingReqId, setStreamingReqId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -266,7 +267,17 @@ export function SideChatPanel({
               className={`${styles.msgCard} ${msg.role === 'user' ? styles.msgUser : ''}`}
               data-testid={`side-chat-msg-${msg.role}`}
             >
-              <pre className={styles.msgBody}>{msg.text || (msg.streaming ? '…' : '')}</pre>
+              {msg.role === 'assistant' ? (
+                msg.text ? (
+                  <div className={styles.msgMarkdown}>
+                    <MarkdownContent text={msg.text} compact />
+                  </div>
+                ) : (
+                  <pre className={styles.msgBody}>{msg.streaming ? '…' : ''}</pre>
+                )
+              ) : (
+                <pre className={styles.msgBody}>{msg.text}</pre>
+              )}
               {msg.role === 'assistant' && !msg.streaming && msg.text && (
                 <div className={styles.msgActions}>
                   <button

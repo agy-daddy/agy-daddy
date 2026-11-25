@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiClient } from '../api/client';
 import { useI18n } from '../i18n';
-import type { FsNode } from '../types';
-import { formatBytes, formatDockError } from './dockUtils';
+import type { FsNode, SideChatSelectionContext } from '../types';
+import { formatBytes, formatDockError, truncateSelectionSnippet } from './dockUtils';
 import styles from './FileTreePanel.module.css';
 
 export interface FileTreePanelProps {
@@ -11,6 +11,7 @@ export interface FileTreePanelProps {
   onFileSaved?: (path: string, bytes: number) => void;
   onAuthorizeRoot?: (root: string) => Promise<void> | void;
   focusedFile?: { path: string; nonce: number } | null;
+  onSelectionChange?: (selection: SideChatSelectionContext | null) => void;
 }
 
 function mergeNodeChildren(nodes: FsNode[], targetPath: string, children: FsNode[]): FsNode[] {
@@ -38,7 +39,14 @@ function collectDefaultExpanded(nodes: FsNode[]): Record<string, boolean> {
   return next;
 }
 
-export function FileTreePanel({ root, refreshKey, onFileSaved, onAuthorizeRoot, focusedFile }: FileTreePanelProps) {
+export function FileTreePanel({
+  root,
+  refreshKey,
+  onFileSaved,
+  onAuthorizeRoot,
+  focusedFile,
+  onSelectionChange,
+}: FileTreePanelProps) {
   const { t } = useI18n();
   const [treeEntries, setTreeEntries] = useState<FsNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -62,6 +70,22 @@ export function FileTreePanel({ root, refreshKey, onFileSaved, onAuthorizeRoot, 
 
   const treeAbortRef = useRef<AbortController | null>(null);
   const fileAbortRef = useRef<AbortController | null>(null);
+  const hasEmittedSelectionRef = useRef(false);
+
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    if (selectedPath && !fileLoading && !fileError) {
+      hasEmittedSelectionRef.current = true;
+      onSelectionChange({
+        path: selectedPath,
+        snippet: truncateSelectionSnippet(draftContent),
+        kind: 'file',
+      });
+    } else if (!selectedPath && hasEmittedSelectionRef.current) {
+      hasEmittedSelectionRef.current = false;
+      onSelectionChange(null);
+    }
+  }, [selectedPath, draftContent, fileLoading, fileError, onSelectionChange]);
 
   const loadTree = useCallback(async () => {
     treeAbortRef.current?.abort();

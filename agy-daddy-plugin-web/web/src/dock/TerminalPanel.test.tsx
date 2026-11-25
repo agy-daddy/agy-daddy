@@ -115,4 +115,72 @@ describe('TerminalPanel', () => {
       );
     });
   });
+
+  it('shows explicit reconnect button when SSE disconnects and resubscribes on click', async () => {
+    vi.spyOn(apiClient, 'listTerminalSessions').mockResolvedValue({
+      ok: true,
+      runtimeAvailable: true,
+      writable: true,
+      requiredPermission: 'L2',
+      maxSessions: 8,
+      sessions: [
+        {
+          sessionId: 'term-1',
+          title: 'zsh',
+          cwd: '/repo',
+          shell: '/bin/zsh',
+          cols: 80,
+          rows: 24,
+          alive: true,
+          exitCode: null,
+          signal: null,
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+          endedAt: null,
+          latestSeq: 0,
+        },
+      ],
+    });
+
+    let streamHandlers: Parameters<typeof apiClient.subscribeTerminalStream>[1] | null = null;
+    const unsubscribeMock = vi.fn();
+    const subscribeSpy = vi
+      .spyOn(apiClient, 'subscribeTerminalStream')
+      .mockImplementation((_id, handlers) => {
+        streamHandlers = handlers;
+        handlers.onOpen?.();
+        return unsubscribeMock;
+      });
+
+    render(
+      <I18nProvider defaultLocale="en">
+        <TerminalPanel activeRoot="/repo" channel="loopback" permissionLevel="L2" />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-screen')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('terminal-reconnect-btn')).toBeNull();
+
+    act(() => {
+      streamHandlers?.onOutput?.({ seq: 3, chunk: 'hi\n', alive: true });
+      streamHandlers?.onError?.(new Event('error'));
+    });
+
+    const reconnectBtn = await screen.findByTestId('terminal-reconnect-btn');
+    expect(reconnectBtn).toHaveTextContent('Reconnect');
+
+    fireEvent.click(reconnectBtn);
+
+    await waitFor(() => {
+      expect(subscribeSpy).toHaveBeenCalledTimes(2);
+    });
+    expect(unsubscribeMock).toHaveBeenCalledTimes(1);
+    expect(subscribeSpy).toHaveBeenLastCalledWith(
+      'term-1',
+      expect.objectContaining({ afterSeq: 4 }),
+    );
+    expect(screen.queryByTestId('terminal-reconnect-btn')).toBeNull();
+  });
 });

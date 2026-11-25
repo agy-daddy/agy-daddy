@@ -733,4 +733,93 @@ describe('App optimistic send flow', () => {
       expect(screen.getByTestId('composer-context-speed')).toHaveTextContent('60 tok/s');
     });
   });
+
+  it('syncs agy-daddy.web, agy-daddy.context, and agy-daddy.composer when SSE state:plugin.settings@1 carries values', async () => {
+    mocks.getTopbar.mockResolvedValue({
+      ok: true,
+      panels: {
+        context: {
+          available: true,
+          source: 'service',
+          settings: { displayLocation: 'topbar', showSpeed: false, compactPolicy: 'remind' },
+          data: { hasSession: true, used: 120_000, budget: 1_000_000, percent: 12 },
+        },
+        usage: { available: false },
+        quota: { available: false },
+      },
+    });
+    mocks.getSessionDetail.mockResolvedValue({
+      ok: true,
+      session: {
+        cascadeId: 'sess-1',
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 1,
+        source: null,
+        metadata: null,
+        generatorMetadata: [],
+      },
+      events: [makeUserEvent(0, 'Hello')],
+    });
+    mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+      mockSseCallbacks.onStatePatch = cbs.onStatePatch;
+      mockSseCallbacks.onTaskUpdated = cbs.onTaskUpdated;
+      return () => {};
+    });
+
+    renderApp();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Demo Session');
+    });
+
+    const initialTopbarCalls = mocks.getTopbar.mock.calls.length;
+    const initialComposerCalls = mocks.getComposerState.mock.calls.length;
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.web',
+          values: { theme: 'light', drawerSpeed: 'fast' },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('light');
+      expect(document.documentElement.dataset.drawerSpeed).toBe('fast');
+    });
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.context',
+          values: { displayLocation: 'composer', showSpeed: true },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mocks.getTopbar.mock.calls.length).toBeGreaterThan(initialTopbarCalls);
+      expect(document.querySelector('[data-capsule="context"]')).toBeNull();
+      expect(screen.getByTestId('composer-context-bar')).toBeInTheDocument();
+    });
+
+    act(() => {
+      mockSseCallbacks.onStatePatch?.({
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.composer',
+          values: { ghostSuggest: false, showQuickBar: true },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mocks.getComposerState.mock.calls.length).toBeGreaterThan(initialComposerCalls);
+    });
+  });
 });

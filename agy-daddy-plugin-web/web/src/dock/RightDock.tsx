@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n, type I18nKey } from '../i18n';
 import type { ModelItem, SessionSummary, SideChatSelectionContext } from '../types';
 import { ArtifactsPanel } from './ArtifactsPanel';
-import { normalizeWorkspacePath } from './dockUtils';
+import { normalizeWorkspacePath, truncateSelectionSnippet } from './dockUtils';
 import { FileTreePanel } from './FileTreePanel';
 import { GitDiffPanel } from './GitDiffPanel';
 import { SideChatPanel } from './SideChatPanel';
@@ -286,7 +286,56 @@ export function RightDock({
   );
 
   const resolvedOnAuthorizeRoot = onAuthorizeRoot ? handleAuthorizeRoot : undefined;
+  const [fileSelection, setFileSelection] = useState<SideChatSelectionContext | null>(null);
+  const [diffSelection, setDiffSelection] = useState<SideChatSelectionContext | null>(null);
+  const [preferredSelectionKind, setPreferredSelectionKind] = useState<'file' | 'diff' | null>(null);
+
+  useEffect(() => {
+    setFileSelection(null);
+    setDiffSelection(null);
+    setPreferredSelectionKind(null);
+  }, [currentRoot]);
+
+  useEffect(() => {
+    if (focusedDiffFile?.path) {
+      setPreferredSelectionKind('diff');
+    }
+  }, [focusedDiffFile?.path, focusedDiffFile?.nonce]);
+
+  useEffect(() => {
+    if (focusedFilePath?.path) {
+      setPreferredSelectionKind('file');
+    }
+  }, [focusedFilePath?.path, focusedFilePath?.nonce]);
+
+  const handleFileSelectionChange = useCallback((next: SideChatSelectionContext | null) => {
+    setFileSelection(next);
+    if (next) {
+      setPreferredSelectionKind('file');
+    }
+  }, []);
+
+  const handleDiffSelectionChange = useCallback((next: SideChatSelectionContext | null) => {
+    setDiffSelection(next);
+    if (next) {
+      setPreferredSelectionKind('diff');
+    }
+  }, []);
+
   const activeSelectionContext = useMemo<SideChatSelectionContext | null>(() => {
+    const primary =
+      preferredSelectionKind === 'diff'
+        ? diffSelection
+        : preferredSelectionKind === 'file'
+          ? fileSelection
+          : null;
+    const picked = primary || diffSelection || fileSelection;
+    if (picked) {
+      return {
+        ...picked,
+        snippet: truncateSelectionSnippet(picked.snippet),
+      };
+    }
     const filePath = focusedDiffFile?.path || focusedFilePath?.path;
     if (!filePath) return null;
     return {
@@ -294,7 +343,13 @@ export function RightDock({
       snippet: '',
       kind: focusedDiffFile?.path ? 'diff' : 'file',
     };
-  }, [focusedDiffFile?.path, focusedFilePath?.path]);
+  }, [
+    preferredSelectionKind,
+    diffSelection,
+    fileSelection,
+    focusedDiffFile?.path,
+    focusedFilePath?.path,
+  ]);
 
   return (
     <div className={styles.dock} data-testid="right-dock">
@@ -373,6 +428,7 @@ export function RightDock({
             onFileSaved={() => setDiffBumpCount((n) => n + 1)}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedFilePath}
+            onSelectionChange={handleFileSelectionChange}
           />
         )}
         {currentTab === 'diff' && (
@@ -381,6 +437,7 @@ export function RightDock({
             refreshKey={diffRefreshKey}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedDiffFile}
+            onSelectionChange={handleDiffSelectionChange}
           />
         )}
         {currentTab === 'artifacts' && (

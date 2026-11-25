@@ -1,6 +1,19 @@
 import { ApiError } from '../api/client';
 import type { I18nKey, Locale, TranslateFn } from '../i18n';
 
+export const MAX_SELECTION_SNIPPET_CHARS = 8000;
+
+/**
+ * Truncate a workspace file or diff snippet to a safe character budget for Side Chat context.
+ */
+export function truncateSelectionSnippet(
+  text: string,
+  maxChars = MAX_SELECTION_SNIPPET_CHARS,
+): string {
+  if (!text) return '';
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
 function safeDecodePercent(value: string): string {
   if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
   try {

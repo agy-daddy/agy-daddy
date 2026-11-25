@@ -28,15 +28,17 @@ describe('SideChatPanel', () => {
   it('streams isolated reply, supports insert-to-composer without touching main session, and keeps per-session buckets', async () => {
     let capturedHandlers: Parameters<typeof apiClient.streamSideChatCompletion>[1] | null = null;
 
-    vi.spyOn(apiClient, 'streamSideChatCompletion').mockImplementation(async (_req, handlers) => {
-      capturedHandlers = handlers;
-      handlers.onMeta?.({
-        requestId: 'req-1',
-        model: 'MODEL_FAST',
-        label: 'Fast Auto',
-        contextScope: 'session_summary',
+    const streamSpy = vi
+      .spyOn(apiClient, 'streamSideChatCompletion')
+      .mockImplementation(async (_req, handlers) => {
+        capturedHandlers = handlers;
+        handlers.onMeta?.({
+          requestId: 'req-1',
+          model: 'MODEL_FAST',
+          label: 'Fast Auto',
+          contextScope: 'none',
+        });
       });
-    });
     const onInsertToComposer = vi.fn();
 
     const { rerender } = render(
@@ -54,19 +56,28 @@ describe('SideChatPanel', () => {
     expect(screen.getByTestId('side-chat-isolation-badge')).toHaveTextContent(
       'Never pollutes main session',
     );
+    expect((screen.getByTestId('side-chat-scope-select') as HTMLSelectElement).value).toBe('none');
 
     fireEvent.change(screen.getByTestId('side-chat-input'), {
       target: { value: 'Explain this regex' },
     });
     fireEvent.click(screen.getByTestId('side-chat-send-btn'));
 
+    expect(streamSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: 'none',
+        selectionContext: null,
+      }),
+      expect.any(Object),
+    );
     expect(screen.getByTestId('side-chat-stop-btn')).toBeInTheDocument();
 
+    const markdownReply = '**Answer** with `regex`\n\n- Match digits';
     act(() => {
-      capturedHandlers?.onDelta?.({ delta: 'Answer text' });
+      capturedHandlers?.onDelta?.({ delta: markdownReply });
       capturedHandlers?.onDone?.({
         requestId: 'req-1',
-        text: 'Answer text',
+        text: markdownReply,
         model: 'MODEL_FAST',
         label: 'Fast Auto',
         durationMs: 120,
@@ -77,8 +88,14 @@ describe('SideChatPanel', () => {
       expect(screen.getByTestId('side-chat-insert-btn')).toBeInTheDocument();
     });
 
+    const assistantCard = screen.getByTestId('side-chat-msg-assistant');
+    expect(assistantCard.querySelector('strong')).toHaveTextContent('Answer');
+    expect(assistantCard.querySelector('code')).toHaveTextContent('regex');
+    expect(assistantCard.querySelector('li')).toHaveTextContent('Match digits');
+    expect(assistantCard.querySelector('pre')).toBeNull();
+
     fireEvent.click(screen.getByTestId('side-chat-insert-btn'));
-    expect(onInsertToComposer).toHaveBeenCalledWith('Answer text');
+    expect(onInsertToComposer).toHaveBeenCalledWith(markdownReply);
 
     // Switching active session isolates memory bucket
     rerender(

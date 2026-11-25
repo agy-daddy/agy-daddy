@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiClient } from '../api/client';
 import { useI18n, type I18nKey } from '../i18n';
-import type { DiffFile, DiffFileStatus, GitDiffResponse } from '../types';
-import { formatDockError } from './dockUtils';
+import type { DiffFile, DiffFileStatus, GitDiffResponse, SideChatSelectionContext } from '../types';
+import { formatDockError, truncateSelectionSnippet } from './dockUtils';
 import styles from './GitDiffPanel.module.css';
 
 export interface GitDiffPanelProps {
@@ -10,6 +10,7 @@ export interface GitDiffPanelProps {
   refreshKey?: number | string;
   onAuthorizeRoot?: (root: string) => Promise<void> | void;
   focusedFile?: { path: string; nonce: number } | null;
+  onSelectionChange?: (selection: SideChatSelectionContext | null) => void;
 }
 
 interface ParsedDiffLine {
@@ -97,7 +98,13 @@ function parseUnifiedDiff(diffText: string): ParsedDiffSection[] {
   return sections;
 }
 
-export function GitDiffPanel({ root, refreshKey, onAuthorizeRoot, focusedFile }: GitDiffPanelProps) {
+export function GitDiffPanel({
+  root,
+  refreshKey,
+  onAuthorizeRoot,
+  focusedFile,
+  onSelectionChange,
+}: GitDiffPanelProps) {
   const { t } = useI18n();
   const [data, setData] = useState<GitDiffResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -208,6 +215,37 @@ export function GitDiffPanel({ root, refreshKey, onAuthorizeRoot, focusedFile }:
     if (!selectedFilePath || !data?.files) return null;
     return data.files.find((f) => f.path === selectedFilePath) || null;
   }, [selectedFilePath, data]);
+
+  const activeDiffSelection = useMemo<SideChatSelectionContext | null>(() => {
+    if (!data || !data.isGitRepo || visibleSections.length === 0) return null;
+    const text = visibleSections
+      .map((sec) => [...sec.headerLines, ...sec.lines.map((l) => l.text)].join('\n'))
+      .join('\n')
+      .trim();
+    if (!text) return null;
+    const targetPath =
+      selectedFilePath ||
+      visibleSections.find((sec) => sec.filePath)?.filePath ||
+      data.files[0]?.path ||
+      'git.diff';
+    return {
+      path: targetPath,
+      snippet: truncateSelectionSnippet(text),
+      kind: 'diff',
+    };
+  }, [data, visibleSections, selectedFilePath]);
+
+  const hasEmittedSelectionRef = useRef(false);
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    if (activeDiffSelection) {
+      hasEmittedSelectionRef.current = true;
+      onSelectionChange(activeDiffSelection);
+    } else if (hasEmittedSelectionRef.current) {
+      hasEmittedSelectionRef.current = false;
+      onSelectionChange(null);
+    }
+  }, [activeDiffSelection, onSelectionChange]);
 
   if (!root) {
     return (

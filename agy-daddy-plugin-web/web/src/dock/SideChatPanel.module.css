@@ -138,6 +138,12 @@
   font-family: var(--font-sans);
 }
 
+.msgMarkdown {
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
 .msgActions {
   display: flex;
   align-items: center;

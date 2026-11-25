@@ -80,6 +80,7 @@ export function TerminalPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [quickCmd, setQuickCmd] = useState('');
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const [snapshot, setSnapshot] = useState<TerminalSnapshot>(() => new AnsiTerminalBuffer(80, 24).getSnapshot());
 
   const screenRef = useRef<HTMLDivElement | null>(null);
@@ -194,7 +195,7 @@ export function TerminalPanel({
     return () => {
       unsubscribe();
     };
-  }, [activeTermId, isPermitted, getOrCreateBuffer, activeSession?.cols, activeSession?.rows]);
+  }, [activeTermId, isPermitted, getOrCreateBuffer, activeSession?.cols, activeSession?.rows, reconnectNonce]);
 
   // Auto-scroll screen on output updates
   useEffect(() => {
@@ -429,6 +430,20 @@ export function TerminalPanel({
               />
               <span>{statusText}</span>
             </span>
+          )}
+
+          {activeTermId && streamStatus === 'disconnected' && (
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={() => {
+                setErrorMsg(null);
+                setReconnectNonce((n) => n + 1);
+              }}
+              data-testid="terminal-reconnect-btn"
+            >
+              {t('terminal.reconnect')}
+            </button>
           )}
         </div>
 

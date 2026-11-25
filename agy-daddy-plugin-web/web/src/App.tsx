@@ -34,6 +34,7 @@ import type {
   SessionSummary,
   TopbarPanels,
   UpdateProjectRequest,
+  UserEventPayload,
 } from './types';
 import styles from './App.module.css';
 
@@ -240,16 +241,110 @@ function isRunningStatus(status: SessionRunStatus | null | undefined): boolean {
   return upper.includes('RUNNING') || upper.includes('GENERATING');
 }
 
-function mergeEventsBySeq(prev: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
+export function compareSessionEvents(a: SessionEvent, b: SessionEvent): number {
+  const aNeg = a.seq < 0;
+  const bNeg = b.seq < 0;
+  if (aNeg !== bNeg) return aNeg ? 1 : -1;
+  // Negative optimistic seqs (-1, -2, ...) preserve insertion order (FIFO): -1 before -2
+  if (aNeg) return b.seq - a.seq;
+  return a.seq - b.seq;
+}
+
+function normalizeComparableUserText(ev: SessionEvent): string {
+  const p = (ev.payload || {}) as UserEventPayload;
+  let raw = '';
+  if (typeof p.userResponse === 'string' && p.userResponse) {
+    raw = p.userResponse;
+  } else if (typeof p.text === 'string' && p.text) {
+    raw = p.text;
+  } else if (Array.isArray(p.items)) {
+    raw = p.items
+      .map((item) => (typeof item === 'string' ? item : String((item as { text?: string })?.text || '')))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
+function consumeMatchingOptimistic(
+  ev: SessionEvent,
+  optimisticUsers: SessionEvent[],
+  bySeq: Map<number, SessionEvent>,
+): void {
+  if (optimisticUsers.length === 0) return;
+  const incomingText = normalizeComparableUserText(ev);
+  const matchIdx = optimisticUsers.findIndex(
+    (opt) => normalizeComparableUserText(opt) === incomingText,
+  );
+  const [removed] = optimisticUsers.splice(matchIdx >= 0 ? matchIdx : 0, 1);
+  if (removed) {
+    bySeq.delete(removed.seq);
+  }
+}
+
+export function mergeEventsBySeq(prev: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
   if (!incoming || incoming.length === 0) return prev;
+  if (prev.length === 0) {
+    return incoming.slice().sort(compareSessionEvents);
+  }
+  const prevSeqs = new Set<number>();
   const bySeq = new Map<number, SessionEvent>();
+  const optimisticUsers: SessionEvent[] = [];
   for (const ev of prev) {
+    prevSeqs.add(ev.seq);
     bySeq.set(ev.seq, ev);
+    if (ev.seq < 0 && ev.kind === 'user') {
+      optimisticUsers.push(ev);
+    }
   }
+  optimisticUsers.sort(compareSessionEvents);
+
   for (const ev of incoming) {
+    if (ev.seq >= 0 && ev.kind === 'user' && !prevSeqs.has(ev.seq)) {
+      prevSeqs.add(ev.seq);
+      consumeMatchingOptimistic(ev, optimisticUsers, bySeq);
+    }
     bySeq.set(ev.seq, ev);
   }
-  return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+  return Array.from(bySeq.values()).sort(compareSessionEvents);
+}
+
+export function reconcileFullSessionEvents(
+  prev: SessionEvent[],
+  serverEvents: SessionEvent[],
+  pendingOptimistic: SessionEvent[],
+  detailSeqAtStart: number,
+): SessionEvent[] {
+  const serverSorted = serverEvents.slice().sort(compareSessionEvents);
+  if (pendingOptimistic.length === 0) {
+    return serverSorted;
+  }
+  const prevPositiveSeqs = new Set<number>();
+  for (const ev of prev) {
+    if (ev.seq >= 0) prevPositiveSeqs.add(ev.seq);
+  }
+  const bySeq = new Map<number, SessionEvent>();
+  for (const ev of serverSorted) {
+    bySeq.set(ev.seq, ev);
+  }
+  const reconcileCandidates: SessionEvent[] = [];
+  for (const opt of pendingOptimistic) {
+    bySeq.set(opt.seq, opt);
+    if (Math.abs(opt.seq) <= detailSeqAtStart) {
+      reconcileCandidates.push(opt);
+    }
+  }
+  reconcileCandidates.sort(compareSessionEvents);
+
+  if (reconcileCandidates.length > 0) {
+    for (const ev of serverSorted) {
+      if (ev.seq >= 0 && ev.kind === 'user' && !prevPositiveSeqs.has(ev.seq)) {
+        prevPositiveSeqs.add(ev.seq);
+        consumeMatchingOptimistic(ev, reconcileCandidates, bySeq);
+      }
+    }
+  }
+  return Array.from(bySeq.values()).sort(compareSessionEvents);
 }
 
 function formatWorkspaceChip(session: SessionSummary | null): string | null {
@@ -344,6 +439,9 @@ export function App() {
   const activeSessionIdRef = useRef<string | null>(null);
   activeSessionIdRef.current = activeSessionId;
 
+  const sessionDetailRef = useRef<SessionDetail | null>(sessionDetail);
+  sessionDetailRef.current = sessionDetail;
+
   const sessionsRef = useRef<SessionSummary[]>(sessions);
   sessionsRef.current = sessions;
 
@@ -357,6 +455,27 @@ export function App() {
   const recentCreatedSessionsRef = useRef<
     Map<string, { session: SessionSummary; expiresAt: number }>
   >(new Map());
+
+  const optimisticSeqRef = useRef<number>(0);
+  const optimisticEventsRef = useRef<
+    Map<string, { sessionId: string; event: SessionEvent<UserEventPayload> }>
+  >(new Map());
+  const eventsSessionIdRef = useRef<string | null>(null);
+
+  const syncOptimisticRefForSession = useCallback((sessionId: string, nextEvents: SessionEvent[]) => {
+    const activeTempIds = new Set<string>();
+    for (const ev of nextEvents) {
+      const tempId = (ev.payload as UserEventPayload | undefined)?.clientTempId;
+      if (typeof tempId === 'string' && tempId) {
+        activeTempIds.add(tempId);
+      }
+    }
+    for (const [tempId, entry] of optimisticEventsRef.current.entries()) {
+      if (entry.sessionId === sessionId && !activeTempIds.has(tempId)) {
+        optimisticEventsRef.current.delete(tempId);
+      }
+    }
+  }, []);
 
   const lastMarkedReadRef = useRef<{ cascadeId: string; stepCount: number } | null>(null);
 
@@ -506,13 +625,28 @@ export function App() {
 
   const loadSessionDetail = useCallback(
     async (sessionId: string) => {
+      const detailSeqAtStart = optimisticSeqRef.current;
       setDetailLoading(true);
       setDetailError(null);
       try {
         const res = await apiClient.getSessionDetail(sessionId);
         if (activeSessionIdRef.current !== sessionId) return;
         setSessionDetail(res.session);
-        setEvents(res.events);
+        const prevWasSameSession = eventsSessionIdRef.current === sessionId;
+        eventsSessionIdRef.current = sessionId;
+        const pendingForSession = Array.from(optimisticEventsRef.current.values())
+          .filter((entry) => entry.sessionId === sessionId)
+          .map((entry) => entry.event);
+        setEvents((prev) => {
+          const next = reconcileFullSessionEvents(
+            prevWasSameSession ? prev : [],
+            res.events,
+            pendingForSession,
+            detailSeqAtStart,
+          );
+          syncOptimisticRefForSession(sessionId, next);
+          return next;
+        });
         prevRunningRef.current = isRunningStatus(res.session.status);
         markActiveSessionAsRead(sessionId, res.session.numTotalSteps);
       } catch (err) {
@@ -524,7 +658,7 @@ export function App() {
         }
       }
     },
-    [markActiveSessionAsRead, t],
+    [markActiveSessionAsRead, syncOptimisticRefForSession, t],
   );
 
   // Initial parallel bootstrap (runs once on mount)
@@ -658,6 +792,7 @@ export function App() {
     setScrollToSeqState({ seq: 0, nonce: 0 });
     if (!activeSessionId) {
       setSessionDetail(null);
+      eventsSessionIdRef.current = null;
       setEvents([]);
       setDetailError(null);
       prevRunningRef.current = false;
@@ -699,7 +834,13 @@ export function App() {
         if (delta.cascadeId && delta.cascadeId !== activeSessionId) return;
 
         if (Array.isArray(delta.events) && delta.events.length > 0) {
-          setEvents((prev) => mergeEventsBySeq(prev, delta.events));
+          const prevWasSameSession = eventsSessionIdRef.current === activeSessionId;
+          eventsSessionIdRef.current = activeSessionId;
+          setEvents((prev) => {
+            const next = mergeEventsBySeq(prevWasSameSession ? prev : [], delta.events);
+            syncOptimisticRefForSession(activeSessionId, next);
+            return next;
+          });
         }
 
         setSessionDetail((prev) => {
@@ -886,6 +1027,7 @@ export function App() {
     refreshSessions,
     refreshTopbar,
     syncHostLocale,
+    syncOptimisticRefForSession,
   ]);
 
   // Keep App-synced projects fresh on window focus and via 30s visibility-aware polling
@@ -1032,9 +1174,11 @@ export function App() {
           optimistic,
           ...prev.filter((s) => s.cascadeId !== created.cascadeId),
         ]);
+        eventsSessionIdRef.current = created.cascadeId;
         setEvents([]);
         setSessionDetail(null);
         setDetailError(null);
+        activeSessionIdRef.current = created.cascadeId;
         setActiveSessionId(created.cascadeId);
         syncSessionUrl(created.cascadeId);
         await Promise.all([refreshSessions(), refreshProjects()]);
@@ -1191,8 +1335,14 @@ export function App() {
     async (text: string, modelId?: string, thinkingLevel?: string | null) => {
       setSending(true);
       setBannerError(null);
+      let targetSessionId = activeSessionId;
+      let clientTempId: string | null = null;
+      let prevSessionStatus: SessionRunStatus = 'CASCADE_RUN_STATUS_IDLE';
+      let prevDetailStatus: SessionRunStatus | undefined;
+      let prevRunning = prevRunningRef.current;
+
       try {
-        let targetSessionId = activeSessionId;
+        let createdNewSession = false;
         if (!targetSessionId) {
           const workspaceRoot = health?.allowedRoots?.[0];
           const workspaceUri = workspaceRoot ? `file://${workspaceRoot}` : undefined;
@@ -1200,6 +1350,7 @@ export function App() {
             workspaceUri ? { workspaceUri } : {},
           );
           targetSessionId = created.cascadeId;
+          createdNewSession = true;
           const optimistic = buildOptimisticSession(
             created,
             projectsRef.current,
@@ -1213,13 +1364,69 @@ export function App() {
             optimistic,
             ...prev.filter((s) => s.cascadeId !== created.cascadeId),
           ]);
+          eventsSessionIdRef.current = targetSessionId;
           setEvents([]);
           setSessionDetail(null);
           setDetailError(null);
+          activeSessionIdRef.current = targetSessionId;
           setActiveSessionId(targetSessionId);
           syncSessionUrl(targetSessionId);
-          await Promise.all([refreshSessions(), refreshProjects()]);
+          void Promise.all([refreshSessions(), refreshProjects()]);
         }
+
+        const existingSession = sessionsRef.current.find(
+          (s) => s.cascadeId === targetSessionId,
+        );
+        prevSessionStatus = existingSession?.status ?? 'CASCADE_RUN_STATUS_IDLE';
+        prevDetailStatus =
+          sessionDetailRef.current?.cascadeId === targetSessionId
+            ? sessionDetailRef.current.status
+            : undefined;
+        prevRunning = prevRunningRef.current;
+
+        const nextOptSeq = ++optimisticSeqRef.current;
+        clientTempId = `opt_${Date.now()}_${nextOptSeq}`;
+        const optimisticEvent: SessionEvent<UserEventPayload> = {
+          seq: -nextOptSeq,
+          kind: 'user',
+          status: 'pending',
+          rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+          payload: {
+            text,
+            userResponse: text,
+            items: [{ text }],
+            clientTempId,
+            optimistic: true,
+          },
+        };
+        optimisticEventsRef.current.set(clientTempId, {
+          sessionId: targetSessionId,
+          event: optimisticEvent,
+        });
+
+        if (activeSessionIdRef.current === targetSessionId) {
+          const sameSession = !createdNewSession && eventsSessionIdRef.current === targetSessionId;
+          eventsSessionIdRef.current = targetSessionId;
+          setEvents((prev) => mergeEventsBySeq(sameSession ? prev : [], [optimisticEvent]));
+          prevRunningRef.current = true;
+        }
+        setSessionDetail((prev) =>
+          prev && prev.cascadeId === targetSessionId
+            ? { ...prev, status: 'CASCADE_RUN_STATUS_RUNNING' }
+            : prev,
+        );
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.cascadeId === targetSessionId
+              ? {
+                  ...s,
+                  status: 'CASCADE_RUN_STATUS_RUNNING',
+                  lastModifiedTime: new Date().toISOString(),
+                }
+              : s,
+          ),
+        );
+
         const effectiveThinkingLevel =
           thinkingLevel !== undefined ? thinkingLevel : selectedThinkingLevel;
         await apiClient.sendMessage(targetSessionId, {
@@ -1227,18 +1434,30 @@ export function App() {
           modelId: modelId || selectedModelId || undefined,
           thinkingLevel: effectiveThinkingLevel ?? undefined,
         });
-        prevRunningRef.current = true;
-        setSessionDetail((prev) =>
-          prev ? { ...prev, status: 'CASCADE_RUN_STATUS_RUNNING' } : prev,
-        );
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.cascadeId === targetSessionId
-              ? { ...s, status: 'CASCADE_RUN_STATUS_RUNNING', lastModifiedTime: new Date().toISOString() }
-              : s,
-          ),
-        );
       } catch (err) {
+        if (targetSessionId && clientTempId) {
+          const failedTempId = clientTempId;
+          const rollbackSessionId = targetSessionId;
+          optimisticEventsRef.current.delete(failedTempId);
+          setEvents((prev) =>
+            prev.filter(
+              (ev) => (ev.payload as UserEventPayload | undefined)?.clientTempId !== failedTempId,
+            ),
+          );
+          if (activeSessionIdRef.current === rollbackSessionId) {
+            prevRunningRef.current = prevRunning;
+          }
+          setSessionDetail((prev) =>
+            prev && prev.cascadeId === rollbackSessionId
+              ? { ...prev, status: prevDetailStatus ?? prevSessionStatus }
+              : prev,
+          );
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.cascadeId === rollbackSessionId ? { ...s, status: prevSessionStatus } : s,
+            ),
+          );
+        }
         setBannerError(formatErrorMessage(err, t('errors.sendMessageFailed'), t));
         throw err;
       } finally {

@@ -28,6 +28,11 @@
   contain-intrinsic-size: 0 72px;
 }
 
+.userBubbleOptimistic {
+  opacity: 0.78;
+  transition: opacity var(--transition-fast);
+}
+
 .userBody {
   min-width: 0;
 }
@@ -37,7 +42,14 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  min-height: 20px;
   font-size: 11px;
+  color: var(--text-muted);
+}
+
+.optimisticSending {
+  font-size: 11px;
+  line-height: 1.3;
   color: var(--text-muted);
 }
 

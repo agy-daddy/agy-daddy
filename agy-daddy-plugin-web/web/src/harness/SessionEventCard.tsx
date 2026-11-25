@@ -272,9 +272,10 @@ export const SessionEventCard = React.memo(function SessionEventCard({
   const statusKey = `event.status.${event.status}` as I18nKey;
   const statusLabel = t(statusKey) !== statusKey ? t(statusKey) : event.status;
   const isUser = event.kind === 'user';
+  const isOptimistic = isUser && Boolean((event.payload as UserEventPayload | undefined)?.optimistic);
   const isAssistant = event.kind === 'thinking_and_text';
   const isError = event.kind === 'error' || event.status === 'error';
-  const isPending = event.status === 'pending';
+  const isPending = event.status === 'pending' && !isOptimistic;
 
   const handleCopyPlainText = async (content: string) => {
     if (!content) return;
@@ -313,6 +314,7 @@ export const SessionEventCard = React.memo(function SessionEventCard({
     const text = extractUserText(p);
     const bubbleClasses = [
       styles.userBubble,
+      isOptimistic ? styles.userBubbleOptimistic : '',
       isPending ? styles.cardPending : '',
       isError ? styles.cardError : '',
       searchMatchState === 'hit' ? styles.cardSearchHit : '',
@@ -327,6 +329,7 @@ export const SessionEventCard = React.memo(function SessionEventCard({
         data-testid={`session-event-${event.seq}`}
         data-event-kind={event.kind}
         data-event-status={event.status}
+        data-optimistic={isOptimistic ? 'true' : undefined}
         data-search-hit={searchMatchState || undefined}
       >
         <div className={styles.userBody}>
@@ -343,8 +346,16 @@ export const SessionEventCard = React.memo(function SessionEventCard({
           )}
         </div>
         <footer className={styles.userMeta}>
-          {renderStatusNode(false)}
-          <span className={styles.seqMuted}>#{event.seq}</span>
+          {isOptimistic ? (
+            <span className={styles.optimisticSending} data-testid="event-status-optimistic">
+              {t('composer.sending')}
+            </span>
+          ) : (
+            <>
+              {renderStatusNode(false)}
+              <span className={styles.seqMuted}>#{event.seq}</span>
+            </>
+          )}
           {text && (
             <button
               type="button"

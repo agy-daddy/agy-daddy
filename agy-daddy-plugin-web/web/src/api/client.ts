@@ -51,6 +51,7 @@ import type {
   TopbarResponse,
   UpdateProjectGroupRequest,
   UpdateProjectRequest,
+  WebAccessStatusResponse,
 } from '../types';
 
 export class ApiError extends Error {
@@ -115,6 +116,25 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   const dataObj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+
+  // Writes on the Cloudflare channel are challenged with an action-bound
+  // confirm token. Retry exactly once with that token so the UI does not have
+  // to special-case every mutating call.
+  const confirmToken =
+    response.status === 403 && dataObj?.error === 'CONFIRMATION_REQUIRED'
+      ? dataObj.confirmToken
+      : null;
+  if (
+    typeof confirmToken === 'string' &&
+    confirmToken &&
+    !headers['X-Agy-Confirm']
+  ) {
+    return apiRequest<T>(path, {
+      ...options,
+      headers: { ...(options.headers || {}), 'X-Agy-Confirm': confirmToken },
+    });
+  }
+
   if (!response.ok || dataObj?.ok === false) {
     const code = typeof dataObj?.error === 'string' ? dataObj.error : `HTTP_${response.status}`;
     const msg = typeof dataObj?.message === 'string' ? dataObj.message : code;
@@ -489,6 +509,10 @@ export function getTopbar(signal?: AbortSignal): Promise<TopbarResponse> {
 
 export function getRemoteStatus(signal?: AbortSignal): Promise<RemoteStatusResponse> {
   return apiRequest<RemoteStatusResponse>('/api/v1/remote/status', { signal });
+}
+
+export function getWebAccessStatus(signal?: AbortSignal): Promise<WebAccessStatusResponse> {
+  return apiRequest<WebAccessStatusResponse>('/api/v1/web/status', { signal });
 }
 
 export interface SessionStreamHandlers {

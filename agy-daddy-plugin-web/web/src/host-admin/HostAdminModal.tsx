@@ -30,6 +30,7 @@ import type {
 } from '../types';
 import { SchemaSettingsForm, localizeText } from './SchemaSettingsForm';
 import type { HostAdminTab } from './TopbarCapsules';
+import { WebAccessPanel } from './WebAccessPanel';
 import styles from './HostAdminModal.module.css';
 
 export interface HostCommandSuggestion {
@@ -191,6 +192,7 @@ export function HostAdminModal({
   const [appearanceNotice, setAppearanceNotice] = useState<string | null>(null);
   const [appearanceError, setAppearanceError] = useState<string | null>(null);
   const [appearanceSaving, setAppearanceSaving] = useState(false);
+  const [webAccessRefreshToken, setWebAccessRefreshToken] = useState(0);
 
   const [commandFilter, setCommandFilter] = useState('');
   const [cmdIdInput, setCmdIdInput] = useState('');
@@ -339,6 +341,7 @@ export function HostAdminModal({
       await loadPluginSettings(selectedPluginId);
     }
     if (selectedPluginId === 'agy-daddy.web') {
+      setWebAccessRefreshToken((token) => token + 1);
       const nextTheme = normalizeThemePreference(patch.theme);
       if (nextTheme) setTheme(nextTheme);
       const nextColor = normalizeColorTheme(patch.colorTheme);
@@ -860,15 +863,20 @@ export function HostAdminModal({
                           {effectiveSchema &&
                           ((effectiveSchema.fields && effectiveSchema.fields.length > 0) ||
                             (effectiveSchema.actions && effectiveSchema.actions.length > 0)) ? (
-                            <SchemaSettingsForm
-                              pluginId={selectedPlugin.id}
-                              schema={effectiveSchema}
-                              values={settingsState?.values || {}}
-                              secretState={settingsState?.secretState}
-                              locale={locale}
-                              onSave={handleSavePluginSettings}
-                              onRunAction={handleRunSchemaAction}
-                            />
+                            <>
+                              {selectedPlugin.id === 'agy-daddy.web' && (
+                                <WebAccessPanel refreshToken={webAccessRefreshToken} />
+                              )}
+                              <SchemaSettingsForm
+                                pluginId={selectedPlugin.id}
+                                schema={effectiveSchema}
+                                values={settingsState?.values || {}}
+                                secretState={settingsState?.secretState}
+                                locale={locale}
+                                onSave={handleSavePluginSettings}
+                                onRunAction={handleRunSchemaAction}
+                              />
+                            </>
                           ) : (
                             <div className={styles.emptyState}>{t('admin.noSchemaSettings')}</div>
                           )}

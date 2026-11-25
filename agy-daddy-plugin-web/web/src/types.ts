@@ -850,6 +850,29 @@ export interface RemoteStatusResponse {
   deviceCount?: number;
 }
 
+export type AccessChannel = 'loopback' | 'lan' | 'tailscale' | 'bonjour' | 'cloudflare';
+
+export interface WebAccessStatusResponse {
+  ok: boolean;
+  running?: boolean;
+  host?: string;
+  bindHost?: string;
+  connectHost?: string;
+  port?: number | null;
+  url?: string;
+  pairingUrl?: string;
+  /** Channel the caller came in on, as classified by the server. */
+  channel?: string;
+  channels?: Record<string, boolean>;
+  activeChannels?: string[];
+  urls?: Partial<Record<AccessChannel, string>>;
+  primaryChannel?: string;
+  primaryUrl?: string;
+  permissionLevel?: string;
+  allowRemoteWrite?: boolean;
+  tunnelHostname?: string;
+}
+
 export interface OptimizePromptResponse {
   ok: boolean;
   optimized: string;

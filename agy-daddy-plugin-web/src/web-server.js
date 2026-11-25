@@ -1,15 +1,34 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const url = require('node:url');
 
 const { normalizeInputRoot, isForbiddenSystemRoot } = require('./workspace-service');
+const {
+  DEFAULT_CONFIRM_TTL_MS,
+  LOOPBACK_BIND_HOST,
+  assertBindableHost,
+  buildChannelUrls,
+  classifyRequestChannel,
+  createConfirmToken,
+  isChannelAllowed,
+  isPermissionAtLeast,
+  normalizeBindHostMode,
+  normalizeChannelConfig,
+  normalizePermissionLevel,
+  normalizeTunnelHostname,
+  resolveBindHost,
+  resolvePrimaryChannel,
+  verifyConfirmToken
+} = require('./channel-config');
 
 const ALLOWED_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1']);
 const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 const DEFAULT_RING_BUFFER_SIZE = 200;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15000;
@@ -40,14 +59,10 @@ const MIME_TYPES = Object.freeze({
   '.map': 'application/json; charset=utf-8'
 });
 
-function assertLoopbackHost(host) {
-  const clean = String(host || '').trim();
-  if (!ALLOWED_LOOPBACK_HOSTS.has(clean)) {
-    const err = new Error(`ERR_NON_LOOPBACK_FORBIDDEN: host "${clean}" is forbidden; only 127.0.0.1 or ::1 allowed`);
-    err.code = 'ERR_NON_LOOPBACK_FORBIDDEN';
-    throw err;
-  }
-  return clean;
+function normalizeConnectHost(host) {
+  const clean = String(host || LOOPBACK_BIND_HOST).trim().toLowerCase();
+  if (clean === '0.0.0.0' || clean === '::' || clean === '*') return LOOPBACK_BIND_HOST;
+  return clean || LOOPBACK_BIND_HOST;
 }
 
 function safeTokenEqual(a, b) {
@@ -77,7 +92,27 @@ function parseCookies(cookieHeader) {
   return out;
 }
 
-function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader) {
+function parseHostHeader(raw, defaultPort) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = new URL(`http://${text}`);
+    return {
+      hostname: parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+      port: Number(parsed.port) || Number(defaultPort) || 0
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Same-origin rule for the write CSRF gate. Loopback keeps the historical
+ * loopback-origin rule; every other channel must match the request Host
+ * header exactly, which is what LAN IPs, `*.ts.net` and tunnel hostnames all
+ * satisfy in a browser.
+ */
+function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader, channel = 'loopback') {
   if (!originHeader) return true;
   let parsed;
   try {
@@ -85,16 +120,33 @@ function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader) {
   } catch {
     return false;
   }
-  if (parsed.protocol !== 'http:') return false;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-  if (!ALLOWED_LOOPBACK_HOSTS.has(hostname) && hostname !== 'localhost') return false;
-  if (reqHostHeader && parsed.origin === `http://${reqHostHeader}`) {
+  if (!hostname) return false;
+  const schemeDefaultPort = parsed.protocol === 'https:' ? 443 : 80;
+  const originPort = Number(parsed.port) || schemeDefaultPort;
+  const hostHeader = parseHostHeader(reqHostHeader, schemeDefaultPort);
+  if (hostHeader && hostHeader.hostname === hostname && hostHeader.port === originPort) {
     return true;
   }
-  const expectedPort = serverPort ? String(serverPort) : '';
-  const originPort = parsed.port || '80';
+  if (channel !== 'loopback') return false;
+  if (parsed.protocol !== 'http:') return false;
+  if (!ALLOWED_LOOPBACK_HOSTS.has(hostname) && hostname !== 'localhost') return false;
+  const expectedPort = Number(serverPort) || 0;
   if (expectedPort && originPort !== expectedPort) return false;
   return true;
+}
+
+/**
+ * Required permission tier per route for non-loopback channels.
+ *   L0 read-only · L1 chat/session lifecycle · L2 workspace + host admin
+ */
+function requiredPermissionFor(method, pathname) {
+  if (READ_METHODS.has(method)) return 'L0';
+  if (pathname === '/api/v1/confirm') return 'L1';
+  if (pathname.startsWith('/api/v1/sessions')) return 'L1';
+  if (pathname.startsWith('/api/v1/composer')) return 'L1';
+  return 'L2';
 }
 
 function isPlainObject(val) {
@@ -190,12 +242,21 @@ function formatSseFrame({ id, event, data }) {
 }
 
 /**
- * Loopback-locked HTTP + SSE gateway server for agy-daddy-plugin-web.
+ * Multi-channel HTTP + SSE gateway server for agy-daddy-plugin-web.
+ *
+ * Channels: loopback (default), lan, tailscale, bonjour, cloudflare.
+ * Loopback keeps the historical full read/write behaviour; every other
+ * channel is gated by a permission tier (L0 read-only / L1 chat / L2 full).
  */
 class WebServer {
   constructor(options = {}) {
-    const initialHost = options.host === undefined ? '127.0.0.1' : String(options.host).trim();
-    this.host = assertLoopbackHost(initialHost);
+    this.channels = normalizeChannelConfig(options.channels);
+    this.getChannels = typeof options.getChannels === 'function' ? options.getChannels : null;
+    this.bindHostMode = normalizeBindHostMode(options.bindHostMode);
+    const initialHost = options.host === undefined || options.host === null
+      ? resolveBindHost({ channels: this.channels, mode: this.bindHostMode })
+      : String(options.host).trim();
+    this.host = assertBindableHost(initialHost, this.channels, this.bindHostMode);
     this.requestedPort = Number.isInteger(options.port) ? options.port : 18767;
     this.pairingToken = typeof options.pairingToken === 'string' && options.pairingToken
       ? options.pairingToken
@@ -203,6 +264,21 @@ class WebServer {
     this.sessionSecret = typeof options.sessionSecret === 'string' && options.sessionSecret
       ? options.sessionSecret
       : crypto.randomBytes(32).toString('hex');
+    this.permissionLevel = normalizePermissionLevel(
+      options.permissionLevel === undefined ? 'L0' : options.permissionLevel
+    );
+    this.getPermissionLevel = typeof options.getPermissionLevel === 'function'
+      ? options.getPermissionLevel
+      : null;
+    this.confirmSecret = typeof options.confirmSecret === 'string' && options.confirmSecret
+      ? options.confirmSecret
+      : this.sessionSecret;
+    this.tunnelHostname = normalizeTunnelHostname(options.tunnelHostname);
+    this.getTunnelHostname = typeof options.getTunnelHostname === 'function'
+      ? options.getTunnelHostname
+      : null;
+    // Test seam: production always classifies from the socket + headers.
+    this.resolveChannel = typeof options.resolveChannel === 'function' ? options.resolveChannel : null;
     this.harnessAdapter = options.harnessAdapter || null;
     this.workspaceService = options.workspaceService || null;
     this.workspaceMetaStore = options.workspaceMetaStore || null;
@@ -242,15 +318,94 @@ class WebServer {
     this._nextEventId = 0;
   }
 
+  _resolveChannels() {
+    return this.getChannels ? normalizeChannelConfig(this.getChannels()) : this.channels;
+  }
+
+  _resolvePermissionLevel() {
+    return normalizePermissionLevel(
+      this.getPermissionLevel ? this.getPermissionLevel() : this.permissionLevel
+    );
+  }
+
+  _resolveTunnelHostname() {
+    return normalizeTunnelHostname(
+      this.getTunnelHostname ? this.getTunnelHostname() : this.tunnelHostname
+    );
+  }
+
+  /**
+   * Apply a live access-policy change. Returns true when the listen address
+   * must be rebound (channel or bind-host change).
+   */
+  updateAccessConfig({ channels, bindHostMode, permissionLevel, tunnelHostname } = {}) {
+    const nextChannels = channels === undefined ? this.channels : normalizeChannelConfig(channels);
+    const nextMode = bindHostMode === undefined ? this.bindHostMode : normalizeBindHostMode(bindHostMode);
+    const rebind = JSON.stringify(nextChannels) !== JSON.stringify(this.channels)
+      || nextMode !== this.bindHostMode;
+
+    // Validate the whole policy before committing, so a rejected change cannot
+    // leave channels and the listen address out of sync.
+    const nextHost = rebind
+      ? assertBindableHost(
+        resolveBindHost({ channels: nextChannels, mode: nextMode }),
+        nextChannels,
+        nextMode
+      )
+      : this.host;
+
+    this.channels = nextChannels;
+    this.bindHostMode = nextMode;
+    this.host = nextHost;
+    if (permissionLevel !== undefined) {
+      this.permissionLevel = normalizePermissionLevel(permissionLevel);
+    }
+    if (tunnelHostname !== undefined) {
+      this.tunnelHostname = normalizeTunnelHostname(tunnelHostname);
+    }
+    return { rebind, host: this.host };
+  }
+
   getLocalUrl() {
     if (!this.port) return '';
-    const formattedHost = this.host === '::1' ? '[::1]' : this.host;
+    const connectHost = normalizeConnectHost(this.host);
+    const formattedHost = connectHost === '::1' ? '[::1]' : connectHost;
     return `http://${formattedHost}:${this.port}`;
   }
 
   getPairingUrl() {
     const base = this.getLocalUrl();
     return base ? `${base}/?token=${encodeURIComponent(this.pairingToken)}` : '';
+  }
+
+  getChannelUrls() {
+    return buildChannelUrls({
+      port: this.port,
+      token: this.pairingToken,
+      channels: this._resolveChannels(),
+      connectHost: normalizeConnectHost(this.host),
+      hostName: os.hostname(),
+      tunnelHostname: this._resolveTunnelHostname()
+    });
+  }
+
+  getAccessStatus() {
+    const channels = this._resolveChannels();
+    const urls = this.getChannelUrls();
+    const { primaryChannel, primaryUrl } = resolvePrimaryChannel(urls, channels);
+    const permissionLevel = this._resolvePermissionLevel();
+    return {
+      bindHost: this.host,
+      connectHost: normalizeConnectHost(this.host),
+      channels: { ...channels },
+      activeChannels: Object.keys(channels).filter((key) => channels[key] === true),
+      urls,
+      primaryChannel,
+      primaryUrl,
+      permissionLevel,
+      allowRemoteWrite: isPermissionAtLeast(permissionLevel, 'L1'),
+      tunnelHostname: this._resolveTunnelHostname()
+    };
   }
 
   broadcast(eventName, data, { sessionId } = {}) {
@@ -277,7 +432,11 @@ class WebServer {
   }
 
   async start() {
-    assertLoopbackHost(this.host);
+    // Re-validate the chosen listen address against the live channel policy;
+    // recomputing it here would silently discard an explicitly configured host.
+    // Address changes are owned by updateAccessConfig().
+    const liveChannels = this._resolveChannels();
+    this.host = assertBindableHost(this.host, liveChannels, this.bindHostMode);
     if (this.server) {
       return { host: this.host, port: this.port, url: this.getLocalUrl(), pairingUrl: this.getPairingUrl() };
     }
@@ -312,7 +471,8 @@ class WebServer {
       host: this.host,
       port: this.port,
       url: this.getLocalUrl(),
-      pairingUrl: this.getPairingUrl()
+      pairingUrl: this.getPairingUrl(),
+      ...this.getAccessStatus()
     };
   }
 
@@ -358,8 +518,22 @@ class WebServer {
   async _handleRequest(req, res) {
     try {
       const method = String(req.method || 'GET').toUpperCase();
-      const urlObj = new URL(req.url || '/', `http://${this.host === '::1' ? '[::1]' : this.host}`);
+      const urlObj = new URL(req.url || '/', `http://${this.host.includes(':') ? `[${this.host}]` : this.host}`);
       const pathname = urlObj.pathname;
+      const channel = this.resolveChannel
+        ? this.resolveChannel(req)
+        : classifyRequestChannel(req, { tunnelHostname: this._resolveTunnelHostname() });
+      const channels = this._resolveChannels();
+
+      if (!isChannelAllowed(channel, channels)) {
+        sendJson(res, 403, {
+          ok: false,
+          error: 'CHANNEL_DISABLED',
+          channel,
+          allowedChannels: Object.keys(channels).filter((key) => channels[key] === true)
+        });
+        return;
+      }
 
       if (method === 'GET' && pathname === '/' && urlObj.searchParams.has('token')) {
         const providedToken = urlObj.searchParams.get('token') || '';
@@ -369,7 +543,7 @@ class WebServer {
         }
         res.writeHead(302, {
           Location: '/',
-          'Set-Cookie': `agy_web_sid=${encodeURIComponent(this.sessionSecret)}; HttpOnly; SameSite=Strict; Path=/`,
+          'Set-Cookie': this._buildSessionCookie(channel),
           ...SECURITY_HEADERS
         });
         res.end();
@@ -384,13 +558,18 @@ class WebServer {
         }
         if (auth.mode === 'cookie' && WRITE_METHODS.has(method)) {
           const csrf = String(req.headers['x-agy-csrf'] || '').trim();
-          const originOk = isLoopbackSameOrigin(req.headers.origin, this.port, req.headers.host);
+          const originOk = isLoopbackSameOrigin(
+            req.headers.origin,
+            this.port,
+            req.headers.host,
+            channel
+          );
           if (!csrf || !originOk) {
             sendJson(res, 403, { ok: false, error: 'CSRF_REQUIRED' });
             return;
           }
         }
-        await this._handleApiRequest(req, res, method, urlObj);
+        await this._handleApiRequest(req, res, method, urlObj, channel);
         return;
       }
 
@@ -416,8 +595,90 @@ class WebServer {
     return dep;
   }
 
-  async _handleApiRequest(req, res, method, urlObj) {
+  _buildSessionCookie(channel) {
+    // Every channel is a first-party context (the console is served from the
+    // same host the browser navigated to), so SameSite=Strict stays correct and
+    // Strict + HttpOnly is what blocks cross-site cookie attachment.
+    // Secure is added only for the HTTPS tunnel channel: on plain http LAN the
+    // Secure attribute would make browsers drop the cookie entirely.
+    const secure = channel === 'cloudflare' ? '; Secure' : '';
+    return `agy_web_sid=${encodeURIComponent(this.sessionSecret)}; HttpOnly; SameSite=Strict${secure}; Path=/`;
+  }
+
+  _confirmActionId(method, pathname) {
+    return `${method} ${pathname}`;
+  }
+
+  _requireChannelPermission(req, res, method, pathname, channel) {
+    if (channel === 'loopback') return true;
+    const required = requiredPermissionFor(method, pathname);
+    const current = this._resolvePermissionLevel();
+    if (!isPermissionAtLeast(current, required)) {
+      sendJson(res, 403, {
+        ok: false,
+        error: 'PERMISSION_DENIED',
+        required,
+        current,
+        channel
+      });
+      return false;
+    }
+    // Minting a confirm token cannot itself require one, and it mutates no state.
+    if (required !== 'L0' && channel === 'cloudflare' && pathname !== '/api/v1/confirm') {
+      const action = this._confirmActionId(method, pathname);
+      const provided = String(req.headers['x-agy-confirm'] || '').trim();
+      if (provided && verifyConfirmToken(provided, this.confirmSecret, { action })) {
+        return true;
+      }
+      sendJson(res, 403, {
+        ok: false,
+        error: 'CONFIRMATION_REQUIRED',
+        channel,
+        action,
+        confirmToken: createConfirmToken(this.confirmSecret, { action }),
+        confirmHint: '公网 Cloudflare 通道执行写操作需要二次确认'
+      });
+      return false;
+    }
+    return true;
+  }
+
+  async _handleApiRequest(req, res, method, urlObj, channel = 'loopback') {
     const pathname = urlObj.pathname;
+
+    if (!this._requireChannelPermission(req, res, method, pathname, channel)) {
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/web/status') {
+      sendJson(res, 200, {
+        ok: true,
+        running: Boolean(this.server && this.port),
+        host: this.host,
+        port: this.port,
+        url: this.getLocalUrl(),
+        pairingUrl: this.getPairingUrl(),
+        channel,
+        ...this.getAccessStatus()
+      });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/confirm') {
+      const body = await readJsonBody(req, this.maxBodyBytes);
+      const action = String(body.action || '').trim();
+      if (!action) {
+        sendJson(res, 400, { ok: false, error: 'MISSING_ACTION' });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        action,
+        confirmToken: createConfirmToken(this.confirmSecret, { action }),
+        expiresInMs: DEFAULT_CONFIRM_TTL_MS
+      });
+      return;
+    }
 
     if (method === 'GET' && pathname === '/api/v1/health') {
       let health = { ok: true, rpcConnected: Boolean(this.harnessAdapter), hubOrigin: null };
@@ -1407,6 +1668,8 @@ function createWebServer(options = {}) {
 module.exports = {
   ALLOWED_LOOPBACK_HOSTS,
   SECURITY_HEADERS,
+  isLoopbackSameOrigin,
+  requiredPermissionFor,
   WebServer,
   createWebServer
 };

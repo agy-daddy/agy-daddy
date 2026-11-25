@@ -8,10 +8,12 @@ const path = require('node:path');
 const http = require('node:http');
 const url = require('node:url');
 
-const { WebServer, createWebServer, SECURITY_HEADERS } = require('../src/web-server');
+const { WebServer, createWebServer, SECURITY_HEADERS, isLoopbackSameOrigin } = require('../src/web-server');
+const { readAccessSettings } = require('../src/node');
 const { createWorkspaceMetaStore } = require('../src/workspace-meta-store');
 const { createWorkspaceService } = require('../src/workspace-service');
 const { createHostProxy } = require('../src/host-proxy');
+const { createConfirmToken, verifyConfirmToken } = require('../src/channel-config');
 
 function httpRequest(urlStr, options = {}) {
   return new Promise((resolve, reject) => {
@@ -230,21 +232,52 @@ function createFakeDeps() {
   };
 }
 
-test('D1: WebServer hard-locks loopback hosts in constructor and start()', async () => {
-  assert.throws(() => new WebServer({ host: '0.0.0.0' }), /ERR_NON_LOOPBACK_FORBIDDEN/);
-  assert.throws(() => createWebServer({ host: '192.168.1.5' }), /ERR_NON_LOOPBACK_FORBIDDEN/);
-  assert.throws(() => createWebServer({ host: 'localhost' }), /ERR_NON_LOOPBACK_FORBIDDEN/);
+test('D1: WebServer binds per channel policy (loopback default, guarded widening)', async () => {
+  // Default: loopback only, bound to 127.0.0.1
+  const defaultSrv = createWebServer({ port: 0, pairingToken: 'tok-d1-default' });
+  assert.equal(defaultSrv.host, '127.0.0.1');
+  assert.deepEqual(defaultSrv.channels, {
+    loopback: true,
+    lan: false,
+    tailscale: false,
+    bonjour: false,
+    cloudflare: false
+  });
 
+  // Wildcard bind without any non-loopback channel is still refused
+  assert.throws(() => new WebServer({ host: '0.0.0.0' }), /ERR_CHANNEL_NOT_ENABLED/);
+  assert.throws(() => createWebServer({ host: '0.0.0.0', channels: { loopback: true } }), /ERR_CHANNEL_NOT_ENABLED/);
+
+  // Wildcard bind is allowed once a channel actually needs it
+  const lanSrv = createWebServer({ host: '0.0.0.0', channels: { lan: true }, port: 0 });
+  assert.equal(lanSrv.host, '0.0.0.0');
+  assert.equal(lanSrv.getLocalUrl(), '');
+  const lanInfo = await lanSrv.start();
+  assert.equal(lanInfo.host, '0.0.0.0');
+  assert.match(lanInfo.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  await lanSrv.stop();
+
+  // Addresses that are not local interfaces are refused
+  assert.throws(
+    () => createWebServer({ host: '203.0.113.9', channels: { lan: true } }),
+    /ERR_BIND_HOST_NOT_LOCAL/
+  );
+
+  // "localhost" resolves deterministically to 127.0.0.1 instead of ::1
+  assert.equal(createWebServer({ host: 'localhost' }).host, '127.0.0.1');
+  assert.equal(createWebServer({ host: '::1' }).host, '::1');
+
+  // bindHost:"loopback" cannot be combined with an external channel
+  assert.throws(
+    () => createWebServer({ host: '0.0.0.0', channels: { lan: true }, bindHostMode: 'loopback' }),
+    /ERR_BIND_HOST_CONFLICT/
+  );
+
+  // start() re-validates against the live policy
   const srv = createWebServer({ host: '127.0.0.1', port: 0, pairingToken: 'tok-d1' });
   srv.host = '0.0.0.0';
-  await assert.rejects(() => srv.start(), /ERR_NON_LOOPBACK_FORBIDDEN/);
+  await assert.rejects(() => srv.start(), /ERR_CHANNEL_NOT_ENABLED/);
   await srv.stop();
-
-  const ipv4Srv = createWebServer({ host: '127.0.0.1', port: 0, pairingToken: 'tok-d1-v4' });
-  const info4 = await ipv4Srv.start();
-  assert.equal(info4.host, '127.0.0.1');
-  assert.ok(info4.port > 0);
-  await ipv4Srv.stop();
 });
 
 test('D2 & D3: token->cookie exchange, API auth, CSRF gate, security headers, and full endpoint wiring', async () => {
@@ -952,6 +985,334 @@ test('D7: host locale sync + SSE broadcast, web-scoped plugins/settings, workspa
     await srv.stop();
     fs.rmSync(tmpBase, { recursive: true, force: true });
   }
+});
+
+function channelServer(overrides = {}) {
+  const deps = createFakeDeps();
+  const state = { channel: 'lan' };
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken: 'pairing-secret-token-12345',
+    sessionSecret: 'session-secret-cookie-67890',
+    channels: { loopback: true, lan: true },
+    resolveChannel: () => state.channel,
+    ...deps,
+    ...overrides
+  });
+  return { srv, state, deps };
+}
+
+test('D11: a channel that is disabled is refused before auth (CHANNEL_DISABLED)', async () => {
+  const { srv, state } = channelServer({ channels: { loopback: true, lan: false } });
+  const info = await srv.start();
+  try {
+    state.channel = 'lan';
+    const res = await httpRequest(`http://127.0.0.1:${info.port}/api/v1/web/status`, {
+      headers: { Authorization: 'Bearer pairing-secret-token-12345' }
+    });
+    assert.equal(res.status, 403);
+    assert.equal(res.json.error, 'CHANNEL_DISABLED');
+    assert.equal(res.json.channel, 'lan');
+    assert.deepEqual(res.json.allowedChannels, ['loopback']);
+
+    // ...and the static entry point is refused too, so no token prompt leaks
+    const html = await httpRequest(`http://127.0.0.1:${info.port}/`);
+    assert.equal(html.status, 403);
+    assert.equal(html.json.error, 'CHANNEL_DISABLED');
+
+    // "external" (unclassified non-RFC1918 client) is never allowed
+    state.channel = 'external';
+    const ext = await httpRequest(`http://127.0.0.1:${info.port}/api/v1/health`);
+    assert.equal(ext.status, 403);
+    assert.equal(ext.json.error, 'CHANNEL_DISABLED');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D12: non-loopback channels are gated by L0/L1/L2 permission tiers', async () => {
+  const { srv, state } = channelServer({ permissionLevel: 'L0' });
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    // L0: reads and streaming stay available
+    const read = await httpRequest(`${base}/api/v1/sessions`, { headers: bearer });
+    assert.equal(read.status, 200);
+
+    const stream = await openSse(`${base}/api/v1/stream`, bearer);
+    assert.equal(stream.status, 200);
+
+    // L0: every write is denied, with the tier stated in the body
+    const denied = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: bearer,
+      body: { title: 'x' }
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.json.error, 'PERMISSION_DENIED');
+    assert.equal(denied.json.required, 'L1');
+    assert.equal(denied.json.current, 'L0');
+    assert.equal(denied.json.channel, 'lan');
+
+    // L1: chat/session lifecycle allowed, workspace writes still denied
+    srv.updateAccessConfig({ permissionLevel: 'L1' });
+    const chat = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: bearer,
+      body: { title: 'remote chat' }
+    });
+    assert.equal(chat.status, 200);
+    assert.equal(chat.json.ok, true);
+
+    const fsDenied = await httpRequest(`${base}/api/v1/fs/write`, {
+      method: 'PUT',
+      headers: bearer,
+      body: { root: '/tmp', path: 'a.txt', content: 'x' }
+    });
+    assert.equal(fsDenied.status, 403);
+    assert.equal(fsDenied.json.error, 'PERMISSION_DENIED');
+    assert.equal(fsDenied.json.required, 'L2');
+
+    // L2: workspace writes pass the channel gate
+    srv.updateAccessConfig({ permissionLevel: 'L2' });
+    const fsOk = await httpRequest(`${base}/api/v1/fs/write`, {
+      method: 'PUT',
+      headers: bearer,
+      body: { root: '/tmp', path: 'a.txt', content: 'x' }
+    });
+    assert.equal(fsOk.status, 200);
+    assert.equal(fsOk.json.ok, true);
+
+    // loopback is never tier-gated, even at L0
+    srv.updateAccessConfig({ permissionLevel: 'L0' });
+    state.channel = 'loopback';
+    const localWrite = await httpRequest(`${base}/api/v1/fs/write`, {
+      method: 'PUT',
+      headers: bearer,
+      body: { root: '/tmp', path: 'a.txt', content: 'x' }
+    });
+    assert.equal(localWrite.status, 200);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D13: Cloudflare channel writes need an action-bound second confirmation', async () => {
+  const { srv, state } = channelServer({
+    channels: { loopback: true, cloudflare: true },
+    permissionLevel: 'L2'
+  });
+  state.channel = 'cloudflare';
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    // Reads stay open on the tunnel channel
+    const read = await httpRequest(`${base}/api/v1/sessions`, { headers: bearer });
+    assert.equal(read.status, 200);
+
+    // Writes are challenged with a confirm token bound to "POST /api/v1/sessions"
+    const challenged = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: bearer,
+      body: { title: 'x' }
+    });
+    assert.equal(challenged.status, 403);
+    assert.equal(challenged.json.error, 'CONFIRMATION_REQUIRED');
+    assert.equal(challenged.json.channel, 'cloudflare');
+    assert.equal(challenged.json.action, 'POST /api/v1/sessions');
+    assert.ok(challenged.json.confirmToken);
+
+    // A token minted for a different action is rejected
+    const wrongAction = await httpRequest(`${base}/api/v1/confirm`, {
+      method: 'POST',
+      headers: bearer,
+      body: { action: 'PUT /api/v1/fs/write' }
+    });
+    assert.equal(wrongAction.status, 200);
+    const replayWrong = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...bearer, 'X-Agy-Confirm': wrongAction.json.confirmToken },
+      body: { title: 'x' }
+    });
+    assert.equal(replayWrong.status, 403);
+    assert.equal(replayWrong.json.error, 'CONFIRMATION_REQUIRED');
+
+    // The matching token passes
+    const confirmed = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...bearer, 'X-Agy-Confirm': challenged.json.confirmToken },
+      body: { title: 'x' }
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.json.ok, true);
+
+    // /api/v1/confirm requires a non-empty action
+    const missing = await httpRequest(`${base}/api/v1/confirm`, {
+      method: 'POST',
+      headers: bearer,
+      body: {}
+    });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.json.error, 'MISSING_ACTION');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D14: non-loopback cookie auth requires a same-origin Origin and keeps HttpOnly/Strict', async () => {
+  const { srv, state } = channelServer({ permissionLevel: 'L2' });
+  state.channel = 'lan';
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+
+  try {
+    const login = await httpRequest(`${base}/?token=pairing-secret-token-12345`);
+    assert.equal(login.status, 302);
+    const setCookie = String(login.headers['set-cookie'] || '');
+    assert.match(setCookie, /HttpOnly/i);
+    assert.match(setCookie, /SameSite=Strict/i);
+    assert.doesNotMatch(setCookie, /SameSite=None/i);
+    const cookie = setCookie.split(';')[0];
+
+    const writeHeaders = {
+      Cookie: cookie,
+      'X-Agy-Csrf': '1',
+      'Content-Type': 'application/json'
+    };
+
+    // Cross-origin Origin (another site) is refused
+    const crossSite = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...writeHeaders, Origin: 'http://evil.example:18767' },
+      body: { title: 'x' }
+    });
+    assert.equal(crossSite.status, 403);
+    assert.equal(crossSite.json.error, 'CSRF_REQUIRED');
+
+    // A LAN origin that is not the Host actually serving the page is refused
+    const otherLanHost = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...writeHeaders, Origin: 'http://192.168.1.50:18767' },
+      body: { title: 'x' }
+    });
+    assert.equal(otherLanHost.status, 403);
+    assert.equal(otherLanHost.json.error, 'CSRF_REQUIRED');
+
+    // Same-origin write passes
+    const sameOrigin = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...writeHeaders, Origin: base },
+      body: { title: 'x' }
+    });
+    assert.equal(sameOrigin.status, 200);
+
+    // Cookie writes still need the CSRF header
+    const noCsrf = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: base },
+      body: { title: 'x' }
+    });
+    assert.equal(noCsrf.status, 403);
+    assert.equal(noCsrf.json.error, 'CSRF_REQUIRED');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D15: /api/v1/web/status reports the channel set, entry URLs and tier', async () => {
+  const { srv, state } = channelServer({
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L1',
+    tunnelHostname: 'https://ag.example.com'
+  });
+  state.channel = 'loopback';
+  const info = await srv.start();
+  try {
+    const res = await httpRequest(`http://127.0.0.1:${info.port}/api/v1/web/status`, {
+      headers: { Authorization: 'Bearer pairing-secret-token-12345' }
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ok, true);
+    assert.equal(res.json.channel, 'loopback');
+    assert.equal(res.json.permissionLevel, 'L1');
+    assert.equal(res.json.allowRemoteWrite, true);
+    assert.equal(res.json.bindHost, '127.0.0.1');
+    assert.deepEqual(res.json.activeChannels, ['loopback', 'lan', 'cloudflare']);
+    assert.match(res.json.urls.loopback, /token=pairing-secret-token-12345$/);
+    assert.equal(
+      res.json.urls.cloudflare,
+      'https://ag.example.com/?token=pairing-secret-token-12345'
+    );
+    assert.equal(res.json.primaryChannel, 'loopback');
+    assert.equal(res.json.primaryUrl, res.json.urls.loopback);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('D16: confirm tokens are HMAC-bound to exactly one action and expire', () => {
+  const secret = 'unit-test-confirm-secret';
+  const action = 'POST /api/v1/sessions';
+  const token = createConfirmToken(secret, { action });
+
+  assert.equal(verifyConfirmToken(token, secret, { action }), true);
+  assert.equal(verifyConfirmToken(token, secret, { action: 'PUT /api/v1/fs/write' }), false);
+  assert.equal(verifyConfirmToken(token, 'wrong-secret', { action }), false);
+  assert.equal(verifyConfirmToken('not-a-token', secret, { action }), false);
+
+  // A token minted without an action must not unlock any action-specific write.
+  assert.equal(verifyConfirmToken(createConfirmToken(secret), secret, { action }), false);
+
+  const expired = createConfirmToken(secret, { action, ttlMs: 1000, now: 1000 });
+  assert.equal(verifyConfirmToken(expired, secret, { action, now: 200000 }), false);
+});
+
+test('D17: bindHostMode is hot-applied and a rejected policy commits nothing', () => {
+  const { srv } = channelServer({ channels: { loopback: true, lan: false } });
+  assert.equal(srv.bindHostMode, 'auto');
+  assert.equal(srv.host, '127.0.0.1');
+
+  // Forcing lan mode without any non-loopback channel is rejected, and the
+  // previous policy must survive untouched.
+  assert.throws(
+    () => srv.updateAccessConfig({ bindHostMode: 'lan' }),
+    /ERR_CHANNEL_NOT_ENABLED/
+  );
+  assert.equal(srv.bindHostMode, 'auto');
+  assert.equal(srv.host, '127.0.0.1');
+  assert.equal(srv.channels.loopback, true);
+  assert.equal(srv.channels.lan, false);
+
+  // Once a channel needs it, the forced mode re-resolves the listen address.
+  const applied = srv.updateAccessConfig({
+    channels: { loopback: true, lan: true },
+    bindHostMode: 'lan'
+  });
+  assert.equal(applied.rebind, true);
+  assert.equal(applied.host, '0.0.0.0');
+  assert.equal(srv.bindHostMode, 'lan');
+  assert.equal(srv.getAccessStatus().bindHost, '0.0.0.0');
+});
+
+test('D18: isLoopbackSameOrigin enforces port matching and readAccessSettings guards invalid bindHost', () => {
+  assert.equal(isLoopbackSameOrigin('http://localhost:18767', 18767, '127.0.0.1:18767', 'loopback'), true);
+  assert.equal(isLoopbackSameOrigin('http://localhost:18767', 18767, '', 'loopback'), true);
+  assert.equal(isLoopbackSameOrigin('http://localhost:9999', 18767, '127.0.0.1:18767', 'loopback'), false);
+  assert.equal(isLoopbackSameOrigin('https://ag.example.com', 18767, 'ag.example.com', 'cloudflare'), true);
+  assert.equal(isLoopbackSameOrigin('http://ag.example.com:9999', 18767, 'ag.example.com', 'cloudflare'), false);
+  assert.equal(isLoopbackSameOrigin('https://ag.example.com:9999', 18767, 'ag.example.com', 'cloudflare'), false);
+
+  const guarded = readAccessSettings({ bindHost: 'lan', loopback: true, lan: false });
+  assert.equal(guarded.bindHostMode, 'auto');
+  assert.equal(guarded.channels.loopback, true);
+
+  const preserved = readAccessSettings({ bindHost: 'lan', loopback: true, lan: true });
+  assert.equal(preserved.bindHostMode, 'lan');
 });
 
 test('D8: internal/subagent filtering, user-created session protection, read-state + completion SSE sync, raw artifact streaming, and previewers', async () => {

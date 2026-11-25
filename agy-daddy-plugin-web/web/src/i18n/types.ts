@@ -551,6 +551,24 @@ export interface I18nMessages {
   'errors.pluginsFailed': string;
   'errors.settingsFailed': string;
   'errors.doctorFailed': string;
+
+  'webAccess.title': string;
+  'webAccess.currentChannel': string;
+  'webAccess.permissionLevel': string;
+  'webAccess.copy': string;
+  'webAccess.copied': string;
+  'webAccess.loadFailed': string;
+  'webAccess.unknownChannel': string;
+  'webAccess.writableHint': string;
+  'webAccess.readOnlyHint': string;
+  'webAccess.loopbackOnlyHint': string;
+  'webAccess.openFromOtherDevice': string;
+  'webAccess.noChannels': string;
+  'webAccess.channel.loopback': string;
+  'webAccess.channel.lan': string;
+  'webAccess.channel.tailscale': string;
+  'webAccess.channel.bonjour': string;
+  'webAccess.channel.cloudflare': string;
 }
 
 export type I18nKey = keyof I18nMessages;

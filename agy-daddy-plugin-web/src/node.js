@@ -10,6 +10,13 @@ const { createWorkspaceMetaStore, normalizeLocalPath } = require('./workspace-me
 const { createSessionOrgBridge } = require('./session-org-bridge');
 const { createHostProxy } = require('./host-proxy');
 const { createWebServer } = require('./web-server');
+const {
+  normalizeBindHostMode,
+  normalizeChannelConfig,
+  normalizePermissionLevel,
+  normalizeTunnelHostname,
+  resolveBindHost
+} = require('./channel-config');
 
 const DEFAULT_WEB_PORT = 18767;
 const PLUGIN_VERSION = '1.0.0';
@@ -73,14 +80,55 @@ function resolveListenPort(settings, webConfig) {
   return DEFAULT_WEB_PORT;
 }
 
+/**
+ * Read the multi-channel access policy from managed settings. Absent keys fall
+ * back to loopback-only, so an upgraded install keeps its old behaviour.
+ */
+function readAccessSettings(settings) {
+  const channels = normalizeChannelConfig({
+    loopback: settings?.loopback,
+    lan: settings?.lan,
+    tailscale: settings?.tailscale,
+    bonjour: settings?.bonjour,
+    cloudflare: settings?.cloudflare
+  });
+  if (!Object.values(channels).some(Boolean)) {
+    // A fully-disabled channel set would brick the console: fall back to the
+    // safest channel instead of refusing to serve.
+    channels.loopback = true;
+  }
+  let bindHostMode = normalizeBindHostMode(settings?.bindHost);
+  const hasNonLoopback = Boolean(
+    channels.lan || channels.tailscale || channels.bonjour || channels.cloudflare
+  );
+  if (bindHostMode === 'lan' && !hasNonLoopback) {
+    bindHostMode = 'auto';
+  }
+  return {
+    bindHostMode,
+    channels,
+    permissionLevel: normalizePermissionLevel(settings?.remotePermissionLevel),
+    tunnelHostname: normalizeTunnelHostname(settings?.tunnelHostname)
+  };
+}
+
 function buildPublicStatus(runtime) {
   const port = runtime.webServer?.port || null;
+  const access = runtime.webServer?.getAccessStatus ? runtime.webServer.getAccessStatus() : null;
   return {
     ok: true,
     running: Boolean(runtime.webServer && port),
     host: runtime.webServer?.host || '127.0.0.1',
     port,
     url: runtime.webServer?.getLocalUrl() || '',
+    channels: access?.channels || {},
+    activeChannels: access?.activeChannels || [],
+    urls: access?.urls || {},
+    primaryChannel: access?.primaryChannel || 'offline',
+    primaryUrl: access?.primaryUrl || '',
+    permissionLevel: access?.permissionLevel || 'L0',
+    allowRemoteWrite: access?.allowRemoteWrite || false,
+    tunnelHostname: access?.tunnelHostname || '',
     rpcConnected: Boolean(runtime.lastHubOrigin),
     hubOrigin: runtime.lastHubOrigin || null,
     pluginVersion: PLUGIN_VERSION
@@ -99,6 +147,7 @@ async function activate(host) {
   const webConfig = readAndEnsureWebConfig(host);
   const listenPort = resolveListenPort(settings, webConfig);
   const pairingToken = webConfig.token;
+  let runtimeAccess = readAccessSettings(settings);
 
   const workspaceMetaStore = createWorkspaceMetaStore({ storage: host.storage });
   let discoveredSessionRoots = [];
@@ -178,6 +227,7 @@ async function activate(host) {
     hostProxy: null,
     webServer: null,
     disposeOnAny: null,
+    disposeSettings: null,
     disposeService: null
   };
   activeRuntime = runtime;
@@ -187,6 +237,59 @@ async function activate(host) {
     pairingUrl: runtime.webServer?.getPairingUrl() || '',
     pairingToken: runtime.pairingToken
   });
+
+  function publishStatus() {
+    if (typeof host?.state?.set === 'function') {
+      host.state.set('state:web.status@1', buildPublicStatus(runtime));
+    }
+    return buildPublicStatus(runtime);
+  }
+
+  /**
+   * Apply a settings change to the live server. Only a change that alters the
+   * listen address needs a rebind; permission/channel policy applies
+   * immediately on the next request.
+   */
+  async function reconcileAccess() {
+    if (!runtime.webServer) return;
+    const next = readAccessSettings(readStoredSettings(host));
+    const previousAccess = runtimeAccess;
+    const previousHost = runtime.webServer.host;
+    const previousBindHostMode = runtime.webServer.bindHostMode;
+    const previousChannels = { ...runtime.webServer.channels };
+    let result;
+    try {
+      result = runtime.webServer.updateAccessConfig({
+        bindHostMode: next.bindHostMode,
+        channels: next.channels,
+        permissionLevel: next.permissionLevel,
+        tunnelHostname: next.tunnelHostname
+      });
+    } catch {
+      // updateAccessConfig validates before committing, so the live policy is
+      // still the previous one; publish status and wait for the next change.
+      publishStatus();
+      return;
+    }
+    runtimeAccess = next;
+    if (!result.rebind || result.host === previousHost || !runtime.webServer.server) {
+      publishStatus();
+      return;
+    }
+    try {
+      await runtime.webServer.stop();
+      await runtime.webServer.start();
+    } catch {
+      runtimeAccess = previousAccess;
+      runtime.webServer.host = previousHost;
+      runtime.webServer.bindHostMode = previousBindHostMode;
+      runtime.webServer.channels = previousChannels;
+      try {
+        await runtime.webServer.start();
+      } catch {}
+    }
+    publishStatus();
+  }
 
   const commands = {
     'agy-daddy.web.status': async () => getStatus()
@@ -226,7 +329,14 @@ async function activate(host) {
   };
 
   runtime.webServer = createWebServer({
-    host: '127.0.0.1',
+    host: resolveBindHost({ channels: runtimeAccess.channels, mode: runtimeAccess.bindHostMode }),
+    bindHostMode: runtimeAccess.bindHostMode,
+    channels: runtimeAccess.channels,
+    permissionLevel: runtimeAccess.permissionLevel,
+    tunnelHostname: runtimeAccess.tunnelHostname,
+    getChannels: () => runtimeAccess.channels,
+    getPermissionLevel: () => runtimeAccess.permissionLevel,
+    getTunnelHostname: () => runtimeAccess.tunnelHostname,
     port: listenPort,
     pairingToken,
     pluginVersion: PLUGIN_VERSION,
@@ -285,6 +395,12 @@ async function activate(host) {
           payload: ev.payload,
           meta: ev.meta
         });
+      });
+    }
+
+    if (typeof host?.settings?.onChange === 'function') {
+      runtime.disposeSettings = host.settings.onChange(() => {
+        void reconcileAccess();
       });
     }
 
@@ -350,6 +466,13 @@ async function deactivate() {
   runtime.disposeOnAny = null;
 
   try {
+    if (typeof runtime.disposeSettings === 'function') {
+      runtime.disposeSettings();
+    }
+  } catch {}
+  runtime.disposeSettings = null;
+
+  try {
     if (typeof runtime.disposeService === 'function') {
       runtime.disposeService();
     }
@@ -366,5 +489,6 @@ async function deactivate() {
 
 module.exports = {
   activate,
-  deactivate
+  deactivate,
+  readAccessSettings
 };

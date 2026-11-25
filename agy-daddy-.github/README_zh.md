@@ -202,7 +202,7 @@ npm run analyze
 - **社区行为准则**：[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
 - **RFC 提案模板**：[`rfcs/0000-template.md`](./rfcs/0000-template.md)
 - **注册表索引与夹具**：[`agy-daddy-registry/README.md`](../agy-daddy-registry/README.md)
-- **生产发布工程化与 OIDC 发版方案**：[`docs/release-engineering.md`](../docs/release-engineering.md)
+- **生产发布工程化与 OIDC 发版方案**：[`docs/release-engineering.zh-CN.md`](../docs/release-engineering.zh-CN.md)（[英文原版](../docs/release-engineering.md)）
 
 ---
 

@@ -202,7 +202,7 @@ npm run analyze
 - **Code of Conduct**: [`agy-daddy-.github/CODE_OF_CONDUCT.md`](./agy-daddy-.github/CODE_OF_CONDUCT.md)
 - **RFC Template**: [`agy-daddy-.github/rfcs/0000-template.md`](./agy-daddy-.github/rfcs/0000-template.md)
 - **Registry Index & Fixtures**: [`agy-daddy-registry/README.md`](./agy-daddy-registry/README.md)
-- **Release Engineering & OIDC Publishing**: [`docs/release-engineering.md`](./docs/release-engineering.md)
+- **Release Engineering & OIDC Publishing**: [`docs/release-engineering.md`](./docs/release-engineering.md) ([简体中文](./docs/release-engineering.zh-CN.md))
 
 ---
 

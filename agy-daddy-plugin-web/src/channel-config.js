@@ -21,7 +21,7 @@ const DEFAULT_CHANNELS = Object.freeze({
   bonjour: false,
   cloudflare: false
 });
-const PRIMARY_CHANNEL_ORDER = Object.freeze(['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare']);
+const PRIMARY_CHANNEL_ORDER = Object.freeze(['cloudflare', 'tailscale', 'lan', 'bonjour', 'loopback']);
 const NON_LOOPBACK_CHANNEL_KEYS = Object.freeze(['lan', 'tailscale', 'bonjour', 'cloudflare']);
 // Channels that need a non-loopback socket: cloudflared / tailscale-serve reach
 // the server through 127.0.0.1, so they never widen the bind address.
@@ -118,6 +118,26 @@ function extractHeaderHostname(raw) {
   }
 }
 
+function isTrustedProxyRequest(req, cfg = {}) {
+  const headers = req?.headers || {};
+  const remoteIp = String(req?.socket?.remoteAddress || req?.remoteAddress || '')
+    .replace(/^::ffff:/i, '')
+    .trim()
+    .toLowerCase();
+  const fromLoopback = !remoteIp || isLoopbackHostname(remoteIp);
+  if (!fromLoopback) return { trusted: false, hasProxyHeader: false, prefix: '' };
+
+  const hasProxyHeader = Object.keys(headers).some((k) => k.toLowerCase().startsWith('x-agy-proxy-'));
+  if (!hasProxyHeader) return { trusted: false, hasProxyHeader: false, prefix: '' };
+
+  const proxySecret = String(cfg.proxySecret || '');
+  const providedSecret = String(headers['x-agy-proxy-secret'] || '');
+  const proxyChannel = String(headers['x-agy-proxy-channel'] || '').trim().toLowerCase();
+  const trusted = Boolean(proxySecret) && safeTokenEqual(providedSecret, proxySecret) && proxyChannel === 'cloudflare';
+  const prefix = trusted && headers['x-agy-proxy-prefix'] === '/pc' ? '/pc' : '';
+  return { trusted, hasProxyHeader: true, prefix };
+}
+
 function classifyRequestChannel(req, cfg = {}) {
   const headers = req?.headers || {};
   const hostHeader = extractHeaderHostname(headers.host);
@@ -132,7 +152,13 @@ function classifyRequestChannel(req, cfg = {}) {
 
   // `cloudflared` runs locally and connects over loopback; never trust spoofed
   // `cf-*` or tunnel Host headers arriving from non-loopback sockets.
+  // Requests carrying `x-agy-proxy-*` over loopback must validate proxySecret
+  // and NEVER fall back to `'loopback'`.
   if (fromLoopback) {
+    const proxyCheck = isTrustedProxyRequest(req, cfg);
+    if (proxyCheck.hasProxyHeader) {
+      return proxyCheck.trusted ? 'cloudflare' : 'external';
+    }
     if (
       headers['cf-ray'] ||
       headers['cf-connecting-ip'] ||
@@ -352,12 +378,37 @@ function buildChannelUrls(options = {}) {
     if (raw) {
       try {
         const origin = new URL(raw).origin;
-        urls.cloudflare = entry(origin);
+        const mount = options.cloudflareMountPath === '/pc' ? '/pc' : '';
+        const base = `${origin}${mount}`;
+        urls.cloudflare = includeToken
+          ? `${base}/?token=${encodeURIComponent(token)}`
+          : `${base}${mount ? '/' : ''}`;
       } catch {}
     }
   }
 
   return urls;
+}
+
+function buildChannelEndpoints(options = {}) {
+  const cleanUrls = buildChannelUrls({ ...options, includeToken: false });
+  const endpoints = {};
+  for (const key of PRIMARY_CHANNEL_ORDER) {
+    const raw = cleanUrls[key];
+    if (!raw) continue;
+    try {
+      const u = new URL(raw);
+      const basePath = key === 'cloudflare' && options.cloudflareMountPath === '/pc' ? '/pc' : '';
+      endpoints[key] = {
+        key,
+        origin: u.origin,
+        basePath,
+        displayHost: basePath ? `${u.host}${basePath}` : u.host,
+        probeUrl: `${u.origin}${basePath}/api/v1/ping`
+      };
+    } catch {}
+  }
+  return endpoints;
 }
 
 function resolvePrimaryChannel(urls = {}, channels) {
@@ -446,11 +497,13 @@ module.exports = {
   isLanIp,
   classifyRequestChannel,
   isChannelAllowed,
+  isTrustedProxyRequest,
   listLocalAddresses,
   isLocalBindAddress,
   resolveBindHost,
   assertBindableHost,
   buildChannelUrls,
+  buildChannelEndpoints,
   resolvePrimaryChannel,
   safeTokenEqual,
   createConfirmToken,

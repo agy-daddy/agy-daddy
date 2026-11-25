@@ -11,6 +11,12 @@ export type { TopbarPopoverKind, TopbarPopoverProps } from './TopbarPopover';
 export { MobileQrPopover } from './MobileQrPopover';
 export type { MobileQrPopoverProps } from './MobileQrPopover';
 
+export { ChannelSwitcherPopover } from './ChannelSwitcherPopover';
+export type {
+  ChannelProbeEntry,
+  ChannelSwitcherPopoverProps,
+} from './ChannelSwitcherPopover';
+
 export { SchemaSettingsForm, localizeText } from './SchemaSettingsForm';
 export type { SchemaSettingsFormProps } from './SchemaSettingsForm';
 

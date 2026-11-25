@@ -566,7 +566,7 @@ test('D5: staticDir hosting with SPA fallback and JSON 404 for unknown /api/v1/*
 test('D6: CSP allows inline styles + safe same-origin frames/images and per-sessionId SSE delta pump emits changes and cleans up on disconnect/stop', async () => {
   assert.equal(
     SECURITY_HEADERS['Content-Security-Policy'],
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' blob: data:; object-src 'self' blob:; frame-ancestors 'none'"
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https:; frame-src 'self' blob: data:; object-src 'self' blob:; frame-ancestors 'none'"
   );
 
   const pairingToken = 'delta-pump-token-123';
@@ -1252,8 +1252,9 @@ test('D15: /api/v1/web/status reports the channel set, entry URLs and tier', asy
       res.json.urls.cloudflare,
       'https://ag.example.com/?token=pairing-secret-token-12345'
     );
-    assert.equal(res.json.primaryChannel, 'loopback');
-    assert.equal(res.json.primaryUrl, res.json.urls.loopback);
+    assert.equal(res.json.primaryChannel, 'cloudflare');
+    assert.equal(res.json.primaryUrl, res.json.urls.cloudflare);
+    assert.ok(res.json.channelEndpoints?.cloudflare?.probeUrl === 'https://ag.example.com/api/v1/ping');
   } finally {
     await srv.stop();
   }
@@ -1432,7 +1433,8 @@ test('D20: /api/v1/web/status hides pairingToken on non-loopback L0 while preser
     assert.equal(lanL0.json.pairingUrl, '');
     assert.equal(lanL0.json.urls.loopback, base);
     assert.equal(lanL0.json.urls.cloudflare, 'https://ag.example.com');
-    assert.equal(lanL0.json.primaryUrl, base);
+    assert.equal(lanL0.json.primaryChannel, 'cloudflare');
+    assert.equal(lanL0.json.primaryUrl, 'https://ag.example.com');
 
     // Non-loopback L0 (cloudflare): pairingToken also hidden
     state.channel = 'cloudflare';
@@ -2201,3 +2203,177 @@ test('D22: _nudgeSessionPoller triggers burst + immediate delta poll for approve
     await srv.stop();
   }
 });
+
+test('D23: /api/v1/ping CORS/PNA headers, CSP connect-src, /pc proxy secret anti-spoofing, switch-ticket & auth', async () => {
+  const { srv } = channelServer({
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L0',
+    tunnelHostname: 'https://ag.example.com',
+    cloudflareMountPath: '/pc',
+    proxySecret: 'proxy-secret-xyz',
+    resolveChannel: undefined
+  });
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    // 1. CSP allows cross-origin connect-src probes
+    assert.match(SECURITY_HEADERS['Content-Security-Policy'], /connect-src 'self' http: https:/);
+
+    // 2. Unauthenticated /api/v1/ping OPTIONS & GET with CORS + PNA and zero secrets
+    const pingOpt = await httpRequest(`${base}/api/v1/ping`, { method: 'OPTIONS' });
+    assert.equal(pingOpt.status, 204);
+    assert.equal(pingOpt.headers['access-control-allow-origin'], '*');
+    assert.equal(pingOpt.headers['access-control-allow-private-network'], 'true');
+    assert.equal(pingOpt.headers['cross-origin-resource-policy'], 'cross-origin');
+
+    const pingGet = await httpRequest(`${base}/api/v1/ping`);
+    assert.equal(pingGet.status, 200);
+    assert.equal(pingGet.json.ok, true);
+    assert.equal(pingGet.json.service, 'agy-daddy-web');
+    assert.equal(pingGet.json.channel, 'loopback');
+    assert.equal(pingGet.text.includes('pairing-secret-token-12345'), false);
+
+    // 3. Spoofed x-agy-proxy-* on loopback MUST return 403 external (never loopback!)
+    const spoofed = await httpRequest(`${base}/api/v1/sessions`, {
+      headers: {
+        ...bearer,
+        'x-agy-proxy-channel': 'cloudflare',
+        'x-agy-proxy-secret': 'wrong-secret'
+      }
+    });
+    assert.equal(spoofed.status, 403);
+    assert.equal(spoofed.json.error, 'CHANNEL_DISABLED');
+    assert.equal(spoofed.json.channel, 'external');
+
+    // 4. Trusted /pc proxy classifies as cloudflare (NOT loopback), enforces L0 write 403, and scopes Cookie Path=/pc
+    const trustedProxyHeaders = {
+      Host: 'ag.example.com',
+      Origin: 'https://ag.example.com',
+      'x-agy-proxy-source': 'agy-daddy-remote',
+      'x-agy-proxy-channel': 'cloudflare',
+      'x-agy-proxy-prefix': '/pc',
+      'x-agy-proxy-secret': 'proxy-secret-xyz'
+    };
+
+    // POST /api/v1/web/auth works through /pc proxy and issues Path=/pc; Secure cookie
+    const authFail = await httpRequest(`${base}/api/v1/web/auth`, {
+      method: 'POST',
+      headers: { ...trustedProxyHeaders, 'Content-Type': 'application/json' },
+      body: { token: 'wrong-token' }
+    });
+    assert.equal(authFail.status, 401);
+
+    const authOk = await httpRequest(`${base}/api/v1/web/auth`, {
+      method: 'POST',
+      headers: { ...trustedProxyHeaders, 'Content-Type': 'application/json' },
+      body: { token: 'pairing-secret-token-12345' }
+    });
+    assert.equal(authOk.status, 200);
+    assert.equal(authOk.json.channel, 'cloudflare');
+    const pcCookieHeader = String(authOk.headers['set-cookie'] || '');
+    assert.match(pcCookieHeader, /Path=\/pc\b/);
+    assert.match(pcCookieHeader, /Secure/);
+    assert.match(pcCookieHeader, /HttpOnly/);
+    assert.match(pcCookieHeader, /SameSite=Strict/);
+    const pcCookie = pcCookieHeader.split(';')[0];
+
+    // Non-loopback L0 write on /pc still returns 403 PERMISSION_DENIED (never treated as loopback)
+    const l0Write = await httpRequest(`${base}/api/v1/sessions`, {
+      method: 'POST',
+      headers: { ...trustedProxyHeaders, Cookie: pcCookie, 'X-Agy-Csrf': '1' },
+      body: { title: 'blocked-l0' }
+    });
+    assert.equal(l0Write.status, 403);
+    assert.equal(l0Write.json.error, 'PERMISSION_DENIED');
+
+    // D20 preserved under /pc proxy at L0
+    const statusL0 = await httpRequest(`${base}/api/v1/web/status`, {
+      headers: { ...trustedProxyHeaders, Cookie: pcCookie }
+    });
+    assert.equal(statusL0.status, 200);
+    assert.equal(statusL0.json.channel, 'cloudflare');
+    assert.equal(statusL0.text.includes('pairing-secret-token-12345'), false);
+    assert.equal(statusL0.json.urls.cloudflare, 'https://ag.example.com/pc/');
+    assert.equal(statusL0.json.channelEndpoints.cloudflare.probeUrl, 'https://ag.example.com/pc/api/v1/ping');
+
+    // 5. L0 switch-ticket minting under /pc proxy succeeds without X-Agy-Confirm and preserves session
+    const mintTicket = await httpRequest(`${base}/api/v1/web/switch-ticket`, {
+      method: 'POST',
+      headers: { ...trustedProxyHeaders, Cookie: pcCookie, 'X-Agy-Csrf': '1' },
+      body: { targetChannel: 'loopback', sessionId: 'sess-42' }
+    });
+    assert.equal(mintTicket.status, 200);
+    assert.equal(mintTicket.json.ok, true);
+    assert.match(mintTicket.json.switchUrl, /\?switch_ticket=.*&session=sess-42$/);
+
+    const parsedSwitch = new URL(mintTicket.json.switchUrl);
+    const ticketParam = parsedSwitch.searchParams.get('switch_ticket');
+
+    // Loopback ticket cannot be redeemed on non-loopback channel
+    const wrongChannelRedeem = await httpRequest(`${base}/?switch_ticket=${ticketParam}&session=sess-42`, {
+      headers: trustedProxyHeaders
+    });
+    assert.equal(wrongChannelRedeem.status, 401);
+    assert.equal(wrongChannelRedeem.json.error, 'SWITCH_TICKET_INVALID');
+
+    // Mint a fresh ticket for loopback and redeem on loopback
+    const mintLoopback = await httpRequest(`${base}/api/v1/web/switch-ticket`, {
+      method: 'POST',
+      headers: { ...trustedProxyHeaders, Cookie: pcCookie, 'X-Agy-Csrf': '1' },
+      body: { targetChannel: 'loopback', sessionId: 'sess-42' }
+    });
+    const loopTicket = new URL(mintLoopback.json.switchUrl).searchParams.get('switch_ticket');
+    const redeemOk = await httpRequest(`${base}/?switch_ticket=${loopTicket}&session=sess-42`);
+    assert.equal(redeemOk.status, 302);
+    assert.equal(redeemOk.headers.location, '/?session=sess-42');
+    assert.match(String(redeemOk.headers['set-cookie'] || ''), /Path=\/(?:;|$)/);
+
+    // Replay of consumed ticket fails
+    const replayFail = await httpRequest(`${base}/?switch_ticket=${loopTicket}&session=sess-42`);
+    assert.equal(replayFail.status, 401);
+
+    // Mint ticket for cloudflare and redeem via /pc proxy -> 302 /pc/?session=sess-42
+    const mintCf = await httpRequest(`${base}/api/v1/web/switch-ticket`, {
+      method: 'POST',
+      headers: bearer,
+      body: { targetChannel: 'cloudflare', sessionId: 'sess-42' }
+    });
+    assert.equal(mintCf.status, 200);
+    assert.ok(mintCf.json.switchUrl.startsWith('https://ag.example.com/pc/?switch_ticket='));
+    const cfTicket = new URL(mintCf.json.switchUrl).searchParams.get('switch_ticket');
+    const redeemCf = await httpRequest(`${base}/?switch_ticket=${cfTicket}&session=sess-42`, {
+      headers: trustedProxyHeaders
+    });
+    assert.equal(redeemCf.status, 302);
+    assert.equal(redeemCf.headers.location, '/pc/?session=sess-42');
+
+    // 6. Remote SSE + Cookie invalidation on setAuthMaterial({ rotateRemoteSession: true }) while loopback survives
+    const remoteSse = await openSse(`${base}/api/v1/stream`, { ...trustedProxyHeaders, Cookie: pcCookie });
+    const localLogin = await httpRequest(`${base}/?token=pairing-secret-token-12345`);
+    const localCookie = String(localLogin.headers['set-cookie'] || '').split(';')[0];
+
+    srv.setAuthMaterial({
+      pairingToken: 'rotated-new-token-999',
+      authEpoch: 2,
+      rotateRemoteSession: true
+    });
+
+    await new Promise((r) => setTimeout(r, 40));
+    // Remote cookie is immediately rejected with 401
+    const afterRotateRemote = await httpRequest(`${base}/api/v1/web/status`, {
+      headers: { ...trustedProxyHeaders, Cookie: pcCookie }
+    });
+    assert.equal(afterRotateRemote.status, 401);
+    // Loopback cookie remains valid
+    const afterRotateLocal = await httpRequest(`${base}/api/v1/web/status`, {
+      headers: { Cookie: localCookie }
+    });
+    assert.equal(afterRotateLocal.status, 200);
+    remoteSse.close();
+  } finally {
+    await srv.stop();
+  }
+});
+

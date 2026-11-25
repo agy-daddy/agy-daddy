@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   listProjects: vi.fn(),
   getComposerState: vi.fn(),
   getRemoteStatus: vi.fn(),
+  getWebAccessStatus: vi.fn(),
+  authenticateWithToken: vi.fn(),
   getSessionDetail: vi.fn(),
   sendMessage: vi.fn(),
   cancelSession: vi.fn(),
@@ -88,6 +90,8 @@ vi.mock('./api/client', () => {
       getHostDoctor: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
       getTopbar: mocks.getTopbar,
       getRemoteStatus: mocks.getRemoteStatus,
+      getWebAccessStatus: mocks.getWebAccessStatus,
+      authenticateWithToken: mocks.authenticateWithToken,
       getComposerState: mocks.getComposerState,
       optimizePrompt: vi.fn().mockResolvedValue({ ok: true, optimizedText: '' }),
       exportSessionMarkdown: vi.fn().mockResolvedValue({ ok: true, markdown: '' }),
@@ -314,6 +318,13 @@ describe('App optimistic send flow', () => {
       frequentPrompts: [],
     });
     mocks.getRemoteStatus.mockResolvedValue({ ok: true, available: false });
+    mocks.getWebAccessStatus.mockResolvedValue({
+      ok: true,
+      channel: 'loopback',
+      permissionLevel: 'L0',
+      channelEndpoints: {},
+    });
+    mocks.authenticateWithToken.mockResolvedValue({ ok: true, channel: 'cloudflare' });
     mocks.getSessionDetail.mockResolvedValue({
       ok: true,
       session: {
@@ -587,5 +598,42 @@ describe('App optimistic send flow', () => {
     fireEvent.click(screen.getByTestId('cloudflare-confirm-cancel'));
     await expect(p2).resolves.toBe(false);
     expect(screen.queryByTestId('cloudflare-confirm-modal')).toBeNull();
+  });
+
+  it('opens settings modal on /pc/settings and unlocks via 401 token card', async () => {
+    const origLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/pc/settings', search: '', origin: 'https://ag.example.com' },
+      configurable: true,
+    });
+    try {
+      mocks.getHealth.mockRejectedValueOnce(new ApiError('UNAUTHORIZED', 401, 'UNAUTHORIZED'));
+      mocks.listSessions.mockRejectedValueOnce(new ApiError('UNAUTHORIZED', 401, 'UNAUTHORIZED'));
+
+      renderApp();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('auth-unlock-card')).toBeInTheDocument();
+      });
+      // HostAdminModal also initializes open on /pc/settings
+      expect(screen.getByRole('dialog', { name: /Host Admin/i })).toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId('auth-unlock-token-input'), {
+        target: { value: 'shared-tok-xyz' },
+      });
+      fireEvent.click(screen.getByTestId('auth-unlock-submit-btn'));
+
+      await waitFor(() => {
+        expect(mocks.authenticateWithToken).toHaveBeenCalledWith('shared-tok-xyz');
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('auth-unlock-card')).toBeNull();
+      });
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: origLocation,
+        configurable: true,
+      });
+    }
   });
 });

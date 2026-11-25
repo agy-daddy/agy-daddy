@@ -108,25 +108,8 @@
         "zh-CN": "Cloudflare Tunnel 通道"
       },
       "description": {
-        "en": "Accept Cloudflare Tunnel traffic (cf-ray / cf-connecting-ip). The tunnel itself is established by cloudflared pointing at 127.0.0.1:<port>; writes on this channel always need a second confirmation.",
-        "zh-CN": "接受 Cloudflare Tunnel 流量（cf-ray / cf-connecting-ip）。隧道由 cloudflared 指向 127.0.0.1:<端口> 建立；该通道写操作始终需要二次确认。"
-      }
-    },
-    {
-      "key": "tunnelHostname",
-      "type": "string",
-      "default": "",
-      "label": {
-        "en": "Tunnel Public Hostname",
-        "zh-CN": "隧道公网域名"
-      },
-      "placeholder": {
-        "en": "https://ag.example.com",
-        "zh-CN": "https://ag.example.com"
-      },
-      "description": {
-        "en": "Optional HTTPS hostname of the named tunnel; used to display the entry URL and to classify tunnel traffic.",
-        "zh-CN": "可选，命名隧道的 HTTPS 域名；用于展示入口 URL 并识别隧道流量。"
+        "en": "Automatically shares the Cloudflare Tunnel and pairing token managed by Remote Access (agy-daddy.remote) under /pc/, with no separate hostname or second cloudflared needed; writes on this channel always require confirmation.",
+        "zh-CN": "开启后自动复用「远程访问 (agy-daddy.remote)」托管的 Cloudflare 隧道与配对令牌（公网入口为 <隧道域名>/pc/），无需单独配置域名或另起 cloudflared；该通道写操作始终需要二次确认。"
       }
     },
     {

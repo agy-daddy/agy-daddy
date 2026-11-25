@@ -41,8 +41,20 @@ import type {
   TopbarPanels,
   UpdateProjectRequest,
   UserEventPayload,
+  WebAccessStatusResponse,
 } from './types';
 import styles from './App.module.css';
+
+function isUnauthorizedError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return err.status === 401 || err.code === 'UNAUTHORIZED';
+  }
+  if (err && typeof err === 'object') {
+    const rec = err as { status?: unknown; code?: unknown };
+    return rec.status === 401 || rec.code === 'UNAUTHORIZED';
+  }
+  return false;
+}
 
 const MODEL_STORAGE_KEY = 'agy.web.selectedModel';
 const THINKING_STORAGE_KEY = 'agy.web.selectedThinkingLevel';
@@ -443,7 +455,13 @@ export function App() {
   const [topbarLoading, setTopbarLoading] = useState<boolean>(true);
   const [remoteStatus, setRemoteStatus] = useState<RemoteStatusResponse | null>(null);
   const [remoteLoading, setRemoteLoading] = useState<boolean>(true);
+  const [webAccessStatus, setWebAccessStatus] = useState<WebAccessStatusResponse | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
+  const [authLocked, setAuthLocked] = useState<boolean>(false);
+  const [unlockToken, setUnlockToken] = useState<string>('');
+  const [unlockLoading, setUnlockLoading] = useState<boolean>(false);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [bootstrapNonce, setBootstrapNonce] = useState<number>(0);
 
   const [thinkingExpandOverride, setThinkingExpandOverride] = useState<boolean | null>(null);
   const [chatSearchState, setChatSearchState] = useState<ChatSearchState | null>(null);
@@ -465,7 +483,9 @@ export function App() {
   const [reviewBarDismissedSessionId, setReviewBarDismissedSessionId] = useState<string | null>(null);
 
   const [adminOpen, setAdminOpen] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.location.pathname === '/settings',
+    () =>
+      typeof window !== 'undefined' &&
+      (window.location.pathname === '/settings' || window.location.pathname === '/pc/settings'),
   );
   const [adminTab, setAdminTab] = useState<HostAdminTab>('plugins');
 
@@ -623,6 +643,18 @@ export function App() {
     }
   }, []);
 
+  const refreshWebAccessStatus = useCallback(async () => {
+    if (typeof apiClient.getWebAccessStatus !== 'function') return;
+    try {
+      const res = await apiClient.getWebAccessStatus();
+      setWebAccessStatus(res);
+    } catch (err) {
+      if (isUnauthorizedError(err)) {
+        setAuthLocked(true);
+      }
+    }
+  }, []);
+
   const mergeRecentCreatedSessions = useCallback((incoming: SessionSummary[]): SessionSummary[] => {
     const now = Date.now();
     const incomingIds = new Set(incoming.map((s) => s.cascadeId));
@@ -666,6 +698,9 @@ export function App() {
         });
         return merged;
       } catch (err) {
+        if (isUnauthorizedError(err)) {
+          setAuthLocked(true);
+        }
         setBannerError(formatErrorMessage(err, t('errors.sessionsFailed'), t));
         return null;
       } finally {
@@ -747,6 +782,7 @@ export function App() {
         projectsRes,
         composerRes,
         remoteRes,
+        webAccessRes,
       ] = await Promise.allSettled([
         apiClient.getHealth(),
         apiClient.listSessions({ limit: 80, includeInternal: false }),
@@ -757,6 +793,9 @@ export function App() {
         apiClient.listProjects(),
         apiClient.getComposerState(),
         apiClient.getRemoteStatus(),
+        typeof apiClient.getWebAccessStatus === 'function'
+          ? apiClient.getWebAccessStatus()
+          : Promise.resolve(null),
       ]);
 
       if (cancelled) return;
@@ -768,6 +807,9 @@ export function App() {
           setDefaultSessionPath((prev) => prev || healthRes.value.defaultSessionPath || '');
         }
       } else {
+        if (isUnauthorizedError(healthRes.reason)) {
+          setAuthLocked(true);
+        }
         setBannerError(formatErrorMessage(healthRes.reason, translate('errors.healthFailed'), translate));
       }
 
@@ -787,6 +829,9 @@ export function App() {
           syncSessionUrl(targetInitialId);
         }
       } else {
+        if (isUnauthorizedError(sessionsRes.reason)) {
+          setAuthLocked(true);
+        }
         if (initialUrlSessionId) {
           setActiveSessionId((prev) => prev || initialUrlSessionId);
         }
@@ -844,13 +889,17 @@ export function App() {
         setRemoteStatus(remoteRes.value);
       }
       setRemoteLoading(false);
+
+      if (webAccessRes.status === 'fulfilled' && webAccessRes.value) {
+        setWebAccessStatus(webAccessRes.value);
+      }
     }
 
     void bootstrap();
     return () => {
       cancelled = true;
     };
-  }, [hydrateFromSettings, mergeRecentCreatedSessions, syncHostLocale]);
+  }, [bootstrapNonce, hydrateFromSettings, mergeRecentCreatedSessions, syncHostLocale]);
 
   // Load detail whenever activeSessionId changes
   useEffect(() => {
@@ -1032,6 +1081,10 @@ export function App() {
           }
           return;
         }
+        if (patch.key === 'state:web.status@1') {
+          void refreshWebAccessStatus();
+          return;
+        }
         if (patch.key === 'state:remote.status@1') {
           const valObj =
             patch.value && typeof patch.value === 'object'
@@ -1047,6 +1100,7 @@ export function App() {
           } else {
             void refreshRemoteStatus();
           }
+          void refreshWebAccessStatus();
           return;
         }
         if (patch.key === 'state:projects@1' || patch.key === 'state:workspaces@1') {
@@ -1750,8 +1804,11 @@ export function App() {
               hubOrigin={health?.hubOrigin ?? null}
               remoteStatus={remoteStatus}
               remoteLoading={remoteLoading}
+              webAccessStatus={webAccessStatus}
+              activeSessionId={activeSessionId}
               onRefreshTopbar={() => void refreshTopbar()}
               onRefreshRemote={() => void refreshRemoteStatus()}
+              onRefreshWebAccess={() => void refreshWebAccessStatus()}
               onRunCompact={handleRunCompact}
               onOpenHostAdmin={handleOpenAdmin}
               onOpenPlugins={() => handleOpenAdmin('plugins')}
@@ -2022,7 +2079,10 @@ export function App() {
         open={adminOpen}
         activeTab={adminTab}
         onTabChange={setAdminTab}
-        onClose={() => setAdminOpen(false)}
+        onClose={() => {
+          setAdminOpen(false);
+          void refreshWebAccessStatus();
+        }}
         onPluginsChanged={handlePluginsChanged}
         onCommandExecuted={handleCommandExecuted}
       />
@@ -2032,6 +2092,60 @@ export function App() {
         onConfirm={() => settleCurrentConfirm(true)}
         onCancel={() => settleCurrentConfirm(false)}
       />
+
+      {authLocked && (
+        <div className={styles.authUnlockOverlay} role="dialog" aria-modal="true" data-testid="auth-unlock-card">
+          <form
+            className={styles.authUnlockCard}
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              const trimmed = unlockToken.trim();
+              if (!trimmed || unlockLoading || typeof apiClient.authenticateWithToken !== 'function') return;
+              setUnlockLoading(true);
+              setUnlockError(null);
+              void apiClient
+                .authenticateWithToken(trimmed)
+                .then(() => {
+                  setAuthLocked(false);
+                  setUnlockToken('');
+                  setBannerError(null);
+                  setBootstrapNonce((n) => n + 1);
+                })
+                .catch(() => {
+                  setUnlockError(t('authUnlock.invalid'));
+                })
+                .finally(() => {
+                  setUnlockLoading(false);
+                });
+            }}
+          >
+            <h2 className={styles.authUnlockTitle}>{t('authUnlock.title')}</h2>
+            <p className={styles.authUnlockDesc}>{t('authUnlock.description')}</p>
+            <input
+              type="password"
+              className={styles.authUnlockInput}
+              value={unlockToken}
+              onChange={(ev) => setUnlockToken(ev.target.value)}
+              placeholder={t('authUnlock.placeholder')}
+              autoFocus
+              data-testid="auth-unlock-token-input"
+            />
+            {unlockError && (
+              <div className={styles.authUnlockError} role="alert" data-testid="auth-unlock-error">
+                {unlockError}
+              </div>
+            )}
+            <button
+              type="submit"
+              className={styles.authUnlockSubmit}
+              disabled={unlockLoading || !unlockToken.trim()}
+              data-testid="auth-unlock-submit-btn"
+            >
+              {unlockLoading ? t('authUnlock.submitting') : t('authUnlock.submit')}
+            </button>
+          </form>
+        </div>
+      )}
     </>
   );
 }

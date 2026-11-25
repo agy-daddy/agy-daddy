@@ -169,6 +169,31 @@ async function mount(ctx) {
     const pcWeb = latestPairing?.pcWeb || latestStatus?.pcWeb || null;
     const pcWebRunning = Boolean(pcWeb?.running);
     const pcWebUrl = pcWebRunning ? String(pcWeb.pairingUrl || pcWeb.url || '') : '';
+    const pcWebChannel = pcWeb?.primaryChannel && Object.prototype.hasOwnProperty.call(CHANNEL_LABELS, pcWeb.primaryChannel)
+      ? pcWeb.primaryChannel
+      : (pcWebRunning && pcWebUrl ? 'loopback' : 'offline');
+    const pcWebChannelLabel = CHANNEL_LABELS[pcWebChannel] || '本地';
+
+    function formatPcWebCloudflareHint(cfState) {
+      if (!cfState || typeof cfState !== 'object') return '';
+      if (cfState.mode === 'shared_ready') {
+        const modeLabel = cfState.tunnelMode === 'named' ? 'Named 固定域名' : 'Quick 临时隧道';
+        return `共用远程访问隧道（${modeLabel}）`;
+      }
+      if (cfState.mode === 'web_disabled') {
+        return '远程 Cloudflare 隧道已在线；如需公网访问 PC Web，请开启「Cloudflare Tunnel 通道」开关。';
+      }
+      if (cfState.mode === 'remote_pending') {
+        return 'Cloudflare 隧道连接中...';
+      }
+      if (cfState.mode === 'remote_error') {
+        return `请检查远程访问中的 cloudflared 安装状态或隧道配置${cfState.reasonCode && cfState.reasonCode !== 'CLOUDFLARED_NOT_INSTALLED' ? `（${cfState.reasonCode}）` : ''}`;
+      }
+      if (cfState.mode === 'remote_tunnel_off') {
+        return '远程访问尚未开启 Cloudflare 隧道，请前往「远程访问」开启 Cloudflare Tunnel 后即可自动共用。';
+      }
+      return '';
+    }
 
     if (!docRef?.createElement) {
       if (!latestStatus) {
@@ -273,7 +298,14 @@ async function mount(ctx) {
     pcWebCard.setAttribute('data-remote-pcweb-card', 'true');
 
     const pcWebHead = buildEl(docRef, 'div', 'ag-remote-pcweb-head');
-    pcWebHead.appendChild(buildEl(docRef, 'span', 'ag-remote-pcweb-title', 'PC Web 工作台'));
+    const pcWebTitleWrap = buildEl(docRef, 'div', 'ag-remote-channel-meta');
+    pcWebTitleWrap.appendChild(buildEl(docRef, 'span', 'ag-remote-pcweb-title', 'PC Web 工作台'));
+    if (pcWebRunning && pcWebUrl) {
+      const pcWebChChip = buildEl(docRef, 'span', 'ag-chip', pcWebChannelLabel);
+      pcWebChChip.setAttribute('data-remote-pcweb-channel', pcWebChannel);
+      pcWebTitleWrap.appendChild(pcWebChChip);
+    }
+    pcWebHead.appendChild(pcWebTitleWrap);
     const pcWebStatusChip = buildEl(docRef, 'span', 'ag-chip', pcWebRunning && pcWebUrl ? '运行中' : '未启动');
     if (pcWebRunning && pcWebUrl) {
       pcWebStatusChip.setAttribute('data-remote-pcweb-status', 'running');
@@ -330,6 +362,13 @@ async function mount(ctx) {
       pcWebActions.appendChild(openPcWebBtn);
       pcWebActions.appendChild(copyPcWebBtn);
       pcWebCard.appendChild(pcWebActions);
+
+      const cfHintText = formatPcWebCloudflareHint(pcWeb?.cloudflareState);
+      if (cfHintText) {
+        const cfHintEl = buildEl(docRef, 'div', 'ag-remote-pcweb-hint', cfHintText);
+        cfHintEl.setAttribute('data-remote-pcweb-hint', 'true');
+        pcWebCard.appendChild(cfHintEl);
+      }
     } else {
       const hintEl = buildEl(
         docRef,

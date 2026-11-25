@@ -214,6 +214,8 @@ class MobileRemoteServer {
       ? options.getChannelEntries
       : () => ({ tunnelMode: 'quick', writeEnabled: false, entries: [] });
     this.getTunnelHostname = typeof options.getTunnelHostname === 'function' ? options.getTunnelHostname : () => '';
+    this.getProxySecret = typeof options.getProxySecret === 'function' ? options.getProxySecret : () => '';
+    this.getPcWebProxyTarget = typeof options.getPcWebProxyTarget === 'function' ? options.getPcWebProxyTarget : () => null;
     this.isWriteEnabled = typeof options.isWriteEnabled === 'function' ? options.isWriteEnabled : () => false;
     this.onAction = typeof options.onAction === 'function' ? options.onAction : async () => ({ ok: true });
     this.v1Handlers = options.v1Handlers && typeof options.v1Handlers === 'object' ? options.v1Handlers : {};
@@ -416,6 +418,101 @@ class MobileRemoteServer {
     socket.destroy();
   }
 
+  _handlePcWebProxy(req, res, method, urlObj, channel) {
+    if (channel !== 'cloudflare' || this.getChannels()?.cloudflare !== true) {
+      sendJson(res, 403, { ok: false, error: 'CHANNEL_DISABLED', channel });
+      return;
+    }
+
+    const target = this.getPcWebProxyTarget();
+    const targetRunning = Boolean(target && (target.proxyRunning ?? target.running) && target.port);
+    if (!targetRunning) {
+      sendJson(res, 503, { ok: false, error: 'PC_WEB_UNAVAILABLE' });
+      return;
+    }
+    if (target.channels?.cloudflare !== true) {
+      sendJson(res, 403, { ok: false, error: 'CHANNEL_DISABLED', channel: 'cloudflare' });
+      return;
+    }
+
+    if (urlObj.pathname === '/pc') {
+      res.writeHead(302, {
+        Location: `/pc/${urlObj.search || ''}`,
+        ...SECURITY_HEADERS
+      });
+      res.end();
+      return;
+    }
+
+    const strippedPath = urlObj.pathname.slice(3) || '/';
+    const upstreamPath = `${strippedPath}${urlObj.search || ''}`;
+    const forwardHeaders = {};
+    for (const [key, val] of Object.entries(req.headers || {})) {
+      if (val === undefined) continue;
+      const lower = key.toLowerCase();
+      if (lower.startsWith('x-agy-proxy-') || lower === 'connection') continue;
+      forwardHeaders[key] = val;
+    }
+    forwardHeaders['x-agy-proxy-source'] = 'agy-daddy-remote';
+    forwardHeaders['x-agy-proxy-channel'] = 'cloudflare';
+    forwardHeaders['x-agy-proxy-prefix'] = '/pc';
+    forwardHeaders['x-agy-proxy-secret'] = String(this.getProxySecret() || '');
+
+    req.setTimeout?.(0);
+    res.setTimeout?.(0);
+
+    const proxyReq = http.request({
+      hostname: '127.0.0.1',
+      port: target.port,
+      method,
+      path: upstreamPath,
+      headers: forwardHeaders
+    }, (proxyRes) => {
+      if (res.writableEnded || res.destroyed) {
+        proxyRes.destroy();
+        return;
+      }
+      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+      proxyRes.on('data', (chunk) => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(chunk);
+        }
+      });
+      proxyRes.on('end', () => {
+        if (!res.writableEnded) res.end();
+      });
+      proxyRes.on('error', () => {
+        if (!res.writableEnded) res.end();
+      });
+    });
+
+    proxyReq.setTimeout(0);
+    const abortUpstream = () => {
+      if (!res.writableEnded && !proxyReq.destroyed) {
+        proxyReq.destroy();
+      }
+    };
+    res.on('close', abortUpstream);
+    req.on('aborted', abortUpstream);
+    req.on('error', abortUpstream);
+    proxyReq.on('error', () => {
+      if (!res.headersSent) {
+        sendJson(res, 502, { ok: false, error: 'PC_WEB_PROXY_ERROR' });
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    });
+
+    if (method === 'GET' || method === 'HEAD') {
+      proxyReq.end();
+    } else {
+      req.pipe(proxyReq);
+    }
+  }
+
   _tryServeStatic(res, method, pathname) {
     if (!this.staticDir) return false;
     let realStaticDir;
@@ -484,6 +581,11 @@ class MobileRemoteServer {
     const channel = classifyRequestChannel(req, { tunnelHostname: this.getTunnelHostname() });
     if (!isChannelAllowed(channel, this.getChannels())) {
       sendJson(res, 403, { ok: false, error: 'CHANNEL_DISABLED', channel });
+      return;
+    }
+
+    if (pathname === '/pc' || pathname.startsWith('/pc/')) {
+      this._handlePcWebProxy(req, res, method, urlObj, channel);
       return;
     }
 

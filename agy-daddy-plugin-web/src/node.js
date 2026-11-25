@@ -33,21 +33,37 @@ function isTestMode() {
   );
 }
 
+function readDiskSettings(host) {
+  const read = host?.storage?.readJson?.('settings.json', {});
+  return read?.data && typeof read.data === 'object' ? read.data : {};
+}
+
 function readStoredSettings(host) {
   if (typeof host?.settings?.get === 'function') {
     const val = host.settings.get();
     if (val && typeof val === 'object') return val;
   }
-  const read = host?.storage?.readJson?.('settings.json', {});
-  return read?.data && typeof read.data === 'object' ? read.data : {};
+  return readDiskSettings(host);
 }
 
 function readAndEnsureWebConfig(host) {
   const existing = host?.storage?.readJson?.('web-config.json', {})?.data;
   const cfg = existing && typeof existing === 'object' ? { ...existing } : {};
   let changed = false;
+  if (typeof cfg.localToken !== 'string' || !cfg.localToken.trim()) {
+    cfg.localToken = (typeof cfg.token === 'string' && cfg.token.trim())
+      ? cfg.token.trim()
+      : crypto.randomBytes(24).toString('hex');
+    changed = true;
+  }
   if (typeof cfg.token !== 'string' || !cfg.token.trim()) {
-    cfg.token = crypto.randomBytes(24).toString('hex');
+    cfg.token = cfg.localToken;
+    changed = true;
+  }
+  const diskSettings = readDiskSettings(host);
+  const diskLegacy = normalizeTunnelHostname(diskSettings?.tunnelHostname);
+  if (diskLegacy && diskLegacy !== cfg.legacyTunnelHostname) {
+    cfg.legacyTunnelHostname = diskLegacy;
     changed = true;
   }
   if (changed && typeof host?.storage?.writeJson === 'function') {
@@ -124,11 +140,13 @@ function buildPublicStatus(runtime) {
     channels: access?.channels || {},
     activeChannels: access?.activeChannels || [],
     urls: access?.urls || {},
+    channelEndpoints: access?.channelEndpoints || {},
     primaryChannel: access?.primaryChannel || 'offline',
     primaryUrl: access?.primaryUrl || '',
     permissionLevel: access?.permissionLevel || 'L0',
     allowRemoteWrite: access?.allowRemoteWrite || false,
     tunnelHostname: access?.tunnelHostname || '',
+    cloudflareState: access?.cloudflareState || null,
     rpcConnected: Boolean(runtime.lastHubOrigin),
     hubOrigin: runtime.lastHubOrigin || null,
     pluginVersion: PLUGIN_VERSION
@@ -146,7 +164,8 @@ async function activate(host) {
   const settings = readStoredSettings(host);
   const webConfig = readAndEnsureWebConfig(host);
   const listenPort = resolveListenPort(settings, webConfig);
-  const pairingToken = webConfig.token;
+  const localToken = webConfig.localToken || webConfig.token;
+  const localConfirmSecret = crypto.randomBytes(32).toString('hex');
   let runtimeAccess = readAccessSettings(settings);
 
   const workspaceMetaStore = createWorkspaceMetaStore({ storage: host.storage });
@@ -218,7 +237,18 @@ async function activate(host) {
 
   const runtime = {
     host,
-    pairingToken,
+    webConfig,
+    localToken,
+    localConfirmSecret,
+    pairingToken: localToken,
+    confirmSecret: localConfirmSecret,
+    proxySecret: '',
+    authEpoch: 1,
+    tokenSource: 'local',
+    legacyTunnelHostname: normalizeTunnelHostname(webConfig.legacyTunnelHostname || runtimeAccess.tunnelHostname),
+    effectiveTunnelHostname: normalizeTunnelHostname(runtimeAccess.tunnelHostname || webConfig.legacyTunnelHostname),
+    effectiveMountPath: '',
+    cloudflareState: null,
     lastHubOrigin: null,
     harnessAdapter,
     workspaceService,
@@ -234,15 +264,271 @@ async function activate(host) {
 
   const getStatus = () => ({
     ...buildPublicStatus(runtime),
+    authUrls: runtime.webServer?.getChannelUrls({ includeToken: true }) || {},
     pairingUrl: runtime.webServer?.getPairingUrl() || '',
     pairingToken: runtime.pairingToken
   });
 
-  function publishStatus() {
-    if (typeof host?.state?.set === 'function') {
-      host.state.set('state:web.status@1', buildPublicStatus(runtime));
+  function persistWebConfigToken(nextToken, extra = {}) {
+    if (typeof host?.storage?.writeJson !== 'function') return;
+    runtime.webConfig = {
+      ...runtime.webConfig,
+      localToken: runtime.localToken,
+      token: nextToken,
+      ...(runtime.legacyTunnelHostname ? { legacyTunnelHostname: runtime.legacyTunnelHostname } : {}),
+      ...(runtime.webServer?.port ? { port: runtime.webServer.port } : {}),
+      ...extra,
+      updatedAt: new Date().toISOString()
+    };
+    host.storage.writeJson('web-config.json', runtime.webConfig);
+  }
+
+  function computeCloudflareState(bundle, remoteDeactivated = false) {
+    const cfEnabledInWeb = Boolean(runtimeAccess.channels.cloudflare);
+    const remoteOnline = Boolean(bundle && bundle.ok && bundle.available && !remoteDeactivated);
+    if (remoteOnline) {
+      const pubOrigin = normalizeTunnelHostname(bundle.tunnelPublicOrigin);
+      const tunnelMode = bundle.tunnelMode === 'named' ? 'named' : 'quick';
+      if (bundle.cloudflareEnabled) {
+        if (pubOrigin) {
+          if (cfEnabledInWeb) {
+            return {
+              state: {
+                mode: 'shared_ready',
+                tunnelMode,
+                publicOrigin: pubOrigin,
+                mountPath: '/pc',
+                reasonCode: 'OK',
+                tokenSource: 'remote'
+              },
+              tunnelHostname: pubOrigin,
+              mountPath: '/pc'
+            };
+          }
+          return {
+            state: {
+              mode: 'web_disabled',
+              tunnelMode,
+              publicOrigin: '',
+              mountPath: '/pc',
+              reasonCode: 'WEB_CLOUDFLARE_OFF',
+              tokenSource: 'remote'
+            },
+            tunnelHostname: '',
+            mountPath: '/pc'
+          };
+        }
+        if (cfEnabledInWeb) {
+          const errCode = String(bundle.tunnelConfigError || bundle.tunnelState?.error || '').trim();
+          return {
+            state: {
+              mode: errCode ? 'remote_error' : 'remote_pending',
+              tunnelMode,
+              publicOrigin: '',
+              mountPath: '/pc',
+              reasonCode: errCode || 'TUNNEL_STARTING',
+              tokenSource: 'remote'
+            },
+            tunnelHostname: '',
+            mountPath: '/pc'
+          };
+        }
+        return {
+          state: {
+            mode: 'disabled',
+            tunnelMode,
+            publicOrigin: '',
+            mountPath: '/pc',
+            reasonCode: 'CHANNEL_DISABLED',
+            tokenSource: 'remote'
+          },
+          tunnelHostname: '',
+          mountPath: '/pc'
+        };
+      }
+
+      if (cfEnabledInWeb) {
+        return {
+          state: {
+            mode: 'remote_tunnel_off',
+            tunnelMode,
+            publicOrigin: '',
+            mountPath: '/pc',
+            reasonCode: 'REMOTE_CLOUDFLARE_OFF',
+            tokenSource: 'remote'
+          },
+          tunnelHostname: '',
+          mountPath: '/pc'
+        };
+      }
+      return {
+        state: {
+          mode: 'disabled',
+          tunnelMode,
+          publicOrigin: '',
+          mountPath: '/pc',
+          reasonCode: 'CHANNEL_DISABLED',
+          tokenSource: 'remote'
+        },
+        tunnelHostname: '',
+        mountPath: '/pc'
+      };
     }
-    return buildPublicStatus(runtime);
+
+    const legacyOrigin = normalizeTunnelHostname(runtimeAccess.tunnelHostname || runtime.legacyTunnelHostname);
+    if (cfEnabledInWeb) {
+      if (legacyOrigin) {
+        return {
+          state: {
+            mode: 'legacy_standalone',
+            tunnelMode: 'named',
+            publicOrigin: legacyOrigin,
+            mountPath: '/',
+            reasonCode: 'LEGACY_HOSTNAME',
+            tokenSource: 'local'
+          },
+          tunnelHostname: legacyOrigin,
+          mountPath: ''
+        };
+      }
+      return {
+        state: {
+          mode: 'remote_unavailable',
+          tunnelMode: null,
+          publicOrigin: '',
+          mountPath: '/',
+          reasonCode: 'REMOTE_PLUGIN_OFFLINE',
+          tokenSource: 'local'
+        },
+        tunnelHostname: '',
+        mountPath: ''
+      };
+    }
+
+    return {
+      state: {
+        mode: 'disabled',
+        tunnelMode: null,
+        publicOrigin: '',
+        mountPath: '/',
+        reasonCode: 'CHANNEL_DISABLED',
+        tokenSource: 'local'
+      },
+      tunnelHostname: legacyOrigin,
+      mountPath: ''
+    };
+  }
+
+  let syncChain = Promise.resolve();
+
+  async function runSyncWithRemoteService(statusEventPayload = null) {
+    if (activeRuntime !== runtime) return;
+    const remoteDeactivated = Boolean(
+      statusEventPayload &&
+      typeof statusEventPayload === 'object' &&
+      statusEventPayload.deactivated === true &&
+      statusEventPayload.running === false
+    );
+
+    let bundle = null;
+    if (!remoteDeactivated && typeof host?.services?.call === 'function') {
+      try {
+        const res = await host.services.call('remote', 'getSharedAuthBundle', [], { optional: true });
+        if (res?.ok && res.value?.available && res.value?.ok) {
+          bundle = res.value;
+        }
+      } catch {}
+    }
+
+    const computed = computeCloudflareState(bundle, remoteDeactivated);
+    runtime.cloudflareState = computed.state;
+    runtime.effectiveTunnelHostname = computed.tunnelHostname;
+    runtime.effectiveMountPath = computed.mountPath;
+
+    if (bundle && !remoteDeactivated) {
+      const nextToken = typeof bundle.token === 'string' && bundle.token ? bundle.token : runtime.localToken;
+      const nextConfirm = typeof bundle.confirmSecret === 'string' && bundle.confirmSecret
+        ? bundle.confirmSecret
+        : runtime.localConfirmSecret;
+      const nextProxySecret = typeof bundle.proxySecret === 'string' ? bundle.proxySecret : '';
+      const nextEpoch = Number.isInteger(bundle.authEpoch) ? bundle.authEpoch : runtime.authEpoch;
+      const shouldRotateRemote = runtime.tokenSource === 'remote' && (
+        runtime.pairingToken !== nextToken ||
+        runtime.authEpoch !== nextEpoch
+      );
+      const tokenChanged = runtime.pairingToken !== nextToken || runtime.tokenSource !== 'remote';
+
+      runtime.pairingToken = nextToken;
+      runtime.confirmSecret = nextConfirm;
+      runtime.proxySecret = nextProxySecret;
+      runtime.authEpoch = nextEpoch;
+      runtime.tokenSource = 'remote';
+
+      if (runtime.webServer) {
+        runtime.webServer.setAuthMaterial({
+          pairingToken: nextToken,
+          confirmSecret: nextConfirm,
+          proxySecret: nextProxySecret,
+          authEpoch: nextEpoch,
+          tokenSource: 'remote',
+          rotateRemoteSession: shouldRotateRemote
+        });
+        runtime.webServer.tunnelHostname = computed.tunnelHostname;
+        runtime.webServer.cloudflareMountPath = computed.mountPath;
+        runtime.webServer.cloudflareState = computed.state;
+      }
+      if (tokenChanged) {
+        persistWebConfigToken(nextToken);
+      }
+    } else {
+      const wasRemote = runtime.tokenSource === 'remote';
+      runtime.pairingToken = runtime.localToken;
+      runtime.confirmSecret = runtime.localConfirmSecret;
+      runtime.proxySecret = '';
+      runtime.tokenSource = 'local';
+
+      if (runtime.webServer) {
+        runtime.webServer.setAuthMaterial({
+          pairingToken: runtime.localToken,
+          confirmSecret: runtime.localConfirmSecret,
+          proxySecret: '',
+          tokenSource: 'local',
+          rotateRemoteSession: wasRemote
+        });
+        runtime.webServer.tunnelHostname = computed.tunnelHostname;
+        runtime.webServer.cloudflareMountPath = computed.mountPath;
+        runtime.webServer.cloudflareState = computed.state;
+      }
+      if (wasRemote) {
+        persistWebConfigToken(runtime.localToken);
+      }
+    }
+
+    if (runtime.webServer?.server) {
+      publishStatus();
+    }
+  }
+
+  function syncWithRemoteService(statusEventPayload = null) {
+    syncChain = syncChain.then(
+      () => runSyncWithRemoteService(statusEventPayload),
+      () => runSyncWithRemoteService(statusEventPayload)
+    );
+    return syncChain;
+  }
+
+  let lastPublishedStatusJson = '';
+
+  function publishStatus() {
+    const st = buildPublicStatus(runtime);
+    const serialized = JSON.stringify(st);
+    if (serialized !== lastPublishedStatusJson) {
+      lastPublishedStatusJson = serialized;
+      if (typeof host?.state?.set === 'function') {
+        host.state.set('state:web.status@1', st);
+      }
+    }
+    return st;
   }
 
   let reconcileChain = Promise.resolve();
@@ -263,7 +549,9 @@ async function activate(host) {
     const previousBindHostMode = runtime.webServer.bindHostMode;
     const previousChannels = { ...runtime.webServer.channels };
     const previousPermissionLevel = runtime.webServer.permissionLevel;
-    const previousTunnelHostname = runtime.webServer.tunnelHostname;
+    const previousTunnelHostname = runtime.effectiveTunnelHostname;
+    const previousMountPath = runtime.effectiveMountPath;
+    const previousCloudflareState = runtime.cloudflareState;
     let result;
     try {
       result = runtime.webServer.updateAccessConfig({
@@ -279,6 +567,7 @@ async function activate(host) {
       return;
     }
     runtimeAccess = next;
+    await syncWithRemoteService();
     if (!result.rebind || result.host === previousHost || !runtime.webServer.server) {
       publishStatus();
       return;
@@ -293,11 +582,16 @@ async function activate(host) {
     } catch {
       if (activeRuntime !== runtime || !runtime.webServer) return;
       runtimeAccess = previousAccess;
+      runtime.effectiveTunnelHostname = previousTunnelHostname;
+      runtime.effectiveMountPath = previousMountPath;
+      runtime.cloudflareState = previousCloudflareState;
       runtime.webServer.host = previousHost;
       runtime.webServer.bindHostMode = previousBindHostMode;
       runtime.webServer.channels = previousChannels;
       runtime.webServer.permissionLevel = previousPermissionLevel;
       runtime.webServer.tunnelHostname = previousTunnelHostname;
+      runtime.webServer.cloudflareMountPath = previousMountPath;
+      runtime.webServer.cloudflareState = previousCloudflareState;
       try {
         await runtime.webServer.start();
       } catch {}
@@ -349,17 +643,27 @@ async function activate(host) {
     };
   };
 
+  await syncWithRemoteService();
+
   runtime.webServer = createWebServer({
     host: resolveBindHost({ channels: runtimeAccess.channels, mode: runtimeAccess.bindHostMode }),
     bindHostMode: runtimeAccess.bindHostMode,
     channels: runtimeAccess.channels,
     permissionLevel: runtimeAccess.permissionLevel,
-    tunnelHostname: runtimeAccess.tunnelHostname,
+    tunnelHostname: runtime.effectiveTunnelHostname,
+    cloudflareMountPath: runtime.effectiveMountPath,
+    cloudflareState: runtime.cloudflareState,
     getChannels: () => runtimeAccess.channels,
     getPermissionLevel: () => runtimeAccess.permissionLevel,
-    getTunnelHostname: () => runtimeAccess.tunnelHostname,
+    getTunnelHostname: () => runtime.effectiveTunnelHostname,
+    getCloudflareMountPath: () => runtime.effectiveMountPath,
+    getCloudflareState: () => runtime.cloudflareState,
     port: listenPort,
-    pairingToken,
+    pairingToken: runtime.pairingToken,
+    confirmSecret: runtime.confirmSecret,
+    proxySecret: runtime.proxySecret,
+    authEpoch: runtime.authEpoch,
+    tokenSource: runtime.tokenSource,
     pluginVersion: PLUGIN_VERSION,
     staticDir,
     harnessAdapter,
@@ -380,20 +684,22 @@ async function activate(host) {
     await getHealth();
     const startInfo = await runtime.webServer.start();
 
-    if (typeof host?.storage?.writeJson === 'function') {
-      host.storage.writeJson('web-config.json', {
-        ...webConfig,
-        token: pairingToken,
-        port: startInfo.port,
-        updatedAt: new Date().toISOString()
-      });
-    }
+    persistWebConfigToken(runtime.pairingToken, { port: startInfo.port });
 
     if (typeof host?.events?.onAny === 'function') {
       runtime.disposeOnAny = host.events.onAny((ev) => {
         if (!runtime.webServer || !ev) return;
         if (ev.kind === 'state') {
           if (ev.topicOrKey === 'state:web.status@1') return;
+          if (ev.topicOrKey === 'state:remote.status@1') {
+            void syncWithRemoteService(ev.payload);
+            runtime.webServer.broadcast('state.patch', {
+              key: ev.topicOrKey,
+              value: ev.payload,
+              meta: ev.meta
+            });
+            return;
+          }
           if (ev.topicOrKey === 'state:session.readState@1') {
             const externalMap = ev.payload?.sessionReadState ?? ev.payload;
             workspaceMetaStore.mergeExternalReadState(externalMap);
@@ -459,8 +765,8 @@ async function activate(host) {
       }
     }
 
+    publishStatus();
     if (typeof host?.state?.set === 'function') {
-      host.state.set('state:web.status@1', buildPublicStatus(runtime));
       host.state.set('state:session.readState@1', workspaceMetaStore.getReadStateSnapshot());
     }
 

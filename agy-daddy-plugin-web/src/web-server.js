@@ -12,11 +12,13 @@ const {
   DEFAULT_CONFIRM_TTL_MS,
   LOOPBACK_BIND_HOST,
   assertBindableHost,
+  buildChannelEndpoints,
   buildChannelUrls,
   classifyRequestChannel,
   createConfirmToken,
   isChannelAllowed,
   isPermissionAtLeast,
+  isTrustedProxyRequest,
   normalizeBindHostMode,
   normalizeChannelConfig,
   normalizePermissionLevel,
@@ -35,12 +37,25 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 15000;
 const DEFAULT_IDLE_DELTA_POLL_INTERVAL_MS = 400;
 const DEFAULT_ACTIVE_DELTA_POLL_INTERVAL_MS = 50;
 const DEFAULT_BURST_WINDOW_MS = 2500;
+const SWITCH_TICKET_TTL_MS = 60 * 1000;
+const SWITCH_TICKET_MAX_SIZE = 64;
+const AUTH_RATE_LIMIT_MAX_FAILS = 15;
+const AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 const SECURITY_HEADERS = Object.freeze({
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'Cache-Control': 'no-store',
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' blob: data:; object-src 'self' blob:; frame-ancestors 'none'"
+  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https:; frame-src 'self' blob: data:; object-src 'self' blob:; frame-ancestors 'none'"
+});
+
+const PING_CORS_HEADERS = Object.freeze({
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Accept',
+  'Access-Control-Allow-Private-Network': 'true',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+  'Cache-Control': 'no-store'
 });
 
 const MIME_TYPES = Object.freeze({
@@ -145,6 +160,7 @@ function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader, channel =
  */
 function requiredPermissionFor(method, pathname) {
   if (READ_METHODS.has(method)) return 'L0';
+  if (pathname === '/api/v1/web/switch-ticket') return 'L0';
   if (pathname === '/api/v1/confirm') return 'L1';
   if (pathname.startsWith('/api/v1/sessions')) return 'L1';
   if (pathname.startsWith('/api/v1/composer')) return 'L1';
@@ -263,9 +279,16 @@ class WebServer {
     this.pairingToken = typeof options.pairingToken === 'string' && options.pairingToken
       ? options.pairingToken
       : crypto.randomBytes(32).toString('hex');
-    this.sessionSecret = typeof options.sessionSecret === 'string' && options.sessionSecret
+    const sharedInitSecret = typeof options.sessionSecret === 'string' && options.sessionSecret
       ? options.sessionSecret
-      : crypto.randomBytes(32).toString('hex');
+      : '';
+    this.loopbackSessionSecret = typeof options.loopbackSessionSecret === 'string' && options.loopbackSessionSecret
+      ? options.loopbackSessionSecret
+      : (sharedInitSecret || crypto.randomBytes(32).toString('hex'));
+    this.remoteSessionSecret = typeof options.remoteSessionSecret === 'string' && options.remoteSessionSecret
+      ? options.remoteSessionSecret
+      : (sharedInitSecret || crypto.randomBytes(32).toString('hex'));
+    this.sessionSecret = this.remoteSessionSecret;
     this.permissionLevel = normalizePermissionLevel(
       options.permissionLevel === undefined ? 'L0' : options.permissionLevel
     );
@@ -274,10 +297,23 @@ class WebServer {
       : null;
     this.confirmSecret = typeof options.confirmSecret === 'string' && options.confirmSecret
       ? options.confirmSecret
-      : this.sessionSecret;
+      : this.remoteSessionSecret;
+    this.proxySecret = typeof options.proxySecret === 'string' ? options.proxySecret : '';
+    this.authEpoch = Number.isInteger(options.authEpoch) ? options.authEpoch : 1;
+    this.tokenSource = options.tokenSource === 'remote' ? 'remote' : 'local';
     this.tunnelHostname = normalizeTunnelHostname(options.tunnelHostname);
     this.getTunnelHostname = typeof options.getTunnelHostname === 'function'
       ? options.getTunnelHostname
+      : null;
+    this.cloudflareMountPath = options.cloudflareMountPath === '/pc' ? '/pc' : '';
+    this.getCloudflareMountPath = typeof options.getCloudflareMountPath === 'function'
+      ? options.getCloudflareMountPath
+      : null;
+    this.cloudflareState = options.cloudflareState && typeof options.cloudflareState === 'object'
+      ? { ...options.cloudflareState }
+      : null;
+    this.getCloudflareState = typeof options.getCloudflareState === 'function'
+      ? options.getCloudflareState
       : null;
     // Test seam: production always classifies from the socket + headers.
     this.resolveChannel = typeof options.resolveChannel === 'function' ? options.resolveChannel : null;
@@ -343,6 +379,8 @@ class WebServer {
     this._sessionPollers = new Map();
     this._ringBuffer = [];
     this._nextEventId = 0;
+    this._switchTickets = new Map();
+    this._authRateLimit = new Map();
   }
 
   _resolveChannels() {
@@ -359,6 +397,78 @@ class WebServer {
     return normalizeTunnelHostname(
       this.getTunnelHostname ? this.getTunnelHostname() : this.tunnelHostname
     );
+  }
+
+  _resolveCloudflareMountPath() {
+    const raw = this.getCloudflareMountPath ? this.getCloudflareMountPath() : this.cloudflareMountPath;
+    return raw === '/pc' ? '/pc' : '';
+  }
+
+  _resolveCloudflareState() {
+    if (this.getCloudflareState) {
+      return this.getCloudflareState();
+    }
+    if (this.cloudflareState) {
+      return { ...this.cloudflareState };
+    }
+    const channels = this._resolveChannels();
+    const tunnelHostname = this._resolveTunnelHostname();
+    if (!channels.cloudflare) {
+      return {
+        mode: 'disabled',
+        tunnelMode: null,
+        publicOrigin: '',
+        mountPath: this._resolveCloudflareMountPath() || '/',
+        reasonCode: 'CHANNEL_DISABLED',
+        tokenSource: this.tokenSource
+      };
+    }
+    if (tunnelHostname) {
+      return {
+        mode: 'legacy_standalone',
+        tunnelMode: 'named',
+        publicOrigin: tunnelHostname,
+        mountPath: this._resolveCloudflareMountPath() || '/',
+        reasonCode: 'LEGACY_HOSTNAME',
+        tokenSource: this.tokenSource
+      };
+    }
+    return {
+      mode: 'remote_unavailable',
+      tunnelMode: null,
+      publicOrigin: '',
+      mountPath: '/',
+      reasonCode: 'REMOTE_PLUGIN_OFFLINE',
+      tokenSource: this.tokenSource
+    };
+  }
+
+  setAuthMaterial({ pairingToken, confirmSecret, proxySecret, authEpoch, tokenSource, rotateRemoteSession } = {}) {
+    if (typeof pairingToken === 'string' && pairingToken) {
+      this.pairingToken = pairingToken;
+    }
+    if (typeof confirmSecret === 'string' && confirmSecret) {
+      this.confirmSecret = confirmSecret;
+    }
+    if (typeof proxySecret === 'string') {
+      this.proxySecret = proxySecret;
+    }
+    if (Number.isInteger(authEpoch)) {
+      this.authEpoch = authEpoch;
+    }
+    if (tokenSource === 'remote' || tokenSource === 'local') {
+      this.tokenSource = tokenSource;
+    }
+    if (rotateRemoteSession) {
+      this.remoteSessionSecret = crypto.randomBytes(32).toString('hex');
+      this.sessionSecret = this.remoteSessionSecret;
+      this._switchTickets.clear();
+      for (const client of Array.from(this._sseClients)) {
+        if (client.channel && client.channel !== 'loopback') {
+          client.close();
+        }
+      }
+    }
   }
 
   /**
@@ -413,26 +523,42 @@ class WebServer {
       channels: this._resolveChannels(),
       connectHost: normalizeConnectHost(this.host),
       hostName: os.hostname(),
-      tunnelHostname: this._resolveTunnelHostname()
+      tunnelHostname: this._resolveTunnelHostname(),
+      cloudflareMountPath: this._resolveCloudflareMountPath()
+    });
+  }
+
+  getChannelEndpoints() {
+    return buildChannelEndpoints({
+      port: this.port,
+      channels: this._resolveChannels(),
+      connectHost: normalizeConnectHost(this.host),
+      hostName: os.hostname(),
+      tunnelHostname: this._resolveTunnelHostname(),
+      cloudflareMountPath: this._resolveCloudflareMountPath()
     });
   }
 
   getAccessStatus({ includeToken = true } = {}) {
     const channels = this._resolveChannels();
     const urls = this.getChannelUrls({ includeToken });
+    const channelEndpoints = this.getChannelEndpoints();
     const { primaryChannel, primaryUrl } = resolvePrimaryChannel(urls, channels);
     const permissionLevel = this._resolvePermissionLevel();
+    const cloudflareState = this._resolveCloudflareState();
     return {
       bindHost: this.host,
       connectHost: normalizeConnectHost(this.host),
       channels: { ...channels },
       activeChannels: Object.keys(channels).filter((key) => channels[key] === true),
       urls,
+      channelEndpoints,
       primaryChannel,
       primaryUrl,
       permissionLevel,
       allowRemoteWrite: isPermissionAtLeast(permissionLevel, 'L1'),
-      tunnelHostname: this._resolveTunnelHostname()
+      tunnelHostname: this._resolveTunnelHostname(),
+      cloudflareState
     };
   }
 
@@ -526,7 +652,7 @@ class WebServer {
     await new Promise((resolve) => srv.close(() => resolve()));
   }
 
-  _authenticateApiRequest(req) {
+  _authenticateApiRequest(req, channel = 'loopback') {
     const authHeader = String(req.headers?.authorization || '');
     if (authHeader.toLowerCase().startsWith('bearer ')) {
       const token = authHeader.slice(7).trim();
@@ -537,10 +663,39 @@ class WebServer {
     }
 
     const cookies = parseCookies(req.headers?.cookie);
-    if (safeTokenEqual(cookies.agy_web_sid, this.sessionSecret)) {
+    const expectedSecret = channel === 'loopback' ? this.loopbackSessionSecret : this.remoteSessionSecret;
+    if (safeTokenEqual(cookies.agy_web_sid, expectedSecret)) {
       return { ok: true, mode: 'cookie' };
     }
     return { ok: false };
+  }
+
+  _purgeExpiredTickets(now = Date.now()) {
+    for (const [id, item] of this._switchTickets.entries()) {
+      if (!item || item.expiresAt <= now) {
+        this._switchTickets.delete(id);
+      }
+    }
+  }
+
+  _isSwitchTicketChannelMatch(ticket, reqChannel) {
+    if (!ticket) return false;
+    if (reqChannel === 'loopback') {
+      return ticket.targetChannel === 'loopback';
+    }
+    if (ticket.targetChannel === reqChannel) {
+      return true;
+    }
+    if (ticket.targetChannel === 'bonjour' && reqChannel === 'lan') {
+      return true;
+    }
+    return false;
+  }
+
+  _buildCleanRedirectLocation(urlObj, proxyPrefix = '') {
+    const base = proxyPrefix === '/pc' ? '/pc/' : '/';
+    const session = String(urlObj.searchParams.get('session') || '').trim();
+    return session ? `${base}?session=${encodeURIComponent(session)}` : base;
   }
 
   async _handleRequest(req, res) {
@@ -548,9 +703,14 @@ class WebServer {
       const method = String(req.method || 'GET').toUpperCase();
       const urlObj = new URL(req.url || '/', `http://${this.host.includes(':') ? `[${this.host}]` : this.host}`);
       const pathname = urlObj.pathname;
+      const proxyInfo = isTrustedProxyRequest(req, { proxySecret: this.proxySecret });
       const channel = this.resolveChannel
         ? this.resolveChannel(req)
-        : classifyRequestChannel(req, { tunnelHostname: this._resolveTunnelHostname() });
+        : classifyRequestChannel(req, {
+            tunnelHostname: this._resolveTunnelHostname(),
+            proxySecret: this.proxySecret
+          });
+      const proxyPrefix = proxyInfo.trusted && proxyInfo.prefix === '/pc' ? '/pc' : '';
       const channels = this._resolveChannels();
 
       if (!isChannelAllowed(channel, channels)) {
@@ -559,6 +719,70 @@ class WebServer {
           error: 'CHANNEL_DISABLED',
           channel,
           allowedChannels: Object.keys(channels).filter((key) => channels[key] === true)
+        }, pathname === '/api/v1/ping' ? PING_CORS_HEADERS : {});
+        return;
+      }
+
+      if (pathname === '/api/v1/ping') {
+        if (method === 'OPTIONS') {
+          res.writeHead(204, {
+            ...SECURITY_HEADERS,
+            ...PING_CORS_HEADERS
+          });
+          res.end();
+          return;
+        }
+        if (method === 'GET' || method === 'HEAD') {
+          if (method === 'HEAD') {
+            res.writeHead(200, {
+              'Content-Type': 'application/json; charset=utf-8',
+              ...SECURITY_HEADERS,
+              ...PING_CORS_HEADERS
+            });
+            res.end();
+            return;
+          }
+          sendJson(res, 200, {
+            ok: true,
+            service: 'agy-daddy-web',
+            channel,
+            ts: Date.now()
+          }, PING_CORS_HEADERS);
+          return;
+        }
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/web/auth') {
+        const originOk = isLoopbackSameOrigin(
+          req.headers.origin,
+          this.port,
+          req.headers.host,
+          channel
+        );
+        if (!originOk) {
+          sendJson(res, 403, { ok: false, error: 'CSRF_REQUIRED' });
+          return;
+        }
+        const rateKey = `${channel}:${String(req.socket?.remoteAddress || 'local')}`;
+        const now = Date.now();
+        const entry = this._authRateLimit.get(rateKey);
+        if (entry && now - entry.windowStart < AUTH_RATE_LIMIT_WINDOW_MS && entry.fails >= AUTH_RATE_LIMIT_MAX_FAILS) {
+          sendJson(res, 429, { ok: false, error: 'RATE_LIMITED' });
+          return;
+        }
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const providedToken = String(body.token || '').trim();
+        if (!safeTokenEqual(providedToken, this.pairingToken)) {
+          const nextEntry = (!entry || now - entry.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS)
+            ? { fails: 1, windowStart: now }
+            : { fails: entry.fails + 1, windowStart: entry.windowStart };
+          this._authRateLimit.set(rateKey, nextEntry);
+          sendJson(res, 401, { ok: false, error: 'UNAUTHORIZED' });
+          return;
+        }
+        this._authRateLimit.delete(rateKey);
+        sendJson(res, 200, { ok: true, channel }, {
+          'Set-Cookie': this._buildSessionCookie(channel, proxyPrefix)
         });
         return;
       }
@@ -570,8 +794,32 @@ class WebServer {
           return;
         }
         res.writeHead(302, {
-          Location: '/',
-          'Set-Cookie': this._buildSessionCookie(channel),
+          Location: this._buildCleanRedirectLocation(urlObj, proxyPrefix),
+          'Set-Cookie': this._buildSessionCookie(channel, proxyPrefix),
+          ...SECURITY_HEADERS
+        });
+        res.end();
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/' && urlObj.searchParams.has('switch_ticket')) {
+        const now = Date.now();
+        this._purgeExpiredTickets(now);
+        const ticketId = String(urlObj.searchParams.get('switch_ticket') || '').trim();
+        const ticket = ticketId ? this._switchTickets.get(ticketId) : null;
+        if (ticketId) this._switchTickets.delete(ticketId);
+        if (
+          !ticket ||
+          ticket.expiresAt <= now ||
+          ticket.authEpoch !== this.authEpoch ||
+          !this._isSwitchTicketChannelMatch(ticket, channel)
+        ) {
+          sendJson(res, 401, { ok: false, error: 'SWITCH_TICKET_INVALID' });
+          return;
+        }
+        res.writeHead(302, {
+          Location: this._buildCleanRedirectLocation(urlObj, proxyPrefix),
+          'Set-Cookie': this._buildSessionCookie(channel, proxyPrefix),
           ...SECURITY_HEADERS
         });
         res.end();
@@ -579,7 +827,7 @@ class WebServer {
       }
 
       if (pathname === '/api' || pathname.startsWith('/api/')) {
-        const auth = this._authenticateApiRequest(req);
+        const auth = this._authenticateApiRequest(req, channel);
         if (!auth.ok) {
           sendJson(res, 401, { ok: false, error: 'UNAUTHORIZED' });
           return;
@@ -623,14 +871,17 @@ class WebServer {
     return dep;
   }
 
-  _buildSessionCookie(channel) {
+  _buildSessionCookie(channel, proxyPrefix = '') {
     // Every channel is a first-party context (the console is served from the
     // same host the browser navigated to), so SameSite=Strict stays correct and
     // Strict + HttpOnly is what blocks cross-site cookie attachment.
     // Secure is added only for the HTTPS tunnel channel: on plain http LAN the
     // Secure attribute would make browsers drop the cookie entirely.
+    // Proxied /pc requests scope the cookie to Path=/pc so mobile PWA at / is isolated.
+    const secret = channel === 'loopback' ? this.loopbackSessionSecret : this.remoteSessionSecret;
     const secure = channel === 'cloudflare' ? '; Secure' : '';
-    return `agy_web_sid=${encodeURIComponent(this.sessionSecret)}; HttpOnly; SameSite=Strict${secure}; Path=/`;
+    const cookiePath = proxyPrefix === '/pc' ? '/pc' : '/';
+    return `agy_web_sid=${encodeURIComponent(secret)}; HttpOnly; SameSite=Strict${secure}; Path=${cookiePath}`;
   }
 
   _confirmActionId(method, pathname) {
@@ -651,8 +902,13 @@ class WebServer {
       });
       return false;
     }
-    // Minting a confirm token cannot itself require one, and it mutates no state.
-    if (required !== 'L0' && channel === 'cloudflare' && pathname !== '/api/v1/confirm') {
+    // Minting a confirm token or a same-user channel switch ticket cannot itself require one.
+    if (
+      required !== 'L0' &&
+      channel === 'cloudflare' &&
+      pathname !== '/api/v1/confirm' &&
+      pathname !== '/api/v1/web/switch-ticket'
+    ) {
       const action = this._confirmActionId(method, pathname);
       const provided = String(req.headers['x-agy-confirm'] || '').trim();
       if (provided && verifyConfirmToken(provided, this.confirmSecret, { action })) {
@@ -695,6 +951,45 @@ class WebServer {
       return;
     }
 
+    if (method === 'POST' && pathname === '/api/v1/web/switch-ticket') {
+      const body = await readJsonBody(req, this.maxBodyBytes);
+      const targetChannel = String(body.targetChannel || '').trim();
+      const sessionId = String(body.sessionId || '').trim();
+      const channels = this._resolveChannels();
+      if (!targetChannel || !channels[targetChannel]) {
+        sendJson(res, 403, { ok: false, error: 'CHANNEL_DISABLED', channel: targetChannel || 'unknown' });
+        return;
+      }
+      const endpoints = this.getChannelEndpoints();
+      const targetEndpoint = endpoints[targetChannel];
+      if (!targetEndpoint) {
+        sendJson(res, 400, { ok: false, error: 'TARGET_CHANNEL_UNAVAILABLE', channel: targetChannel });
+        return;
+      }
+      const now = Date.now();
+      this._purgeExpiredTickets(now);
+      if (this._switchTickets.size >= SWITCH_TICKET_MAX_SIZE) {
+        const oldestKey = this._switchTickets.keys().next().value;
+        if (oldestKey) this._switchTickets.delete(oldestKey);
+      }
+      const ticketId = crypto.randomBytes(24).toString('hex');
+      this._switchTickets.set(ticketId, {
+        id: ticketId,
+        targetChannel,
+        authEpoch: this.authEpoch,
+        expiresAt: now + SWITCH_TICKET_TTL_MS
+      });
+      const sessionQuery = sessionId ? `&session=${encodeURIComponent(sessionId)}` : '';
+      const switchUrl = `${targetEndpoint.origin}${targetEndpoint.basePath}/?switch_ticket=${encodeURIComponent(ticketId)}${sessionQuery}`;
+      sendJson(res, 200, {
+        ok: true,
+        targetChannel,
+        switchUrl,
+        expiresInMs: SWITCH_TICKET_TTL_MS
+      });
+      return;
+    }
+
     if (method === 'POST' && pathname === '/api/v1/confirm') {
       const body = await readJsonBody(req, this.maxBodyBytes);
       const action = String(body.action || '').trim();
@@ -723,7 +1018,7 @@ class WebServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/stream') {
-      this._handleSseStream(req, res, urlObj);
+      this._handleSseStream(req, res, urlObj, channel);
       return;
     }
 
@@ -1449,7 +1744,7 @@ class WebServer {
     }
   }
 
-  _handleSseStream(req, res, urlObj) {
+  _handleSseStream(req, res, urlObj, channel = 'loopback') {
     const sessionId = String(urlObj.searchParams.get('sessionId') || '').trim() || null;
     const rawLastId = req.headers['last-event-id'] ?? urlObj.searchParams.get('lastEventId');
 
@@ -1503,6 +1798,7 @@ class WebServer {
     let closed = false;
     let heartbeatTimer = null;
     const client = {
+      channel,
       sessionId,
       write(chunk) {
         if (!closed && !res.writableEnded) {

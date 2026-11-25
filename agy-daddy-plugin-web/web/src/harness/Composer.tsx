@@ -1,6 +1,12 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
-import type { ComposerStateResponse, ModelCatalogTree, ModelItem } from '../types';
+import type {
+  ComposerStateResponse,
+  ContextDisplayLocation,
+  ModelCatalogTree,
+  ModelItem,
+  TopbarPanelSlot,
+} from '../types';
 import {
   detectHighRiskPrompt,
   getGhostSuggestions,
@@ -8,6 +14,7 @@ import {
   resolveQuickPrompts,
   truncateGhostLabel,
 } from './composerUtils';
+import { ComposerContextBar } from './ComposerContextBar';
 import { ModelPicker } from './ModelPicker';
 import styles from './Composer.module.css';
 
@@ -30,6 +37,12 @@ export interface ComposerProps {
   onOptimizePrompt?: (text: string) => Promise<string | null>;
   onExportMarkdown?: () => void | Promise<void>;
   exportingMarkdown?: boolean;
+  contextPanel?: TopbarPanelSlot | null;
+  contextDisplayLocation?: ContextDisplayLocation;
+  contextShowSpeed?: boolean;
+  onRefreshContext?: () => void;
+  onRunCompact?: () => void;
+  externalDraftPatch?: { text: string; nonce: number } | null;
 }
 
 function QuickPromptIcon({ id, template }: { id: string; template: string }) {
@@ -288,6 +301,12 @@ export function Composer({
   composerState,
   contextUsagePct = null,
   onOptimizePrompt,
+  contextPanel = null,
+  contextDisplayLocation = 'topbar',
+  contextShowSpeed = false,
+  onRefreshContext,
+  onRunCompact,
+  externalDraftPatch = null,
 }: ComposerProps) {
   const { locale, t } = useI18n();
   const [text, setText] = useState('');
@@ -296,7 +315,10 @@ export function Composer({
   const [optimizedResultText, setOptimizedResultText] = useState<string | null>(null);
   const [ghostIndex, setGhostIndex] = useState(0);
   const [ghostDismissed, setGhostDismissed] = useState(false);
+  const [quickPillsOverflowRight, setQuickPillsOverflowRight] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const quickPillsRef = useRef<HTMLDivElement | null>(null);
+  const lastDraftPatchNonceRef = useRef<number | null>(null);
   const textRef = useRef<string>(text);
   textRef.current = text;
 
@@ -400,6 +422,33 @@ export function Composer({
       setOptimizedResultText(null);
     }
   };
+
+  useEffect(() => {
+    if (!externalDraftPatch) return;
+    if (lastDraftPatchNonceRef.current === externalDraftPatch.nonce) return;
+    lastDraftPatchNonceRef.current = externalDraftPatch.nonce;
+    handleTextChange(externalDraftPatch.text);
+    textareaRef.current?.focus();
+  }, [externalDraftPatch]);
+
+  useLayoutEffect(() => {
+    const el = quickPillsRef.current;
+    if (!el) {
+      setQuickPillsOverflowRight(false);
+      return;
+    }
+    const updateOverflow = () => {
+      setQuickPillsOverflowRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+    };
+    updateOverflow();
+    el.addEventListener('scroll', updateOverflow, { passive: true });
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(updateOverflow) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', updateOverflow);
+      ro?.disconnect();
+    };
+  }, [showQuickBar, quickPrompts.length, compactRecommended]);
 
   const submitMessage = async () => {
     if (!canSend) return;
@@ -582,7 +631,11 @@ export function Composer({
           data-testid="composer-quick-bar"
         >
           {showQuickBar && (
-            <div className={styles.quickPills}>
+            <div
+              ref={quickPillsRef}
+              className={styles.quickPills}
+              data-overflow-right={quickPillsOverflowRight ? 'true' : 'false'}
+            >
               {quickPrompts.map((item) => {
                 const isCompactHighlight =
                   compactRecommended && (item.id === 'compact' || item.label.includes('/compact'));
@@ -626,7 +679,7 @@ export function Composer({
                 </span>
                 <span className={styles.ghostPrefix}>{t('composer.perceptionHint')}</span>
                 <span className={styles.ghostText} data-testid="composer-ghost-text">
-                  {truncateGhostLabel(activeGhostSuggestion, 26)}
+                  {truncateGhostLabel(activeGhostSuggestion, 48)}
                 </span>
                 <kbd className={styles.ghostKbd}>{t('composer.ghostAcceptHint')}</kbd>
               </button>
@@ -759,6 +812,21 @@ export function Composer({
           </div>
         </div>
       </div>
+      {contextDisplayLocation === 'composer' && contextPanel?.available && (
+        <ComposerContextBar
+          slot={contextPanel}
+          showSpeed={contextShowSpeed}
+          isRunning={isRunning}
+          hasDraft={trimmed.length > 0}
+          onRefresh={onRefreshContext}
+          onRunCompact={
+            onRunCompact ??
+            (() => {
+              handleInsertQuickPrompt('/compact ');
+            })
+          }
+        />
+      )}
     </form>
   );
 }

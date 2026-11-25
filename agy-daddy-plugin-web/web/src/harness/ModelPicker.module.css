@@ -62,11 +62,8 @@
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 60;
-  display: flex;
-  align-items: stretch;
-  width: min(560px, 100%);
-  max-width: 100%;
-  max-height: min(460px, 68vh);
+  width: min(312px, calc(100vw - 24px));
+  max-height: min(440px, 68vh);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-default);
   background: var(--bg-panel);
@@ -75,30 +72,51 @@
   color: var(--text-primary);
 }
 
-.primaryPane {
-  flex: 1 1 255px;
+.slideTrack {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  transform: translate3d(calc(-100% * var(--picker-level, 0)), 0, 0);
+  transition: transform var(--picker-duration, 220ms) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.pane {
+  flex: 0 0 100%;
+  width: 100%;
   min-width: 0;
+  max-height: min(440px, 68vh);
   overflow-y: auto;
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  transition: opacity var(--picker-duration, 220ms) cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.secondaryPane {
-  flex: 0 1 250px;
-  min-width: 195px;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  overflow-y: auto;
-  padding: 6px;
+.paneActive {
+  opacity: 1;
+}
+
+.paneInactive {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.paneHeader {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 2px;
+}
+
+.navBar {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  padding-bottom: 4px;
 }
 
 .secondaryHeader {
-  padding: 6px 8px 4px;
+  padding: 4px 8px 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -119,7 +137,7 @@
 }
 
 .backBtn {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   border: none;
@@ -130,6 +148,7 @@
   padding: 4px 6px;
   border-radius: var(--radius-xs);
   text-align: left;
+  cursor: pointer;
 }
 
 .backBtn:hover {
@@ -319,25 +338,9 @@
   font-weight: 600;
 }
 
-@media (max-width: 640px) {
-  .popover {
-    width: min(320px, calc(100vw - 24px));
-  }
-
-  .primaryPane[data-drill='true'] {
-    display: none;
-  }
-
-  .secondaryPane {
-    width: 100%;
-    border-left: none;
-  }
-
-  .secondaryPane[data-drill='false'] {
-    display: none;
-  }
-
-  .backBtn {
-    display: inline-flex;
+@media (prefers-reduced-motion: reduce) {
+  .slideTrack,
+  .pane {
+    transition-duration: 0ms;
   }
 }

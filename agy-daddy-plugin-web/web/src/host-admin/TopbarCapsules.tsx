@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { normalizeLocale, useI18n, type TranslateFn } from '../i18n';
-import { useTheme } from '../theme/ThemeProvider';
+import { useI18n, type TranslateFn } from '../i18n';
 import type {
   AccessChannel,
+  BackgroundTasksListResponse,
+  ContextDisplayLocation,
   RemoteStatusResponse,
+  StopBackgroundTaskResponse,
   TopbarPanelSlot,
   TopbarPanels,
   WebAccessStatusResponse,
 } from '../types';
+import { BackgroundTasksPopover } from './BackgroundTasksPopover';
 import { ChannelSwitcherPopover, type ChannelProbeEntry } from './ChannelSwitcherPopover';
+import { CustomMenuPopover } from './CustomMenuPopover';
 import { MobileQrPopover } from './MobileQrPopover';
 import { TopbarPopover, type TopbarPopoverKind } from './TopbarPopover';
 import { CHANNEL_SHORT_LABEL_KEY } from './webAccessHelpers';
@@ -28,12 +32,26 @@ export interface TopbarCapsulesProps {
   remoteLoading?: boolean;
   webAccessStatus?: WebAccessStatusResponse | null;
   activeSessionId?: string | null;
+  sessionTitle?: string | null;
+  sessionRunning?: boolean;
+  workspaceName?: string | null;
+  branchName?: string | null;
+  diffCount?: number;
+  contextDisplayLocation?: ContextDisplayLocation;
+  tasksData?: BackgroundTasksListResponse | null;
+  tasksLoading?: boolean;
+  onRefreshTasks?: () => void;
+  onStopTask?: (taskId: string) => Promise<StopBackgroundTaskResponse | void>;
+  onSelectTaskSession?: (sessionId: string) => void;
+  onRefreshSession?: () => void;
+  onOpenDiffReview?: () => void;
+  onPluginsChanged?: () => void;
   onRefreshTopbar?: () => void;
   onRefreshRemote?: () => void;
   onRefreshWebAccess?: () => void;
   onNavigateChannelUrl?: (url: string) => void;
   onRunCompact?: () => void;
-  onOpenHostAdmin?: (initialTab?: HostAdminTab) => void;
+  onOpenHostAdmin?: (initialTab?: HostAdminTab, selectedPluginId?: string) => void;
   onOpenPlugins?: () => void;
   onOpenCommandPalette?: () => void;
   onOpenDoctor?: () => void;
@@ -42,7 +60,13 @@ export interface TopbarCapsulesProps {
 }
 
 type CapsuleTone = 'muted' | 'accent' | 'warning' | 'danger' | 'neutral';
-type ActivePopoverKey = TopbarPopoverKind | 'mobile-qr' | 'channel-switcher' | null;
+type ActivePopoverKey =
+  | TopbarPopoverKind
+  | 'mobile-qr'
+  | 'channel-switcher'
+  | 'tasks'
+  | 'custom-menu'
+  | null;
 
 interface FormattedCapsule {
   key: 'context' | 'usage' | 'quota';
@@ -273,16 +297,24 @@ function getConnectionMeta(status: ConnectionStatus, t: TranslateFn): { label: s
   }
 }
 
-function MobileQrIcon() {
+function MenuHamburgerIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <rect x="2" y="1.5" width="7.5" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.35" />
-      <circle cx="5.75" cy="12" r="0.75" fill="currentColor" />
-      <rect x="10.5" y="2.5" width="3.5" height="3.5" rx="0.5" stroke="currentColor" strokeWidth="1.2" />
-      <rect x="10.5" y="8" width="1.6" height="1.6" fill="currentColor" />
-      <rect x="12.6" y="8" width="1.6" height="1.6" fill="currentColor" />
-      <rect x="10.5" y="10.2" width="3.7" height="1.6" fill="currentColor" />
-      <rect x="12.4" y="12.2" width="1.8" height="1.8" fill="currentColor" />
+      <path
+        d="M2.5 4.25h11M2.5 8h11M2.5 11.75h11"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function TasksPulseIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M5 7l2 2 4-3.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -297,6 +329,20 @@ export function TopbarCapsules({
   remoteLoading = false,
   webAccessStatus,
   activeSessionId,
+  sessionTitle,
+  sessionRunning = false,
+  workspaceName,
+  branchName,
+  diffCount = 0,
+  contextDisplayLocation,
+  tasksData,
+  tasksLoading = false,
+  onRefreshTasks,
+  onStopTask,
+  onSelectTaskSession,
+  onRefreshSession,
+  onOpenDiffReview,
+  onPluginsChanged,
   onRefreshTopbar,
   onRefreshRemote,
   onRefreshWebAccess,
@@ -309,8 +355,7 @@ export function TopbarCapsules({
   onCapsuleClick,
   className,
 }: TopbarCapsulesProps) {
-  const { locale, supportedLanguages, setLocale, t } = useI18n();
-  const { preference, resolvedTheme, cycleTheme } = useTheme();
+  const { t } = useI18n();
 
   const [activePopover, setActivePopover] = useState<ActivePopoverKey>(null);
   const [anchorLeft, setAnchorLeft] = useState<number>(0);
@@ -320,6 +365,8 @@ export function TopbarCapsules({
   const popoverLayerRef = useRef<HTMLDivElement | null>(null);
   const mobileQrAnchorRef = useRef<HTMLDivElement | null>(null);
   const channelSwitcherAnchorRef = useRef<HTMLDivElement | null>(null);
+  const tasksAnchorRef = useRef<HTMLDivElement | null>(null);
+  const customMenuAnchorRef = useRef<HTMLDivElement | null>(null);
   const capsuleRefs = useRef<Partial<Record<'context' | 'usage' | 'quota', HTMLButtonElement | null>>>({});
 
   const closePopover = useCallback(() => {
@@ -343,6 +390,10 @@ export function TopbarCapsules({
         if (mobileQrAnchorRef.current?.contains(target)) return;
       } else if (activePopover === 'channel-switcher') {
         if (channelSwitcherAnchorRef.current?.contains(target)) return;
+      } else if (activePopover === 'tasks') {
+        if (tasksAnchorRef.current?.contains(target)) return;
+      } else if (activePopover === 'custom-menu') {
+        if (customMenuAnchorRef.current?.contains(target)) return;
       } else {
         const triggerBtn = capsuleRefs.current[activePopover];
         if (triggerBtn?.contains(target)) return;
@@ -383,27 +434,38 @@ export function TopbarCapsules({
     setActivePopover(cap.key);
   };
 
+  const panelLocation: ContextDisplayLocation =
+    panels?.context?.settings?.displayLocation === 'composer' ? 'composer' : 'topbar';
+  const effectiveContextLocation: ContextDisplayLocation = contextDisplayLocation ?? panelLocation;
+  const showContextCapsule = Boolean(
+    panels?.context?.available === true && effectiveContextLocation === 'topbar',
+  );
+
+  useEffect(() => {
+    if (!showContextCapsule && activePopover === 'context') {
+      setActivePopover(null);
+    }
+  }, [showContextCapsule, activePopover]);
+
   const capsules: FormattedCapsule[] = [
-    formatContextCapsule(panels?.context, t),
+    ...(showContextCapsule ? [formatContextCapsule(panels?.context, t)] : []),
     formatUsageCapsule(panels?.usage, t),
     formatQuotaCapsule(panels?.quota, t),
   ];
 
   const conn = getConnectionMeta(connectionStatus, t);
-  const themeLabel =
-    preference === 'system'
-      ? `${t('theme.system')} (${resolvedTheme === 'light' ? '☀' : '☾'})`
-      : preference === 'light'
-        ? `☀ ${t('theme.light')}`
-        : `☾ ${t('theme.dark')}`;
+  const hasConnectionAlert = connectionStatus !== 'connected' || !rpcConnected;
+  const runningTasksCount =
+    tasksData?.runningCount ??
+    (tasksData?.running ? tasksData.running.length : 0);
 
-  const openTab = (tab: HostAdminTab, dedicated?: () => void) => {
+  const openTab = (tab: HostAdminTab, selectedPluginId?: string, dedicated?: () => void) => {
     setActivePopover(null);
-    if (dedicated) {
+    if (dedicated && !selectedPluginId) {
       dedicated();
       return;
     }
-    onOpenHostAdmin?.(tab);
+    onOpenHostAdmin?.(tab, selectedPluginId);
   };
 
   const activeCapsuleSlot =
@@ -432,6 +494,52 @@ export function TopbarCapsules({
 
   return (
     <div ref={rootRef} className={`${styles.root} ${className || ''}`.trim()}>
+      <div className={styles.leftGroup}>
+        <span className={styles.brandMark} aria-hidden="true">
+          A
+        </span>
+        {sessionTitle && (
+          <>
+            <span
+              className={styles.sessionTitle}
+              title={sessionTitle}
+              data-testid="topbar-session-title"
+            >
+              {sessionTitle}
+            </span>
+            <span
+              className={`${styles.sessionStatusBadge} ${
+                sessionRunning ? styles.sessionStatusRunning : styles.sessionStatusIdle
+              }`}
+              data-testid="topbar-session-status"
+            >
+              <span className={styles.sessionStatusDot} aria-hidden="true" />
+              <span>{sessionRunning ? t('topbar.sessionRunning') : t('topbar.sessionIdle')}</span>
+            </span>
+          </>
+        )}
+        {(workspaceName || branchName) && (
+          <span
+            className={styles.workspaceChip}
+            title={[workspaceName, branchName].filter(Boolean).join(' · ')}
+            data-testid="topbar-workspace-chip"
+          >
+            {workspaceName && <span className={styles.workspaceName}>{workspaceName}</span>}
+            {branchName && <span className={styles.branchTag}>{branchName}</span>}
+          </span>
+        )}
+        {diffCount > 0 && onOpenDiffReview && (
+          <button
+            type="button"
+            className={styles.diffBadgeBtn}
+            onClick={onOpenDiffReview}
+            data-testid="topbar-review-btn"
+          >
+            {t('topbar.diffReview', { count: diffCount })}
+          </button>
+        )}
+      </div>
+
       <div className={styles.capsules} aria-label={t('topbar.capsulesAria')}>
         {capsules.map((cap) => {
           const toneClass = getToneClass(cap.tone);
@@ -470,31 +578,36 @@ export function TopbarCapsules({
         )}
       </div>
 
-      {activePopover && activePopover !== 'mobile-qr' && activePopover !== 'channel-switcher' && (
-        <div ref={popoverLayerRef}>
-          <TopbarPopover
-            kind={activePopover}
-            slot={activeCapsuleSlot}
-            loading={loading}
-            anchorLeft={anchorLeft}
-            onRefresh={onRefreshTopbar}
-            onRunCompact={
-              onRunCompact
-                ? () => {
-                    onRunCompact();
-                    closePopover();
-                  }
-                : undefined
-            }
-            onClose={closePopover}
-          />
-        </div>
-      )}
+      {activePopover &&
+        activePopover !== 'mobile-qr' &&
+        activePopover !== 'channel-switcher' &&
+        activePopover !== 'tasks' &&
+        activePopover !== 'custom-menu' && (
+          <div ref={popoverLayerRef}>
+            <TopbarPopover
+              kind={activePopover}
+              slot={activeCapsuleSlot}
+              loading={loading}
+              anchorLeft={anchorLeft}
+              onRefresh={onRefreshTopbar}
+              onRunCompact={
+                onRunCompact
+                  ? () => {
+                      onRunCompact();
+                      closePopover();
+                    }
+                  : undefined
+              }
+              onClose={closePopover}
+            />
+          </div>
+        )}
 
       <div className={styles.rightGroup}>
         <div
-          className={styles.statusPill}
+          className={`${styles.statusPill} ${hasConnectionAlert ? styles.statusPillAlert : ''}`.trim()}
           data-connection={connectionStatus}
+          data-alert={hasConnectionAlert ? 'true' : 'false'}
           title={hubOrigin ? `${conn.label} · Hub: ${hubOrigin}` : conn.label}
         >
           <span className={`${styles.statusDot} ${conn.dotClass}`} aria-hidden="true" />
@@ -533,20 +646,44 @@ export function TopbarCapsules({
           )}
         </div>
 
-        <div ref={mobileQrAnchorRef} className={styles.mobileQrAnchor}>
+        <div ref={tasksAnchorRef} className={styles.mobileQrAnchor}>
           <button
             type="button"
-            className={`${styles.triggerBtn} ${activePopover === 'mobile-qr' ? styles.triggerBtnActive : ''}`.trim()}
-            onClick={() => setActivePopover((prev) => (prev === 'mobile-qr' ? null : 'mobile-qr'))}
-            title={t('topbar.mobileQrTitle')}
+            className={`${styles.triggerBtn} ${runningTasksCount > 0 ? styles.triggerBtnAccent : ''} ${activePopover === 'tasks' ? styles.triggerBtnActive : ''}`.trim()}
+            onClick={() => {
+              const next = activePopover === 'tasks' ? null : 'tasks';
+              setActivePopover(next);
+              if (next === 'tasks') onRefreshTasks?.();
+            }}
+            title={t('topbar.tasks')}
             aria-haspopup="dialog"
-            aria-expanded={activePopover === 'mobile-qr'}
-            data-testid="topbar-mobile-qr-btn"
+            aria-expanded={activePopover === 'tasks'}
+            data-testid="topbar-tasks-btn"
           >
-            <MobileQrIcon />
-            <span>{t('topbar.mobileQr')}</span>
+            <TasksPulseIcon />
+            <span className={styles.tasksBtnLabel}>{t('topbar.tasks')}</span>
+            {runningTasksCount > 0 && (
+              <span className={styles.tasksCountBadge} data-testid="topbar-tasks-badge">
+                {runningTasksCount}
+              </span>
+            )}
           </button>
 
+          {activePopover === 'tasks' && (
+            <BackgroundTasksPopover
+              tasksData={tasksData}
+              loading={tasksLoading}
+              channel={webAccessStatus?.channel || 'loopback'}
+              permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
+              onRefresh={onRefreshTasks}
+              onStopTask={onStopTask}
+              onSelectSession={onSelectTaskSession}
+              onClose={closePopover}
+            />
+          )}
+        </div>
+
+        <div ref={mobileQrAnchorRef} className={styles.mobileQrAnchor}>
           {activePopover === 'mobile-qr' && (
             <MobileQrPopover
               remoteStatus={remoteStatus}
@@ -557,69 +694,52 @@ export function TopbarCapsules({
           )}
         </div>
 
-        <button
-          type="button"
-          className={styles.triggerBtn}
-          onClick={cycleTheme}
-          title={t('theme.toggleTitle', { current: themeLabel })}
-          aria-label={t('theme.toggleTitle', { current: themeLabel })}
-          data-testid="theme-toggle-btn"
-          data-theme-pref={preference}
-        >
-          <span>{themeLabel}</span>
-        </button>
+        <div ref={customMenuAnchorRef} className={styles.mobileQrAnchor}>
+          <button
+            type="button"
+            className={`${styles.triggerBtn} ${styles.menuTriggerBtn} ${activePopover === 'custom-menu' ? styles.triggerBtnActive : ''}`.trim()}
+            onClick={() => setActivePopover((prev) => (prev === 'custom-menu' ? null : 'custom-menu'))}
+            title={t('topbar.customMenu')}
+            aria-label={t('topbar.customMenu')}
+            aria-haspopup="menu"
+            aria-expanded={activePopover === 'custom-menu'}
+            data-testid="topbar-custom-menu-btn"
+          >
+            <MenuHamburgerIcon />
+          </button>
 
-        <select
-          className={`${styles.triggerBtn} ${styles.localeSelect}`}
-          value={locale}
-          onChange={(ev) => {
-            setLocale(normalizeLocale(ev.target.value) || 'en');
-          }}
-          title={t('lang.syncedWithHost')}
-          aria-label={t('lang.selectAria')}
-          data-testid="topbar-locale-select"
-          data-locale={locale}
-        >
-          {supportedLanguages.map((lang) => (
-            <option key={lang.bcp47} value={lang.bcp47}>
-              {lang.nativeName || lang.shortLabel || lang.bcp47}
-            </option>
-          ))}
-        </select>
-
-        <button
-          type="button"
-          className={`${styles.triggerBtn} ${styles.triggerBtnAccent}`}
-          onClick={() => openTab('plugins', onOpenPlugins)}
-        >
-          <span>{t('topbar.plugins')}</span>
-        </button>
-
-        <button
-          type="button"
-          className={styles.triggerBtn}
-          onClick={() => openTab('appearance')}
-          data-testid="topbar-appearance-btn"
-        >
-          <span>{t('topbar.appearance')}</span>
-        </button>
-
-        <button
-          type="button"
-          className={styles.triggerBtn}
-          onClick={() => openTab('commands', onOpenCommandPalette)}
-        >
-          <span>{t('topbar.commands')}</span>
-          <kbd className={styles.kbd}>⌘K</kbd>
-        </button>
-
-        <button
-          type="button"
-          className={styles.triggerBtn}
-          onClick={() => openTab('doctor', onOpenDoctor)}
-        >
-          <span>{t('topbar.doctor')}</span>
-        </button>
+          {activePopover === 'custom-menu' && (
+            <CustomMenuPopover
+              connectionLabel={conn.label}
+              connectionStatus={connectionStatus}
+              rpcConnected={rpcConnected}
+              channelLabel={channelCapsuleText}
+              channel={webAccessStatus?.channel || 'loopback'}
+              permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
+              panels={panels}
+              runningTasksCount={runningTasksCount}
+              onRefreshSession={onRefreshSession}
+              onOpenHostAdmin={(tab, pluginId) => {
+                if (tab === 'plugins') {
+                  openTab('plugins', pluginId, onOpenPlugins);
+                } else if (tab === 'commands') {
+                  openTab('commands', undefined, onOpenCommandPalette);
+                } else if (tab === 'doctor') {
+                  openTab('doctor', undefined, onOpenDoctor);
+                } else {
+                  openTab(tab || 'appearance', pluginId);
+                }
+              }}
+              onOpenMobileQr={() => setActivePopover('mobile-qr')}
+              onOpenTasks={() => {
+                setActivePopover('tasks');
+                onRefreshTasks?.();
+              }}
+              onPluginsChanged={onPluginsChanged}
+              onClose={closePopover}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

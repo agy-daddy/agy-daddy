@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
+import { ThemeProvider } from '../theme/ThemeProvider';
 import type { ModelCatalogTree, ModelItem } from '../types';
 import { ModelPicker } from './ModelPicker';
 
@@ -200,6 +201,10 @@ const SAMPLE_TREE: ModelCatalogTree = {
 };
 
 describe('ModelPicker', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
   it('displays human-readable names without raw MODEL_PLACEHOLDER IDs and selects thinking & orchestrator presets', () => {
     const onSelectModel = vi.fn();
 
@@ -307,10 +312,10 @@ describe('ModelPicker', () => {
     expect(opusLeaf).toHaveTextContent('Claude Opus 5.5');
     expect(opusLeaf).toHaveTextContent('42%');
 
-    // Selecting planner model keeps popover open & updates thinking section target
+    // Clicking planner model pushes to Level 2 (thinking selector) & keeps popover open
     fireEvent.click(opusLeaf);
     expect(onSelectModel).toHaveBeenCalledWith('orchestrator:claude-opus-5-5');
-    expect(screen.getByTestId('model-picker-popover')).toBeInTheDocument();
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '2');
     expect(screen.getByTestId('orch-thinking-selector')).toHaveTextContent('Claude Opus 5.5');
 
     // Selecting thinking level commits & closes popover
@@ -395,10 +400,21 @@ describe('ModelPicker', () => {
     const orchRow = screen
       .getByTestId('model-picker-primary')
       .querySelector('[data-node-key="orch"]') as HTMLElement;
-    fireEvent.click(orchRow);
+    // Hovering MUST NOT jump levels (click-only drill-down)
+    fireEvent.mouseEnter(orchRow);
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '0');
 
-    const secondary = screen.getByTestId('model-picker-secondary');
-    expect(secondary).toHaveTextContent('思考等级');
+    fireEvent.click(orchRow);
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '1');
+
+    const secondaryNeon = screen
+      .getByTestId('model-picker-secondary')
+      .querySelector('[data-node-key="orch/gemini-4-neon"]') as HTMLElement;
+    fireEvent.click(secondaryNeon);
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '2');
+
+    const tertiary = screen.getByTestId('orch-thinking-selector');
+    expect(tertiary).toHaveTextContent('思考等级');
     expect(screen.getByTestId('orch-thinking-selector')).toBeInTheDocument();
     expect(screen.getByTestId('orch-thinking-level-low')).toBeInTheDocument();
     expect(screen.getByTestId('orch-thinking-level-medium')).toBeInTheDocument();
@@ -426,6 +442,8 @@ describe('ModelPicker', () => {
       'Orchestrator · Gemini 4 Neon Medium',
     );
     fireEvent.click(screen.getByTestId('model-picker-trigger'));
+    // Reopening always starts at Level 0
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '0');
     const orchRowAgain = screen
       .getByTestId('model-picker-primary')
       .querySelector('[data-node-key="orch"]') as HTMLElement;
@@ -436,28 +454,51 @@ describe('ModelPicker', () => {
     expect(neonLeaf).toHaveTextContent('Medium · → Hydrogen');
   });
 
-  it('activates default Orchestrator preset when picking thinking level directly from another model', () => {
+  it('activates default Orchestrator preset when picking thinking level directly from another model and supports Back / ArrowLeft / drawerSpeed off', () => {
     const onSelectModel = vi.fn();
     const onSelectThinkingLevel = vi.fn();
+    window.localStorage.setItem('agy.web.drawerSpeed', 'off');
 
     render(
       <I18nProvider defaultLocale="en">
-        <ModelPicker
-          models={SAMPLE_MODELS}
-          tree={SAMPLE_TREE}
-          selectedModelId="MODEL_PLACEHOLDER_M533"
-          selectedThinkingLevel={null}
-          onSelectModel={onSelectModel}
-          onSelectThinkingLevel={onSelectThinkingLevel}
-        />
+        <ThemeProvider>
+          <ModelPicker
+            models={SAMPLE_MODELS}
+            tree={SAMPLE_TREE}
+            selectedModelId="MODEL_PLACEHOLDER_M533"
+            selectedThinkingLevel={null}
+            onSelectModel={onSelectModel}
+            onSelectThinkingLevel={onSelectThinkingLevel}
+          />
+        </ThemeProvider>
       </I18nProvider>,
     );
 
     fireEvent.click(screen.getByTestId('model-picker-trigger'));
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-transition-ms', '0');
+
     const orchRow = screen
       .getByTestId('model-picker-primary')
       .querySelector('[data-node-key="orch"]') as HTMLElement;
     fireEvent.click(orchRow);
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '1');
+
+    const neonPreset = screen
+      .getByTestId('model-picker-secondary')
+      .querySelector('[data-node-key="orch/gemini-4-neon"]') as HTMLElement;
+    fireEvent.click(neonPreset);
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '2');
+
+    // Back / ArrowLeft pops back one level without jumping outside
+    fireEvent.keyDown(screen.getByTestId('orch-thinking-selector'), { key: 'ArrowLeft' });
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '1');
+
+    fireEvent.click(
+      screen
+        .getByTestId('model-picker-secondary')
+        .querySelector('[data-node-key="orch/gemini-4-neon"]') as HTMLElement,
+    );
+    expect(screen.getByTestId('model-picker-popover')).toHaveAttribute('data-level', '2');
 
     // Fallback levels ['low', 'medium', 'high', 'xhigh'] are rendered even without supportedThinkingLevels on tree
     fireEvent.click(screen.getByTestId('orch-thinking-level-low'));

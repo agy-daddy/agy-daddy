@@ -24,6 +24,7 @@ export interface SchemaSettingsFormProps {
   onSave?: (patch: Record<string, unknown>) => Promise<unknown> | unknown;
   onSaved?: (response: PluginSettingsResponse) => void;
   onRunAction?: (action: SettingsSchemaAction) => Promise<unknown> | unknown;
+  readOnly?: boolean;
   className?: string;
 }
 
@@ -136,6 +137,7 @@ export function SchemaSettingsForm({
   onSave,
   onSaved,
   onRunAction,
+  readOnly = false,
   className,
 }: SchemaSettingsFormProps) {
   const { locale: ctxLocale } = useI18n();
@@ -170,6 +172,7 @@ export function SchemaSettingsForm({
   }, [pluginId, schema, values, secretState]);
 
   const isSaving = Boolean(externalSaving ?? internalSaving);
+  const isFormDisabled = isSaving || readOnly;
   const activeActionId = externalRunningActionId ?? internalRunningActionId;
   const displayError = externalError || feedbackError;
 
@@ -357,7 +360,7 @@ export function SchemaSettingsForm({
                   type="checkbox"
                   className={styles.checkbox}
                   checked={Boolean(draft[field.key])}
-                  disabled={isSaving}
+                  disabled={isFormDisabled}
                   onChange={(e) =>
                     setDraft((prev) => ({
                       ...prev,
@@ -381,7 +384,7 @@ export function SchemaSettingsForm({
                   id={inputId}
                   className={styles.select}
                   value={String(draft[field.key] ?? '')}
-                  disabled={isSaving}
+                  disabled={isFormDisabled}
                   onChange={(e) =>
                     setDraft((prev) => ({
                       ...prev,
@@ -415,7 +418,7 @@ export function SchemaSettingsForm({
                   max={field.max}
                   value={numberDrafts[field.key] ?? ''}
                   placeholder={localizeText(field.placeholder, locale)}
-                  disabled={isSaving}
+                  disabled={isFormDisabled}
                   onChange={(e) => {
                     const nextVal = e.target.value;
                     setNumberDrafts((prev) => ({ ...prev, [field.key]: nextVal }));
@@ -459,7 +462,7 @@ export function SchemaSettingsForm({
                             type="button"
                             className={styles.listRemoveBtn}
                             aria-label={t('schema.removeItem', { item })}
-                            disabled={isSaving}
+                            disabled={isFormDisabled}
                             onClick={() => handleRemoveListItem(field.key, idx)}
                           >
                             ×
@@ -475,7 +478,7 @@ export function SchemaSettingsForm({
                       className={styles.input}
                       value={listInputs[field.key] ?? ''}
                       placeholder={listPlaceholder}
-                      disabled={isSaving || atLimit}
+                      disabled={isFormDisabled || atLimit}
                       onChange={(e) =>
                         setListInputs((prev) => ({ ...prev, [field.key]: e.target.value }))
                       }
@@ -484,7 +487,7 @@ export function SchemaSettingsForm({
                     <button
                       type="button"
                       className={styles.smallBtn}
-                      disabled={isSaving || atLimit}
+                      disabled={isFormDisabled || atLimit}
                       onClick={() => handleAddListItem(field)}
                     >
                       {t('schema.add')}
@@ -525,7 +528,7 @@ export function SchemaSettingsForm({
                     autoComplete="off"
                     value={secretDrafts[field.key] ?? ''}
                     placeholder={placeholder}
-                    disabled={isSaving}
+                    disabled={isFormDisabled}
                     onChange={(e) => {
                       const next = e.target.value;
                       setSecretDrafts((prev) => ({ ...prev, [field.key]: next }));
@@ -559,7 +562,7 @@ export function SchemaSettingsForm({
                 className={styles.input}
                 value={String(draft[field.key] ?? '')}
                 placeholder={localizeText(field.placeholder, locale)}
-                disabled={isSaving}
+                disabled={isFormDisabled}
                 onChange={(e) =>
                   setDraft((prev) => ({
                     ...prev,
@@ -586,7 +589,7 @@ export function SchemaSettingsForm({
                   key={action.id}
                   type="button"
                   title={actionDesc || undefined}
-                  disabled={isSaving || activeActionId !== null}
+                  disabled={isFormDisabled || activeActionId !== null}
                   className={`${styles.actionBtn} ${action.danger ? styles.actionBtnDanger : ''}`.trim()}
                   onClick={() => void handleActionClick(action)}
                 >
@@ -610,7 +613,7 @@ export function SchemaSettingsForm({
       )}
 
       <div className={styles.footer}>
-        <button type="submit" className={styles.saveBtn} disabled={isSaving}>
+        <button type="submit" className={styles.saveBtn} disabled={isFormDisabled}>
           {isSaving ? t('schema.saving') : t('schema.saveSettings')}
         </button>
       </div>

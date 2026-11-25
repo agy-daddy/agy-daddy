@@ -15,6 +15,11 @@
   color: var(--text-primary);
 }
 
+.popoverTop {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
 .header {
   display: flex;
   align-items: center;

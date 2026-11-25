@@ -276,8 +276,9 @@ describe('TopbarCapsules popovers & MobileQrPopover', () => {
       onRefreshRemote,
     });
 
-    const mobileBtn = screen.getByTestId('topbar-mobile-qr-btn');
+    const mobileBtn = screen.getByTestId('topbar-custom-menu-btn');
     await user.click(mobileBtn);
+    await user.click(screen.getByTestId('topbar-mobile-qr-btn'));
 
     const popover = screen.getByTestId('mobile-qr-popover');
     expect(popover).toBeInTheDocument();
@@ -315,6 +316,7 @@ describe('TopbarCapsules popovers & MobileQrPopover', () => {
       remoteStatus: { ok: true, available: false, running: false },
     });
 
+    await user.click(screen.getByTestId('topbar-custom-menu-btn'));
     await user.click(screen.getByTestId('topbar-mobile-qr-btn'));
     expect(screen.getByTestId('mobile-qr-offline')).toHaveTextContent('Remote service offline');
     expect(screen.queryByTestId('mobile-qr-card')).not.toBeInTheDocument();
@@ -367,5 +369,31 @@ describe('TopbarCapsules popovers & MobileQrPopover', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('hides Context capsule when contextDisplayLocation is composer or slot is unavailable', () => {
+    const { rerender } = render(
+      <I18nProvider defaultLocale="en">
+        <ThemeProvider>
+          <TopbarCapsules panels={FULL_PANELS} contextDisplayLocation="composer" />
+        </ThemeProvider>
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByText('Context')).not.toBeInTheDocument();
+    expect(screen.getByText('Usage')).toBeInTheDocument();
+    expect(screen.getByText('Quota')).toBeInTheDocument();
+
+    rerender(
+      <I18nProvider defaultLocale="en">
+        <ThemeProvider>
+          <TopbarCapsules
+            panels={{ ...FULL_PANELS, context: { available: false } }}
+            contextDisplayLocation="topbar"
+          />
+        </ThemeProvider>
+      </I18nProvider>,
+    );
+    expect(screen.queryByText('Context')).not.toBeInTheDocument();
   });
 });

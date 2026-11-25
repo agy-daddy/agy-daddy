@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n, type I18nKey, type TranslateFn } from '../i18n';
+import { useTheme } from '../theme/ThemeProvider';
 import type {
   ModelBadge,
   ModelCatalogTree,
@@ -299,13 +300,38 @@ export function ModelPicker({
   disabled = false,
 }: ModelPickerProps) {
   const { t } = useI18n();
+  const { drawerSpeed } = useTheme();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const paneRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
+  const lastParentKeyRef = useRef<string | null>(null);
+
   const [open, setOpen] = useState(false);
+  const [level, setLevel] = useState<0 | 1 | 2>(0);
   const [activeBranchKey, setActiveBranchKey] = useState<string | null>(null);
-  const [drillInSecondary, setDrillInSecondary] = useState(false);
   const [internalThinkingLevel, setInternalThinkingLevel] = useState<string | null>(null);
   const [orchThinkingTouched, setOrchThinkingTouched] = useState(false);
   const [focusedOrchLeafKey, setFocusedOrchLeafKey] = useState<string | null>(null);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const sync = () => setPrefersReducedMotion(Boolean(mql.matches));
+    sync();
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', sync);
+      return () => mql.removeEventListener('change', sync);
+    }
+    return undefined;
+  }, []);
+
+  const transitionMs = useMemo(() => {
+    if (prefersReducedMotion || drawerSpeed === 'off') return 0;
+    if (drawerSpeed === 'fast') return 120;
+    if (drawerSpeed === 'smooth') return 320;
+    return 220;
+  }, [prefersReducedMotion, drawerSpeed]);
 
   const controlledThinking =
     selectedThinkingLevel !== undefined
@@ -406,23 +432,27 @@ export function ModelPicker({
     return resolveLeafThinkingSuffix(targetOrchLeaf) || 'high';
   }, [activeMatch, activeOrchThinkingLevel, orchThinkingTouched, controlledThinking, targetOrchLeaf]);
 
+  const closePicker = (restoreTriggerFocus = false) => {
+    setOpen(false);
+    setLevel(0);
+    setOrchThinkingTouched(false);
+    setFocusedOrchLeafKey(null);
+    if (restoreTriggerFocus) {
+      requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  };
+
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (ev: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(ev.target as Node)) {
-        setOpen(false);
-        setDrillInSecondary(false);
-        setOrchThinkingTouched(false);
-        setFocusedOrchLeafKey(null);
+        closePicker(false);
       }
     };
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') {
         ev.preventDefault();
-        setOpen(false);
-        setDrillInSecondary(false);
-        setOrchThinkingTouched(false);
-        setFocusedOrchLeafKey(null);
+        closePicker(true);
       }
     };
     document.addEventListener('mousedown', onPointerDown);
@@ -439,7 +469,7 @@ export function ModelPicker({
       const next = !prev;
       if (next) {
         setActiveBranchKey(activeMatch?.branch?.key ?? null);
-        setDrillInSecondary(false);
+        setLevel(0);
         setOrchThinkingTouched(false);
         setFocusedOrchLeafKey(
           activeMatch?.branch?.role === 'orchestrator_root' ? activeMatch.leaf.key : null,
@@ -469,25 +499,77 @@ export function ModelPicker({
       setFocusedOrchLeafKey(leaf.key);
       setOrchThinkingTouched(true);
       commitThinkingLevel(nextLevel);
+      if (supported.length >= 2) {
+        lastParentKeyRef.current = leaf.key;
+        setLevel(2);
+        return;
+      }
+      closePicker(true);
       return;
     }
     commitThinkingLevel(resolveLeafThinkingSuffix(leaf));
-    setOrchThinkingTouched(false);
-    setFocusedOrchLeafKey(null);
-    setOpen(false);
-    setDrillInSecondary(false);
+    closePicker(true);
   };
 
-  const handleSelectOrchThinking = (level: string) => {
-    const normalized = normalizeThinkingLevel(level) || level;
+  const handleSelectOrchThinking = (thinkingLvl: string) => {
+    const normalized = normalizeThinkingLevel(thinkingLvl) || thinkingLvl;
     commitThinkingLevel(normalized);
     if (targetOrchLeaf && activeLeaf?.key !== targetOrchLeaf.key) {
       onSelectModel(targetOrchLeaf.selection.requestedModel);
     }
-    setOrchThinkingTouched(false);
-    setFocusedOrchLeafKey(null);
-    setOpen(false);
-    setDrillInSecondary(false);
+    closePicker(true);
+  };
+
+  const stepBack = () => {
+    setLevel((prev) => {
+      const next = prev === 2 ? 1 : 0;
+      requestAnimationFrame(() => {
+        const pane = paneRefs.current[next];
+        if (!pane) return;
+        const parentKey = lastParentKeyRef.current;
+        const target = parentKey
+          ? (pane.querySelector(`[data-node-key="${CSS.escape ? CSS.escape(parentKey) : parentKey}"]`) as HTMLElement | null)
+          : null;
+        (target || (pane.querySelector('button:not(:disabled)') as HTMLElement | null))?.focus();
+      });
+      return next;
+    });
+  };
+
+  const handlePaneKeyDown = (paneIndex: 0 | 1 | 2) => (ev: React.KeyboardEvent<HTMLDivElement>) => {
+    const pane = paneRefs.current[paneIndex];
+    if (!pane) return;
+    const focusables = Array.from(
+      pane.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not(:disabled), button[data-node-key]:not(:disabled)'),
+    );
+    const activeEl = document.activeElement as HTMLButtonElement | null;
+    const currentIdx = activeEl ? focusables.indexOf(activeEl) : -1;
+
+    if (ev.key === 'ArrowDown') {
+      if (focusables.length === 0) return;
+      ev.preventDefault();
+      const nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % focusables.length;
+      focusables[nextIdx]?.focus();
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      if (focusables.length === 0) return;
+      ev.preventDefault();
+      const prevIdx = currentIdx < 0 ? focusables.length - 1 : (currentIdx - 1 + focusables.length) % focusables.length;
+      focusables[prevIdx]?.focus();
+      return;
+    }
+    if (ev.key === 'ArrowRight') {
+      if (activeEl && activeEl.dataset.nodeKind === 'branch') {
+        ev.preventDefault();
+        activeEl.click();
+      }
+      return;
+    }
+    if ((ev.key === 'ArrowLeft' || ev.key === 'Backspace') && paneIndex > 0) {
+      ev.preventDefault();
+      stepBack();
+    }
   };
 
   const triggerParts = useMemo<{ primary: string; secondary: string | null }>(() => {
@@ -525,9 +607,12 @@ export function ModelPicker({
     return { primary: fallbackText, secondary: null };
   }, [activeLeaf, activeMatch, activeOrchThinkingLevel, controlledThinking, models, selectedModelId, t]);
 
+  const isOrchBranch = activeBranch?.role === 'orchestrator_root';
+
   return (
     <div ref={rootRef} className={styles.picker} data-testid="composer-model-picker">
       <button
+        ref={triggerRef}
         type="button"
         className={styles.trigger}
         onClick={handleToggle}
@@ -564,236 +649,254 @@ export function ModelPicker({
           className={styles.popover}
           role="menu"
           aria-label={t('models.selectModel')}
+          data-level={level}
+          data-transition-ms={transitionMs}
           data-testid="model-picker-popover"
+          style={
+            {
+              '--picker-level': String(level),
+              '--picker-duration': `${transitionMs}ms`,
+            } as React.CSSProperties
+          }
         >
-          <div
-            className={styles.primaryPane}
-            data-drill={drillInSecondary ? 'true' : 'false'}
-            data-testid="model-picker-primary"
-          >
-            {effectiveTree.nodes.map((node) => {
-              const isBranch = node.kind === 'branch';
-              const containsSelected =
-                node.kind === 'leaf'
-                  ? activeLeaf?.key === node.key
-                  : activeMatch?.branch?.key === node.key;
-              const isHighlighted = isBranch && activeBranch?.key === node.key;
-
-              const orchDisplay = getThinkingDisplayName(activeOrchThinkingLevel) || 'High';
-              const rowSecondary =
-                containsSelected && isBranch && activeLeaf
-                  ? node.role === 'orchestrator_root'
-                    ? `${activeLeaf.label} ${orchDisplay}`
-                    : activeLeaf.label
-                  : node.secondaryLabel;
-
-              const displayLabel =
-                node.role === 'orchestrator_root' ? t('models.orchestratorName') : node.label;
-
-              return (
-                <button
-                  key={node.key}
-                  type="button"
-                  role="menuitem"
-                  disabled={node.disabled}
-                  className={[
-                    styles.row,
-                    containsSelected ? styles.rowSelected : '',
-                    isHighlighted ? styles.rowHighlighted : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  onMouseEnter={() => {
-                    if (isBranch) setActiveBranchKey(node.key);
-                  }}
-                  onClick={() => {
-                    if (node.kind === 'leaf') {
-                      handleSelectLeaf(node);
-                    } else {
-                      setActiveBranchKey(node.key);
-                      setDrillInSecondary(true);
-                    }
-                  }}
-                  data-node-key={node.key}
-                  data-node-kind={node.kind}
-                  data-selected={containsSelected ? 'true' : 'false'}
-                >
-                  <span className={styles.rowMain}>
-                    <span className={styles.rowLabel}>{displayLabel}</span>
-                    {rowSecondary && <span className={styles.rowSecondary}>{rowSecondary}</span>}
-                    {node.badge && (
-                      <span
-                        className={`${styles.badgePill} ${styles[`badge_${node.badge.kind}`] || ''}`}
-                        title={node.badge.description}
-                      >
-                        {translateBadgeText(node.badge, t)}
-                        {node.badge.description ? ' ⓘ' : ''}
-                      </span>
-                    )}
-                  </span>
-
-                  <span className={styles.rowEnd}>
-                    {containsSelected && (
-                      <span className={styles.checkMark} aria-label="Selected">
-                        ✓
-                      </span>
-                    )}
-                    {isBranch && (
-                      <span className={styles.chevron} aria-hidden="true">
-                        ›
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-
-            {activeLeaf?.role === 'family' &&
-              activeLeaf.supportedThinkingLevels &&
-              activeLeaf.supportedThinkingLevels.length > 1 && (
-                <div
-                  className={styles.inlineThinkingSection}
-                  data-testid="family-thinking-selector"
-                >
-                  <span className={styles.thinkingSectionTitle}>
-                    {t('models.thinkingLevelConfig')}
-                  </span>
-                  <div className={styles.thinkingChips}>
-                    {activeLeaf.supportedThinkingLevels.map((lvl) => {
-                      const norm = normalizeThinkingLevel(lvl) || lvl;
-                      const current =
-                        controlledThinking || resolveLeafThinkingSuffix(activeLeaf) || 'medium';
-                      const isChecked = current === norm;
-                      return (
-                        <button
-                          key={norm}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={isChecked}
-                          className={`${styles.thinkingChip} ${isChecked ? styles.thinkingChipActive : ''}`}
-                          onClick={() => commitThinkingLevel(norm)}
-                          data-testid={`family-thinking-level-${norm}`}
-                        >
-                          {localizeThinkingSuffixLabel(norm, t)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-          </div>
-
-          {activeBranch && (
+          <div className={styles.slideTrack} data-testid="model-picker-slide-track">
             <div
-              className={styles.secondaryPane}
-              data-drill={drillInSecondary ? 'true' : 'false'}
-              data-testid="model-picker-secondary"
+              ref={(el) => {
+                paneRefs.current[0] = el;
+              }}
+              className={`${styles.pane} ${level === 0 ? styles.paneActive : styles.paneInactive}`}
+              aria-hidden={level !== 0}
+              onKeyDown={handlePaneKeyDown(0)}
+              data-testid="model-picker-primary"
             >
-              <button
-                type="button"
-                className={styles.backBtn}
-                onClick={() => setDrillInSecondary(false)}
-              >
-                ‹ {t('models.back')}
-              </button>
-
-              <div className={styles.secondaryHeader}>
-                <span className={styles.secondaryTitle}>
-                  {activeBranch.role === 'orchestrator_root'
-                    ? t('models.orchestratorPresetsTitle')
-                    : `${activeBranch.label} · ${t('models.thinkingLevelTitle')}`}
-                </span>
-                {activeBranch.role === 'orchestrator_root' && (
-                  <span className={styles.secondaryHint}>{t('models.orchestratorExecutorHint')}</span>
-                )}
+              <div className={styles.paneHeader}>
+                <span className={styles.secondaryTitle}>{t('models.pickerTitle')}</span>
               </div>
+              {effectiveTree.nodes.map((node) => {
+                const isBranch = node.kind === 'branch';
+                const containsSelected =
+                  node.kind === 'leaf'
+                    ? activeLeaf?.key === node.key
+                    : activeMatch?.branch?.key === node.key;
+                const isHighlighted = isBranch && activeBranch?.key === node.key && level > 0;
 
-              {activeBranch.children.map((child) => {
-                if (child.kind !== 'leaf') return null;
-                const isSelected = activeLeaf?.key === child.key;
-                const quotaPct =
-                  child.quota && Number.isFinite(child.quota.remainingFraction)
-                    ? Math.round(child.quota.remainingFraction * 100)
-                    : null;
-                const childSecondary =
-                  activeBranch.role === 'orchestrator_root' && isSelected
-                    ? resolveOrchestratorSecondaryLabel(child, previewOrchThinkingLevel)
-                    : child.secondaryLabel;
+                const orchDisplay = getThinkingDisplayName(activeOrchThinkingLevel) || 'High';
+                const rowSecondary =
+                  containsSelected && isBranch && activeLeaf
+                    ? node.role === 'orchestrator_root'
+                      ? `${activeLeaf.label} ${orchDisplay}`
+                      : activeLeaf.label
+                    : node.secondaryLabel;
+
+                const displayLabel =
+                  node.role === 'orchestrator_root' ? t('models.orchestratorName') : node.label;
 
                 return (
                   <button
-                    key={child.key}
+                    key={node.key}
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={isSelected}
-                    disabled={child.disabled}
-                    className={`${styles.row} ${isSelected ? styles.rowSelected : ''}`}
-                    onClick={() => handleSelectLeaf(child)}
-                    data-node-key={child.key}
-                    data-model-id={child.selection.requestedModel}
-                    data-selected={isSelected ? 'true' : 'false'}
+                    role="menuitem"
+                    tabIndex={level === 0 ? 0 : -1}
+                    disabled={node.disabled}
+                    className={[
+                      styles.row,
+                      containsSelected ? styles.rowSelected : '',
+                      isHighlighted ? styles.rowHighlighted : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={() => {
+                      if (node.kind === 'leaf') {
+                        handleSelectLeaf(node);
+                      } else {
+                        lastParentKeyRef.current = node.key;
+                        setActiveBranchKey(node.key);
+                        setLevel(1);
+                      }
+                    }}
+                    data-node-key={node.key}
+                    data-node-kind={node.kind}
+                    data-selected={containsSelected ? 'true' : 'false'}
                   >
                     <span className={styles.rowMain}>
-                      <span className={styles.rowLabel}>{localizeThinkingLabel(child, t)}</span>
-                      {childSecondary && (
-                        <span className={styles.rowSecondary}>{childSecondary}</span>
+                      <span className={styles.rowLabel}>{displayLabel}</span>
+                      {rowSecondary && <span className={styles.rowSecondary}>{rowSecondary}</span>}
+                      {node.badge && (
+                        <span
+                          className={`${styles.badgePill} ${styles[`badge_${node.badge.kind}`] || ''}`}
+                          title={node.badge.description}
+                        >
+                          {translateBadgeText(node.badge, t)}
+                          {node.badge.description ? ' ⓘ' : ''}
+                        </span>
                       )}
                     </span>
 
                     <span className={styles.rowEnd}>
-                      {quotaPct !== null && (
-                        <span
-                          className={styles.quotaChip}
-                          title={t('models.quotaRemaining', { pct: quotaPct })}
-                        >
-                          {quotaPct}%
+                      {containsSelected && (
+                        <span className={styles.checkMark} aria-label="Selected">
+                          ✓
                         </span>
                       )}
-                      {isSelected && <span className={styles.checkMark}>✓</span>}
+                      {isBranch && (
+                        <span className={styles.chevron} aria-hidden="true">
+                          ›
+                        </span>
+                      )}
                     </span>
                   </button>
                 );
               })}
+            </div>
 
-              {activeBranch.role === 'orchestrator_root' && (
-                <div
-                  className={styles.thinkingSection}
-                  data-testid="orch-thinking-selector"
+            <div
+              ref={(el) => {
+                paneRefs.current[1] = el;
+              }}
+              className={`${styles.pane} ${level === 1 ? styles.paneActive : styles.paneInactive}`}
+              aria-hidden={level !== 1}
+              onKeyDown={handlePaneKeyDown(1)}
+              data-testid="model-picker-secondary"
+            >
+              <div className={styles.navBar}>
+                <button
+                  type="button"
+                  tabIndex={level === 1 ? 0 : -1}
+                  className={styles.backBtn}
+                  onClick={stepBack}
+                  data-testid="model-picker-back-1"
                 >
-                  <div className={styles.thinkingSectionHeader}>
-                    <span className={styles.thinkingSectionTitle}>
-                      {t('models.thinkingLevelConfig')}
+                  ‹ {t('models.back')}
+                </button>
+              </div>
+
+              {activeBranch && (
+                <>
+                  <div className={styles.secondaryHeader}>
+                    <span className={styles.secondaryTitle}>
+                      {isOrchBranch
+                        ? t('models.orchestratorPresetsTitle')
+                        : `${activeBranch.label} · ${t('models.thinkingLevelTitle')}`}
                     </span>
-                    {targetOrchLeaf && (
-                      <span className={styles.thinkingSectionTarget}>
-                        {targetOrchLeaf.label}
-                      </span>
+                    {isOrchBranch && (
+                      <span className={styles.secondaryHint}>{t('models.orchestratorExecutorHint')}</span>
                     )}
                   </div>
-                  <div className={styles.thinkingChips}>
-                    {orchSupportedThinkingLevels.map((lvl) => {
-                      const isChecked = previewOrchThinkingLevel === lvl;
-                      return (
-                        <button
-                          key={lvl}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={isChecked}
-                          className={`${styles.thinkingChip} ${isChecked ? styles.thinkingChipActive : ''}`}
-                          onClick={() => handleSelectOrchThinking(lvl)}
-                          data-testid={`orch-thinking-level-${lvl}`}
-                          data-selected={isChecked ? 'true' : 'false'}
-                        >
-                          <span>{localizeThinkingSuffixLabel(lvl, t)}</span>
-                          {isChecked && <span className={styles.checkMark}>✓</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+
+                  {activeBranch.children.map((child) => {
+                    if (child.kind !== 'leaf') return null;
+                    const isSelected = activeLeaf?.key === child.key;
+                    const quotaPct =
+                      child.quota && Number.isFinite(child.quota.remainingFraction)
+                        ? Math.round(child.quota.remainingFraction * 100)
+                        : null;
+                    const childSecondary =
+                      isOrchBranch && isSelected
+                        ? resolveOrchestratorSecondaryLabel(child, previewOrchThinkingLevel)
+                        : child.secondaryLabel;
+                    const hasLevel3 =
+                      isOrchBranch &&
+                      (!child.supportedThinkingLevels || child.supportedThinkingLevels.length !== 1);
+
+                    return (
+                      <button
+                        key={child.key}
+                        type="button"
+                        role="menuitemradio"
+                        tabIndex={level === 1 ? 0 : -1}
+                        aria-checked={isSelected}
+                        disabled={child.disabled}
+                        className={`${styles.row} ${isSelected ? styles.rowSelected : ''}`}
+                        onClick={() => handleSelectLeaf(child)}
+                        data-node-key={child.key}
+                        data-node-kind={hasLevel3 ? 'branch' : 'leaf'}
+                        data-model-id={child.selection.requestedModel}
+                        data-selected={isSelected ? 'true' : 'false'}
+                      >
+                        <span className={styles.rowMain}>
+                          <span className={styles.rowLabel}>{localizeThinkingLabel(child, t)}</span>
+                          {childSecondary && (
+                            <span className={styles.rowSecondary}>{childSecondary}</span>
+                          )}
+                        </span>
+
+                        <span className={styles.rowEnd}>
+                          {quotaPct !== null && (
+                            <span
+                              className={styles.quotaChip}
+                              title={t('models.quotaRemaining', { pct: quotaPct })}
+                            >
+                              {quotaPct}%
+                            </span>
+                          )}
+                          {isSelected && <span className={styles.checkMark}>✓</span>}
+                          {hasLevel3 && (
+                            <span className={styles.chevron} aria-hidden="true">
+                              ›
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
               )}
             </div>
-          )}
+
+            <div
+              ref={(el) => {
+                paneRefs.current[2] = el;
+              }}
+              className={`${styles.pane} ${level === 2 ? styles.paneActive : styles.paneInactive}`}
+              aria-hidden={level !== 2}
+              onKeyDown={handlePaneKeyDown(2)}
+              data-testid="orch-thinking-selector"
+            >
+              <div className={styles.navBar}>
+                <button
+                  type="button"
+                  tabIndex={level === 2 ? 0 : -1}
+                  className={styles.backBtn}
+                  onClick={stepBack}
+                  data-testid="model-picker-back-2"
+                >
+                  ‹ {t('models.back')}
+                </button>
+              </div>
+
+              <div className={styles.secondaryHeader}>
+                <span className={styles.secondaryTitle}>
+                  {targetOrchLeaf
+                    ? t('models.level3Title', { model: targetOrchLeaf.label })
+                    : t('models.thinkingLevelConfig')}
+                </span>
+              </div>
+
+              {orchSupportedThinkingLevels.map((lvl) => {
+                const isChecked = previewOrchThinkingLevel === lvl;
+                return (
+                  <button
+                    key={lvl}
+                    type="button"
+                    role="menuitemradio"
+                    tabIndex={level === 2 ? 0 : -1}
+                    aria-checked={isChecked}
+                    className={`${styles.row} ${isChecked ? styles.rowSelected : ''}`}
+                    onClick={() => handleSelectOrchThinking(lvl)}
+                    data-testid={`orch-thinking-level-${lvl}`}
+                    data-selected={isChecked ? 'true' : 'false'}
+                  >
+                    <span className={styles.rowMain}>
+                      <span className={styles.rowLabel}>{localizeThinkingSuffixLabel(lvl, t)}</span>
+                    </span>
+                    <span className={styles.rowEnd}>
+                      {isChecked && <span className={styles.checkMark}>✓</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
     </div>

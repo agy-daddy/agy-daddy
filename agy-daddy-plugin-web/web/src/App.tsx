@@ -22,7 +22,9 @@ import { formatSessionTitle, useI18n, type TranslateFn } from './i18n';
 import { ThreeColumnShell } from './layout/ThreeColumnShell';
 import { useTheme } from './theme/ThemeProvider';
 import type {
+  BackgroundTasksListResponse,
   ComposerStateResponse,
+  ContextDisplayLocation,
   CreateProjectRequest,
   CreateSessionRequest,
   CreateSessionResponse,
@@ -38,6 +40,7 @@ import type {
   SessionEvent,
   SessionRunStatus,
   SessionSummary,
+  StopBackgroundTaskResponse,
   TopbarPanels,
   UpdateProjectRequest,
   UserEventPayload,
@@ -488,6 +491,12 @@ export function App() {
       (window.location.pathname === '/settings' || window.location.pathname === '/pc/settings'),
   );
   const [adminTab, setAdminTab] = useState<HostAdminTab>('plugins');
+  const [adminSelectedPluginId, setAdminSelectedPluginId] = useState<string | null>(null);
+  const [tasksData, setTasksData] = useState<BackgroundTasksListResponse | null>(null);
+  const [tasksLoading, setTasksLoading] = useState<boolean>(false);
+  const [composerDraftPatch, setComposerDraftPatch] = useState<{ text: string; nonce: number } | null>(null);
+  const [contextLocationOverride, setContextLocationOverride] = useState<ContextDisplayLocation | null>(null);
+  const [contextShowSpeedOverride, setContextShowSpeedOverride] = useState<boolean | null>(null);
 
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [confirmQueue, setConfirmQueue] = useState<
@@ -655,6 +664,29 @@ export function App() {
     }
   }, []);
 
+  const refreshTasks = useCallback(async () => {
+    if (typeof apiClient.listBackgroundTasks !== 'function') return;
+    setTasksLoading(true);
+    try {
+      const res = await apiClient.listBackgroundTasks();
+      setTasksData(res);
+    } catch {
+      // Background tasks panel soft-degrades cleanly when unavailable
+    } finally {
+      setTasksLoading(false);
+    }
+  }, []);
+
+  const handleStopTask = useCallback(
+    async (taskId: string): Promise<StopBackgroundTaskResponse | void> => {
+      if (typeof apiClient.stopBackgroundTask !== 'function') return;
+      const res = await apiClient.stopBackgroundTask(taskId);
+      await refreshTasks();
+      return res;
+    },
+    [refreshTasks],
+  );
+
   const mergeRecentCreatedSessions = useCallback((incoming: SessionSummary[]): SessionSummary[] => {
     const now = Date.now();
     const incomingIds = new Set(incoming.map((s) => s.cascadeId));
@@ -783,6 +815,7 @@ export function App() {
         composerRes,
         remoteRes,
         webAccessRes,
+        tasksRes,
       ] = await Promise.allSettled([
         apiClient.getHealth(),
         apiClient.listSessions({ limit: 80, includeInternal: false }),
@@ -795,6 +828,9 @@ export function App() {
         apiClient.getRemoteStatus(),
         typeof apiClient.getWebAccessStatus === 'function'
           ? apiClient.getWebAccessStatus()
+          : Promise.resolve(null),
+        typeof apiClient.listBackgroundTasks === 'function'
+          ? apiClient.listBackgroundTasks()
           : Promise.resolve(null),
       ]);
 
@@ -892,6 +928,10 @@ export function App() {
 
       if (webAccessRes.status === 'fulfilled' && webAccessRes.value) {
         setWebAccessStatus(webAccessRes.value);
+      }
+
+      if (tasksRes.status === 'fulfilled' && tasksRes.value) {
+        setTasksData(tasksRes.value);
       }
     }
 
@@ -1002,6 +1042,9 @@ export function App() {
         setConnectionStatus('connected');
         void loadSessionDetail(activeSessionId);
       },
+      onTaskUpdated: () => {
+        void refreshTasks();
+      },
       onStatePatch: (patch) => {
         if (patch.key === 'state:host.locale@1' || patch.key === 'state:zh-cn.lang@1') {
           const valObj =
@@ -1107,6 +1150,50 @@ export function App() {
           void refreshProjects();
           return;
         }
+        if (patch.key === 'state:composer.settings@1') {
+          void apiClient
+            .getComposerState()
+            .then((res) => setComposerState(res))
+            .catch(() => {});
+          return;
+        }
+        if (patch.key === 'state:host.plugins@1') {
+          void refreshHealth();
+          void refreshTopbar();
+          void apiClient
+            .getComposerState()
+            .then((res) => setComposerState(res))
+            .catch(() => {});
+          return;
+        }
+        if (patch.key === 'state:plugin.settings@1') {
+          const valObj =
+            patch.value && typeof patch.value === 'object'
+              ? (patch.value as Record<string, unknown>)
+              : null;
+          const targetPlugin = typeof valObj?.pluginId === 'string' ? valObj.pluginId : '';
+          const pSettings =
+            valObj?.settings && typeof valObj.settings === 'object'
+              ? (valObj.settings as Record<string, unknown>)
+              : null;
+          if (targetPlugin === 'agy-daddy.context' && pSettings) {
+            if (pSettings.displayLocation === 'composer' || pSettings.displayLocation === 'topbar') {
+              setContextLocationOverride(pSettings.displayLocation);
+            }
+            if (typeof pSettings.showSpeed === 'boolean') {
+              setContextShowSpeedOverride(pSettings.showSpeed);
+            }
+            void refreshTopbar();
+          } else if (targetPlugin === 'agy-daddy.web' && pSettings) {
+            hydrateFromSettings(pSettings);
+          } else if (targetPlugin === 'agy-daddy.composer') {
+            void apiClient
+              .getComposerState()
+              .then((res) => setComposerState(res))
+              .catch(() => {});
+          }
+          return;
+        }
         const match = /^state:(context|usage|quota)\.(snapshot|status|summary)@1$/.exec(patch.key);
         if (match) {
           const panelKey = match[1] as 'context' | 'usage' | 'quota';
@@ -1114,6 +1201,14 @@ export function App() {
             patch.value && typeof patch.value === 'object'
               ? (patch.value as Record<string, unknown>)
               : undefined;
+          if (panelKey === 'context' && valObj) {
+            if (valObj.displayLocation === 'composer' || valObj.displayLocation === 'topbar') {
+              setContextLocationOverride(valObj.displayLocation);
+            }
+            if (typeof valObj.showSpeed === 'boolean') {
+              setContextShowSpeedOverride(valObj.showSpeed);
+            }
+          }
           setTopbarPanels((prev) => {
             const base: TopbarPanels = prev || {
               context: { available: false },
@@ -1126,6 +1221,19 @@ export function App() {
                 available: Boolean(valObj),
                 source: 'state',
                 data: valObj,
+                ...(panelKey === 'context' && valObj
+                  ? {
+                      settings: {
+                        displayLocation:
+                          valObj.displayLocation === 'composer' ? 'composer' : 'topbar',
+                        showSpeed: Boolean(valObj.showSpeed),
+                        compactPolicy:
+                          typeof valObj.compactPolicy === 'string'
+                            ? valObj.compactPolicy
+                            : undefined,
+                      },
+                    }
+                  : {}),
               },
             };
           });
@@ -1140,11 +1248,14 @@ export function App() {
     };
   }, [
     activeSessionId,
+    hydrateFromSettings,
     loadSessionDetail,
     markActiveSessionAsRead,
+    refreshHealth,
     refreshProjects,
     refreshRemoteStatus,
     refreshSessions,
+    refreshTasks,
     refreshTopbar,
     syncHostLocale,
     syncOptimisticRefForSession,
@@ -1623,9 +1734,14 @@ export function App() {
     void handleSendMessage('/compact');
   }, [creatingSession, handleSendMessage, sending]);
 
-  const handleOpenAdmin = useCallback((tab: HostAdminTab = 'plugins') => {
+  const handleOpenAdmin = useCallback((tab: HostAdminTab = 'plugins', selectedPluginId?: string) => {
+    setAdminSelectedPluginId(selectedPluginId ?? null);
     setAdminTab(tab);
     setAdminOpen(true);
+  }, []);
+
+  const handleInsertFromSideChat = useCallback((text: string) => {
+    setComposerDraftPatch((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
   const handlePluginsChanged = useCallback(() => {
@@ -1784,6 +1900,12 @@ export function App() {
     setScrollToSeqState((prev) => ({ seq, nonce: prev.nonce + 1 }));
   }, []);
 
+  const effectiveContextDisplayLocation: ContextDisplayLocation =
+    contextLocationOverride ??
+    (topbarPanels?.context?.settings?.displayLocation === 'composer' ? 'composer' : 'topbar');
+  const effectiveContextShowSpeed =
+    contextShowSpeedOverride ?? Boolean(topbarPanels?.context?.settings?.showSpeed);
+
   return (
     <>
       <ThreeColumnShell
@@ -1792,10 +1914,6 @@ export function App() {
         onOpenSettings={() => handleOpenAdmin('plugins')}
         topbar={
           <div className={styles.topbarWrap}>
-            <div className={styles.brand}>
-              <span className={styles.brandMark}>A</span>
-              <span>{t('brand.title')}</span>
-            </div>
             <TopbarCapsules
               panels={topbarPanels}
               loading={topbarLoading}
@@ -1806,6 +1924,22 @@ export function App() {
               remoteLoading={remoteLoading}
               webAccessStatus={webAccessStatus}
               activeSessionId={activeSessionId}
+              sessionTitle={headerTitle}
+              sessionRunning={isRunning}
+              workspaceName={workspaceChip}
+              branchName={activeSession?.branchName || null}
+              diffCount={reviewFilesSummary?.count ?? 0}
+              contextDisplayLocation={effectiveContextDisplayLocation}
+              tasksData={tasksData}
+              tasksLoading={tasksLoading}
+              onRefreshTasks={() => void refreshTasks()}
+              onStopTask={handleStopTask}
+              onSelectTaskSession={(sid) => handleSelectSession(sid)}
+              onRefreshSession={
+                activeSessionId ? () => void loadSessionDetail(activeSessionId) : undefined
+              }
+              onOpenDiffReview={() => handleReviewDiff()}
+              onPluginsChanged={handlePluginsChanged}
               onRefreshTopbar={() => void refreshTopbar()}
               onRefreshRemote={() => void refreshRemoteStatus()}
               onRefreshWebAccess={() => void refreshWebAccessStatus()}
@@ -1879,72 +2013,6 @@ export function App() {
                 </button>
               </div>
             )}
-
-            <div className={styles.sessionHeader}>
-              <div className={styles.sessionMeta}>
-                <h1 className={styles.sessionTitle} title={headerTitle}>
-                  {headerTitle}
-                </h1>
-                {activeSessionId && (
-                  <span
-                    className={`${styles.badge} ${isRunning ? styles.badgeRunning : styles.badgeIdle}`}
-                  >
-                    <span className={styles.dot} />
-                    {isRunning ? t('sidebar.status.running') : t('sidebar.status.idle')}
-                  </span>
-                )}
-                {workspaceChip && (
-                  <span className={styles.badge} title={activeSession?.workspaceUri || undefined}>
-                    {workspaceChip}
-                  </span>
-                )}
-                {activeSession?.branchName && (
-                  <span className={styles.badge}>git:{activeSession.branchName}</span>
-                )}
-                {activeModelLabel && (
-                  <span className={styles.badge} data-testid="active-model-badge">
-                    {activeModelLabel}
-                  </span>
-                )}
-              </div>
-
-              <div className={styles.headerActions}>
-                {reviewFilesSummary && reviewFilesSummary.count > 0 && (
-                  <button
-                    type="button"
-                    className={`${styles.headerBtn} ${styles.headerReviewBtn}`}
-                    onClick={() => handleReviewDiff()}
-                    data-testid="session-header-review-btn"
-                  >
-                    <span>{t('review.barTitle', { count: reviewFilesSummary.count })}</span>
-                    {(reviewFilesSummary.additions > 0 || reviewFilesSummary.deletions > 0) && (
-                      <span className={styles.headerDiffDelta}>
-                        <span className={styles.diffAddText}>+{reviewFilesSummary.additions}</span>{' '}
-                        <span className={styles.diffDelText}>-{reviewFilesSummary.deletions}</span>
-                      </span>
-                    )}
-                  </button>
-                )}
-                {activeSessionId && (
-                  <button
-                    type="button"
-                    className={styles.headerBtn}
-                    onClick={() => void loadSessionDetail(activeSessionId)}
-                    title={t('session.refresh')}
-                  >
-                    {t('session.refresh')}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={`${styles.headerBtn} ${rightbarOpen ? styles.headerBtnActive : ''}`}
-                  onClick={() => setRightbarOpen((prev) => !prev)}
-                  data-testid="session-header-dock-toggle"
-                >
-                  {rightbarOpen ? t('shell.hideDock') : t('shell.showDock')}
-                </button>
-              </div>
-            </div>
 
             <div className={styles.streamRegion}>
               <SessionStream
@@ -2051,6 +2119,12 @@ export function App() {
                 canceling={canceling}
                 composerState={composerState}
                 contextUsagePct={contextUsagePct}
+                contextPanel={topbarPanels?.context ?? null}
+                contextDisplayLocation={effectiveContextDisplayLocation}
+                contextShowSpeed={effectiveContextShowSpeed}
+                onRefreshContext={() => void refreshTopbar()}
+                onRunCompact={handleRunCompact}
+                externalDraftPatch={composerDraftPatch}
                 onOptimizePrompt={handleOptimizePrompt}
                 onExportMarkdown={handleExportMarkdown}
                 exportingMarkdown={exportingMarkdown}
@@ -2071,6 +2145,11 @@ export function App() {
             diffBadgeCount={reviewFilesSummary?.source === 'git' ? reviewFilesSummary.count : 0}
             focusedDiffFile={focusedDiffFile}
             focusedFilePath={focusedFilePath}
+            channel={webAccessStatus?.channel || 'loopback'}
+            permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
+            models={models}
+            activeModelId={selectedModelId}
+            onInsertToComposer={handleInsertFromSideChat}
           />
         }
       />
@@ -2078,9 +2157,13 @@ export function App() {
       <HostAdminModal
         open={adminOpen}
         activeTab={adminTab}
+        initialSelectedPluginId={adminSelectedPluginId}
         onTabChange={setAdminTab}
+        channel={webAccessStatus?.channel}
+        permissionLevel={webAccessStatus?.permissionLevel}
         onClose={() => {
           setAdminOpen(false);
+          setAdminSelectedPluginId(null);
           void refreshWebAccessStatus();
         }}
         onPluginsChanged={handlePluginsChanged}

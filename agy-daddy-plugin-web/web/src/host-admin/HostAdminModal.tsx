@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
+  apiClient,
   getHostDoctor,
   getHostPlugins,
   getPluginSettings,
-  getWebAccessStatus,
   runHostCommand,
   runHostPluginAction,
   savePluginSettings,
@@ -316,8 +316,10 @@ export function HostAdminModal({
 
   useEffect(() => {
     if (!open || (channelProp !== undefined && permissionLevelProp !== undefined)) return;
+    if (typeof apiClient.getWebAccessStatus !== 'function') return;
     let cancelled = false;
-    void getWebAccessStatus()
+    void apiClient
+      .getWebAccessStatus()
       .then((res) => {
         if (cancelled || !res) return;
         setResolvedAccess({

@@ -162,11 +162,33 @@ function safeDecodeURIComponent(raw) {
   }
 }
 
+function classifyDeleteRpcError(err) {
+  const raw = `${err?.code || ''} ${err?.message || ''}`.trim();
+  let reasonCode = 'RPC_ERROR';
+  if (/RPC_UNAVAILABLE|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|not connected|no hub|HARNESS_ADAPTER_UNAVAILABLE/i.test(raw)) {
+    reasonCode = 'RPC_OFFLINE';
+  } else if (/RPC_METHOD_BLOCKED|RPC_PERMISSION_DENIED|UNIMPLEMENTED|404|501|not supported/i.test(raw)) {
+    reasonCode = 'RPC_UNSUPPORTED';
+  }
+  return {
+    reasonCode,
+    message: err?.message || 'Host session delete unavailable'
+  };
+}
+
 /**
  * Required permission tier per route for non-loopback channels.
  *   L0 read-only · L1 chat/session lifecycle · L2 workspace + host admin
  */
 function requiredPermissionFor(method, pathname) {
+  if (
+    pathname === '/api/v1/workspace/browse'
+    || pathname === '/api/v1/workspace/remote-preflight'
+    || pathname === '/api/v1/workspace/github-repos'
+    || /^\/api\/v1\/projects\/remote-jobs(?:\/[^/]+)?$/.test(pathname)
+  ) {
+    return 'L2';
+  }
   if (/^\/api\/v1\/terminal\/sessions\/[^/]+\/stream$/.test(pathname)) {
     return 'L2';
   }
@@ -178,7 +200,10 @@ function requiredPermissionFor(method, pathname) {
   if (READ_METHODS.has(method)) return 'L0';
   if (pathname === '/api/v1/web/switch-ticket' || pathname === '/api/v1/web/auth') return 'L0';
   if (pathname === '/api/v1/confirm') return 'L1';
-  if (pathname.startsWith('/api/v1/sessions')) return 'L1';
+  if (method === 'DELETE' && /^\/api\/v1\/sessions\/[^/]+$/.test(pathname)) return 'L2';
+  if (pathname.startsWith('/api/v1/sessions') || pathname.startsWith('/api/sessions/')) return 'L1';
+  if (pathname.startsWith('/api/v1/project-groups')) return 'L1';
+  if (method === 'PATCH' && /^\/api\/v1\/projects\/[^/]+$/.test(pathname)) return 'L1';
   if (pathname.startsWith('/api/v1/composer')) return 'L1';
   if (pathname.startsWith('/api/v1/side-chat')) return 'L1';
   const taskStopMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/stop$/);
@@ -935,7 +960,8 @@ class WebServer {
       channel === 'cloudflare' &&
       pathname !== '/api/v1/confirm' &&
       pathname !== '/api/v1/web/switch-ticket' &&
-      pathname !== '/api/v1/side-chat/cancel'
+      pathname !== '/api/v1/side-chat/cancel' &&
+      !/^\/api\/v1\/projects\/remote-jobs\/[^/]+\/cancel$/.test(pathname)
     ) {
       const termWriteMatch = method === 'POST'
         ? pathname.match(/^\/api\/v1\/terminal\/sessions\/([^/]+)\/(input|resize)$/)
@@ -1069,19 +1095,24 @@ class WebServer {
         const limit = limitRaw !== null ? Number(limitRaw) : 50;
         const includeInternal = urlObj.searchParams.get('includeInternal') === '1'
           || urlObj.searchParams.get('includeInternal') === 'true';
+        const includeArchived = urlObj.searchParams.get('includeArchived') === '1'
+          || urlObj.searchParams.get('includeArchived') === 'true';
         const result = await adapter.listSessions({ limit: Number.isFinite(limit) && limit > 0 ? limit : 50 });
         if (result?.ok !== false && Array.isArray(result?.sessions)) {
           this.refreshSessionRoots?.(result.sessions);
           if (this.workspaceMetaStore) {
             const enrichedRes = typeof this.workspaceMetaStore.enrichSessionsWithMeta === 'function'
-              ? this.workspaceMetaStore.enrichSessionsWithMeta(result.sessions, { includeInternal })
+              ? this.workspaceMetaStore.enrichSessionsWithMeta(result.sessions, { includeInternal, includeArchived })
               : {
-                  sessions: this.workspaceMetaStore.enrichSessions(result.sessions, { includeInternal }),
+                  sessions: this.workspaceMetaStore.enrichSessions(result.sessions, { includeInternal, includeArchived }),
                   hiddenInternalCount: 0
                 };
             let sessions = Array.isArray(enrichedRes?.sessions) ? enrichedRes.sessions : [];
             const hiddenInternalCount = Number.isFinite(Number(enrichedRes?.hiddenInternalCount))
               ? Number(enrichedRes.hiddenInternalCount)
+              : 0;
+            const archivedCount = Number.isFinite(Number(enrichedRes?.archivedCount))
+              ? Number(enrichedRes.archivedCount)
               : 0;
             const projectIdFilter = urlObj.searchParams.get('projectId');
             if (projectIdFilter) {
@@ -1089,7 +1120,7 @@ class WebServer {
                 ? sessions.filter((s) => !s.projectId)
                 : sessions.filter((s) => s.projectId === projectIdFilter);
             }
-            sendActionResult(res, { ...result, sessions, hiddenInternalCount });
+            sendActionResult(res, { ...result, sessions, hiddenInternalCount, archivedCount });
             return;
           }
         }
@@ -1196,12 +1227,35 @@ class WebServer {
       }
 
       if (method === 'GET' && (pathname === '/api/sessions/org' || pathname === '/api/v1/sessions/org')) {
-        if (this.sessionOrgBridge) {
-          sendActionResult(res, this.sessionOrgBridge.getOrg());
+        const includeArchived = urlObj.searchParams.get('includeArchived') === '1'
+          || urlObj.searchParams.get('includeArchived') === 'true';
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (orgProvider && typeof orgProvider.getOrg === 'function') {
+          const baseOrg = orgProvider.getOrg({ includeArchived });
+          if (this.workspaceMetaStore && typeof this.workspaceMetaStore.listProjectsAndGroups === 'function') {
+            let sessions = [];
+            if (typeof this.harnessAdapter?.listSessions === 'function') {
+              try {
+                const listRes = await this.harnessAdapter.listSessions({ limit: 500 });
+                if (listRes?.ok !== false && Array.isArray(listRes?.sessions)) {
+                  sessions = listRes.sessions;
+                }
+              } catch {}
+            }
+            const listed = this.workspaceMetaStore.listProjectsAndGroups(sessions);
+            sendActionResult(res, {
+              ...baseOrg,
+              groups: listed.groups || baseOrg.groups,
+              projects: listed.projects || baseOrg.projects,
+              defaultSessionPath: listed.defaultSessionPath || baseOrg.defaultSessionPath
+            });
+            return;
+          }
+          sendActionResult(res, baseOrg);
           return;
         }
         if (typeof this.harnessAdapter?.getSessionOrg === 'function') {
-          sendActionResult(res, await this.harnessAdapter.getSessionOrg());
+          sendActionResult(res, await this.harnessAdapter.getSessionOrg({ includeArchived }));
           return;
         }
         sendJson(res, 200, { ok: true, groups: [], projects: [], pins: { sessions: [], projects: [], groups: [] } });
@@ -1210,8 +1264,16 @@ class WebServer {
 
       if (method === 'POST' && (pathname === '/api/sessions/pin' || pathname === '/api/v1/sessions/pin')) {
         const body = await readJsonBody(req, this.maxBodyBytes);
-        if (this.sessionOrgBridge) {
-          sendActionResult(res, this.sessionOrgBridge.togglePin(body));
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (orgProvider && typeof orgProvider.togglePin === 'function') {
+          let pinBody = body;
+          if (String(body?.type || '').toLowerCase().startsWith('project') && !body.rootPath && !body.workspaceUri && this.workspaceMetaStore) {
+            const proj = this.workspaceMetaStore.getProjectById?.(body.id);
+            if (proj?.rootPath) {
+              pinBody = { ...body, rootPath: proj.rootPath, projectName: proj.name };
+            }
+          }
+          sendActionResult(res, orgProvider.togglePin(pinBody));
           return;
         }
         if (typeof this.harnessAdapter?.togglePin === 'function') {
@@ -1224,8 +1286,16 @@ class WebServer {
 
       if (method === 'POST' && (pathname === '/api/sessions/groups' || pathname === '/api/v1/sessions/groups')) {
         const body = await readJsonBody(req, this.maxBodyBytes);
-        if (this.sessionOrgBridge) {
-          sendActionResult(res, this.sessionOrgBridge.mutateGroup(body));
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (orgProvider && typeof orgProvider.mutateGroup === 'function') {
+          let grpBody = body;
+          if (String(body?.action || '').toLowerCase() === 'assign' && body.projectId && !body.rootPath && !body.workspaceUri && this.workspaceMetaStore) {
+            const proj = this.workspaceMetaStore.getProjectById?.(body.projectId);
+            if (proj?.rootPath) {
+              grpBody = { ...body, rootPath: proj.rootPath };
+            }
+          }
+          sendActionResult(res, orgProvider.mutateGroup(grpBody));
           return;
         }
         if (typeof this.harnessAdapter?.mutateGroup === 'function') {
@@ -1236,7 +1306,135 @@ class WebServer {
         return;
       }
 
+      if (method === 'POST' && pathname === '/api/v1/sessions/org/reorder') {
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (!orgProvider || typeof orgProvider.reorderOrg !== 'function') {
+          sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+          return;
+        }
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        if (body?.movedProject?.projectId && !body.movedProject.workspaceUri && this.workspaceMetaStore) {
+          const proj = this.workspaceMetaStore.getProjectById?.(body.movedProject.projectId);
+          if (proj?.rootPath) {
+            body.movedProject = { ...body.movedProject, workspaceUri: url.pathToFileURL(proj.rootPath).href };
+          }
+        }
+        const result = orgProvider.reorderOrg(body);
+        sendActionResult(res, result);
+        return;
+      }
+
       let match;
+      if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/archive$/))) {
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (!orgProvider || typeof orgProvider.archiveSession !== 'function') {
+          sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+          return;
+        }
+        const id = decodeURIComponent(match[1]);
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        if (typeof body.archived !== 'boolean') {
+          sendJson(res, 400, { ok: false, error: 'INVALID_ARCHIVE_FLAG' });
+          return;
+        }
+        let stepCount = Number.isFinite(Number(body.stepCount)) ? Number(body.stepCount) : 0;
+        let isRunning = Boolean(body.isRunning);
+        let projectId = body.projectId || null;
+        let projectName = body.projectName || null;
+        let titleSnapshot = typeof body.titleSnapshot === 'string' ? body.titleSnapshot : '';
+        if (body.archived && typeof this.harnessAdapter?.listSessions === 'function' && !body.skipLookup) {
+          try {
+            const listRes = await this.harnessAdapter.listSessions({ limit: 500 });
+            const found = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+            if (found) {
+              stepCount = Number.isFinite(Number(found.stepCount)) ? Number(found.stepCount) : stepCount;
+              isRunning = /RUNNING|GENERATING/i.test(String(found.status || '')) || Boolean(found.notFullyIdle);
+              titleSnapshot = titleSnapshot || found.title || '';
+              if (this.workspaceMetaStore && !projectId) {
+                const enriched = this.workspaceMetaStore.enrichSessions([found], { includeInternal: true, includeArchived: true });
+                if (enriched[0]) {
+                  projectId = enriched[0].projectId || projectId;
+                  projectName = enriched[0].projectName || projectName;
+                }
+              }
+            }
+          } catch {}
+        }
+        const result = orgProvider.archiveSession(id, {
+          archived: body.archived,
+          stepCount,
+          isRunning,
+          projectId,
+          projectName,
+          titleSnapshot
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)$/))) {
+        const id = decodeURIComponent(match[1]);
+        const mode = String(urlObj.searchParams.get('mode') || 'auto').trim().toLowerCase();
+        if (mode !== 'auto' && mode !== 'local_hide') {
+          sendJson(res, 400, { ok: false, error: 'INVALID_DELETE_MODE' });
+          return;
+        }
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (mode === 'local_hide') {
+          if (!orgProvider || typeof orgProvider.deleteSessionOrgRecord !== 'function') {
+            sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+            return;
+          }
+          const resRec = orgProvider.deleteSessionOrgRecord(id, { mode: 'local_tombstone' });
+          this.workspaceMetaStore?.cleanupSessionTelemetry?.(id);
+          sendActionResult(res, resRec);
+          return;
+        }
+        if (typeof this.harnessAdapter?.deleteSession !== 'function') {
+          sendJson(res, 503, {
+            ok: false,
+            error: 'HOST_DELETE_UNAVAILABLE',
+            reasonCode: 'RPC_OFFLINE',
+            canFallbackLocalHide: true
+          });
+          return;
+        }
+        try {
+          if (typeof this.harnessAdapter.listSessions === 'function' && typeof this.harnessAdapter.cancelSession === 'function') {
+            try {
+              const listRes = await this.harnessAdapter.listSessions({ limit: 500 });
+              const cur = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+              if (cur && (/RUNNING|GENERATING/i.test(String(cur.status || '')) || cur.notFullyIdle)) {
+                await this.harnessAdapter.cancelSession(id).catch(() => {});
+              }
+            } catch {}
+          }
+          await this.harnessAdapter.deleteSession(id);
+          let revision = 0;
+          if (orgProvider && typeof orgProvider.deleteSessionOrgRecord === 'function') {
+            const cleanRes = orgProvider.deleteSessionOrgRecord(id, { mode: 'host_deleted' });
+            revision = cleanRes?.revision ?? 0;
+          }
+          this.workspaceMetaStore?.cleanupSessionTelemetry?.(id);
+          sendJson(res, 200, {
+            ok: true,
+            cascadeId: id,
+            deletionMode: 'host_deleted',
+            hostCleaned: true,
+            revision
+          });
+        } catch (err) {
+          const info = classifyDeleteRpcError(err);
+          sendJson(res, 503, {
+            ok: false,
+            error: 'HOST_DELETE_UNAVAILABLE',
+            reasonCode: info.reasonCode,
+            canFallbackLocalHide: true,
+            message: info.message
+          });
+        }
+        return;
+      }
       if (method === 'PUT' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/pin$/))) {
         const store = this._requireDep(this.workspaceMetaStore, 'WORKSPACE_META_STORE');
         const id = decodeURIComponent(match[1]);
@@ -1297,10 +1495,11 @@ class WebServer {
           return;
         }
         const result = await adapter.sendMessage(id, body);
-        sendActionResult(res, result);
         if (!result || result.ok !== false) {
+          this.workspaceMetaStore?.unarchiveOnSendMessage?.(id);
           this._nudgeSessionPoller(id);
         }
+        sendActionResult(res, result);
         return;
       }
 

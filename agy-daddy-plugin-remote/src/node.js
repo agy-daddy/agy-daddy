@@ -759,6 +759,12 @@ function createStandaloneRpcAdapter(rpc) {
       await rpc.call('CancelCascadeInvocation', { cascadeId });
       return { ok: true, cascadeId };
     },
+    async deleteSession(cascadeId) {
+      ensureRpc();
+      await rpc.call('DeleteCascadeTrajectory', { cascadeId });
+      cursors.delete(cascadeId);
+      return { ok: true, cascadeId, hostCleaned: true };
+    },
     async approveStep(cascadeId, stepIdx, decision = 'allow', payload = {}) {
       ensureRpc();
       const allow = typeof decision === 'boolean'
@@ -1803,6 +1809,182 @@ async function activate(host) {
     },
     async mutateGroup(body) {
       return sessionOrgStore.mutateGroup(body);
+    },
+    async reorderOrg(body) {
+      return sessionOrgStore.reorderOrg(body);
+    },
+    async archiveSession(id, body = {}) {
+      if (typeof body.archived !== 'boolean') {
+        return { ok: false, statusCode: 400, error: 'INVALID_ARCHIVE_FLAG' };
+      }
+      let stepCount = Number.isFinite(Number(body.stepCount)) ? Number(body.stepCount) : 0;
+      let isRunning = Boolean(body.isRunning);
+      let projectId = body.projectId || null;
+      let projectName = body.projectName || null;
+      let titleSnapshot = typeof body.titleSnapshot === 'string' ? body.titleSnapshot : '';
+      if (body.archived && !body.skipLookup) {
+        try {
+          const listRes = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived: true });
+          const found = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+          if (found) {
+            stepCount = Number.isFinite(Number(found.stepCount)) ? Number(found.stepCount) : stepCount;
+            isRunning = /RUNNING|GENERATING/i.test(String(found.status || '')) || Boolean(found.notFullyIdle);
+            projectId = projectId || found.projectId || null;
+            projectName = projectName || found.projectName || null;
+            titleSnapshot = titleSnapshot || found.title || '';
+          }
+        } catch {}
+      }
+      return sessionOrgStore.archiveSession(id, {
+        archived: body.archived,
+        stepCount,
+        isRunning,
+        projectId,
+        projectName,
+        titleSnapshot
+      });
+    },
+    async deleteSession(id, { mode = 'auto' } = {}) {
+      const cleanMode = String(mode || 'auto').trim().toLowerCase();
+      if (cleanMode !== 'auto' && cleanMode !== 'local_hide') {
+        return { ok: false, statusCode: 400, error: 'INVALID_DELETE_MODE' };
+      }
+      if (cleanMode === 'local_hide') {
+        return sessionOrgStore.deleteSessionOrgRecord(id, { mode: 'local_tombstone' });
+      }
+      try {
+        try {
+          const listRes = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived: true });
+          const cur = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+          if (cur && (/RUNNING|GENERATING/i.test(String(cur.status || '')) || cur.notFullyIdle)) {
+            await callHarness('cancelSession', [id]).catch(() => {});
+          }
+        } catch {}
+        await callHarness('deleteSession', [id]);
+        return sessionOrgStore.deleteSessionOrgRecord(id, { mode: 'host_deleted' });
+      } catch (err) {
+        const raw = `${err?.code || ''} ${err?.message || ''}`.trim();
+        let reasonCode = 'RPC_ERROR';
+        if (/RPC_UNAVAILABLE|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|not connected|no hub/i.test(raw)) {
+          reasonCode = 'RPC_OFFLINE';
+        } else if (/RPC_METHOD_BLOCKED|RPC_PERMISSION_DENIED|UNIMPLEMENTED|404|501|HARNESS_METHOD_UNSUPPORTED|not supported/i.test(raw)) {
+          reasonCode = 'RPC_UNSUPPORTED';
+        }
+        return {
+          ok: false,
+          statusCode: 503,
+          error: 'HOST_DELETE_UNAVAILABLE',
+          reasonCode,
+          canFallbackLocalHide: true,
+          message: err?.message || 'Host session delete unavailable'
+        };
+      }
+    },
+    async listProjects() {
+      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT });
+      return {
+        ok: true,
+        version: 2,
+        revision: res.revision ?? 0,
+        projects: res.projects || [],
+        groups: res.groups || [],
+        pins: res.pins || { sessions: [], projects: [], groups: [] },
+        defaultSessionPath: res.defaultSessionPath
+      };
+    },
+    async updateProject(id, patch = {}) {
+      const cleanId = String(id || '').trim();
+      if (!cleanId || !isPlainObject(patch)) {
+        return { ok: false, statusCode: 400, error: 'INVALID_PATCH' };
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'name') && (!String(patch.name || '').trim())) {
+        return { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' };
+      }
+      return sessionOrgStore.mutateOrgAtomically((org) => {
+        let proj = org.projects.find((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId))) || null;
+        if (!proj) {
+          const wsUri = patch.workspaceUri || patch.rootPath;
+          if (!wsUri) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+          }
+          proj = sessionOrgStore.materializeProjectInOrg(org, {
+            id: cleanId,
+            rootPath: patch.rootPath,
+            workspaceUri: patch.workspaceUri,
+            syncedFromApp: cleanId.startsWith('app:'),
+            source: cleanId.startsWith('app:') ? 'app' : 'local'
+          });
+        }
+        if (!proj) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
+          proj.name = String(patch.name).trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
+          const nextGid = patch.groupId ? String(patch.groupId).trim() : null;
+          if (nextGid && !org.groups.some((g) => g.id === nextGid)) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+          }
+          proj.groupId = nextGid;
+          if (nextGid) org.projectGroupMap[proj.id] = nextGid;
+          else delete org.projectGroupMap[proj.id];
+          for (const g of org.groups) {
+            g.projectIds = g.projectIds.filter((pid) => pid !== proj.id);
+            if (nextGid && g.id === nextGid) g.projectIds.push(proj.id);
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'pinned')) {
+          const shouldPin = Boolean(patch.pinned);
+          if (shouldPin && !org.pins.projects.includes(proj.id)) {
+            org.pins.projects.push(proj.id);
+            org.pinTimestamps.projects[proj.id] = new Date().toISOString();
+          } else if (!shouldPin) {
+            org.pins.projects = org.pins.projects.filter((pid) => pid !== proj.id);
+            delete org.pinTimestamps.projects[proj.id];
+          }
+        }
+        proj.updatedAt = new Date().toISOString();
+        return {
+          buildResult: (saved) => ({
+            ok: true,
+            project: { ...proj, pinned: saved.pins.projects.includes(proj.id) },
+            revision: saved.revision
+          })
+        };
+      });
+    },
+    async deleteProject(id) {
+      const cleanId = String(id || '').trim();
+      return sessionOrgStore.mutateOrgAtomically((org) => {
+        const idx = org.projects.findIndex((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId)));
+        if (idx < 0) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        const targetId = org.projects[idx].id;
+        const removeIds = new Set([cleanId, targetId, ...(org.projects[idx].aliases || [])]);
+        org.projects.splice(idx, 1);
+        org.pins.projects = org.pins.projects.filter((pid) => !removeIds.has(pid));
+        for (const rid of removeIds) {
+          delete org.pinTimestamps.projects[rid];
+          delete org.projectGroupMap[rid];
+          delete org.sessionOrder[rid];
+        }
+        for (const g of org.groups) {
+          g.projectIds = g.projectIds.filter((pid) => !removeIds.has(pid));
+        }
+        for (const ord of Object.values(org.projectOrder)) {
+          if (!ord) continue;
+          ord.pinned = (ord.pinned || []).filter((pid) => !removeIds.has(pid));
+          ord.normal = (ord.normal || []).filter((pid) => !removeIds.has(pid));
+        }
+        for (const [cid, pid] of Object.entries(org.sessionProjectOverrides)) {
+          if (removeIds.has(pid)) delete org.sessionProjectOverrides[cid];
+        }
+        return {
+          buildResult: (saved) => ({ ok: true, id: targetId, deleted: true, revision: saved.revision })
+        };
+      });
     },
     async createSession(body) {
       return await callHarness('createSession', [body]);

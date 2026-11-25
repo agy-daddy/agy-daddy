@@ -350,6 +350,8 @@ class MobileRemoteServer {
     sendJson(res, 403, {
       ok: false,
       error: 'CONFIRMATION_REQUIRED',
+      channel,
+      action,
       confirmHint: '公网 Cloudflare 通道执行高危写操作需要二次确认',
       confirmToken
     });
@@ -797,6 +799,23 @@ class MobileRemoteServer {
       return;
     }
 
+    if (method === 'POST' && pathname === '/api/v1/confirm') {
+      if (!this._requirePermission(res, 'L1')) return;
+      const body = await readJsonBody(req);
+      const action = String(body.action || '').trim();
+      if (!action) {
+        sendJson(res, 400, { ok: false, error: 'MISSING_ACTION' });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        action,
+        confirmToken: createConfirmToken(String(this.getConfirmSecret() || ''), { action }),
+        expiresInMs: 60_000
+      });
+      return;
+    }
+
     if (method === 'GET' && pathname === '/api/v1/sessions') {
       if (typeof h.listSessions !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSIONS_UNAVAILABLE' });
@@ -806,9 +825,12 @@ class MobileRemoteServer {
       const limit = limitRaw !== null ? Number(limitRaw) : 200;
       const includeSubagentsRaw = String(urlObj.searchParams.get('includeSubagents') || '').trim().toLowerCase();
       const includeSubagents = includeSubagentsRaw === 'true' || includeSubagentsRaw === '1';
+      const includeArchivedRaw = String(urlObj.searchParams.get('includeArchived') || '').trim().toLowerCase();
+      const includeArchived = includeArchivedRaw === 'true' || includeArchivedRaw === '1';
       const result = await h.listSessions({
         limit: Number.isFinite(limit) && limit > 0 ? limit : 200,
-        includeSubagents
+        includeSubagents,
+        includeArchived
       });
       sendResult(res, result);
       return;
@@ -816,6 +838,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && pathname === '/api/v1/sessions') {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.createSession !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSIONS_UNAVAILABLE' });
         return;
@@ -827,8 +850,10 @@ class MobileRemoteServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/sessions/org') {
+      const includeArchivedRaw = String(urlObj.searchParams.get('includeArchived') || '').trim().toLowerCase();
+      const includeArchived = includeArchivedRaw === 'true' || includeArchivedRaw === '1';
       if (typeof h.getSessionOrg === 'function') {
-        const result = await h.getSessionOrg();
+        const result = await h.getSessionOrg({ includeArchived });
         sendResult(res, result);
         return;
       }
@@ -838,6 +863,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && pathname === '/api/v1/sessions/pin') {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.togglePin !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
         return;
@@ -850,6 +876,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && pathname === '/api/v1/sessions/groups') {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.mutateGroup !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
         return;
@@ -860,7 +887,91 @@ class MobileRemoteServer {
       return;
     }
 
+    if (method === 'POST' && pathname === '/api/v1/sessions/org/reorder') {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.reorderOrg !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const result = await h.reorderOrg(body);
+      sendResult(res, result);
+      return;
+    }
+
     let match;
+    if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/archive$/))) {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.archiveSession !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const id = decodeURIComponent(match[1]);
+      const body = await readJsonBody(req);
+      const result = await h.archiveSession(id, body);
+      sendResult(res, result);
+      return;
+    }
+
+    if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)$/))) {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.deleteSession !== 'function') {
+        sendJson(res, 503, {
+          ok: false,
+          error: 'HOST_DELETE_UNAVAILABLE',
+          reasonCode: 'RPC_OFFLINE',
+          canFallbackLocalHide: true
+        });
+        return;
+      }
+      const id = decodeURIComponent(match[1]);
+      const mode = String(urlObj.searchParams.get('mode') || 'auto').trim().toLowerCase();
+      const result = await h.deleteSession(id, { mode });
+      sendResult(res, result);
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/projects') {
+      if (typeof h.listProjects === 'function') {
+        sendResult(res, await h.listProjects());
+        return;
+      }
+      if (typeof h.getSessionOrg === 'function') {
+        sendResult(res, await h.getSessionOrg());
+        return;
+      }
+      sendJson(res, 200, { ok: true, projects: [], groups: [] });
+      return;
+    }
+
+    if (method === 'PATCH' && (match = pathname.match(/^\/api\/v1\/projects\/([^/]+)$/))) {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.updateProject !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const id = decodeURIComponent(match[1]);
+      const body = await readJsonBody(req);
+      sendResult(res, await h.updateProject(id, body));
+      return;
+    }
+
+    if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/projects\/([^/]+)$/))) {
+      if (!this._requirePermission(res, 'L2')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.deleteProject !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const id = decodeURIComponent(match[1]);
+      sendResult(res, await h.deleteProject(id));
+      return;
+    }
+
     if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/queue$/))) {
       const id = decodeURIComponent(match[1]);
       if (typeof h.listQueue === 'function') {
@@ -875,6 +986,7 @@ class MobileRemoteServer {
 
     if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/queue\/([^/]+)$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       const id = decodeURIComponent(match[1]);
       const queueId = decodeURIComponent(match[2]);
       if (typeof h.removeQueuedMessage === 'function') {
@@ -893,6 +1005,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/queue\/([^/]+)\/steer$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       const id = decodeURIComponent(match[1]);
       const queueId = decodeURIComponent(match[2]);
       await readJsonBody(req);
@@ -927,6 +1040,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/messages$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.sendMessage !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSIONS_UNAVAILABLE' });
         return;
@@ -946,6 +1060,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/cancel$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.cancelSession !== 'function') {
         sendJson(res, 503, { ok: false, error: 'SESSIONS_UNAVAILABLE' });
         return;
@@ -959,6 +1074,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/steps\/(\d+)\/approve$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.approveStep !== 'function') {
         sendJson(res, 503, { ok: false, error: 'APPROVAL_UNAVAILABLE' });
         return;
@@ -973,6 +1089,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/steps\/(\d+)\/answer$/))) {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.answerStep !== 'function') {
         sendJson(res, 503, { ok: false, error: 'ANSWER_UNAVAILABLE' });
         return;
@@ -997,6 +1114,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && pathname === '/api/v1/composer/optimize') {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.optimizePrompt !== 'function') {
         sendJson(res, 503, { ok: false, error: 'COMPOSER_UNAVAILABLE' });
         return;
@@ -1009,6 +1127,7 @@ class MobileRemoteServer {
 
     if (method === 'POST' && pathname === '/api/v1/orchestrator/thinking') {
       if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
       if (typeof h.updateOrchestratorThinking !== 'function') {
         sendJson(res, 503, { ok: false, error: 'ORCHESTRATOR_CONFIG_UNAVAILABLE' });
         return;

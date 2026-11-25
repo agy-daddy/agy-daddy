@@ -805,6 +805,7 @@ async function activate(host) {
         createSession: (opts = {}) => harnessAdapter.createSession(opts),
         sendMessage: (cascadeId, payload = {}) => harnessAdapter.sendMessage(cascadeId, payload),
         cancelSession: (cascadeId) => harnessAdapter.cancelSession(cascadeId),
+        deleteSession: (cascadeId) => harnessAdapter.deleteSession(cascadeId),
         approveStep: (cascadeId, stepIdx, decision, payload = {}) =>
           harnessAdapter.approveStep(cascadeId, stepIdx, decision, payload),
         answerQuestion: (cascadeId, stepIdx, answers, payload = {}) =>

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-const { createWebServer } = require('../src/web-server');
+const { createWebServer, requiredPermissionFor } = require('../src/web-server');
 const { createHostProxy } = require('../src/host-proxy');
 const { createPtyManager } = require('../src/pty-manager');
 const { createSideChatService } = require('../src/side-chat-service');
@@ -209,8 +209,49 @@ test('WebServer terminal/side-chat/tasks permission matrix (L0/L1/L2) & Cloudfla
     assert.equal(stopSessionL0.status, 403);
     assert.equal(stopSessionL0.json.required, 'L1');
 
+    // L0: non-PTY task detail stays L0, while terminal SSE stream & pty: task detail require L2
+    const sessionTaskDetailL0 = await httpRequest(`${baseUrl}/api/v1/tasks/session:cid-1`, {
+      headers: authHeaders
+    });
+    assert.equal(sessionTaskDetailL0.status, 200);
+    assert.equal(sessionTaskDetailL0.json.ok, true);
+
+    const termStreamL0 = await httpRequest(`${baseUrl}/api/v1/terminal/sessions/s-any/stream`, {
+      headers: authHeaders
+    });
+    assert.equal(termStreamL0.status, 403);
+    assert.equal(termStreamL0.json.error, 'PERMISSION_DENIED');
+    assert.equal(termStreamL0.json.required, 'L2');
+
+    const ptyDetailL0 = await httpRequest(`${baseUrl}/api/v1/tasks/pty:p1`, {
+      headers: authHeaders
+    });
+    assert.equal(ptyDetailL0.status, 403);
+    assert.equal(ptyDetailL0.json.error, 'PERMISSION_DENIED');
+    assert.equal(ptyDetailL0.json.required, 'L2');
+
+    const ptyDetailEncodedL0 = await httpRequest(`${baseUrl}/api/v1/tasks/pty%3Ap1`, {
+      headers: authHeaders
+    });
+    assert.equal(ptyDetailEncodedL0.status, 403);
+    assert.equal(ptyDetailEncodedL0.json.error, 'PERMISSION_DENIED');
+    assert.equal(ptyDetailEncodedL0.json.required, 'L2');
+
     // L1 on Cloudflare: side-chat requires X-Agy-Confirm, cancel exempts X-Agy-Confirm, terminal still L2
     permLevel = 'L1';
+    const termStreamL1 = await httpRequest(`${baseUrl}/api/v1/terminal/sessions/s-any/stream`, {
+      headers: authHeaders
+    });
+    assert.equal(termStreamL1.status, 403);
+    assert.equal(termStreamL1.json.error, 'PERMISSION_DENIED');
+    assert.equal(termStreamL1.json.required, 'L2');
+
+    const ptyDetailL1 = await httpRequest(`${baseUrl}/api/v1/tasks/pty:p1`, {
+      headers: authHeaders
+    });
+    assert.equal(ptyDetailL1.status, 403);
+    assert.equal(ptyDetailL1.json.error, 'PERMISSION_DENIED');
+    assert.equal(ptyDetailL1.json.required, 'L2');
     const sideChatNoConfirm = await httpRequest(`${baseUrl}/api/v1/side-chat/completions`, {
       method: 'POST',
       headers: authHeaders,
@@ -262,6 +303,38 @@ test('WebServer terminal/side-chat/tasks permission matrix (L0/L1/L2) & Cloudfla
     const leaseToken = createOk.json.writeConfirmToken;
     assert.ok(leaseToken);
 
+    // L2 on Cloudflare: GET terminal stream & GET pty: task detail succeed WITHOUT X-Agy-Confirm
+    const ptyDetailL2 = await httpRequest(`${baseUrl}/api/v1/tasks/pty:${sid}`, {
+      headers: authHeaders
+    });
+    assert.equal(ptyDetailL2.status, 200);
+    assert.equal(ptyDetailL2.json.ok, true);
+    assert.equal(ptyDetailL2.json.task.taskId, `pty:${sid}`);
+
+    const sseHeadL2 = await new Promise((resolve, reject) => {
+      const u = new URL(`${baseUrl}/api/v1/terminal/sessions/${sid}/stream`);
+      const req = http.request({
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname,
+        method: 'GET',
+        headers: authHeaders
+      }, (res) => {
+        res.once('data', (chunk) => {
+          req.destroy();
+          resolve({ status: res.statusCode, contentType: res.headers['content-type'], firstChunk: chunk.toString('utf8') });
+        });
+      });
+      req.on('error', (err) => {
+        if (err && err.code === 'ECONNRESET') return;
+        reject(err);
+      });
+      req.end();
+    });
+    assert.equal(sseHeadL2.status, 200);
+    assert.match(String(sseHeadL2.contentType), /text\/event-stream/);
+    assert.match(sseHeadL2.firstChunk, /connected/);
+
     // Input & resize succeed with the single 5min PTY_WRITE lease token
     const inputOk = await httpRequest(`${baseUrl}/api/v1/terminal/sessions/${sid}/input`, {
       method: 'POST',
@@ -304,4 +377,18 @@ test('WebServer terminal/side-chat/tasks permission matrix (L0/L1/L2) & Cloudfla
     await srv.stop();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+
+test('requiredPermissionFor tightens terminal SSE stream and pty: task details to L2 while preserving L0 reads', () => {
+  assert.equal(requiredPermissionFor('GET', '/api/v1/terminal/sessions/s-1/stream'), 'L2');
+  assert.equal(requiredPermissionFor('HEAD', '/api/v1/terminal/sessions/s-1/stream'), 'L2');
+  assert.equal(requiredPermissionFor('GET', '/api/v1/tasks/pty:s-1'), 'L2');
+  assert.equal(requiredPermissionFor('GET', '/api/v1/tasks/pty%3As-1'), 'L2');
+  assert.equal(requiredPermissionFor('HEAD', '/api/v1/tasks/pty:s-1'), 'L2');
+
+  assert.equal(requiredPermissionFor('GET', '/api/v1/terminal/sessions'), 'L0');
+  assert.equal(requiredPermissionFor('GET', '/api/v1/tasks'), 'L0');
+  assert.equal(requiredPermissionFor('GET', '/api/v1/tasks/session:cid-1'), 'L0');
+  assert.equal(requiredPermissionFor('GET', '/api/v1/tasks/%E0%A4%A'), 'L0');
+  assert.equal(requiredPermissionFor('POST', '/api/v1/tasks/%E0%A4%A/stop'), 'L1');
 });

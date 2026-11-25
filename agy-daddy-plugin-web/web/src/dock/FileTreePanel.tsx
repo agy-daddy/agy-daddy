@@ -64,6 +64,7 @@ export function FileTreePanel({
   const [fileTruncated, setFileTruncated] = useState(false);
   const [originalContent, setOriginalContent] = useState('');
   const [draftContent, setDraftContent] = useState('');
+  const [selectedRange, setSelectedRange] = useState<{ start: number; end: number } | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
@@ -76,16 +77,21 @@ export function FileTreePanel({
     if (!onSelectionChange) return;
     if (selectedPath && !fileLoading && !fileError) {
       hasEmittedSelectionRef.current = true;
+      const rawSlice =
+        selectedRange && selectedRange.end > selectedRange.start
+          ? draftContent.slice(selectedRange.start, selectedRange.end)
+          : '';
+      const effectiveContent = rawSlice.trim() ? rawSlice : draftContent;
       onSelectionChange({
         path: selectedPath,
-        snippet: truncateSelectionSnippet(draftContent),
+        snippet: truncateSelectionSnippet(effectiveContent),
         kind: 'file',
       });
     } else if (!selectedPath && hasEmittedSelectionRef.current) {
       hasEmittedSelectionRef.current = false;
       onSelectionChange(null);
     }
-  }, [selectedPath, draftContent, fileLoading, fileError, onSelectionChange]);
+  }, [selectedPath, draftContent, selectedRange, fileLoading, fileError, onSelectionChange]);
 
   const loadTree = useCallback(async () => {
     treeAbortRef.current?.abort();
@@ -130,6 +136,7 @@ export function FileTreePanel({
       const controller = new AbortController();
       fileAbortRef.current = controller;
       setSelectedPath(filePath);
+      setSelectedRange(null);
       setFileLoading(true);
       setFileError(null);
       setSaveNotice(null);
@@ -158,6 +165,7 @@ export function FileTreePanel({
 
   useEffect(() => {
     setSelectedPath(null);
+    setSelectedRange(null);
     setExpandedDirs({});
     setFileError(null);
     setSaveNotice(null);
@@ -470,7 +478,14 @@ export function FileTreePanel({
               value={draftContent}
               onChange={(ev) => {
                 setDraftContent(ev.target.value);
+                setSelectedRange(null);
                 if (saveNotice) setSaveNotice(null);
+              }}
+              onSelect={(ev) => {
+                const el = ev.currentTarget;
+                const start = el.selectionStart ?? 0;
+                const end = el.selectionEnd ?? 0;
+                setSelectedRange(end > start ? { start, end } : null);
               }}
               onKeyDown={handleEditorKeyDown}
               readOnly={fileTruncated}

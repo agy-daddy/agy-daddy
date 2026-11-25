@@ -2377,3 +2377,342 @@ test('D23: /api/v1/ping CORS/PNA headers, CSP connect-src, /pc proxy secret anti
   }
 });
 
+test('S3-1 org-api: archive, true/503/local_hide session delete, atomic reorder, and L0/L1/L2 + Cloudflare confirm', async () => {
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-web-org-api-'));
+  const projA = path.join(tmpBase, 'projA');
+  const projB = path.join(tmpBase, 'projB');
+  fs.mkdirSync(projA, { recursive: true });
+  fs.mkdirSync(projB, { recursive: true });
+
+  const { createSessionOrgBridge } = require('../src/session-org-bridge');
+  const orgPath = path.join(tmpBase, 'session-org.json');
+  const bridge = createSessionOrgBridge({ orgPath });
+  const metaStore = createWorkspaceMetaStore({
+    defaultBaseDir: path.join(tmpBase, 'default-ws'),
+    sessionOrgBridge: bridge,
+    conversationDbPath: null,
+    sharedReadStatePath: null
+  });
+
+  const deletedCalls = [];
+  const cancelledCalls = [];
+  let deleteModeBehavior = 'ok';
+  let channelMode = 'loopback';
+
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken: 'org-api-token-12345',
+    confirmSecret: 'org-api-confirm-secret',
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L1',
+    resolveChannel: () => channelMode,
+    workspaceMetaStore: metaStore,
+    sessionOrgBridge: bridge,
+    harnessAdapter: {
+      async listSessions() {
+        return {
+          ok: true,
+          sessions: [
+            { cascadeId: 's-1', title: 'S1', status: 'CASCADE_RUN_STATUS_IDLE', stepCount: 5, workspaceUri: url.pathToFileURL(projA).href, lastModifiedTime: '2026-11-25T10:00:00Z' },
+            { cascadeId: 's-2', title: 'S2', status: 'CASCADE_RUN_STATUS_RUNNING', stepCount: 8, workspaceUri: url.pathToFileURL(projB).href, lastModifiedTime: '2026-11-25T11:00:00Z' },
+            { cascadeId: 's-3', title: 'S3', status: 'CASCADE_RUN_STATUS_IDLE', stepCount: 3, workspaceUri: url.pathToFileURL(projA).href, lastModifiedTime: '2026-11-25T09:00:00Z' }
+          ]
+        };
+      },
+      async cancelSession(id) {
+        cancelledCalls.push(id);
+        return { ok: true, cascadeId: id };
+      },
+      async deleteSession(id) {
+        if (deleteModeBehavior === 'offline') {
+          throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:50001'), { code: 'ECONNREFUSED' });
+        }
+        if (deleteModeBehavior === 'blocked') {
+          throw new Error('RPC_METHOD_BLOCKED: DeleteCascadeTrajectory');
+        }
+        deletedCalls.push(id);
+        return { ok: true, cascadeId: id, hostCleaned: true };
+      }
+    }
+  });
+
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const auth = { Authorization: 'Bearer org-api-token-12345', 'Content-Type': 'application/json' };
+
+  try {
+    // Setup projects & groups
+    const g1 = (await httpRequest(`${base}/api/v1/sessions/groups`, { method: 'POST', headers: auth, body: { action: 'upsert', name: 'G1' } })).json.group;
+    const g2 = (await httpRequest(`${base}/api/v1/sessions/groups`, { method: 'POST', headers: auth, body: { action: 'upsert', name: 'G2' } })).json.group;
+    const p1 = (await httpRequest(`${base}/api/v1/projects`, { method: 'POST', headers: auth, body: { name: 'P1', rootPath: projA, groupId: g1.id } })).json.project;
+    const p2 = (await httpRequest(`${base}/api/v1/projects`, { method: 'POST', headers: auth, body: { name: 'P2', rootPath: projB, groupId: g1.id } })).json.project;
+
+    // Pin s-1 then archive -> atomic unpin & hidden from active sessions
+    assert.equal((await httpRequest(`${base}/api/v1/sessions/pin`, { method: 'POST', headers: auth, body: { type: 'session', id: 's-1', pinned: true } })).status, 200);
+    const archRes = await httpRequest(`${base}/api/v1/sessions/s-1/archive`, {
+      method: 'POST',
+      headers: auth,
+      body: { archived: true }
+    });
+    assert.equal(archRes.status, 200);
+    assert.equal(archRes.json.archived, true);
+    assert.equal(archRes.json.unpinned, true);
+    assert.equal(archRes.json.archivedCount, 1);
+
+    const orgWithArch = await httpRequest(`${base}/api/v1/sessions/org?includeArchived=1`, { headers: auth });
+    assert.equal(orgWithArch.status, 200);
+    assert.ok(orgWithArch.json.archivedSessions['s-1']);
+    assert.equal(orgWithArch.json.pins.sessions.includes('s-1'), false);
+
+    // Unarchive s-1 -> stays unpinned
+    const unarchRes = await httpRequest(`${base}/api/v1/sessions/s-1/archive`, {
+      method: 'POST',
+      headers: auth,
+      body: { archived: false }
+    });
+    assert.equal(unarchRes.status, 200);
+    assert.equal(unarchRes.json.archived, false);
+    assert.equal(unarchRes.json.archivedCount, 0);
+
+    // Reorder: ZONE_PIN_MISMATCH rejected with 409
+    assert.equal((await httpRequest(`${base}/api/v1/sessions/pin`, { method: 'POST', headers: auth, body: { type: 'project', id: p1.id, pinned: true } })).status, 200);
+    const mismatch = await httpRequest(`${base}/api/v1/sessions/org/reorder`, {
+      method: 'POST',
+      headers: auth,
+      body: { targetType: 'project', containerId: g1.id, zone: 'normal', orderedIds: [p1.id, p2.id] }
+    });
+    assert.equal(mismatch.status, 409);
+    assert.equal(mismatch.json.error, 'ZONE_PIN_MISMATCH');
+
+    // Cross-group atomic move p2 from g1 -> g2
+    const crossMove = await httpRequest(`${base}/api/v1/sessions/org/reorder`, {
+      method: 'POST',
+      headers: auth,
+      body: {
+        targetType: 'project',
+        containerId: g2.id,
+        zone: 'normal',
+        orderedIds: [p2.id],
+        movedProject: { projectId: p2.id, fromGroupId: g1.id, toGroupId: g2.id }
+      }
+    });
+    assert.equal(crossMove.status, 200);
+    assert.equal(crossMove.json.org.projectGroupMap[p2.id], g2.id);
+    assert.deepEqual(crossMove.json.org.projectOrder[g2.id].normal, [p2.id]);
+
+    // Permission check: non-loopback L1 blocks DELETE /api/v1/sessions/:id with 403 L2 required,
+    // allows /api/sessions/pin (L1 compat) and PATCH /api/v1/projects/:id (L1)
+    channelMode = 'lan';
+    const delL1 = await httpRequest(`${base}/api/v1/sessions/s-2`, { method: 'DELETE', headers: auth });
+    assert.equal(delL1.status, 403);
+    assert.equal(delL1.json.required, 'L2');
+
+    const compatPin = await httpRequest(`${base}/api/sessions/pin`, {
+      method: 'POST',
+      headers: auth,
+      body: { type: 'group', id: g1.id, pinned: true }
+    });
+    assert.equal(compatPin.status, 200);
+
+    const patchProjL1 = await httpRequest(`${base}/api/v1/projects/${p1.id}`, {
+      method: 'PATCH',
+      headers: auth,
+      body: { name: 'P1 L1 Renamed' }
+    });
+    assert.equal(patchProjL1.status, 200);
+
+    // L2 + Cloudflare requires X-Agy-Confirm on DELETE /api/v1/sessions/:id
+    srv.updateAccessConfig({ permissionLevel: 'L2' });
+    channelMode = 'cloudflare';
+    const cfChallenge = await httpRequest(`${base}/api/v1/sessions/s-2`, { method: 'DELETE', headers: auth });
+    assert.equal(cfChallenge.status, 403);
+    assert.equal(cfChallenge.json.error, 'CONFIRMATION_REQUIRED');
+
+    // True delete on running session cancels first, then calls DeleteCascadeTrajectory
+    const cfDelOk = await httpRequest(`${base}/api/v1/sessions/s-2`, {
+      method: 'DELETE',
+      headers: { ...auth, 'X-Agy-Confirm': cfChallenge.json.confirmToken }
+    });
+    assert.equal(cfDelOk.status, 200);
+    assert.equal(cfDelOk.json.deletionMode, 'host_deleted');
+    assert.equal(cfDelOk.json.hostCleaned, true);
+    assert.deepEqual(cancelledCalls, ['s-2']);
+    assert.deepEqual(deletedCalls, ['s-2']);
+
+    // Host offline -> 503 HOST_DELETE_UNAVAILABLE (no tombstone written yet), then mode=local_hide writes tombstone
+    channelMode = 'loopback';
+    deleteModeBehavior = 'offline';
+    const del503 = await httpRequest(`${base}/api/v1/sessions/s-3`, { method: 'DELETE', headers: auth });
+    assert.equal(del503.status, 503);
+    assert.equal(del503.json.error, 'HOST_DELETE_UNAVAILABLE');
+    assert.equal(del503.json.reasonCode, 'RPC_OFFLINE');
+    assert.equal(del503.json.canFallbackLocalHide, true);
+    assert.equal(Boolean(bridge.loadPersistedOrg().deletedSessions['s-3']), false);
+
+    const delHide = await httpRequest(`${base}/api/v1/sessions/s-3?mode=local_hide`, { method: 'DELETE', headers: auth });
+    assert.equal(delHide.status, 200);
+    assert.equal(delHide.json.deletionMode, 'local_tombstone');
+    assert.equal(delHide.json.hostCleaned, false);
+    assert.ok(bridge.loadPersistedOrg().deletedSessions['s-3']);
+
+    const afterHide = await httpRequest(`${base}/api/v1/sessions`, { headers: auth });
+    assert.equal(afterHide.json.sessions.some((s) => s.cascadeId === 's-3'), false);
+  } finally {
+    bridge.dispose();
+    await srv.stop();
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
+test('WebServer workspace browse & remote provisioning endpoints: L2 gates, Cloudflare confirm, 202 jobs, cancel exemption', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { createSessionOrgBridge } = require('../src/session-org-bridge');
+  const { createWorkspaceBrowser } = require('../src/workspace-browser');
+  const { createRemoteProjectProvisioner } = require('../src/remote-project-provisioner');
+
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ws-prov-'));
+  const orgPath = path.join(tmpBase, 'session-org.json');
+  const wsRoot = path.join(tmpBase, 'ws');
+  fs.mkdirSync(wsRoot, { recursive: true });
+
+  const makeChild = ({ code = 0, stdout = '', delayMs = 5 } = {}) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let timer = setTimeout(() => {
+      if (stdout) child.stdout.write(stdout);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', code, null);
+    }, delayMs);
+    child.kill = (sig = 'SIGTERM') => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      setImmediate(() => {
+        child.stdout.end();
+        child.stderr.end();
+        child.emit('close', null, sig);
+      });
+      return true;
+    };
+    return child;
+  };
+
+  const bridge = createSessionOrgBridge({ orgPath });
+  const metaStore = createWorkspaceMetaStore({ sessionOrgBridge: bridge });
+  const browser = createWorkspaceBrowser({
+    getDefaultSessionPath: () => wsRoot,
+    getProjectRootPaths: () => metaStore.getProjectRootPaths()
+  });
+  const provisioner = createRemoteProjectProvisioner({
+    spawnFn: (bin, args) => {
+      if (bin === 'git' && args[0] === 'clone') {
+        const target = args[args.length - 1];
+        fs.mkdirSync(path.join(target, '.git'), { recursive: true });
+        return makeChild({ code: 0, delayMs: 40 });
+      }
+      if (bin === 'gh' && args[0] === '--version') {
+        return makeChild({ code: 0, stdout: 'gh version 2.50.0\n' });
+      }
+      if (bin === 'gh' && args[0] === 'auth') {
+        return makeChild({ code: 0, stdout: 'Logged in to github.com account octo\nActive account: true\n' });
+      }
+      if (bin === 'gh' && args[0] === 'repo' && args[1] === 'list') {
+        return makeChild({
+          code: 0,
+          stdout: JSON.stringify([{ nameWithOwner: 'octo/repo', url: 'https://github.com/octo/repo', isPrivate: false }])
+        });
+      }
+      return makeChild({ code: 0 });
+    },
+    createProjectFn: (payload) => metaStore.createProject(payload)
+  });
+
+  let channelMode = 'cloudflare';
+  const srv = createWebServer({
+    port: 0,
+    pairingToken: 'tok-prov-123',
+    confirmSecret: 'cf-secret-prov',
+    permissionLevel: 'L1',
+    channels: { loopback: true, lan: true, tailscale: true, bonjour: true, cloudflare: true },
+    resolveChannel: () => channelMode,
+    workspaceMetaStore: metaStore,
+    sessionOrgBridge: bridge,
+    workspaceBrowser: browser,
+    remoteProvisioner: provisioner,
+    deltaPollIntervalMs: 0
+  });
+
+  try {
+    const info = await srv.start();
+    const base = `http://127.0.0.1:${info.port}`;
+    const auth = { Authorization: 'Bearer tok-prov-123' };
+
+    // L1 blocked on L2 browse/preflight
+    const l1Browse = await httpRequest(`${base}/api/v1/workspace/browse?path=${encodeURIComponent(wsRoot)}`, { headers: auth });
+    assert.equal(l1Browse.status, 403);
+    assert.equal(l1Browse.json.required, 'L2');
+
+    srv.updateAccessConfig({ permissionLevel: 'L2' });
+
+    // L2 GET routes pass on Cloudflare without X-Agy-Confirm
+    assert.equal((await httpRequest(`${base}/api/v1/workspace/browse?path=${encodeURIComponent(wsRoot)}`, { headers: auth })).status, 200);
+    const pfRes = await httpRequest(`${base}/api/v1/workspace/remote-preflight?provider=github`, { headers: auth });
+    assert.equal(pfRes.status, 200);
+    assert.equal(pfRes.json.github.ghAuthenticated, true);
+    const reposRes = await httpRequest(`${base}/api/v1/workspace/github-repos`, { headers: auth });
+    assert.equal(reposRes.status, 200);
+    assert.equal(reposRes.json.repos[0].nameWithOwner, 'octo/repo');
+
+    // POST mkdir & remote-jobs require X-Agy-Confirm on Cloudflare
+    const jobCh = await httpRequest(`${base}/api/v1/projects/remote-jobs`, {
+      method: 'POST',
+      headers: auth,
+      body: {
+        provider: 'github',
+        mode: 'gh_clone',
+        projectName: 'Repo One',
+        parentDir: wsRoot,
+        localDirName: 'repo-one',
+        github: { repoSpec: 'octo/repo' }
+      }
+    });
+    assert.equal(jobCh.status, 403);
+    assert.equal(jobCh.json.error, 'CONFIRMATION_REQUIRED');
+
+    const jobStart = await httpRequest(`${base}/api/v1/projects/remote-jobs`, {
+      method: 'POST',
+      headers: { ...auth, 'X-Agy-Confirm': jobCh.json.confirmToken },
+      body: {
+        provider: 'github',
+        mode: 'gh_clone',
+        projectName: 'Repo One',
+        parentDir: wsRoot,
+        localDirName: 'repo-one',
+        github: { repoSpec: 'octo/repo' }
+      }
+    });
+    assert.equal(jobStart.status, 202);
+    assert.ok(jobStart.json.jobId);
+
+    // /cancel exempts X-Agy-Confirm
+    const cancelRes = await httpRequest(`${base}/api/v1/projects/remote-jobs/${jobStart.json.jobId}/cancel`, {
+      method: 'POST',
+      headers: auth,
+      body: {}
+    });
+    assert.equal(cancelRes.status, 200);
+    assert.equal(cancelRes.json.job.status, 'cancelled');
+  } finally {
+    provisioner.dispose();
+    bridge.dispose();
+    await srv.stop();
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
+

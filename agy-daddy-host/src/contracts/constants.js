@@ -73,7 +73,8 @@ const RPC_WRITE_ALLOWLIST = Object.freeze([
   'SendAllQueuedMessages',
   'RevertToCascadeStep',
   'UpdateConversationAnnotations',
-  'UpdatePermissionSettings'
+  'UpdatePermissionSettings',
+  'DeleteCascadeTrajectory'
 ]);
 
 const CONTRIBUTION_POINTS = Object.freeze([

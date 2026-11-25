@@ -29,6 +29,8 @@ import type {
 } from '../types';
 import { api, configureApiClient } from './api';
 import {
+  flushDraftSave,
+  flushSnapshotSave,
   loadDraft,
   loadQueue,
   loadSessionsCache,
@@ -36,7 +38,9 @@ import {
   saveDraft,
   saveQueue,
   saveSessionsCache,
-  saveSessionSnapshot
+  saveSessionSnapshot,
+  scheduleDraftSave,
+  scheduleSnapshotSave
 } from './idb';
 import {
   applyModelPreferences,
@@ -593,6 +597,10 @@ export class RemoteStoreController {
       }
     }
 
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+
     this.sse = new RemoteSseClient({
       onStatusChange: (sseStatus) => this.setState({ sseStatus }),
       onSessionDelta: (payload) => this.handleSessionDelta(payload),
@@ -635,9 +643,22 @@ export class RemoteStoreController {
     }
   }
 
+  private handleVisibilityChange = (): void => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState === 'hidden' || document.hidden) {
+      void flushDraftSave().catch(() => {});
+      void flushSnapshotSave().catch(() => {});
+    }
+  };
+
   public destroy(): void {
     this.sse?.destroy();
     this.sse = null;
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+    void flushDraftSave().catch(() => {});
+    void flushSnapshotSave().catch(() => {});
     this.initialized = false;
   }
 
@@ -652,6 +673,8 @@ export class RemoteStoreController {
   public logoutToken(): void {
     clearSavedToken();
     this.sse?.destroy();
+    void flushDraftSave().catch(() => {});
+    void flushSnapshotSave().catch(() => {});
     this.setState({
       token: '',
       bootstrap: null,
@@ -1000,9 +1023,10 @@ export class RemoteStoreController {
   public async selectSession(cascadeId: string): Promise<void> {
     if (!cascadeId) return;
     const prevId = this.state.activeSessionId;
-    if (prevId !== cascadeId) {
-      saveDraft(prevId, this.state.composerText).catch(() => {});
-    }
+    await Promise.all([
+      flushDraftSave(prevId).catch(() => {}),
+      prevId !== cascadeId ? flushSnapshotSave().catch(() => {}) : Promise.resolve()
+    ]);
     const [snap, draft] = await Promise.all([
       loadSessionSnapshot(cascadeId),
       loadDraft(cascadeId)
@@ -1187,11 +1211,18 @@ export class RemoteStoreController {
           : null;
 
       this.setState({ events: merged, activeSession: nextDetail });
-      saveSessionSnapshot(
-        cascadeId,
-        nextDetail,
-        merged.filter((ev) => ev.seq >= 0)
-      ).catch(() => {});
+      const activeSummaryStatus =
+        this.state.sessions.find((s) => s.cascadeId === cascadeId)?.status || '';
+      const effectiveStatus = (status || nextDetail?.status || activeSummaryStatus).toUpperCase();
+      const isStreaming =
+        effectiveStatus.includes('RUNNING') || effectiveStatus.includes('GENERATING');
+      const confirmedEvents = merged.filter((ev) => ev.seq >= 0);
+      if (isStreaming) {
+        scheduleSnapshotSave(cascadeId, nextDetail, confirmedEvents);
+      } else {
+        scheduleSnapshotSave(cascadeId, nextDetail, confirmedEvents);
+        void flushSnapshotSave(cascadeId).catch(() => {});
+      }
 
       if (status && status.toUpperCase().includes('IDLE')) {
         this.flushPendingQueue();
@@ -1289,7 +1320,7 @@ export class RemoteStoreController {
 
   public setComposerText(text: string): void {
     this.setState({ composerText: text });
-    saveDraft(this.state.activeSessionId, text).catch(() => {});
+    scheduleDraftSave(this.state.activeSessionId, text);
   }
 
   public injectQuoteToComposer(snippet: string): void {
@@ -1412,7 +1443,8 @@ export class RemoteStoreController {
     const images = this.state.composerImages;
     if (!text && images.length === 0) return;
 
-    let sessionId = this.state.activeSessionId;
+    const initialActiveId = this.state.activeSessionId;
+    let sessionId = initialActiveId;
     if (!sessionId && this.state.online && this.state.token) {
       const created = await api.createSession({ title: text.slice(0, 32) });
       sessionId = created.cascadeId;
@@ -1446,7 +1478,11 @@ export class RemoteStoreController {
       };
       const nextQ = [...this.state.queue, qItem];
       this.setState({ queue: nextQ, composerText: '', composerImages: [] });
-      await Promise.all([saveQueue(nextQ), saveDraft(sessionId, '')]);
+      await Promise.all([
+        saveQueue(nextQ),
+        saveDraft(sessionId, ''),
+        initialActiveId !== sessionId ? saveDraft(initialActiveId, '') : Promise.resolve()
+      ]);
       this.showToast('离线草稿已入队，恢复后自动发送');
       return;
     }
@@ -1478,6 +1514,9 @@ export class RemoteStoreController {
         events: optimisticEvents
       });
       saveDraft(sessionId, '').catch(() => {});
+      if (initialActiveId !== sessionId) {
+        saveDraft(initialActiveId, '').catch(() => {});
+      }
 
       const res = await api.sendMessage(sessionId, {
         text,

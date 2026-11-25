@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/registry",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Official Agy-Daddy plugin registry, integrity hashes, and Antigravity anchor fixture matrix",
   "license": "MIT",
   "repository": {

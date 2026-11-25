@@ -6,6 +6,7 @@ import { StepCard } from './chat/StepCard';
 import { VirtualChatList } from './chat/VirtualChatList';
 import DiffViewer from './lazy/DiffViewer';
 import PtyTerminal from './lazy/PtyTerminal';
+import { __resetIdbForTests, loadDraft } from './store/idb';
 import { extractTokenAndScrubUrl } from './store/token';
 import {
   mergeEvents,
@@ -1068,5 +1069,30 @@ describe('Optimistic UI: mergeEvents, StepCard & App send lifecycle', () => {
     await store.sendMessage();
     await waitFor(() => expect(getSessionCalls).toBe(baselineGets + 1));
     store.destroy();
+  });
+
+  it('clears pending debounced draft on send so stale typing does not resurrect empty draft', async () => {
+    vi.useFakeTimers();
+    __resetIdbForTests();
+    try {
+      window.history.replaceState(null, '', '/?t=tok-draft-clear');
+      vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+      const { fetchMock } = createAppSessionFetchMock('s-draft-clear');
+      vi.stubGlobal('fetch', fetchMock);
+
+      const store = new RemoteStoreController();
+      await store.init();
+
+      store.setComposerText('hello world');
+      await vi.advanceTimersByTimeAsync(100);
+      await store.sendMessage();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(await loadDraft('s-draft-clear')).toBe('');
+      store.destroy();
+    } finally {
+      vi.useRealTimers();
+      __resetIdbForTests();
+    }
   });
 });

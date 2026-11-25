@@ -378,10 +378,11 @@ class WebServer {
     return base ? `${base}/?token=${encodeURIComponent(this.pairingToken)}` : '';
   }
 
-  getChannelUrls() {
+  getChannelUrls({ includeToken = true } = {}) {
     return buildChannelUrls({
       port: this.port,
       token: this.pairingToken,
+      includeToken,
       channels: this._resolveChannels(),
       connectHost: normalizeConnectHost(this.host),
       hostName: os.hostname(),
@@ -389,9 +390,9 @@ class WebServer {
     });
   }
 
-  getAccessStatus() {
+  getAccessStatus({ includeToken = true } = {}) {
     const channels = this._resolveChannels();
-    const urls = this.getChannelUrls();
+    const urls = this.getChannelUrls({ includeToken });
     const { primaryChannel, primaryUrl } = resolvePrimaryChannel(urls, channels);
     const permissionLevel = this._resolvePermissionLevel();
     return {
@@ -651,15 +652,18 @@ class WebServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/web/status') {
+      const currentTier = this._resolvePermissionLevel();
+      const hidePairingToken = channel !== 'loopback' && !isPermissionAtLeast(currentTier, 'L1');
+      const accessStatus = this.getAccessStatus({ includeToken: !hidePairingToken });
       sendJson(res, 200, {
         ok: true,
         running: Boolean(this.server && this.port),
         host: this.host,
         port: this.port,
         url: this.getLocalUrl(),
-        pairingUrl: this.getPairingUrl(),
+        pairingUrl: hidePairingToken ? '' : this.getPairingUrl(),
         channel,
-        ...this.getAccessStatus()
+        ...accessStatus
       });
       return;
     }

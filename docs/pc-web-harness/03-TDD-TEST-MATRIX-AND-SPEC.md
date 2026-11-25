@@ -56,6 +56,9 @@
 | **D15** | `web-server.js` | `GET /api/v1/web/status` 汇总通道、入口 URL 与权限级别 | 缺失通道/URL/权限字段，或忽略 `tunnelHostname` | 断言 `channel`、`permissionLevel`、`allowRemoteWrite`、`bindHost`、`activeChannels`、`urls.loopback`、`urls.cloudflare`（由 `tunnelHostname` 生成）、`primaryChannel` | 同上 |
 | **D16** | `channel-config.js` | 确认令牌 HMAC 绑定单一动作且会过期 | 空 `act` 令牌可跨动作重放，或签名不校验 | 正确动作通过；错误动作、错误密钥、篡改令牌均失败；无动作令牌对具体动作失败；过期令牌失败 | 同上 |
 | **D17** | `web-server.js` | `bindHostMode` 热更新重算地址，且被拒策略不留半更新状态 | 校验失败时已写入新通道/模式 | `bindHostMode: 'lan'` + 仅回环 → 抛 `ERR_CHANNEL_NOT_ENABLED` 且 `channels`/`host`/`bindHostMode` 全部不变；启用 `lan` 后同一调用返回 `rebind: true` 且 `host === '0.0.0.0'` | 同上 |
+| **D19** | `channel-config.js` | `cf-*` 与 `*.ts.net` 请求头仅在可信源 IP 下生效 | 局域网或公网源 IP 伪造请求头绕过通道开关 | 回环源带 `cf-ray` → `cloudflare`；LAN/公网源伪造 `cf-ray`/`*.ts.net` → 仍归为 `lan`/`external`；回环或 Tailscale 源带 `*.ts.net` → `tailscale` | 同上 |
+| **D20** | `web-server.js` | 非回环 `L0` 下 `/api/v1/web/status` 隐藏 `pairingToken` | 非回环只读客户端读取到明文配对 Token | `lan`/`cloudflare` + `L0` 下 `pairingUrl === ''` 且 `urls.*`/`primaryUrl` 不含 `token=`；回环或升至 `L1+` 后恢复返回配对链接 | 同上 |
+| **E8** | `node.js` | `reconcileAccess()` 串行 Promise 链与 `start()` 失败回退 `previousHost` | 并发 `onChange` 丢弃二次重绑，或重绑失败后停服 | 连续触发 `{lan:true}`/`{lan:false}` 严格按序重绑；模拟 `0.0.0.0` 监听失败后自动回退 `127.0.0.1` 且服务保持 `running: true` | `AGY_DADDY_TEST_MODE=1 node --test agy-daddy-plugin-web/test/plugin-contract.test.js` |
 
 ---
 

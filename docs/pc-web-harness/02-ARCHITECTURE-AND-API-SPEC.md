@@ -69,10 +69,10 @@
 ### 3.1 通道模型、鉴权与安全头
 
 - **通道开关**：`settings.schema.json` 提供 `loopback` / `lan` / `tailscale` / `bonjour` / `cloudflare` 五个布尔开关与 `bindHost`（`auto` / `loopback` / `lan`）、`tunnelHostname`、`remotePermissionLevel`。默认仅回环通道，升级安装行为不变。
-- **监听地址推导**：`bindHost: auto` 时，仅在启用 `lan` / `tailscale` / `bonjour` 任一通道才绑定 `0.0.0.0`；`cloudflare` 由 cloudflared 连向 `127.0.0.1:<port>`，不扩宽绑定。未启用非回环通道却要求非回环绑定 → `ERR_CHANNEL_NOT_ENABLED`；绑定非本机网卡地址 → `ERR_BIND_HOST_NOT_LOCAL`；`bindHost: loopback` 与外部通道冲突 → `ERR_BIND_HOST_CONFLICT`。显式传入的 `host` 只被重新校验，不被静默改写。
-- **逐请求通道识别**：`classifyRequestChannel()` 依 `cf-ray` / `cf-connecting-ip` / `*.ts.net` / `*.local` / RFC1918 源地址 / 回环地址归类；未启用通道一律 `403 { ok: false, error: 'CHANNEL_DISABLED', channel, allowedChannels }`，`external` 永不放行。
-- **权限分级**（仅作用于非回环通道）：`L0` 只读（GET/HEAD + SSE）、`L1` 增加会话与对话写、`L2` 增加文件写入、Git、插件与宿主设置；越级返回 `403 { ok: false, error: 'PERMISSION_DENIED', required, current, channel }`。回环通道始终全读写。
-- **Cloudflare 二次确认**：该通道上的写操作另需 `X-Agy-Confirm` 携带 HMAC 令牌（`POST /api/v1/confirm` 或 403 响应体下发），令牌绑定 `${method} ${pathname}`、默认 60s 有效；缺失返回 `403 { ok: false, error: 'CONFIRMATION_REQUIRED', action, confirmToken }`。
+- **监听地址推导**：`bindHost: auto` 时，仅在启用 `lan` / `tailscale` / `bonjour` 任一通道才绑定 `0.0.0.0`；`cloudflare` 由 cloudflared 连向 `127.0.0.1:<port>`，不扩宽绑定。未启用非回环通道却要求非回环绑定 → `ERR_CHANNEL_NOT_ENABLED`；绑定非本机网卡地址 → `ERR_BIND_HOST_NOT_LOCAL`；`bindHost: loopback` 与外部通道冲突 → `ERR_BIND_HOST_CONFLICT`。显式传入的 `host` 只被重新校验，不被静默改写。`reconcileAccess()` 通过串行 Promise 链应用热更新；若新监听地址 `start()` 失败则自动回退至 `previousHost` 恢复监听。
+- **逐请求通道识别**：`classifyRequestChannel()` 将 `cf-*` / 隧道域名请求头信任限制在回环源地址（本机 `cloudflared`），将 `*.ts.net` / `tailscale-user-login` 请求头信任限制在回环或 Tailscale 网段源地址，避免绑定 `0.0.0.0` 时跨通道请求头伪造；未启用通道一律 `403 { ok: false, error: 'CHANNEL_DISABLED', channel, allowedChannels }`，`external` 永不放行。
+- **权限分级**（仅作用于非回环通道）：`L0` 只读（GET/HEAD + SSE，且 `/api/v1/web/status` 在非回环 `L0` 下隐藏 `pairingToken`）、`L1` 增加会话与对话写、`L2` 增加文件写入、Git、插件与宿主设置；越级返回 `403 { ok: false, error: 'PERMISSION_DENIED', required, current, channel }`。回环通道始终全读写。
+- **Cloudflare 二次确认**：该通道上的写操作另需 `X-Agy-Confirm` 携带 HMAC 令牌（`POST /api/v1/confirm` 或 403 响应体下发），令牌绑定 `${method} ${pathname}`、默认 60s 有效；缺失返回 `403 { ok: false, error: 'CONFIRMATION_REQUIRED', action, confirmToken }`，前端工作台捕获后弹出确认对话框，用户确认后方携带令牌重试。
 - **Token → Cookie 交换**：
   - 访问 `GET /?token=<pairingToken>` 时使用 `crypto.timingSafeEqual` 校验通过后，下发 `Set-Cookie: agy_web_sid=<sessionSecret>; HttpOnly; SameSite=Strict; Path=/` 并 `302` 重定向至 `/`（剥离 URL 中的敏感 token）。
   - 所有 `/api/v1/*` 需携带有效 Cookie（或 `Authorization: Bearer <pairingToken>` 供 CLI/单测使用）；未鉴权返回 `401 { ok: false, error: 'UNAUTHORIZED' }`。

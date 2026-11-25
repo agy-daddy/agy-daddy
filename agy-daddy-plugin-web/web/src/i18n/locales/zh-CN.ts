@@ -558,4 +558,11 @@ export const zhCN: I18nMessages = {
   'webAccess.channel.tailscale': 'Tailscale',
   'webAccess.channel.bonjour': 'Bonjour (.local)',
   'webAccess.channel.cloudflare': 'Cloudflare Tunnel',
+  'webAccess.confirm.title': '确认公网隧道写操作',
+  'webAccess.confirm.description': '当前通过 Cloudflare Tunnel 公网通道访问，执行该写操作前请二次确认。',
+  'webAccess.confirm.actionLabel': '目标动作',
+  'webAccess.confirm.channelBadge': 'Cloudflare Tunnel',
+  'webAccess.confirm.confirmBtn': '确认执行',
+  'webAccess.confirm.cancelBtn': '取消',
+  'errors.confirmationCancelled': '已取消本次写操作。',
 };

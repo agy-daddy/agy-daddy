@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, apiClient } from './api/client';
+import { ApiError, apiClient, type WriteConfirmChallenge } from './api/client';
 import { RightDock, type RightDockTab } from './dock';
 import {
   ChatNavDock,
@@ -11,7 +11,13 @@ import {
   SessionStream,
   type ChatSearchState,
 } from './harness';
-import { HostAdminModal, TopbarCapsules, type ConnectionStatus, type HostAdminTab } from './host-admin';
+import {
+  HostAdminModal,
+  TopbarCapsules,
+  WriteConfirmModal,
+  type ConnectionStatus,
+  type HostAdminTab,
+} from './host-admin';
 import { formatSessionTitle, useI18n, type TranslateFn } from './i18n';
 import { ThreeColumnShell } from './layout/ThreeColumnShell';
 import { useTheme } from './theme/ThemeProvider';
@@ -362,6 +368,9 @@ function formatErrorMessage(err: unknown, fallback: string, t: TranslateFn): str
     if (err.status === 401) {
       return t('errors.authExpired');
     }
+    if (err.code === 'CONFIRMATION_CANCELLED') {
+      return t('errors.confirmationCancelled');
+    }
     return `${fallback}: ${err.message || err.code}`;
   }
   if (err instanceof Error && err.message) {
@@ -435,6 +444,37 @@ export function App() {
   const [adminTab, setAdminTab] = useState<HostAdminTab>('plugins');
 
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [confirmQueue, setConfirmQueue] = useState<
+    Array<{ challenge: WriteConfirmChallenge; resolve: (confirmed: boolean) => void }>
+  >([]);
+  const confirmQueueRef = useRef<
+    Array<{ challenge: WriteConfirmChallenge; resolve: (confirmed: boolean) => void }>
+  >([]);
+  confirmQueueRef.current = confirmQueue;
+
+  useEffect(() => {
+    apiClient.setConfirmWriteHandler?.((challenge) =>
+      new Promise<boolean>((resolve) => {
+        setConfirmQueue((prev) => [...prev, { challenge, resolve }]);
+      }),
+    );
+    return () => {
+      apiClient.setConfirmWriteHandler?.(null);
+      for (const item of confirmQueueRef.current) {
+        item.resolve(false);
+      }
+    };
+  }, []);
+
+  const settleCurrentConfirm = useCallback((confirmed: boolean) => {
+    setConfirmQueue((prev) => {
+      const [current, ...rest] = prev;
+      if (current) {
+        current.resolve(confirmed);
+      }
+      return rest;
+    });
+  }, []);
 
   const activeSessionIdRef = useRef<string | null>(null);
   activeSessionIdRef.current = activeSessionId;
@@ -1959,6 +1999,12 @@ export function App() {
         onClose={() => setAdminOpen(false)}
         onPluginsChanged={handlePluginsChanged}
         onCommandExecuted={handleCommandExecuted}
+      />
+
+      <WriteConfirmModal
+        challenge={confirmQueue[0]?.challenge ?? null}
+        onConfirm={() => settleCurrentConfirm(true)}
+        onCancel={() => settleCurrentConfirm(false)}
       />
     </>
   );

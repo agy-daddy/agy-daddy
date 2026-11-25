@@ -107,36 +107,76 @@ function isLanIp(ip) {
   return false;
 }
 
+function extractHeaderHostname(raw) {
+  const first = String(raw || '').split(',')[0].trim();
+  if (!first) return '';
+  try {
+    const parsed = new URL(`http://${first}`);
+    return parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return first.split(':')[0].trim().toLowerCase();
+  }
+}
+
 function classifyRequestChannel(req, cfg = {}) {
   const headers = req?.headers || {};
-  const hostHeader = String(headers.host || '').split(':')[0].trim().toLowerCase();
-  const forwardedHost = String(headers['x-forwarded-host'] || '').split(',')[0].split(':')[0].trim().toLowerCase();
-  const remoteIp = String(req?.socket?.remoteAddress || req?.remoteAddress || '').replace(/^::ffff:/, '').trim().toLowerCase();
+  const hostHeader = extractHeaderHostname(headers.host);
+  const forwardedHost = extractHeaderHostname(headers['x-forwarded-host']);
+  const remoteIp = String(req?.socket?.remoteAddress || req?.remoteAddress || '')
+    .replace(/^::ffff:/i, '')
+    .trim()
+    .toLowerCase();
 
-  if (headers['cf-ray'] || headers['cf-connecting-ip'] || headers['cf-visitor'] || hostHeader.endsWith('.trycloudflare.com')) {
-    return 'cloudflare';
-  }
-  if (cfg.tunnelHostname) {
-    try {
-      const tunnelHost = new URL(cfg.tunnelHostname).hostname.toLowerCase();
-      if (tunnelHost && hostHeader === tunnelHost) return 'cloudflare';
-    } catch {}
+  const fromLoopback = !remoteIp || isLoopbackHostname(remoteIp);
+  const fromTailscale = isTailscaleIp(remoteIp);
+
+  // `cloudflared` runs locally and connects over loopback; never trust spoofed
+  // `cf-*` or tunnel Host headers arriving from non-loopback sockets.
+  if (fromLoopback) {
+    if (
+      headers['cf-ray'] ||
+      headers['cf-connecting-ip'] ||
+      headers['cf-visitor'] ||
+      hostHeader.endsWith('.trycloudflare.com')
+    ) {
+      return 'cloudflare';
+    }
+    if (cfg.tunnelHostname) {
+      try {
+        const tunnelHost = new URL(cfg.tunnelHostname).hostname.toLowerCase();
+        if (tunnelHost && hostHeader === tunnelHost) return 'cloudflare';
+      } catch {}
+    }
   }
 
+  // `*.ts.net` and `tailscale-user-login` headers are only trusted when the
+  // connection originates from the Tailscale CGNAT/ULA subnet or local
+  // `tailscale serve` on loopback.
+  if (fromTailscale) {
+    return 'tailscale';
+  }
   if (
-    hostHeader.endsWith('.ts.net') ||
-    forwardedHost.endsWith('.ts.net') ||
-    Boolean(headers['tailscale-user-login']) ||
-    isTailscaleIp(remoteIp)
+    fromLoopback &&
+    (hostHeader.endsWith('.ts.net') ||
+      forwardedHost.endsWith('.ts.net') ||
+      Boolean(headers['tailscale-user-login']))
   ) {
     return 'tailscale';
   }
 
-  if (hostHeader.endsWith('.local')) return 'bonjour';
+  if (
+    hostHeader.endsWith('.local') &&
+    (fromLoopback ||
+      isLanIp(remoteIp) ||
+      remoteIp.startsWith('fe80:') ||
+      remoteIp.startsWith('169.254.'))
+  ) {
+    return 'bonjour';
+  }
 
   if (isLanIp(remoteIp)) return 'lan';
 
-  if (!remoteIp || isLoopbackHostname(remoteIp)) return 'loopback';
+  if (fromLoopback) return 'loopback';
 
   return 'external';
 }
@@ -259,7 +299,8 @@ function buildChannelUrls(options = {}) {
   if (!Number.isInteger(port) || port <= 0) return urls;
 
   const connectHost = options.connectHost || LOOPBACK_BIND_HOST;
-  const entry = (base) => `${base}/?token=${encodeURIComponent(token)}`;
+  const includeToken = options.includeToken !== false && Boolean(token);
+  const entry = (base) => (includeToken ? `${base}/?token=${encodeURIComponent(token)}` : base);
   const loopbackBase = `http://${connectHost.includes(':') ? `[${connectHost}]` : connectHost}:${port}`;
 
   if (channels.loopback) urls.loopback = entry(loopbackBase);

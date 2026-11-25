@@ -69,12 +69,31 @@ export class ApiError extends Error {
 }
 
 const CSRF_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const CONFIRM_REFRESH_THRESHOLD_MS = 45_000;
+
+export interface WriteConfirmChallenge {
+  action: string;
+  channel: string;
+  confirmToken: string;
+  confirmHint?: string;
+  method: string;
+  path: string;
+}
+
+export type ConfirmWriteHandler = (challenge: WriteConfirmChallenge) => Promise<boolean>;
+
+let confirmWriteHandler: ConfirmWriteHandler | null = null;
+
+export function setConfirmWriteHandler(handler: ConfirmWriteHandler | null): void {
+  confirmWriteHandler = handler;
+}
 
 export interface ApiRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   body?: unknown;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  interactiveConfirm?: boolean;
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -118,8 +137,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   const dataObj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
 
   // Writes on the Cloudflare channel are challenged with an action-bound
-  // confirm token. Retry exactly once with that token so the UI does not have
-  // to special-case every mutating call.
+  // confirm token and require explicit user confirmation before retrying.
   const confirmToken =
     response.status === 403 && dataObj?.error === 'CONFIRMATION_REQUIRED'
       ? dataObj.confirmToken
@@ -127,11 +145,50 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   if (
     typeof confirmToken === 'string' &&
     confirmToken &&
-    !headers['X-Agy-Confirm']
+    !headers['X-Agy-Confirm'] &&
+    options.interactiveConfirm !== false &&
+    confirmWriteHandler
   ) {
+    const challengedAt = Date.now();
+    const action =
+      typeof dataObj?.action === 'string' && dataObj.action
+        ? dataObj.action
+        : `${method} ${path.split('?')[0]}`;
+    const challenge: WriteConfirmChallenge = {
+      action,
+      channel: typeof dataObj?.channel === 'string' && dataObj.channel ? dataObj.channel : 'cloudflare',
+      confirmToken,
+      confirmHint: typeof dataObj?.confirmHint === 'string' ? dataObj.confirmHint : undefined,
+      method,
+      path,
+    };
+    const approved = await confirmWriteHandler(challenge);
+    if (!approved) {
+      throw new ApiError('CONFIRMATION_CANCELLED', 403, 'CONFIRMATION_CANCELLED', parsed);
+    }
+
+    let tokenToUse = confirmToken;
+    if (Date.now() - challengedAt > CONFIRM_REFRESH_THRESHOLD_MS && action) {
+      try {
+        const refreshed = await apiRequest<{ ok: boolean; confirmToken?: string }>(
+          '/api/v1/confirm',
+          {
+            method: 'POST',
+            body: { action },
+            signal: options.signal,
+          },
+        );
+        if (typeof refreshed?.confirmToken === 'string' && refreshed.confirmToken) {
+          tokenToUse = refreshed.confirmToken;
+        }
+      } catch {
+        // Fall back to original token if minting refresh fails
+      }
+    }
+
     return apiRequest<T>(path, {
       ...options,
-      headers: { ...(options.headers || {}), 'X-Agy-Confirm': confirmToken },
+      headers: { ...(options.headers || {}), 'X-Agy-Confirm': tokenToUse },
     });
   }
 
@@ -193,6 +250,7 @@ export function markSessionRead(
     {
       method: 'PUT',
       body: payload ?? {},
+      interactiveConfirm: false,
     },
   );
 }
@@ -647,4 +705,5 @@ export const apiClient = {
   optimizePrompt,
   exportSessionMarkdown,
   subscribeSessionStream,
+  setConfirmWriteHandler,
 };

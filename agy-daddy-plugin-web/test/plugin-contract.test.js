@@ -1140,3 +1140,129 @@ test('E7: getRemoteStatus aggregates remote snapshot/state, generates qrSvg, and
     });
   }
 });
+
+test('E8: reconcileAccess serializes rapid settings changes and rolls back to previousHost when rebind start() fails', async () => {
+  const { activate, deactivate } = require('../src/node');
+  let liveSettings = {
+    loopback: true,
+    lan: false,
+    remotePermissionLevel: 'L0',
+    tunnelHostname: ''
+  };
+  const changeListeners = new Set();
+  const stateMap = new Map();
+  const storageMap = new Map();
+
+  const host = {
+    settings: {
+      get: () => ({ ...liveSettings }),
+      onChange: (fn) => {
+        changeListeners.add(fn);
+        return () => changeListeners.delete(fn);
+      }
+    },
+    storage: {
+      readJson: (name, fallback) => ({
+        ok: true,
+        data: storageMap.has(name) ? storageMap.get(name) : fallback
+      }),
+      writeJson: (name, val) => {
+        storageMap.set(name, val);
+        return { ok: true };
+      }
+    },
+    state: {
+      get: (key) => stateMap.get(key) || null,
+      set: (key, value) => {
+        stateMap.set(key, value);
+        return { key, value };
+      }
+    },
+    rpc: {
+      call: async () => ({}),
+      getOrigin: async () => null
+    }
+  };
+
+  const emitSettings = (next) => {
+    liveSettings = { ...liveSettings, ...next };
+    for (const fn of Array.from(changeListeners)) {
+      fn();
+    }
+  };
+
+  const listenHosts = [];
+  let failNextWildcardBind = false;
+  const origListen = http.Server.prototype.listen;
+  http.Server.prototype.listen = function patchedListen(...args) {
+    const bindHost = typeof args[1] === 'string' ? args[1] : '';
+    listenHosts.push(bindHost);
+    if (failNextWildcardBind && bindHost === '0.0.0.0') {
+      failNextWildcardBind = false;
+      process.nextTick(() => {
+        const err = new Error('listen EADDRINUSE: address already in use 0.0.0.0');
+        err.code = 'EADDRINUSE';
+        this.emit('error', err);
+      });
+      return this;
+    }
+    return origListen.apply(this, args);
+  };
+
+  try {
+    const initial = await activate(host);
+    assert.equal(initial.running, true);
+    assert.equal(initial.host, '127.0.0.1');
+    const initialPort = initial.port;
+    const authHeaders = { Authorization: `Bearer ${initial.pairingToken}` };
+
+    // 1. Overlapping settings changes ({ lan: true }, then { lan: false } while
+    // the first rebind is mid-flight) must execute strictly serially:
+    // 127.0.0.1 -> 0.0.0.0 -> 127.0.0.1, keeping the same port and ending on 127.0.0.1.
+    emitSettings({ lan: true });
+    await Promise.resolve();
+    emitSettings({ lan: false });
+    await new Promise((r) => setTimeout(r, 120));
+
+    assert.deepEqual(listenHosts, ['127.0.0.1', '0.0.0.0', '127.0.0.1']);
+    const afterRapid = stateMap.get('state:web.status@1');
+    assert.equal(afterRapid.running, true);
+    assert.equal(afterRapid.host, '127.0.0.1');
+    assert.equal(afterRapid.port, initialPort);
+    assert.deepEqual(afterRapid.activeChannels, ['loopback']);
+
+    const checkRapid = await httpJsonRequest(`http://127.0.0.1:${initialPort}/api/v1/web/status`, {
+      headers: authHeaders
+    });
+    assert.equal(checkRapid.status, 200);
+    assert.equal(checkRapid.json.bindHost, '127.0.0.1');
+
+    // 2. When start() on the new bind address (0.0.0.0) fails, reconcileAccess
+    // must roll back to previousHost (127.0.0.1) and previous policy and keep serving.
+    failNextWildcardBind = true;
+    emitSettings({
+      lan: true,
+      remotePermissionLevel: 'L2',
+      tunnelHostname: 'https://ag.example.com'
+    });
+    await new Promise((r) => setTimeout(r, 120));
+
+    const afterRollback = stateMap.get('state:web.status@1');
+    assert.equal(afterRollback.running, true);
+    assert.equal(afterRollback.host, '127.0.0.1');
+    assert.equal(afterRollback.port, initialPort);
+    assert.equal(afterRollback.permissionLevel, 'L0');
+    assert.equal(afterRollback.tunnelHostname, '');
+
+    const checkRecovered = await httpJsonRequest(
+      `http://127.0.0.1:${initialPort}/api/v1/web/status`,
+      { headers: authHeaders }
+    );
+    assert.equal(checkRecovered.status, 200);
+    assert.equal(checkRecovered.json.bindHost, '127.0.0.1');
+    assert.equal(checkRecovered.json.permissionLevel, 'L0');
+  } finally {
+    http.Server.prototype.listen = origListen;
+    await deactivate();
+  }
+});

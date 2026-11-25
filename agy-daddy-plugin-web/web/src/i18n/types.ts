@@ -569,6 +569,13 @@ export interface I18nMessages {
   'webAccess.channel.tailscale': string;
   'webAccess.channel.bonjour': string;
   'webAccess.channel.cloudflare': string;
+  'webAccess.confirm.title': string;
+  'webAccess.confirm.description': string;
+  'webAccess.confirm.actionLabel': string;
+  'webAccess.confirm.channelBadge': string;
+  'webAccess.confirm.confirmBtn': string;
+  'webAccess.confirm.cancelBtn': string;
+  'errors.confirmationCancelled': string;
 }
 
 export type I18nKey = keyof I18nMessages;

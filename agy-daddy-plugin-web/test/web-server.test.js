@@ -13,7 +13,11 @@ const { readAccessSettings } = require('../src/node');
 const { createWorkspaceMetaStore } = require('../src/workspace-meta-store');
 const { createWorkspaceService } = require('../src/workspace-service');
 const { createHostProxy } = require('../src/host-proxy');
-const { createConfirmToken, verifyConfirmToken } = require('../src/channel-config');
+const {
+  classifyRequestChannel,
+  createConfirmToken,
+  verifyConfirmToken
+} = require('../src/channel-config');
 
 function httpRequest(urlStr, options = {}) {
   return new Promise((resolve, reject) => {
@@ -1313,6 +1317,151 @@ test('D18: isLoopbackSameOrigin enforces port matching and readAccessSettings gu
 
   const preserved = readAccessSettings({ bindHost: 'lan', loopback: true, lan: true });
   assert.equal(preserved.bindHostMode, 'lan');
+});
+
+test('D19: classifyRequestChannel restricts cf-* to loopback and *.ts.net to loopback/Tailscale source IPs', () => {
+  // Trusted loopback cloudflared traffic classifies as cloudflare
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'cf-ray': '8abc123' },
+      socket: { remoteAddress: '127.0.0.1' }
+    }),
+    'cloudflare'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'cf-connecting-ip': '198.51.100.7' },
+      socket: { remoteAddress: '::ffff:127.0.0.1' }
+    }),
+    'cloudflare'
+  );
+  assert.equal(
+    classifyRequestChannel(
+      { headers: { host: 'ag.example.com' }, socket: { remoteAddress: '::1' } },
+      { tunnelHostname: 'https://ag.example.com' }
+    ),
+    'cloudflare'
+  );
+
+  // Spoofed cf-* / tunnel Host from LAN, Tailscale, or external IPs must NOT classify as cloudflare
+  assert.equal(
+    classifyRequestChannel(
+      {
+        headers: { 'cf-ray': 'spoof', 'cf-connecting-ip': '1.2.3.4', host: 'ag.example.com' },
+        socket: { remoteAddress: '192.168.1.50' }
+      },
+      { tunnelHostname: 'https://ag.example.com' }
+    ),
+    'lan'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'cf-ray': 'spoof', host: 'demo.trycloudflare.com' },
+      socket: { remoteAddress: '100.80.1.2' }
+    }),
+    'tailscale'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'cf-ray': 'spoof', host: 'demo.trycloudflare.com' },
+      socket: { remoteAddress: '203.0.113.9' }
+    }),
+    'external'
+  );
+
+  // Trusted loopback (`tailscale serve`) or Tailscale subnet with *.ts.net / tailscale-user-login -> tailscale
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'x-forwarded-host': 'box.tail123.ts.net' },
+      socket: { remoteAddress: '127.0.0.1' }
+    }),
+    'tailscale'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { 'tailscale-user-login': 'alice@example.com' },
+      socket: { remoteAddress: '::1' }
+    }),
+    'tailscale'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { host: 'box.tail123.ts.net:18767' },
+      socket: { remoteAddress: '100.90.1.5' }
+    }),
+    'tailscale'
+  );
+
+  // Spoofed *.ts.net / tailscale-user-login from LAN or external IPs must NOT classify as tailscale
+  assert.equal(
+    classifyRequestChannel({
+      headers: {
+        host: 'box.tail123.ts.net:18767',
+        'x-forwarded-host': 'box.tail123.ts.net',
+        'tailscale-user-login': 'spoof@example.com'
+      },
+      socket: { remoteAddress: '192.168.1.50' }
+    }),
+    'lan'
+  );
+  assert.equal(
+    classifyRequestChannel({
+      headers: { host: 'box.tail123.ts.net:18767', 'tailscale-user-login': 'spoof@example.com' },
+      socket: { remoteAddress: '203.0.113.9' }
+    }),
+    'external'
+  );
+});
+
+test('D20: /api/v1/web/status hides pairingToken on non-loopback L0 while preserving it on loopback and L1+', async () => {
+  const { srv, state } = channelServer({
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L0',
+    tunnelHostname: 'https://ag.example.com'
+  });
+  const info = await srv.start();
+  const base = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    // Non-loopback L0 (lan): pairingToken must not appear anywhere in response
+    state.channel = 'lan';
+    const lanL0 = await httpRequest(`${base}/api/v1/web/status`, { headers: bearer });
+    assert.equal(lanL0.status, 200);
+    assert.equal(lanL0.text.includes('pairing-secret-token-12345'), false);
+    assert.equal(lanL0.json.pairingUrl, '');
+    assert.equal(lanL0.json.urls.loopback, base);
+    assert.equal(lanL0.json.urls.cloudflare, 'https://ag.example.com');
+    assert.equal(lanL0.json.primaryUrl, base);
+
+    // Non-loopback L0 (cloudflare): pairingToken also hidden
+    state.channel = 'cloudflare';
+    const cfL0 = await httpRequest(`${base}/api/v1/web/status`, { headers: bearer });
+    assert.equal(cfL0.status, 200);
+    assert.equal(cfL0.text.includes('pairing-secret-token-12345'), false);
+    assert.equal(cfL0.json.pairingUrl, '');
+
+    // Loopback at L0: pairingToken remains available for local device pairing
+    state.channel = 'loopback';
+    const localL0 = await httpRequest(`${base}/api/v1/web/status`, { headers: bearer });
+    assert.equal(localL0.status, 200);
+    assert.match(localL0.json.pairingUrl, /token=pairing-secret-token-12345$/);
+    assert.match(localL0.json.urls.loopback, /token=pairing-secret-token-12345$/);
+    assert.equal(
+      localL0.json.urls.cloudflare,
+      'https://ag.example.com/?token=pairing-secret-token-12345'
+    );
+
+    // Non-loopback upgraded to L1: pairingToken available again
+    srv.updateAccessConfig({ permissionLevel: 'L1' });
+    state.channel = 'lan';
+    const lanL1 = await httpRequest(`${base}/api/v1/web/status`, { headers: bearer });
+    assert.equal(lanL1.status, 200);
+    assert.match(lanL1.json.pairingUrl, /token=pairing-secret-token-12345$/);
+    assert.match(lanL1.json.urls.loopback, /token=pairing-secret-token-12345$/);
+  } finally {
+    await srv.stop();
+  }
 });
 
 test('D8: internal/subagent filtering, user-created session protection, read-state + completion SSE sync, raw artifact streaming, and previewers', async () => {

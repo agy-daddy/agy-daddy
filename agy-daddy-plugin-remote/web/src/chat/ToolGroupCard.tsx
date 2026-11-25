@@ -8,6 +8,11 @@ import {
   summarizeToolEvent,
   summarizeToolGroup
 } from './chatFilter';
+import {
+  extractCodeActionDiffLines,
+  extractCodeActionDiffStats,
+  extractCodeActionTargetFile
+} from './codeActionUtils';
 import { Markdown } from './Markdown';
 import styles from './ToolGroupCard.module.css';
 
@@ -16,6 +21,11 @@ export interface ToolGroupCardProps {
   events: SessionEvent[];
   thinkingNotes?: BridgedThinkingNote[];
   onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  currentMatchSeq?: number | null;
 }
 
 function formatJson(v: unknown): string {
@@ -28,18 +38,139 @@ function formatJson(v: unknown): string {
   }
 }
 
-function extractNum(
-  stats: Record<string, unknown> | null | undefined,
-  keys: string[]
-): number | null {
-  if (!stats) return null;
-  for (const k of keys) {
-    if (typeof stats[k] === 'number' && Number.isFinite(stats[k])) return stats[k] as number;
-  }
-  return null;
+function CodeActionToolDetail({
+  ev,
+  onInspectFile,
+  onViewDiffFile,
+  searchQuery,
+  searchRegex,
+  searchCaseSensitive,
+  isCurrentMatch
+}: {
+  ev: SessionEvent;
+  onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  isCurrentMatch?: boolean;
+}) {
+  const [diffExpanded, setDiffExpanded] = useState(false);
+  const p = ev.payload || {};
+  const spec = (p.actionSpec as Record<string, unknown> | undefined) || null;
+  const targetFile = extractCodeActionTargetFile(p, ev.title);
+  const { additions, deletions } = extractCodeActionDiffStats(p);
+  const diffLines = extractCodeActionDiffLines(p, 80);
+  const visibleLines = diffExpanded ? diffLines : diffLines.slice(0, 16);
+  const openDiff = onViewDiffFile || onInspectFile;
+
+  return (
+    <div className={styles.detailBody}>
+      {typeof spec?.description === 'string' && spec.description && (
+        <Markdown
+          text={spec.description}
+          highlightQuery={searchQuery}
+          highlightRegex={searchRegex}
+          highlightCaseSensitive={searchCaseSensitive}
+          isCurrentMatch={isCurrentMatch}
+        />
+      )}
+      <div className={styles.metaRow}>
+        {targetFile &&
+          (onInspectFile ? (
+            <button
+              type="button"
+              className={styles.fileBtn}
+              onClick={(e) => {
+                e.stopPropagation();
+                onInspectFile(targetFile);
+              }}
+            >
+              {targetFile}
+            </button>
+          ) : (
+            <span className="ag-chip">{targetFile}</span>
+          ))}
+        {additions !== null && (
+          <span className="ag-chip" data-tone="ok">
+            +{additions}
+          </span>
+        )}
+        {deletions !== null && (
+          <span className="ag-chip" data-tone="danger">
+            -{deletions}
+          </span>
+        )}
+        {targetFile && openDiff && (
+          <button
+            type="button"
+            className={styles.viewDiffBtn}
+            onClick={(e) => {
+              e.stopPropagation();
+              openDiff(targetFile);
+            }}
+            data-testid={`tool-group-diff-${ev.seq}`}
+          >
+            在 Diff 中查看 ↗
+          </button>
+        )}
+      </div>
+      {visibleLines.length > 0 ? (
+        <div className={styles.diffPreviewWrap} data-testid={`tool-group-diff-lines-${ev.seq}`}>
+          {visibleLines.map((line, i) => (
+            <div
+              key={i}
+              className={[
+                styles.diffLine,
+                line.kind === 'add'
+                  ? styles.diffLineAdd
+                  : line.kind === 'del'
+                    ? styles.diffLineDel
+                    : line.kind === 'hunk'
+                      ? styles.diffLineHunk
+                      : styles.diffLineCtx
+              ].join(' ')}
+            >
+              <span className={styles.diffSign}>
+                {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}
+              </span>
+              <span>{line.text}</span>
+            </div>
+          ))}
+          {diffLines.length > 16 && (
+            <button
+              type="button"
+              className={styles.diffExpandBtn}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDiffExpanded((v) => !v);
+              }}
+            >
+              {diffExpanded ? '收起预览' : `展开其余 ${diffLines.length - 16} 行`}
+            </button>
+          )}
+        </div>
+      ) : (
+        spec &&
+        !spec.description && (
+          <pre className={styles.codeBlock} data-hscroll="1">
+            {formatJson(spec)}
+          </pre>
+        )
+      )}
+    </div>
+  );
 }
 
-function renderToolDetail(ev: SessionEvent, onInspectFile?: (filePath: string) => void) {
+function renderToolDetail(
+  ev: SessionEvent,
+  onInspectFile?: (filePath: string) => void,
+  onViewDiffFile?: (filePath: string) => void,
+  searchQuery?: string,
+  searchRegex?: boolean,
+  searchCaseSensitive?: boolean,
+  isCurrentMatch?: boolean
+) {
   const p = ev.payload || {};
 
   switch (ev.kind) {
@@ -107,52 +238,18 @@ function renderToolDetail(ev: SessionEvent, onInspectFile?: (filePath: string) =
       );
     }
 
-    case 'code_action': {
-      const spec = (p.actionSpec as Record<string, unknown> | undefined) || null;
-      const targetFile = typeof spec?.targetFile === 'string' ? spec.targetFile : '';
-      const diffStats = (p.diffStats as Record<string, unknown> | undefined) || null;
-      const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-      const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+    case 'code_action':
       return (
-        <div className={styles.detailBody}>
-          {typeof spec?.description === 'string' && spec.description && (
-            <Markdown text={spec.description} />
-          )}
-          <div className={styles.metaRow}>
-            {targetFile &&
-              (onInspectFile ? (
-                <button
-                  type="button"
-                  className={styles.fileBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onInspectFile(targetFile);
-                  }}
-                >
-                  {targetFile}
-                </button>
-              ) : (
-                <span className="ag-chip">{targetFile}</span>
-              ))}
-            {additions !== null && (
-              <span className="ag-chip" data-tone="ok">
-                +{additions}
-              </span>
-            )}
-            {deletions !== null && (
-              <span className="ag-chip" data-tone="danger">
-                -{deletions}
-              </span>
-            )}
-          </div>
-          {spec && !spec.description && (
-            <pre className={styles.codeBlock} data-hscroll="1">
-              {formatJson(spec)}
-            </pre>
-          )}
-        </div>
+        <CodeActionToolDetail
+          ev={ev}
+          onInspectFile={onInspectFile}
+          onViewDiffFile={onViewDiffFile}
+          searchQuery={searchQuery}
+          searchRegex={searchRegex}
+          searchCaseSensitive={searchCaseSensitive}
+          isCurrentMatch={isCurrentMatch}
+        />
       );
-    }
 
     case 'web_search': {
       const docs = Array.isArray(p.webDocuments) ? p.webDocuments : [];
@@ -242,18 +339,27 @@ function getInspectableFilePath(ev: SessionEvent): string {
     return p.absolutePathUri;
   }
   if (ev.kind === 'code_action') {
-    const spec = (p.actionSpec as Record<string, unknown> | undefined) || null;
-    if (typeof spec?.targetFile === 'string' && spec.targetFile) return spec.targetFile;
+    return extractCodeActionTargetFile(p, ev.title);
   }
   return '';
 }
 
 function ToolSubRow({
   event,
-  onInspectFile
+  onInspectFile,
+  onViewDiffFile,
+  searchQuery,
+  searchRegex,
+  searchCaseSensitive,
+  isCurrentMatch
 }: {
   event: SessionEvent;
   onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  isCurrentMatch?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const p = event.payload || {};
@@ -262,13 +368,13 @@ function ToolSubRow({
   const filePath = getInspectableFilePath(event);
   const summary = summarizeToolEvent(event);
 
-  const diffStats =
+  const { additions, deletions } =
     event.kind === 'code_action'
-      ? ((p.diffStats as Record<string, unknown> | undefined) || null)
-      : null;
-  const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-  const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+      ? extractCodeActionDiffStats(p)
+      : { additions: null, deletions: null };
   const hasExit = event.kind === 'command' && typeof p.exitCode === 'number';
+  const chipHandler =
+    event.kind === 'code_action' && onViewDiffFile ? onViewDiffFile : onInspectFile;
 
   return (
     <div
@@ -297,17 +403,17 @@ function ToolSubRow({
         </button>
 
         <div className={styles.subRight}>
-          {filePath && onInspectFile && (
+          {filePath && chipHandler && (
             <button
               type="button"
               className={styles.inspectQuickBtn}
               title={`查看 ${filePath}`}
               onClick={(e) => {
                 e.stopPropagation();
-                onInspectFile(filePath);
+                chipHandler(filePath);
               }}
             >
-              {formatBasename(filePath)}
+              <span className={styles.inspectQuickText}>{formatBasename(filePath)}</span>
             </button>
           )}
           {hasExit && (
@@ -338,12 +444,34 @@ function ToolSubRow({
         </div>
       </div>
 
-      {expanded && <div className={styles.subDetail}>{renderToolDetail(event, onInspectFile)}</div>}
+      {expanded && (
+        <div className={styles.subDetail}>
+          {renderToolDetail(
+            event,
+            onInspectFile,
+            onViewDiffFile,
+            searchQuery,
+            searchRegex,
+            searchCaseSensitive,
+            isCurrentMatch
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function ToolGroupCardInner({ id, events, thinkingNotes, onInspectFile }: ToolGroupCardProps) {
+function ToolGroupCardInner({
+  id,
+  events,
+  thinkingNotes,
+  onInspectFile,
+  onViewDiffFile,
+  searchQuery,
+  searchRegex,
+  searchCaseSensitive,
+  currentMatchSeq
+}: ToolGroupCardProps) {
   const [open, setOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const { headline, activeEvent, hasError } = summarizeToolGroup(events);
@@ -389,7 +517,16 @@ function ToolGroupCardInner({ id, events, thinkingNotes, onInspectFile }: ToolGr
       {open && (
         <div className={styles.groupBody} data-testid={`tool-group-body-${id}`}>
           {events.map((ev) => (
-            <ToolSubRow key={ev.seq} event={ev} onInspectFile={onInspectFile} />
+            <ToolSubRow
+              key={ev.seq}
+              event={ev}
+              onInspectFile={onInspectFile}
+              onViewDiffFile={onViewDiffFile}
+              searchQuery={searchQuery}
+              searchRegex={searchRegex}
+              searchCaseSensitive={searchCaseSensitive}
+              isCurrentMatch={ev.seq === currentMatchSeq}
+            />
           ))}
 
           {thinkingNotes && thinkingNotes.length > 0 && (
@@ -424,6 +561,11 @@ export const ToolGroupCard = memo(ToolGroupCardInner, (prev, next) => {
   if (
     prev.id !== next.id ||
     prev.onInspectFile !== next.onInspectFile ||
+    prev.onViewDiffFile !== next.onViewDiffFile ||
+    prev.searchQuery !== next.searchQuery ||
+    prev.searchRegex !== next.searchRegex ||
+    prev.searchCaseSensitive !== next.searchCaseSensitive ||
+    prev.currentMatchSeq !== next.currentMatchSeq ||
     prev.events.length !== next.events.length ||
     (prev.thinkingNotes?.length || 0) !== (next.thinkingNotes?.length || 0)
   ) {

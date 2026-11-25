@@ -101,6 +101,7 @@
 }
 
 .copyBtn {
+  position: relative;
   padding: 2px 8px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-control);
@@ -108,6 +109,12 @@
   font-size: 10.5px;
   font-weight: 500;
   transition: background-color 140ms var(--ag-ease-out, ease-out), transform 120ms ease;
+}
+
+.copyBtn::after {
+  content: '';
+  position: absolute;
+  inset: -11px -8px;
 }
 
 .copyBtn:hover {

@@ -23,7 +23,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 9px 12px;
-  min-height: 40px;
+  min-height: 44px;
   text-align: left;
   transition: background-color 140ms var(--ag-ease-out, ease-out);
 }
@@ -103,7 +103,7 @@
   display: inline-block;
   font-size: 11px;
   color: var(--ag-muted);
-  transition: transform 180ms var(--ag-ease-spring, ease-out);
+  transition: transform 180ms var(--ag-ease-drawer, ease-out);
 }
 
 .chevronOpen {
@@ -135,8 +135,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 6px 8px;
-  min-height: 34px;
+  padding: 2px 6px 2px 8px;
+  min-height: 44px;
 }
 
 .subToggle {
@@ -144,6 +144,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  min-height: 44px;
   flex: 1 1 auto;
   text-align: left;
 }
@@ -192,27 +193,48 @@
 }
 
 .inspectQuickBtn {
-  padding: 2px 7px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  min-height: 30px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-accent-soft, var(--ag-control));
   color: var(--ag-accent, var(--ag-fg));
   border: 1px solid var(--ag-accent-border, var(--ag-border-sub));
   font-family: var(--ag-font-mono);
-  font-size: 10.5px;
-  max-width: 110px;
+  font-size: 11px;
+  max-width: 112px;
+}
+
+.inspectQuickBtn::after {
+  content: '';
+  position: absolute;
+  inset: -7px -2px;
+}
+
+.inspectQuickText {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .chevronBtn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
   border-radius: var(--ag-r-xs, 6px);
   color: var(--ag-muted);
+}
+
+.chevronBtn::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
 }
 
 .chevronBtn:hover {
@@ -255,7 +277,8 @@
 .fileBtn {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  min-height: 44px;
+  padding: 6px 11px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-accent-soft, var(--ag-control));
   color: var(--ag-accent, var(--ag-fg));
@@ -265,6 +288,73 @@
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.viewDiffBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--ag-r-pill, 999px);
+  background: var(--ag-accent-soft, var(--ag-control));
+  color: var(--ag-accent, var(--ag-fg));
+  border: 1px solid var(--ag-accent-border, var(--ag-border-sub));
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.diffPreviewWrap {
+  border-radius: var(--ag-r-xs, 6px);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-surface);
+  overflow: hidden;
+  font-family: var(--ag-font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.diffLine {
+  padding: 1px 8px;
+  white-space: pre;
+  overflow-x: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.diffLineAdd {
+  background: var(--ag-ok-soft);
+  color: var(--ag-ok);
+}
+
+.diffLineDel {
+  background: var(--ag-danger-soft);
+  color: var(--ag-danger);
+}
+
+.diffLineHunk {
+  background: var(--ag-control);
+  color: var(--ag-muted);
+  font-weight: 600;
+}
+
+.diffLineCtx {
+  color: var(--ag-secondary);
+}
+
+.diffSign {
+  user-select: none;
+  flex-shrink: 0;
+  width: 1ch;
+}
+
+.diffExpandBtn {
+  width: 100%;
+  min-height: 44px;
+  border-top: 1px solid var(--ag-border-sub);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ag-secondary);
+  background: var(--ag-control);
 }
 
 .webList {
@@ -300,6 +390,7 @@
 
 .notesToggle {
   width: 100%;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;

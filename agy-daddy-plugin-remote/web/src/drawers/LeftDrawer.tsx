@@ -36,6 +36,7 @@ export interface LeftDrawerProps {
   onToggleVibrate: () => void;
   onTogglePush: () => Promise<void>;
   onTestPush: () => Promise<void>;
+  onOpenChannels?: () => void;
   onClose: () => void;
 }
 
@@ -138,7 +139,6 @@ export function LeftDrawer(props: LeftDrawerProps) {
     pins,
     channel,
     permissionLevel,
-    token,
     appearance,
     soundAlert,
     vibrateAlert,
@@ -525,7 +525,6 @@ export function LeftDrawer(props: LeftDrawerProps) {
   };
 
   const canWrite = permissionLevel !== 'L0';
-  const entryHref = token ? `/entry?t=${encodeURIComponent(token)}` : '/entry';
 
   const renderSessionRow = (s: SessionSummary, showProjectBadge: boolean) => {
     const isRunning = String(s.status || '').includes('RUNNING');
@@ -1026,9 +1025,16 @@ export function LeftDrawer(props: LeftDrawerProps) {
           <div className={styles.settingsCard}>
             <div className={styles.settingRow}>
               <span>当前通道：{channel}</span>
-              <a className="ag-pill-btn" href={entryHref} style={{ textDecoration: 'none' }}>
+              <button
+                type="button"
+                className="ag-pill-btn"
+                onClick={() => {
+                  onClose();
+                  props.onOpenChannels?.();
+                }}
+              >
                 切换通道
-              </a>
+              </button>
             </div>
             <div className={styles.settingRow}>
               <span>外观主题</span>

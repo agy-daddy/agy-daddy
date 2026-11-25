@@ -14,20 +14,27 @@
 .sheet {
   width: 100%;
   max-width: 520px;
-  height: min(74dvh, 560px);
-  max-height: min(82dvh, 640px);
-  min-height: 320px;
+  height: auto;
+  max-height: min(74dvh, 560px);
   display: flex;
   flex-direction: column;
   border-radius: var(--ag-r-xl, 24px) var(--ag-r-xl, 24px) 0 0;
   border: 1px solid var(--ag-border);
   border-bottom: none;
   background: var(--ag-elevated, var(--ag-card));
-  box-shadow: var(--ag-highlight-top, inset 0 1px 0 rgba(255, 255, 255, 0.08)),
+  box-shadow: var(--ag-highlight-top, inset 0 1px 0 var(--ag-border-sub)),
     var(--ag-shadow-lg, var(--ag-shadow));
   padding-bottom: env(safe-area-inset-bottom, 0px);
   overflow: hidden;
+  transform: translate3d(0, var(--sheet-drag-y, 0px), 0);
+  transition: transform 240ms var(--ag-ease-drawer, cubic-bezier(0.22, 1, 0.36, 1));
   animation: sheetUp 240ms var(--ag-ease-drawer, cubic-bezier(0.22, 1, 0.36, 1));
+  touch-action: pan-y;
+}
+
+.sheet[data-dragging="1"] {
+  transition: none;
+  animation: none;
 }
 
 .handleWrap {
@@ -64,8 +71,9 @@
 }
 
 .backBtn {
-  height: 28px;
-  padding: 0 9px 0 6px;
+  position: relative;
+  height: 32px;
+  padding: 0 10px 0 7px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-control);
   border: 1px solid var(--ag-border-sub);
@@ -78,6 +86,12 @@
   flex-shrink: 0;
   white-space: nowrap;
   transition: background-color 140ms ease, transform 120ms ease;
+}
+
+.backBtn::after {
+  content: '';
+  position: absolute;
+  inset: -6px -4px;
 }
 
 .backBtn:active {
@@ -125,8 +139,9 @@
 }
 
 .closeBtn {
-  width: 30px;
-  height: 30px;
+  position: relative;
+  width: 32px;
+  height: 32px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-control);
   color: var(--ag-secondary);
@@ -136,6 +151,12 @@
   font-size: 13px;
   flex-shrink: 0;
   transition: background-color 140ms ease, transform 120ms ease;
+}
+
+.closeBtn::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 
 .closeBtn:active {
@@ -153,32 +174,43 @@
 
 .slideTrack {
   display: flex;
+  align-items: flex-start;
   width: 300%;
-  height: 100%;
+  height: auto;
   transition: transform 260ms var(--ag-ease-drawer, cubic-bezier(0.22, 1, 0.36, 1));
   will-change: transform;
 }
 
+.slideTrack[data-dragging="1"] {
+  transition: none;
+}
+
 .slideTrack[data-depth="0"] {
-  transform: translate3d(0%, 0, 0);
+  transform: translate3d(calc(0% + var(--picker-drag-x, 0px)), 0, 0);
 }
 
 .slideTrack[data-depth="1"] {
-  transform: translate3d(-33.333333%, 0, 0);
+  transform: translate3d(calc(-33.333333% + var(--picker-drag-x, 0px)), 0, 0);
 }
 
 .slideTrack[data-depth="2"] {
-  transform: translate3d(-66.666667%, 0, 0);
+  transform: translate3d(calc(-66.666667% + var(--picker-drag-x, 0px)), 0, 0);
 }
 
 .slidePane {
   width: 33.333333%;
   flex: 0 0 33.333333%;
   min-width: 0;
-  height: 100%;
+  max-height: calc(min(74dvh, 560px) - 74px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.slideTrack:not([data-dragging="1"]) .slidePane[aria-hidden="true"] {
+  max-height: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 
 .searchWrap {
@@ -188,13 +220,13 @@
 
 .searchInput {
   width: 100%;
-  min-height: 36px;
-  padding: 7px 12px;
+  min-height: 44px;
+  padding: 8px 12px;
   border-radius: var(--ag-r-sm, 10px);
   border: 1px solid var(--ag-border);
   background: var(--ag-subcard);
   color: var(--ag-fg);
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .list {
@@ -281,23 +313,23 @@
 }
 
 .dotGemini {
-  background: #60a5fa;
-  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
+  background: var(--ag-tier-balanced);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ag-tier-balanced) 20%, transparent);
 }
 
 .dotClaude {
-  background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+  background: var(--ag-tier-warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ag-tier-warn) 20%, transparent);
 }
 
 .dotOpenai {
-  background: #22c55e;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16);
+  background: var(--ag-tier-fast);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ag-tier-fast) 20%, transparent);
 }
 
 .dotOrch {
-  background: #a78bfa;
-  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+  background: var(--ag-tier-deep);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ag-tier-deep) 24%, transparent);
 }
 
 .dotOther {

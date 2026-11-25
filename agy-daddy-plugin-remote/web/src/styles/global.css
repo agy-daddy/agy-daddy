@@ -16,6 +16,11 @@
   }
 }
 
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
 html, body, #root {
   margin: 0;
   padding: 0;
@@ -25,8 +30,8 @@ html, body, #root {
   background: var(--ag-bg);
   color: var(--ag-fg);
   font-family: var(--ag-font-sans);
-  font-size: 13.5px;
-  line-height: 1.48;
+  font-size: 14px;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -36,6 +41,10 @@ button, input, select, textarea {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
+}
+
+input, select, textarea, .ag-input {
+  font-size: 16px;
 }
 
 button {
@@ -83,30 +92,31 @@ a {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 32px;
-  padding: 0 12px;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 13px;
   border-radius: var(--ag-r-pill);
   background: var(--ag-control);
   color: var(--ag-fg);
   border: 1px solid var(--ag-border);
   box-shadow: var(--ag-highlight-btn), var(--ag-shadow-sm);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 550;
   white-space: nowrap;
   transition:
     transform 120ms var(--ag-ease-out),
     background-color 150ms var(--ag-ease-out),
-    border-color 150ms var(--ag-ease-out),
-    box-shadow 140ms var(--ag-ease-out);
+    border-color 150ms var(--ag-ease-out);
 }
 
 .ag-pill-btn::after {
   content: '';
   position: absolute;
-  top: -4px;
-  bottom: -4px;
-  left: 0;
-  right: 0;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  transform: translate(-50%, -50%);
 }
 
 .ag-pill-btn:hover:not(:disabled) {
@@ -115,14 +125,13 @@ a {
 
 .ag-pill-btn:active:not(:disabled) {
   transform: translateY(1px) scale(0.98);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
 }
 
 .ag-pill-btn-primary {
   background: var(--ag-primary-bg);
   color: var(--ag-primary-fg);
   border-color: transparent;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), var(--ag-shadow-sm);
+  box-shadow: var(--ag-highlight-top), var(--ag-shadow-sm);
 }
 
 .ag-pill-btn-primary:hover:not(:disabled) {
@@ -135,6 +144,12 @@ a {
   color: var(--ag-danger);
   border-color: var(--ag-danger-border);
   box-shadow: var(--ag-highlight-top);
+}
+
+.ag-touch-target {
+  position: relative;
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .ag-chip {
@@ -178,13 +193,13 @@ a {
 
 .ag-input {
   width: 100%;
-  min-height: 34px;
-  padding: 6px 10px;
+  min-height: 44px;
+  padding: 8px 12px;
   border-radius: var(--ag-r-sm);
   border: 1px solid var(--ag-border);
   background: var(--ag-subcard);
   color: var(--ag-fg);
-  font-size: 13px;
+  font-size: 16px;
   transition: border-color 150ms var(--ag-ease-out), background-color 150ms var(--ag-ease-out);
 }
 
@@ -210,12 +225,12 @@ a {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--ag-shadow-sm);
 }
 
 .ag-badge-danger {
   background: var(--ag-danger);
-  color: #ffffff;
+  color: var(--ag-on-danger);
 }
 
 .ag-badge-neutral {
@@ -227,6 +242,18 @@ a {
   padding: 28px 16px;
   text-align: center;
   color: var(--ag-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.5;
+}
+
+.ag-search-mark {
+  background: var(--ag-search-mark-bg);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.ag-search-mark[data-current="1"] {
+  background: var(--ag-search-mark-current-bg);
+  box-shadow: 0 0 0 1px var(--ag-warn-border);
 }

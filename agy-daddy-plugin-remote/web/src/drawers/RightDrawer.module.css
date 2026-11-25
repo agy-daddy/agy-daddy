@@ -35,7 +35,9 @@
 }
 
 .tabBtn {
-  padding: 5px 11px;
+  position: relative;
+  min-height: 36px;
+  padding: 6px 12px;
   border-radius: var(--ag-r-pill);
   font-size: 12px;
   font-weight: 550;
@@ -47,6 +49,12 @@
     color 150ms var(--ag-ease-out),
     transform 120ms var(--ag-ease-out),
     box-shadow 150ms var(--ag-ease-out);
+}
+
+.tabBtn::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
 }
 
 .tabBtn:hover:not(.tabActive) {
@@ -64,8 +72,9 @@
 }
 
 .closeBtn {
-  width: 32px;
-  height: 32px;
+  position: relative;
+  width: 34px;
+  height: 34px;
   border-radius: var(--ag-r-sm);
   border: 1px solid var(--ag-border-sub);
   background: var(--ag-control);
@@ -80,6 +89,12 @@
     background-color 140ms var(--ag-ease-out),
     color 140ms var(--ag-ease-out),
     transform 120ms var(--ag-ease-out);
+}
+
+.closeBtn::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
 }
 
 .closeBtn:hover {

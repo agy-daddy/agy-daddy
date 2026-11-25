@@ -102,12 +102,15 @@ export default function PtyTerminal({
       if (disposed || !hostRef.current) return;
 
       hostRef.current.innerHTML = '';
+      const computedStyle = getComputedStyle(document.documentElement);
+      const termBg = computedStyle.getPropertyValue('--ag-terminal-bg').trim() || undefined;
+      const termFg = computedStyle.getPropertyValue('--ag-terminal-fg').trim() || undefined;
       const term = new Terminal({
         fontSize: 12,
         cursorBlink: true,
         theme: {
-          background: '#0a0a0a',
-          foreground: '#e4e4e7'
+          background: termBg,
+          foreground: termFg
         }
       });
       const fit = new FitAddon();

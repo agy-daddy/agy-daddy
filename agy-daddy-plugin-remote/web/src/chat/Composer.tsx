@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import { compressImageFile } from '../store/image';
 import {
   formatCompactModelBadge,
@@ -9,6 +10,9 @@ import { sanitizePresets } from '../store/useRemoteStore';
 import type {
   ChatMode,
   ComposerPreset,
+  ComposerQuickPrompt,
+  ComposerSettingsDto,
+  ComposerStateResponse,
   DispatchMode,
   ImageAttachment,
   ModelOption,
@@ -18,8 +22,15 @@ import type {
   OrchestratorThinkingTier,
   PermissionInfo,
   PermissionLevel,
-  QueuedMessage
+  QueuedMessage,
+  TelemetryPanels
 } from '../types';
+import {
+  detectHighRiskPrompt,
+  getGhostSuggestions,
+  resolveQuickPrompts,
+  truncateGhostLabel
+} from './composerUtils';
 import { ModelPickerSheet } from './ModelPickerSheet';
 import styles from './Composer.module.css';
 
@@ -39,6 +50,11 @@ export interface ComposerProps {
   running: boolean;
   voiceSupported: boolean;
   queue?: QueuedMessage[];
+  telemetry?: TelemetryPanels;
+  composerSettings?: ComposerSettingsDto;
+  quickPrompts?: ComposerQuickPrompt[];
+  frequentPrompts?: string[];
+  composerState?: ComposerStateResponse | null;
   onTextChange: (next: string) => void;
   onAddImage: (img: ImageAttachment) => void;
   onRemoveImage: (id: string) => void;
@@ -49,11 +65,13 @@ export interface ComposerProps {
     thinkingLevel: OrchestratorThinkingTier
   ) => void;
   onOpenModelPicker?: () => void;
+  onOpenTelemetry?: () => void;
+  onCompact?: () => Promise<boolean> | void;
   onChatModeChange: (mode: ChatMode) => void;
   onDispatchModeChange?: (mode: DispatchMode) => void;
   onSend: (overrideDispatch?: DispatchMode) => void;
   onCancel: () => void;
-  onOptimize: () => Promise<void>;
+  onOptimize: () => Promise<string | null | void>;
   onRemoveQueueItem?: (id: string) => void;
 }
 
@@ -70,6 +88,14 @@ const DEFAULT_PERM_LEVELS: Array<{
 const TEXTAREA_MIN_HEIGHT = 66; // 3 lines default
 const TEXTAREA_MAX_HEIGHT = 156;
 
+function fmtCtxTok(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) return '0';
+  const n = Math.max(0, Number(v));
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2).replace(/\.?0+$/, '')}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, '')}K`;
+  return String(Math.round(n));
+}
+
 export function Composer(props: ComposerProps) {
   const {
     text,
@@ -85,28 +111,44 @@ export function Composer(props: ComposerProps) {
     permissionInfo,
     running,
     voiceSupported,
+    telemetry,
+    composerSettings,
+    quickPrompts,
+    frequentPrompts,
+    composerState,
     onTextChange,
     onAddImage,
     onRemoveImage,
     onModelChange,
     onSelectOrchestrator,
     onOpenModelPicker,
+    onOpenTelemetry,
+    onCompact,
     onChatModeChange,
     onSend,
     onCancel,
     onOptimize
   } = props;
 
+  const { locale } = useI18n();
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [localModelPickerOpen, setLocalModelPickerOpen] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
+  const [preOptimizeText, setPreOptimizeText] = useState<string | null>(null);
+  const [pendingHighRisk, setPendingHighRisk] = useState<{
+    labels: string[];
+    overrideDispatch?: DispatchMode;
+  } | null>(null);
+  const [compactBusy, setCompactBusy] = useState(false);
+  const [quickFade, setQuickFade] = useState<'none' | 'right' | 'left' | 'both'>('right');
   const [kbdOffset, setKbdOffset] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const quickBarRef = useRef<HTMLDivElement | null>(null);
 
   const isReadOnly = permissionLevel === 'L0';
   const safePresets = useMemo(() => sanitizePresets(presets), [presets]);
@@ -137,6 +179,80 @@ export function Composer(props: ComposerProps) {
   const permDetails = permissionInfo?.levels && permissionInfo.levels.length > 0
     ? permissionInfo.levels
     : DEFAULT_PERM_LEVELS;
+
+  const resolvedQuickPrompts = useMemo(
+    () => resolveQuickPrompts(quickPrompts, locale),
+    [quickPrompts, locale]
+  );
+
+  const ctxData = telemetry?.context?.available ? telemetry.context.data : undefined;
+  const ctxUsed = ctxData ? (ctxData.usedTokens ?? ctxData.used ?? null) : null;
+  const ctxLimit = ctxData ? (ctxData.maxTokens ?? ctxData.budget ?? null) : null;
+  const ctxPct =
+    ctxData && typeof ctxData.percent === 'number'
+      ? Math.round(ctxData.percent)
+      : ctxData && typeof ctxData.usageRatio === 'number'
+        ? Math.round(ctxData.usageRatio * 100)
+        : ctxUsed !== null && ctxLimit && ctxLimit > 0
+          ? Math.round((ctxUsed / ctxLimit) * 100)
+          : null;
+  const ctxRiskRaw = ctxData?.cacheCliffRisk || ctxData?.riskLevel || '';
+  const ctxLevel: 'ok' | 'warn' | 'critical' =
+    ctxRiskRaw === 'critical' || (ctxPct !== null && ctxPct >= 92)
+      ? 'critical'
+      : ctxRiskRaw === 'warn' || (ctxPct !== null && ctxPct >= 80)
+        ? 'warn'
+        : 'ok';
+  const autoCompactPct =
+    composerSettings?.autoCompactThresholdTokens && ctxLimit && ctxLimit > 0
+      ? Math.round((composerSettings.autoCompactThresholdTokens / ctxLimit) * 100)
+      : 80;
+  const showQuickBar = composerSettings?.showQuickBar !== false && !isReadOnly;
+  const ghostEnabled = composerSettings?.ghostSuggest !== false && !isReadOnly;
+
+  const ghostSuggestions = useMemo(() => {
+    if (!ghostEnabled) return [];
+    return getGhostSuggestions({
+      text,
+      frequentPrompts,
+      quickPrompts: resolvedQuickPrompts,
+      composerState,
+      contextUsagePct: ctxPct,
+      autoCompactThreshold: autoCompactPct
+    });
+  }, [
+    ghostEnabled,
+    text,
+    frequentPrompts,
+    resolvedQuickPrompts,
+    composerState,
+    ctxPct,
+    autoCompactPct
+  ]);
+
+  const showGhostChip =
+    ghostSuggestions.length > 0 &&
+    (text.trim().length > 0 || (ctxPct !== null && ctxPct >= autoCompactPct));
+
+  const updateQuickFade = () => {
+    const el = quickBarRef.current;
+    if (!el) return;
+    const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+    if (maxScroll <= 4) {
+      setQuickFade('none');
+      return;
+    }
+    const leftClip = el.scrollLeft > 4;
+    const rightClip = el.scrollLeft < maxScroll - 4;
+    if (leftClip && rightClip) setQuickFade('both');
+    else if (leftClip) setQuickFade('left');
+    else if (rightClip) setQuickFade('right');
+    else setQuickFade('none');
+  };
+
+  useEffect(() => {
+    updateQuickFade();
+  }, [resolvedQuickPrompts.length, showQuickBar]);
 
   // Upgrade visualViewport listener for clean iOS Safari & Android Chrome keyboard lift (zero occlusion)
   useEffect(() => {
@@ -201,12 +317,28 @@ export function Composer(props: ComposerProps) {
 
   const handleOptimize = async () => {
     if (!text.trim() || optimizing) return;
+    const before = text;
     setOptimizing(true);
     try {
-      await onOptimize();
+      const optimized = await onOptimize();
+      if (optimized !== null) {
+        setPreOptimizeText(before);
+      }
     } finally {
       setOptimizing(false);
     }
+  };
+
+  const attemptSend = (overrideDispatch?: DispatchMode) => {
+    if (!canSend) return;
+    const risk = detectHighRiskPrompt(text);
+    if (risk.risky) {
+      setPendingHighRisk({ labels: risk.labels, overrideDispatch });
+      return;
+    }
+    setPendingHighRisk(null);
+    setPreOptimizeText(null);
+    onSend(overrideDispatch);
   };
 
   const handleFocus = () => {
@@ -350,6 +482,99 @@ export function Composer(props: ComposerProps) {
         </div>
       )}
 
+      {pendingHighRisk && (
+        <div className={styles.highRiskBanner} data-testid="composer-high-risk-banner" role="alert">
+          <div className={styles.highRiskText}>
+            检测到高危指令（{pendingHighRisk.labels.join(' / ')}），请确认是否仍要发送：
+          </div>
+          <div className={styles.highRiskActions}>
+            <button
+              type="button"
+              className={styles.riskCancelBtn}
+              onClick={() => setPendingHighRisk(null)}
+              data-testid="composer-high-risk-cancel"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className={styles.riskProceedBtn}
+              onClick={() => {
+                const disp = pendingHighRisk.overrideDispatch;
+                setPendingHighRisk(null);
+                setPreOptimizeText(null);
+                onSend(disp);
+              }}
+              data-testid="composer-high-risk-confirm"
+            >
+              仍要发送
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showQuickBar && resolvedQuickPrompts.length > 0 && (
+        <div
+          ref={quickBarRef}
+          className={styles.quickBar}
+          data-hscroll="1"
+          data-fade={quickFade}
+          data-testid="composer-quick-bar"
+          onScroll={updateQuickFade}
+        >
+          {resolvedQuickPrompts.map((qp) => (
+            <button
+              key={qp.id}
+              type="button"
+              className={styles.quickPill}
+              onClick={() => {
+                const cleaned = text === '/' ? '' : text;
+                const next = cleaned ? `${cleaned.trimEnd()} ${qp.template}` : qp.template;
+                onTextChange(next);
+                setPendingHighRisk(null);
+                taRef.current?.focus();
+              }}
+            >
+              {qp.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(preOptimizeText !== null || showGhostChip) && (
+        <div className={styles.ghostRow}>
+          {preOptimizeText !== null && (
+            <button
+              type="button"
+              className={styles.undoOptimizeBtn}
+              data-testid="composer-undo-optimize-btn"
+              onClick={() => {
+                onTextChange(preOptimizeText);
+                setPreOptimizeText(null);
+                taRef.current?.focus();
+              }}
+            >
+              ↶ 撤销优化
+            </button>
+          )}
+          {showGhostChip && (
+            <button
+              type="button"
+              className={styles.ghostBtn}
+              data-testid="composer-ghost-btn"
+              onClick={() => {
+                onTextChange(ghostSuggestions[0]);
+                setPendingHighRisk(null);
+                taRef.current?.focus();
+              }}
+            >
+              <span>建议: {truncateGhostLabel(ghostSuggestions[0], 26)}</span>
+              <span>↵</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 统一圆角卡片输入框：所有操作控件均收纳在卡片内部 */}
       <div
         className={`${styles.card} ${isFocused ? styles.cardFocused : ''} ${isReadOnly ? styles.cardReadOnly : ''}`}
@@ -414,6 +639,10 @@ export function Composer(props: ComposerProps) {
           onInput={(e) => {
             const val = (e.target as HTMLTextAreaElement).value;
             onTextChange(val);
+            if (!val) {
+              setPendingHighRisk(null);
+              setPreOptimizeText(null);
+            }
             if (val === '/') {
               setPermOpen(false);
               setPresetsOpen(true);
@@ -422,7 +651,7 @@ export function Composer(props: ComposerProps) {
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
               e.preventDefault();
-              if (canSend) onSend('queue');
+              if (canSend) attemptSend('queue');
             }
           }}
         />
@@ -541,7 +770,7 @@ export function Composer(props: ComposerProps) {
               type="button"
               className={styles.sendBtn}
               disabled={!canSend}
-              onClick={() => onSend('queue')}
+              onClick={() => attemptSend('queue')}
               data-testid="composer-send-btn"
             >
               {actionLabel}
@@ -549,6 +778,49 @@ export function Composer(props: ComposerProps) {
           </div>
         </div>
       </div>
+
+      {ctxData && ctxData.displayLocation === 'composer' && (
+        <div className={styles.contextBar} data-testid="composer-context-bar">
+          <button
+            type="button"
+            className={styles.contextBarMain}
+            onClick={() => onOpenTelemetry?.()}
+            aria-label="查看上下文与用量"
+          >
+            <span className={styles.contextBarTrack}>
+              <span
+                className={styles.contextBarFill}
+                data-tone={ctxLevel}
+                style={{ width: `${Math.min(100, Math.max(0, ctxPct ?? 0))}%` }}
+              />
+            </span>
+            <span className={styles.contextBarMeta}>
+              {ctxPct ?? 0}% · {fmtCtxTok(ctxUsed)} / {fmtCtxTok(ctxLimit)}
+              {typeof ctxData.cacheHitRate === 'number'
+                ? ` · 命中 ${Math.round(ctxData.cacheHitRate * 100)}%`
+                : ''}
+            </span>
+          </button>
+          {ctxLevel !== 'ok' && onCompact && (
+            <button
+              type="button"
+              className={styles.contextBarCompactBtn}
+              disabled={compactBusy || isReadOnly}
+              onClick={async () => {
+                setCompactBusy(true);
+                try {
+                  await onCompact();
+                } finally {
+                  setCompactBusy(false);
+                }
+              }}
+              data-testid="composer-compact-btn"
+            >
+              {compactBusy ? '…' : '/compact'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Standalone fallback sheet when Composer is rendered without a shared App-level ModelPickerSheet */}
       {!onOpenModelPicker && (

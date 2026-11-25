@@ -1,11 +1,24 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { LOCALE_STORAGE_KEY, normalizeLocale } from '../i18n';
+import {
+  COLOR_THEME_STORAGE_KEY,
+  DRAWER_SPEED_STORAGE_KEY,
+  normalizeColorTheme,
+  normalizeDrawerSpeed
+} from '../theme/ThemeProvider';
 import type {
+  ActiveSheetId,
   AppearanceMode,
   BootstrapResponse,
+  ChannelEntryDto,
   ChatMode,
+  ColorThemeId,
   ComposerPreset,
+  ComposerQuickPrompt,
+  ComposerSettingsDto,
   ConfirmPromptState,
   DispatchMode,
+  DrawerSpeedId,
   HostProject,
   ImageAttachment,
   ModelPickerGroup,
@@ -25,9 +38,10 @@ import type {
   SessionGroup,
   SessionPins,
   SessionSummary,
+  SupportedLocale,
   TelemetryPanels
 } from '../types';
-import { api, configureApiClient } from './api';
+import { api, configureApiClient, getApiBaseOrigin, setApiBaseOrigin } from './api';
 import {
   flushDraftSave,
   flushSnapshotSave,
@@ -60,7 +74,12 @@ import {
   unsubscribeWebPush
 } from './push';
 import { RemoteSseClient, type SseStatus } from './sse';
-import { clearSavedToken, extractTokenAndScrubUrl, saveToken } from './token';
+import {
+  clearSavedToken,
+  extractTokenAndScrubUrl,
+  saveToken,
+  scrubSwitchTicketFromUrl
+} from './token';
 
 export {
   applyModelPreferences,
@@ -87,9 +106,11 @@ export interface RemoteState {
   ready: boolean;
   authError: string;
   online: boolean;
+  rpcConnected: boolean;
   sseStatus: SseStatus;
   bootstrap: BootstrapResponse | null;
   channel: string;
+  apiBaseOrigin: string;
   permissionLevel: PermissionLevel;
   permissionInfo: PermissionInfo | null;
   models: NormalizedModel[];
@@ -107,7 +128,11 @@ export interface RemoteState {
   events: SessionEvent[];
   loadingSession: boolean;
   telemetry: TelemetryPanels;
+  runningTasksCount: number;
   presets: ComposerPreset[];
+  quickPrompts: ComposerQuickPrompt[];
+  frequentPrompts: string[];
+  composerSettings: ComposerSettingsDto;
   selectedModelId: string;
   chatMode: ChatMode;
   dispatchMode: DispatchMode;
@@ -116,6 +141,9 @@ export interface RemoteState {
   queue: QueuedMessage[];
   changedFilesCount: number;
   appearance: AppearanceMode;
+  colorTheme: ColorThemeId;
+  drawerSpeed: DrawerSpeedId;
+  locale: SupportedLocale;
   soundAlert: boolean;
   vibrateAlert: boolean;
   pushSubscribed: boolean;
@@ -124,6 +152,11 @@ export interface RemoteState {
   rightOpen: boolean;
   rightTab: RightTabId;
   contextExpanded: boolean;
+  activeSheet: ActiveSheetId;
+  telemetryTab: 'context' | 'usage' | 'quota';
+  hideSystemEvents: boolean;
+  thinkingExpandVersion: number;
+  thinkingExpandTarget: boolean | null;
   confirmPrompt: ConfirmPromptState | null;
   toast: string;
   inspectTargetFile: string;
@@ -491,11 +524,23 @@ export class RemoteStoreController {
   private initialized = false;
   private pendingUserModelId = '';
   private optimisticSeq = 0;
+  private pendingSwitchTicket = '';
 
   constructor() {
     const urlInit = extractTokenAndScrubUrl();
+    this.pendingSwitchTicket = urlInit.switchTicket;
     const appearance = readAppearance();
     applyAppearance(appearance);
+    let colorTheme: ColorThemeId = 'monochrome';
+    let drawerSpeed: DrawerSpeedId = 'normal';
+    let locale: SupportedLocale = 'zh-CN';
+    try {
+      colorTheme =
+        normalizeColorTheme(window.localStorage?.getItem(COLOR_THEME_STORAGE_KEY)) || 'monochrome';
+      drawerSpeed =
+        normalizeDrawerSpeed(window.localStorage?.getItem(DRAWER_SPEED_STORAGE_KEY)) || 'normal';
+      locale = normalizeLocale(window.localStorage?.getItem(LOCALE_STORAGE_KEY)) || 'zh-CN';
+    } catch {}
     const cachedPins = normalizePins(readJsonPref<SessionPins>(PINS_CACHE_KEY, EMPTY_PINS));
     const cachedGroups = readJsonPref<SessionGroup[]>(GROUPS_CACHE_KEY, []);
     const cachedOrchThinking = sanitizeOrchestratorThinkingMap(
@@ -509,9 +554,11 @@ export class RemoteStoreController {
       ready: false,
       authError: '',
       online: typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
+      rpcConnected: true,
       sseStatus: 'disconnected',
       bootstrap: null,
       channel: 'loopback',
+      apiBaseOrigin: getApiBaseOrigin(),
       permissionLevel: 'L0',
       permissionInfo: buildDefaultPermissionInfo('L0'),
       models: [],
@@ -529,7 +576,11 @@ export class RemoteStoreController {
       events: [],
       loadingSession: false,
       telemetry: {},
+      runningTasksCount: 0,
       presets: [],
+      quickPrompts: [],
+      frequentPrompts: [],
+      composerSettings: { showQuickBar: true, ghostSuggest: true, showPromptOptimizer: true },
       selectedModelId: '',
       chatMode: 'chat',
       dispatchMode: 'queue',
@@ -538,6 +589,9 @@ export class RemoteStoreController {
       queue: [],
       changedFilesCount: 0,
       appearance,
+      colorTheme,
+      drawerSpeed,
+      locale,
       soundAlert: readBoolPref(SOUND_KEY, true),
       vibrateAlert: readBoolPref(VIBRATE_KEY, true),
       pushSubscribed: false,
@@ -546,6 +600,11 @@ export class RemoteStoreController {
       rightOpen: false,
       rightTab: 'diff',
       contextExpanded: false,
+      activeSheet: null,
+      telemetryTab: 'context',
+      hideSystemEvents: false,
+      thinkingExpandVersion: 0,
+      thinkingExpandTarget: null,
       confirmPrompt: null,
       toast: '',
       inspectTargetFile: ''
@@ -597,15 +656,35 @@ export class RemoteStoreController {
     if (this.initialized) return;
     this.initialized = true;
 
-    if (!this.state.token) {
-      const refreshed = extractTokenAndScrubUrl();
-      if (refreshed.token) {
-        this.setState({
-          token: refreshed.token,
-          activeSessionId: this.state.activeSessionId || refreshed.sessionId,
-          enteredFromLanding: refreshed.enteredFromLanding
-        });
+    const refreshed = extractTokenAndScrubUrl();
+    const switchTicket = this.pendingSwitchTicket || refreshed.switchTicket;
+    if (switchTicket) {
+      this.pendingSwitchTicket = '';
+      try {
+        const redeemed = await api.redeemSwitchTicket(switchTicket);
+        if (redeemed?.authToken) {
+          saveToken(redeemed.authToken);
+          this.setState({
+            token: redeemed.authToken,
+            activeSessionId: redeemed.sessionId || this.state.activeSessionId || refreshed.sessionId,
+            composerText: redeemed.draftText || this.state.composerText,
+            enteredFromLanding: true
+          });
+          if (redeemed.sessionId && redeemed.draftText) {
+            saveDraft(redeemed.sessionId, redeemed.draftText).catch(() => {});
+          }
+        }
+      } catch {
+        this.showToast('跨协议切通道票据已过期，请重新扫码或输入令牌');
+      } finally {
+        scrubSwitchTicketFromUrl();
       }
+    } else if (!this.state.token && refreshed.token) {
+      this.setState({
+        token: refreshed.token,
+        activeSessionId: this.state.activeSessionId || refreshed.sessionId,
+        enteredFromLanding: refreshed.enteredFromLanding
+      });
     }
 
     if (typeof window !== 'undefined') {
@@ -635,7 +714,9 @@ export class RemoteStoreController {
       onSessionDelta: (payload) => this.handleSessionDelta(payload),
       onAttentionUpdate: (payload) => this.handleAttentionUpdate(payload),
       onTelemetryPatch: (payload) => this.handleTelemetryPatch(payload),
-      onQueueUpdate: (payload) => this.handleQueueUpdate(payload)
+      onQueueUpdate: (payload) => this.handleQueueUpdate(payload),
+      onStatePatch: (payload) => this.handleStatePatch(payload),
+      onTaskUpdated: (payload) => this.handleTaskUpdated(payload)
     });
 
     const [cachedSessions, cachedQueue, cachedDraft] = await Promise.all([
@@ -772,6 +853,8 @@ export class RemoteStoreController {
         orchestratorThinking,
         modelPreferences,
         channel: boot.channel || 'loopback',
+        rpcConnected: boot.rpcConnected !== false,
+        runningTasksCount: Number(boot.runningTasksCount ?? boot.telemetry?.runningTasksCount ?? 0),
         permissionLevel,
         permissionInfo,
         selectedModelId,
@@ -812,6 +895,44 @@ export class RemoteStoreController {
             ...(Array.isArray(presetsRes.frequentPrompts) ? presetsRes.frequentPrompts : [])
           ])
         : [];
+      const quickPrompts: ComposerQuickPrompt[] = Array.isArray(presetsRes?.quickPrompts)
+        ? presetsRes.quickPrompts
+            .map((item, idx) => {
+              const r = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+              const tpl = String(r.template ?? r.prompt ?? r.text ?? '').trim();
+              const lbl = String(r.label ?? r.title ?? tpl).trim();
+              if (!tpl || !lbl) return null;
+              return {
+                id: String(r.id || `qp-${idx}`),
+                label: lbl,
+                template: tpl,
+                category: typeof r.category === 'string' ? r.category : undefined
+              } as ComposerQuickPrompt;
+            })
+            .filter((x): x is ComposerQuickPrompt => Boolean(x))
+        : [];
+      const frequentPrompts: string[] = Array.isArray(presetsRes?.frequentPrompts)
+        ? presetsRes.frequentPrompts
+            .map((item) => {
+              if (typeof item === 'string') return item.trim();
+              if (item && typeof item === 'object') {
+                const r = item as Record<string, unknown>;
+                return String(r.template ?? r.prompt ?? r.text ?? r.label ?? '').trim();
+              }
+              return '';
+            })
+            .filter(Boolean)
+        : [];
+      const composerSettings: ComposerSettingsDto = presetsRes?.settings
+        ? {
+            showQuickBar: presetsRes.settings.showQuickBar !== false,
+            ghostSuggest: presetsRes.settings.ghostSuggest !== false,
+            showPromptOptimizer: presetsRes.settings.showPromptOptimizer !== false,
+            ...(presetsRes.settings.autoCompactThresholdTokens !== undefined
+              ? { autoCompactThresholdTokens: presetsRes.settings.autoCompactThresholdTokens }
+              : {})
+          }
+        : this.state.composerSettings;
 
       const targetId =
         (this.state.activeSessionId &&
@@ -826,6 +947,10 @@ export class RemoteStoreController {
         projects: pinnedOrg.projects,
         pins: resolvedPins,
         presets,
+        quickPrompts,
+        frequentPrompts,
+        composerSettings,
+        rpcConnected: sessRes.rpcConnected !== false && boot.rpcConnected !== false,
         activeSessionId: targetId
       });
 
@@ -834,7 +959,7 @@ export class RemoteStoreController {
         this.syncSessionQueue(targetId);
       }
 
-      this.sse?.connect(this.state.token, targetId || '');
+      this.sse?.connect(this.state.token, targetId || '', this.state.apiBaseOrigin);
       this.refreshDiffBadge();
       if (!initialTelemetry?.context) {
         api
@@ -1129,6 +1254,26 @@ export class RemoteStoreController {
       (q) => q.sessionId !== sessionId || (q.source === 'local' && !this.state.online)
     );
     const next = [...others, ...normalizedServer];
+    const unchanged =
+      next.length === this.state.queue.length &&
+      next.every((item, idx) => {
+        const cur = this.state.queue[idx];
+        return (
+          cur &&
+          cur.id === item.id &&
+          cur.queueId === item.queueId &&
+          cur.status === item.status &&
+          cur.dispatchMode === item.dispatchMode &&
+          cur.text === item.text &&
+          cur.source === item.source
+        );
+      });
+    if (unchanged) {
+      if (eventsOverride) {
+        this.setState({ events: eventsOverride });
+      }
+      return;
+    }
     this.setState(eventsOverride ? { queue: next, events: eventsOverride } : { queue: next });
     saveQueue(next).catch(() => {});
   }
@@ -1332,9 +1477,46 @@ export class RemoteStoreController {
         }
       };
     }
-    this.setState({
-      telemetry: merged
-    });
+    const patch: Partial<RemoteState> = { telemetry: merged };
+    if (typeof payload.runningTasksCount === 'number' && Number.isFinite(payload.runningTasksCount)) {
+      patch.runningTasksCount = payload.runningTasksCount;
+    }
+    this.setState(patch);
+  }
+
+  private handleStatePatch(payload: Record<string, unknown>): void {
+    const key = typeof payload.key === 'string' ? payload.key : '';
+    const val = payload.value as Record<string, unknown> | undefined;
+    if (key === 'state:host.locale@1' && val) {
+      const nextLocale = normalizeLocale(val.bcp47 || val.locale || val.lang);
+      if (nextLocale) {
+        try {
+          window.localStorage?.setItem(LOCALE_STORAGE_KEY, nextLocale);
+        } catch {}
+        if (typeof document !== 'undefined') document.documentElement.lang = nextLocale;
+        this.setState({ locale: nextLocale });
+      }
+    } else if (key === 'state:composer.settings@1' && val) {
+      const raw = (val.settings && typeof val.settings === 'object'
+        ? val.settings
+        : val) as Record<string, unknown>;
+      this.setState({
+        composerSettings: {
+          showQuickBar: raw.showQuickBar !== false,
+          ghostSuggest: raw.ghostSuggest !== false,
+          showPromptOptimizer: raw.showPromptOptimizer !== false,
+          ...(Number.isFinite(Number(raw.autoCompactThresholdTokens))
+            ? { autoCompactThresholdTokens: Number(raw.autoCompactThresholdTokens) }
+            : {})
+        }
+      });
+    }
+  }
+
+  private handleTaskUpdated(payload: Record<string, unknown>): void {
+    if (typeof payload.runningCount === 'number' && Number.isFinite(payload.runningCount)) {
+      this.setState({ runningTasksCount: payload.runningCount });
+    }
   }
 
   private handleQueueUpdate(payload: Record<string, unknown>): void {
@@ -1479,10 +1661,6 @@ export class RemoteStoreController {
         }
       } catch {}
     }
-  }
-
-  public setModelPickerOpen(open: boolean): void {
-    this.setState({ modelPickerOpen: open });
   }
 
   public setChatMode(chatMode: ChatMode): void {
@@ -1848,27 +2026,65 @@ export class RemoteStoreController {
     }
   }
 
-  public async optimizeComposerPrompt(): Promise<void> {
+  public async optimizeComposerPrompt(): Promise<string | null> {
     const text = this.state.composerText.trim();
-    if (!text) return;
+    if (!text) return null;
     try {
       const res = await api.optimizePrompt(text);
       const next = res.optimizedText || res.text || text;
       this.setComposerText(next);
-      this.showToast('已优化提示词');
+      this.showToast(res.unchanged ? '提示词已足够清晰' : '已优化提示词');
+      return next;
     } catch (err) {
       this.showToast(`优化失败: ${(err as Error).message}`);
+      return null;
     }
   }
 
-  public cycleAppearance(): void {
-    const order: AppearanceMode[] = ['auto', 'light', 'dark'];
-    const next = order[(order.indexOf(this.state.appearance) + 1) % order.length];
+  public setAppearance(next: AppearanceMode): void {
     applyAppearance(next);
     try {
       window.localStorage?.setItem(APPEARANCE_KEY, next);
     } catch {}
     this.setState({ appearance: next });
+  }
+
+  public cycleAppearance(): void {
+    const order: AppearanceMode[] = ['auto', 'light', 'dark'];
+    const next = order[(order.indexOf(this.state.appearance) + 1) % order.length];
+    this.setAppearance(next);
+  }
+
+  public setColorTheme(next: ColorThemeId): void {
+    try {
+      window.localStorage?.setItem(COLOR_THEME_STORAGE_KEY, next);
+    } catch {}
+    this.setState({ colorTheme: next });
+  }
+
+  public setDrawerSpeed(next: DrawerSpeedId): void {
+    try {
+      window.localStorage?.setItem(DRAWER_SPEED_STORAGE_KEY, next);
+    } catch {}
+    this.setState({ drawerSpeed: next });
+  }
+
+  public async setLocale(next: SupportedLocale): Promise<void> {
+    try {
+      window.localStorage?.setItem(LOCALE_STORAGE_KEY, next);
+    } catch {}
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = next;
+    }
+    this.setState({ locale: next });
+    if (this.state.token && this.state.online) {
+      try {
+        const res = await api.setLocale(next);
+        if (res?.localOnly) {
+          this.showToast('当前为 L0 模式，语言已在手机本地生效');
+        }
+      } catch {}
+    }
   }
 
   public toggleSoundAlert(): void {
@@ -1939,9 +2155,112 @@ export class RemoteStoreController {
     });
   }
 
+  public openRightDrawerDiffForFile(filePath: string): void {
+    this.setState({
+      inspectTargetFile: filePath,
+      rightOpen: true,
+      leftOpen: false,
+      rightTab: 'diff'
+    });
+  }
+
+  public setModelPickerOpen(open: boolean): void {
+    this.setState({
+      modelPickerOpen: open,
+      activeSheet: open ? 'modelPicker' : this.state.activeSheet === 'modelPicker' ? null : this.state.activeSheet
+    });
+  }
+
+  public setActiveSheet(sheet: ActiveSheetId, telemetryTab?: 'context' | 'usage' | 'quota'): void {
+    this.setState({
+      activeSheet: sheet,
+      contextExpanded: sheet === 'telemetry',
+      modelPickerOpen: sheet === 'modelPicker',
+      ...(telemetryTab ? { telemetryTab } : {})
+    });
+  }
+
+  public setTelemetryTab(tab: 'context' | 'usage' | 'quota'): void {
+    this.setState({ telemetryTab: tab });
+  }
+
   public toggleContextPanel(force?: boolean): void {
     const next = typeof force === 'boolean' ? force : !this.state.contextExpanded;
-    this.setState({ contextExpanded: next });
+    this.setState({
+      contextExpanded: next,
+      activeSheet: next ? 'telemetry' : this.state.activeSheet === 'telemetry' ? null : this.state.activeSheet
+    });
+  }
+
+  public setHideSystemEvents(hide: boolean): void {
+    this.setState({ hideSystemEvents: hide });
+  }
+
+  public setThinkingExpandAll(expand: boolean): void {
+    this.setState({
+      thinkingExpandVersion: this.state.thinkingExpandVersion + 1,
+      thinkingExpandTarget: expand
+    });
+  }
+
+  public setRunningTasksCount(runningTasksCount: number): void {
+    this.setState({ runningTasksCount: Math.max(0, Number(runningTasksCount) || 0) });
+  }
+
+  public reconnectSse(): void {
+    this.sse?.reconnect();
+    if (this.state.token) {
+      void this.connectAndSync();
+    }
+  }
+
+  public async compactActiveSession(): Promise<boolean> {
+    if (!this.state.activeSessionId) {
+      this.showToast('请先选择一个会话');
+      return false;
+    }
+    try {
+      await api.compactSession(this.state.activeSessionId);
+      this.showToast('已派发 /compact 上下文压缩');
+      return true;
+    } catch (err) {
+      this.showToast(`压缩失败: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  public async switchApiChannelInPage(entry: ChannelEntryDto): Promise<void> {
+    setApiBaseOrigin(entry.origin);
+    this.setState({
+      channel: entry.key,
+      apiBaseOrigin: entry.origin
+    });
+    this.sse?.setBaseOrigin(entry.origin);
+    this.sse?.reconnect();
+    this.showToast(`已切换至 ${entry.label}`);
+    try {
+      const boot = await api.bootstrap();
+      const nextTelemetry = boot.telemetry?.panels || boot.panels || this.state.telemetry;
+      this.setState({
+        bootstrap: { ...boot, models: this.state.models.length > 0 ? this.state.models : normalizeModelCatalog(boot.models, boot.modelGroups) },
+        channel: boot.channel || entry.key,
+        telemetry: nextTelemetry,
+        runningTasksCount: Number(boot.runningTasksCount ?? this.state.runningTasksCount ?? 0),
+        rpcConnected: boot.rpcConnected !== false
+      });
+    } catch {}
+  }
+
+  public async switchChannelWithTicket(entry: ChannelEntryDto): Promise<void> {
+    const res = await api.createSwitchTicket({
+      targetChannel: entry.key,
+      sessionId: this.state.activeSessionId || null,
+      draftText: this.state.composerText || ''
+    });
+    const nextUrl = `${entry.origin.replace(/\/+$/, '')}/?enter=1&switch_ticket=${encodeURIComponent(res.ticket)}`;
+    if (typeof window !== 'undefined') {
+      window.location.assign(nextUrl);
+    }
   }
 }
 

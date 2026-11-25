@@ -53,7 +53,64 @@ function isSafeHref(raw: string): boolean {
   }
 }
 
-function renderInline(text: string): ComponentChildren[] {
+function buildHighlightMatcher(
+  query?: string,
+  useRegex?: boolean,
+  caseSensitive?: boolean
+): RegExp | null {
+  const raw = (query || '').trim();
+  if (!raw) return null;
+  const flags = caseSensitive ? 'g' : 'gi';
+  try {
+    const pattern = useRegex ? raw : raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+}
+
+function renderHighlightedChunk(
+  text: string,
+  matcher: RegExp | null,
+  isCurrentMatch: boolean,
+  keyBase: string
+): ComponentChildren {
+  if (!matcher || !text) return text;
+  const re = new RegExp(matcher.source, matcher.flags);
+  const parts: ComponentChildren[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0].length === 0) {
+      re.lastIndex += 1;
+      continue;
+    }
+    if (m.index > lastIdx) {
+      parts.push(text.slice(lastIdx, m.index));
+    }
+    parts.push(
+      <mark
+        key={`${keyBase}-m-${idx++}`}
+        className="ag-search-mark"
+        data-current={isCurrentMatch ? '1' : undefined}
+      >
+        {m[0]}
+      </mark>
+    );
+    lastIdx = m.index + m[0].length;
+    if (parts.length > 200) break;
+  }
+  if (parts.length === 0) return text;
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return parts;
+}
+
+function renderInline(
+  text: string,
+  matcher: RegExp | null = null,
+  isCurrentMatch = false
+): ComponentChildren[] {
   const out: ComponentChildren[] = [];
   const tokenRe = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|~~[^~\n]+~~|\[[^\]\n]+\]\(([^)\s]+)\))/g;
   let lastIdx = 0;
@@ -62,21 +119,33 @@ function renderInline(text: string): ComponentChildren[] {
 
   while ((match = tokenRe.exec(text)) !== null) {
     if (match.index > lastIdx) {
-      out.push(text.slice(lastIdx, match.index));
+      out.push(renderHighlightedChunk(text.slice(lastIdx, match.index), matcher, isCurrentMatch, `p-${k}`));
     }
     const tok = match[0];
     if (tok.startsWith('`')) {
       out.push(
         <code key={k++} className={styles.inlineCode}>
-          {tok.slice(1, -1)}
+          {renderHighlightedChunk(tok.slice(1, -1), matcher, isCurrentMatch, `c-${k}`)}
         </code>
       );
     } else if (tok.startsWith('**')) {
-      out.push(<strong key={k++}>{tok.slice(2, -2)}</strong>);
+      out.push(
+        <strong key={k++}>
+          {renderHighlightedChunk(tok.slice(2, -2), matcher, isCurrentMatch, `b-${k}`)}
+        </strong>
+      );
     } else if (tok.startsWith('~~')) {
-      out.push(<del key={k++}>{tok.slice(2, -2)}</del>);
+      out.push(
+        <del key={k++}>
+          {renderHighlightedChunk(tok.slice(2, -2), matcher, isCurrentMatch, `d-${k}`)}
+        </del>
+      );
     } else if (tok.startsWith('*')) {
-      out.push(<em key={k++}>{tok.slice(1, -1)}</em>);
+      out.push(
+        <em key={k++}>
+          {renderHighlightedChunk(tok.slice(1, -1), matcher, isCurrentMatch, `i-${k}`)}
+        </em>
+      );
     } else if (tok.startsWith('[')) {
       const closeBracket = tok.indexOf('](');
       const label = tok.slice(1, closeBracket);
@@ -84,18 +153,18 @@ function renderInline(text: string): ComponentChildren[] {
       if (isSafeHref(href)) {
         out.push(
           <a key={k++} href={href} target="_blank" rel="noreferrer noopener">
-            {label}
+            {renderHighlightedChunk(label, matcher, isCurrentMatch, `a-${k}`)}
           </a>
         );
       } else {
-        out.push(tok);
+        out.push(renderHighlightedChunk(tok, matcher, isCurrentMatch, `u-${k++}`));
       }
     }
     lastIdx = match.index + tok.length;
   }
 
   if (lastIdx < text.length) {
-    out.push(text.slice(lastIdx));
+    out.push(renderHighlightedChunk(text.slice(lastIdx), matcher, isCurrentMatch, `e-${k}`));
   }
   return out;
 }
@@ -232,11 +301,23 @@ function parseBlocks(source: string): Block[] {
 export interface MarkdownProps {
   text: string;
   streaming?: boolean;
+  highlightQuery?: string;
+  highlightRegex?: boolean;
+  highlightCaseSensitive?: boolean;
+  isCurrentMatch?: boolean;
 }
 
-export const Markdown = memo(function Markdown({ text, streaming = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({
+  text,
+  streaming = false,
+  highlightQuery,
+  highlightRegex = false,
+  highlightCaseSensitive = false,
+  isCurrentMatch = false
+}: MarkdownProps) {
   if (!text) return null;
   const blocks = parseBlocks(text);
+  const matcher = buildHighlightMatcher(highlightQuery, highlightRegex, highlightCaseSensitive);
   const lastIdx = blocks.length - 1;
 
   return (
@@ -260,7 +341,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
           case 'heading': {
             const content = (
               <>
-                {renderInline(b.text)}
+                {renderInline(b.text, matcher, isCurrentMatch)}
                 {showInlineCursor && <span className={styles.streamCursor} aria-hidden="true" />}
               </>
             );
@@ -273,7 +354,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
               <blockquote key={idx}>
                 {b.lines.map((l, j) => (
                   <div key={j}>
-                    {renderInline(l)}
+                    {renderInline(l, matcher, isCurrentMatch)}
                     {showInlineCursor && j === b.lines.length - 1 && (
                       <span className={styles.streamCursor} aria-hidden="true" />
                     )}
@@ -287,7 +368,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
               <Tag key={idx}>
                 {b.items.map((item, j) => (
                   <li key={j}>
-                    {renderInline(item)}
+                    {renderInline(item, matcher, isCurrentMatch)}
                     {showInlineCursor && j === b.items.length - 1 && (
                       <span className={styles.streamCursor} aria-hidden="true" />
                     )}
@@ -303,7 +384,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
                   <thead>
                     <tr>
                       {b.headers.map((h, j) => (
-                        <th key={j}>{renderInline(h)}</th>
+                        <th key={j}>{renderInline(h, matcher, isCurrentMatch)}</th>
                       ))}
                     </tr>
                   </thead>
@@ -311,7 +392,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
                     {b.rows.map((row, rIdx) => (
                       <tr key={rIdx}>
                         {row.map((cell, cIdx) => (
-                          <td key={cIdx}>{renderInline(cell)}</td>
+                          <td key={cIdx}>{renderInline(cell, matcher, isCurrentMatch)}</td>
                         ))}
                       </tr>
                     ))}
@@ -322,7 +403,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false }: Mark
           case 'para':
             return (
               <p key={idx}>
-                {renderInline(b.text)}
+                {renderInline(b.text, matcher, isCurrentMatch)}
                 {showInlineCursor && <span className={styles.streamCursor} aria-hidden="true" />}
               </p>
             );

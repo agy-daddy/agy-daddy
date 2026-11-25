@@ -89,10 +89,10 @@
 }
 
 .compactBtn {
-  min-height: 32px;
-  padding: 0 11px;
+  min-height: 44px;
+  padding: 0 13px;
   border-radius: var(--ag-r-sm, 10px);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
   display: inline-flex;

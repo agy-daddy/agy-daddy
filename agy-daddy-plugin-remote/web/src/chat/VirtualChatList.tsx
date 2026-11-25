@@ -10,7 +10,18 @@ export interface VirtualChatListProps {
   loading?: boolean;
   activeSessionId?: string;
   permissionLevel?: PermissionLevel;
+  hideSystemEvents?: boolean;
+  thinkingExpandVersion?: number;
+  thinkingExpandTarget?: boolean | null;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  currentMatchSeq?: number | null;
+  jumpTarget?: { seq: number; nonce: number } | null;
+  scrollBottomNonce?: number;
+  scrollTopNonce?: number;
   onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
   onApprove?: (seq: number, decision: 'allow' | 'deny') => Promise<void> | void;
   onAnswer?: (seq: number, answers: unknown) => Promise<void> | void;
   queue?: QueuedMessage[];
@@ -51,7 +62,18 @@ export function VirtualChatList({
   loading,
   activeSessionId,
   permissionLevel = 'L1',
+  hideSystemEvents = false,
+  thinkingExpandVersion = 0,
+  thinkingExpandTarget = null,
+  searchQuery,
+  searchRegex = false,
+  searchCaseSensitive = false,
+  currentMatchSeq = null,
+  jumpTarget = null,
+  scrollBottomNonce = 0,
+  scrollTopNonce = 0,
   onInspectFile,
+  onViewDiffFile,
   onApprove,
   onAnswer,
   queue,
@@ -70,7 +92,12 @@ export function VirtualChatList({
   const [busyQueueIds, setBusyQueueIds] = useState<Record<string, boolean>>({});
   const [, setMeasureTick] = useState(0);
 
-  const displayItems = useMemo(() => buildDisplayTimeline(events), [events]);
+  const visibleEvents = useMemo(
+    () => (hideSystemEvents ? events.filter((ev) => ev.kind !== 'system') : events),
+    [events, hideSystemEvents]
+  );
+
+  const displayItems = useMemo(() => buildDisplayTimeline(visibleEvents), [visibleEvents]);
 
   const sessionQueue = useMemo(() => {
     if (!Array.isArray(queue) || queue.length === 0) return [];
@@ -139,6 +166,62 @@ export function VirtualChatList({
     if (!stickBottom) return;
     pinToBottom();
   }, [displayItems.length, tailSignature, sessionQueue.length, stickBottom, pinToBottom]);
+
+  useEffect(() => {
+    if (!scrollBottomNonce) return;
+    stickBottomRef.current = true;
+    setStickBottom(true);
+    pinToBottom();
+  }, [scrollBottomNonce, pinToBottom]);
+
+  useEffect(() => {
+    if (!scrollTopNonce) return;
+    stickBottomRef.current = false;
+    setStickBottom(false);
+    if (scrollerRef.current) {
+      scrollerRef.current.scrollTop = 0;
+      setScrollTop(0);
+    }
+  }, [scrollTopNonce]);
+
+  useEffect(() => {
+    if (!jumpTarget || !jumpTarget.nonce) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    stickBottomRef.current = false;
+    setStickBottom(false);
+
+    const scrollTargetIntoView = () => {
+      const node = scroller.querySelector(
+        `[data-testid="step-card-${jumpTarget.seq}"], [data-testid="tool-group-item-${jumpTarget.seq}"]`
+      );
+      if (node && typeof (node as HTMLElement).scrollIntoView === 'function') {
+        (node as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return true;
+      }
+      return false;
+    };
+
+    if (scrollTargetIntoView()) return;
+
+    const itemIdx = displayItems.findIndex((item) =>
+      item.type === 'tool_group'
+        ? item.events.some((e) => e.seq === jumpTarget.seq)
+        : item.event.seq === jumpTarget.seq
+    );
+    if (itemIdx >= 0) {
+      let approxY = 0;
+      for (let i = 0; i < itemIdx; i++) {
+        approxY += heightsRef.current.get(getItemKey(displayItems[i])) || DEFAULT_ESTIMATED_HEIGHT;
+      }
+      scroller.scrollTop = Math.max(0, approxY - viewportHeight / 3);
+      setScrollTop(scroller.scrollTop);
+      const raf = requestAnimationFrame(() => {
+        scrollTargetIntoView();
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [jumpTarget, displayItems, viewportHeight]);
 
   const onScroll = useCallback(() => {
     const el = scrollerRef.current;
@@ -247,14 +330,26 @@ export function VirtualChatList({
                   events={item.events}
                   thinkingNotes={item.thinkingNotes}
                   onInspectFile={onInspectFile}
+                  onViewDiffFile={onViewDiffFile}
+                  searchQuery={searchQuery}
+                  searchRegex={searchRegex}
+                  searchCaseSensitive={searchCaseSensitive}
+                  currentMatchSeq={currentMatchSeq}
                 />
               ) : (
                 <StepCard
                   event={item.event}
                   permissionLevel={permissionLevel}
                   onInspectFile={onInspectFile}
+                  onViewDiffFile={onViewDiffFile}
                   onApprove={onApprove}
                   onAnswer={onAnswer}
+                  thinkingExpandVersion={thinkingExpandVersion}
+                  thinkingExpandTarget={thinkingExpandTarget}
+                  searchQuery={searchQuery}
+                  searchRegex={searchRegex}
+                  searchCaseSensitive={searchCaseSensitive}
+                  isCurrentMatch={item.event.seq === currentMatchSeq}
                 />
               )}
             </div>

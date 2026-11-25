@@ -1,5 +1,5 @@
 import { memo } from 'preact/compat';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { PermissionLevel, SessionEvent, SessionEventStatus } from '../types';
 import {
   extractPlannerText,
@@ -9,6 +9,11 @@ import {
   KIND_LABELS,
   summarizeToolEvent
 } from './chatFilter';
+import {
+  extractCodeActionDiffLines,
+  extractCodeActionDiffStats,
+  extractCodeActionTargetFile
+} from './codeActionUtils';
 import { Markdown } from './Markdown';
 import styles from './StepCard.module.css';
 
@@ -16,8 +21,15 @@ export interface StepCardProps {
   event: SessionEvent;
   permissionLevel?: PermissionLevel;
   onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
   onApprove?: (seq: number, decision: 'allow' | 'deny') => Promise<void> | void;
   onAnswer?: (seq: number, answers: unknown) => Promise<void> | void;
+  thinkingExpandVersion?: number;
+  thinkingExpandTarget?: boolean | null;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  isCurrentMatch?: boolean;
 }
 
 const TERMINAL_STATUSES = new Set<SessionEventStatus>(['done', 'error', 'canceled']);
@@ -49,17 +61,6 @@ function formatJson(v: unknown): string {
   } catch {
     return String(v);
   }
-}
-
-function extractNum(
-  stats: Record<string, unknown> | null | undefined,
-  keys: string[]
-): number | null {
-  if (!stats) return null;
-  for (const k of keys) {
-    if (typeof stats[k] === 'number' && Number.isFinite(stats[k])) return stats[k] as number;
-  }
-  return null;
 }
 
 function normalizeQuestions(p: Record<string, unknown>): NormalizedQuestion[] {
@@ -268,14 +269,40 @@ function StepCardInner({
   event,
   permissionLevel = 'L1',
   onInspectFile,
+  onViewDiffFile,
   onApprove,
-  onAnswer
+  onAnswer,
+  thinkingExpandVersion = 0,
+  thinkingExpandTarget = null,
+  searchQuery,
+  searchRegex = false,
+  searchCaseSensitive = false,
+  isCurrentMatch = false
 }: StepCardProps) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
+  const [diffExpanded, setDiffExpanded] = useState(false);
+  const [copiedTurn, setCopiedTurn] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<Record<number, string[]>>({});
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (thinkingExpandVersion > 0 && thinkingExpandTarget !== null) {
+      setThinkingOpen(thinkingExpandTarget);
+    }
+  }, [thinkingExpandVersion, thinkingExpandTarget]);
+
+  const handleCopyText = (text: string) => {
+    if (!text) return;
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopiedTurn(true);
+        setTimeout(() => setCopiedTurn(false), 1500);
+      })
+      .catch(() => {});
+  };
 
   const p = event.payload || {};
   const isUser = event.kind === 'user';
@@ -362,14 +389,21 @@ function StepCardInner({
 
       case 'code_action': {
         const spec = (p.actionSpec as Record<string, unknown> | undefined) || null;
-        const targetFile = typeof spec?.targetFile === 'string' ? spec.targetFile : '';
-        const diffStats = (p.diffStats as Record<string, unknown> | undefined) || null;
-        const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-        const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+        const targetFile = extractCodeActionTargetFile(p, event.title);
+        const { additions, deletions } = extractCodeActionDiffStats(p);
+        const diffLines = extractCodeActionDiffLines(p, 80);
+        const visibleLines = diffExpanded ? diffLines : diffLines.slice(0, 16);
+        const openDiff = onViewDiffFile || onInspectFile;
         return (
           <>
             {typeof spec?.description === 'string' && spec.description && (
-              <Markdown text={spec.description} />
+              <Markdown
+                text={spec.description}
+                highlightQuery={searchQuery}
+                highlightRegex={searchRegex}
+                highlightCaseSensitive={searchCaseSensitive}
+                isCurrentMatch={isCurrentMatch}
+              />
             )}
             <div className={styles.metaRow}>
               {targetFile &&
@@ -394,11 +428,56 @@ function StepCardInner({
                   -{deletions}
                 </span>
               )}
+              {targetFile && openDiff && (
+                <button
+                  type="button"
+                  className={styles.viewDiffBtn}
+                  onClick={() => openDiff(targetFile)}
+                  data-testid={`code-action-diff-${event.seq}`}
+                >
+                  在 Diff 中查看 ↗
+                </button>
+              )}
             </div>
-            {spec && !spec.description && (
-              <pre className={styles.codeBlock} data-hscroll="1">
-                {formatJson(spec)}
-              </pre>
+            {visibleLines.length > 0 ? (
+              <div className={styles.diffPreviewWrap} data-testid={`code-action-lines-${event.seq}`}>
+                {visibleLines.map((line, i) => (
+                  <div
+                    key={i}
+                    className={[
+                      styles.diffLine,
+                      line.kind === 'add'
+                        ? styles.diffLineAdd
+                        : line.kind === 'del'
+                          ? styles.diffLineDel
+                          : line.kind === 'hunk'
+                            ? styles.diffLineHunk
+                            : styles.diffLineCtx
+                    ].join(' ')}
+                  >
+                    <span className={styles.diffSign}>
+                      {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}
+                    </span>
+                    <span>{line.text}</span>
+                  </div>
+                ))}
+                {diffLines.length > 16 && (
+                  <button
+                    type="button"
+                    className={styles.diffExpandBtn}
+                    onClick={() => setDiffExpanded((v) => !v)}
+                  >
+                    {diffExpanded ? '收起预览' : `展开其余 ${diffLines.length - 16} 行`}
+                  </button>
+                )}
+              </div>
+            ) : (
+              spec &&
+              !spec.description && (
+                <pre className={styles.codeBlock} data-hscroll="1">
+                  {formatJson(spec)}
+                </pre>
+              )
             )}
           </>
         );
@@ -488,19 +567,18 @@ function StepCardInner({
   if (isStandaloneTool) {
     const summary = summarizeToolEvent(event);
     const hasExit = event.kind === 'command' && typeof p.exitCode === 'number';
-    const diffStats =
+    const { additions, deletions } =
       event.kind === 'code_action'
-        ? ((p.diffStats as Record<string, unknown> | undefined) || null)
-        : null;
-    const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-    const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+        ? extractCodeActionDiffStats(p)
+        : { additions: null, deletions: null };
     const inspectPath =
       event.kind === 'file_view' && typeof p.absolutePathUri === 'string'
         ? p.absolutePathUri
-        : event.kind === 'code_action' &&
-            typeof (p.actionSpec as { targetFile?: unknown } | undefined)?.targetFile === 'string'
-          ? String((p.actionSpec as { targetFile: string }).targetFile)
+        : event.kind === 'code_action'
+          ? extractCodeActionTargetFile(p, event.title)
           : '';
+    const chipClickHandler =
+      event.kind === 'code_action' && onViewDiffFile ? onViewDiffFile : onInspectFile;
 
     return (
       <article
@@ -536,17 +614,17 @@ function StepCardInner({
           </button>
 
           <div className={styles.toolRowRight}>
-            {inspectPath && onInspectFile && (
+            {inspectPath && chipClickHandler && (
               <button
                 type="button"
                 className={styles.fileChipBtn}
                 title={inspectPath}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onInspectFile(inspectPath);
+                  chipClickHandler(inspectPath);
                 }}
               >
-                {formatBasename(inspectPath)}
+                <span className={styles.fileChipText}>{formatBasename(inspectPath)}</span>
               </button>
             )}
             {hasExit && (
@@ -837,74 +915,155 @@ function StepCardInner({
         ? styles.statusError
         : '';
 
+  if (isUser) {
+    const userText = extractUserText(p);
+    return (
+      <article
+        className={[
+          styles.userRow,
+          isOptimistic ? styles.userRowOptimistic : '',
+          isCurrentMatch ? styles.currentMatchOutline : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        data-testid={`step-card-${event.seq}`}
+        data-kind={event.kind}
+        data-status={event.status}
+        data-optimistic={isOptimistic ? 'true' : undefined}
+        data-current-match={isCurrentMatch ? '1' : undefined}
+      >
+        <div className={styles.userBubble}>
+          <Markdown
+            text={userText || '(空消息)'}
+            highlightQuery={searchQuery}
+            highlightRegex={searchRegex}
+            highlightCaseSensitive={searchCaseSensitive}
+            isCurrentMatch={isCurrentMatch}
+          />
+        </div>
+        {(isOptimistic || isError || Boolean(userText)) && (
+          <div className={styles.userFooter}>
+            {isOptimistic && (
+              <span className={`${styles.status} ${styles.statusOptimistic}`}>发送中…</span>
+            )}
+            {isError && (
+              <span className={`${styles.status} ${styles.statusError}`}>发送异常</span>
+            )}
+            {userText && (
+              <button
+                type="button"
+                className={styles.copyStepBtn}
+                onClick={() => handleCopyText(userText)}
+                aria-label="复制消息"
+              >
+                {copiedTurn ? '✓ 已复制' : '复制'}
+              </button>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  if (event.kind === 'thinking_and_text') {
+    const thinking = typeof p.thinking === 'string' ? p.thinking : '';
+    const text = extractPlannerText(p);
+    const duration = formatDurationBadge(p.thinkingDuration);
+    const isThinkingLive = isRunning && !text;
+
+    return (
+      <article
+        className={[
+          styles.editorialAssistant,
+          isError ? styles.editorialAssistantError : '',
+          isCurrentMatch ? styles.currentMatchOutline : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        data-testid={`step-card-${event.seq}`}
+        data-kind={event.kind}
+        data-status={event.status}
+        data-current-match={isCurrentMatch ? '1' : undefined}
+      >
+        {thinking && (
+          <div
+            className={[styles.thinkingBox, isThinkingLive ? styles.thinkingBoxLive : '']
+              .filter(Boolean)
+              .join(' ')}
+          >
+            <button
+              type="button"
+              className={styles.thinkingToggle}
+              aria-expanded={thinkingOpen}
+              onClick={() => setThinkingOpen((prev) => !prev)}
+              data-testid={`thinking-toggle-${event.seq}`}
+            >
+              <span className={styles.thinkingLeft}>
+                {isThinkingLive ? (
+                  <span className={styles.pulseDot} aria-hidden="true" />
+                ) : (
+                  <span
+                    className={[styles.chevron, thinkingOpen ? styles.chevronOpen : ''].join(' ')}
+                  >
+                    ▸
+                  </span>
+                )}
+                <span>{isThinkingLive ? '正在思考' : '思考过程'}</span>
+                {duration && <span className={styles.thinkingDur}>{duration}</span>}
+              </span>
+              <span className={styles.thinkingAction}>{thinkingOpen ? '收起' : '展开'}</span>
+            </button>
+            {thinkingOpen && (
+              <pre className={styles.thinkingBody} data-testid={`thinking-body-${event.seq}`}>
+                {thinking}
+              </pre>
+            )}
+          </div>
+        )}
+        {text ? (
+          <Markdown
+            text={text}
+            streaming={isRunning}
+            highlightQuery={searchQuery}
+            highlightRegex={searchRegex}
+            highlightCaseSensitive={searchCaseSensitive}
+            isCurrentMatch={isCurrentMatch}
+          />
+        ) : (
+          isRunning &&
+          !thinking && (
+            <div className={styles.streamingPlaceholder}>
+              <span className={styles.pulseDot} aria-hidden="true" />
+              <span>正在生成回复...</span>
+            </div>
+          )
+        )}
+        {(isRunning || isError || Boolean(text)) && (
+          <div className={styles.assistantMetaRow}>
+            {(isRunning || isError) && (
+              <span className={`${styles.status} ${statusCls}`}>
+                {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
+              </span>
+            )}
+            {text && !isRunning && (
+              <button
+                type="button"
+                className={styles.copyStepBtn}
+                onClick={() => handleCopyText(text)}
+                aria-label="复制回复"
+                data-testid={`step-copy-${event.seq}`}
+              >
+                {copiedTurn ? '✓ 已复制' : '复制'}
+              </button>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  }
+
   const renderStandardBody = () => {
     switch (event.kind) {
-      case 'user': {
-        const text = extractUserText(p);
-        return <Markdown text={text || '(空消息)'} />;
-      }
-
-      case 'thinking_and_text': {
-        const thinking = typeof p.thinking === 'string' ? p.thinking : '';
-        const text = extractPlannerText(p);
-        const duration = formatDurationBadge(p.thinkingDuration);
-        const isThinkingLive = isRunning && !text;
-
-        return (
-          <>
-            {thinking && (
-              <div
-                className={[styles.thinkingBox, isThinkingLive ? styles.thinkingBoxLive : '']
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <button
-                  type="button"
-                  className={styles.thinkingToggle}
-                  aria-expanded={thinkingOpen}
-                  onClick={() => setThinkingOpen((prev) => !prev)}
-                  data-testid={`thinking-toggle-${event.seq}`}
-                >
-                  <span className={styles.thinkingLeft}>
-                    {isThinkingLive ? (
-                      <span className={styles.pulseDot} aria-hidden="true" />
-                    ) : (
-                      <span
-                        className={[
-                          styles.chevron,
-                          thinkingOpen ? styles.chevronOpen : ''
-                        ].join(' ')}
-                      >
-                        ▸
-                      </span>
-                    )}
-                    <span>{isThinkingLive ? '正在思考' : '思考过程'}</span>
-                    {duration && <span className={styles.thinkingDur}>{duration}</span>}
-                  </span>
-                  <span className={styles.thinkingAction}>{thinkingOpen ? '收起' : '展开'}</span>
-                </button>
-                {thinkingOpen && (
-                  <pre className={styles.thinkingBody} data-testid={`thinking-body-${event.seq}`}>
-                    {thinking}
-                  </pre>
-                )}
-              </div>
-            )}
-            {text ? (
-              <Markdown text={text} streaming={isRunning} />
-            ) : (
-              isRunning &&
-              !thinking && (
-                <div className={styles.streamingPlaceholder}>
-                  <span className={styles.pulseDot} aria-hidden="true" />
-                  <span>正在生成回复...</span>
-                </div>
-              )
-            )}
-          </>
-        );
-      }
-
       case 'system': {
         return (
           <>
@@ -913,7 +1072,15 @@ function StepCardInner({
                 <span className="ag-chip">{p.eventType}</span>
               </div>
             )}
-            {typeof p.message === 'string' && p.message && <Markdown text={p.message} />}
+            {typeof p.message === 'string' && p.message && (
+              <Markdown
+                text={p.message}
+                highlightQuery={searchQuery}
+                highlightRegex={searchRegex}
+                highlightCaseSensitive={searchCaseSensitive}
+                isCurrentMatch={isCurrentMatch}
+              />
+            )}
           </>
         );
       }
@@ -939,44 +1106,29 @@ function StepCardInner({
     <article
       className={[
         styles.card,
-        isUser ? styles.cardUser : '',
-        isOptimistic ? styles.cardOptimistic : '',
         isGenerating ? styles.cardGenerating : '',
-        isError ? styles.cardError : ''
+        isError ? styles.cardError : '',
+        isCurrentMatch ? styles.currentMatchOutline : ''
       ]
         .filter(Boolean)
         .join(' ')}
       data-testid={`step-card-${event.seq}`}
       data-kind={event.kind}
       data-status={event.status}
-      data-optimistic={isOptimistic ? 'true' : undefined}
+      data-current-match={isCurrentMatch ? '1' : undefined}
     >
       <header className={styles.header}>
         <div className={styles.headerLeft}>
-          <span
-            className={[
-              styles.kind,
-              isUser ? styles.kindUser : '',
-              isError ? styles.kindError : ''
-            ]
-              .filter(Boolean)
-              .join(' ')}
-          >
+          <span className={[styles.kind, isError ? styles.kindError : ''].filter(Boolean).join(' ')}>
             {KIND_LABELS[event.kind] || event.kind}
           </span>
           {!isOptimistic && <span className={styles.seq}>#{event.seq}</span>}
-          {event.title && event.kind !== 'thinking_and_text' && event.kind !== 'user' && (
-            <span className={styles.title}>{event.title}</span>
-          )}
+          {event.title && <span className={styles.title}>{event.title}</span>}
         </div>
-        {isOptimistic ? (
-          <span className={`${styles.status} ${styles.statusOptimistic}`}>发送中…</span>
-        ) : (
-          (isRunning || isError) && (
-            <span className={`${styles.status} ${statusCls}`}>
-              {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
-            </span>
-          )
+        {(isRunning || isError) && (
+          <span className={`${styles.status} ${statusCls}`}>
+            {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
+          </span>
         )}
       </header>
       <div className={styles.body}>{renderStandardBody()}</div>
@@ -988,13 +1140,19 @@ export const StepCard = memo(StepCardInner, (prev, next) => {
   if (
     prev.permissionLevel !== next.permissionLevel ||
     prev.onInspectFile !== next.onInspectFile ||
+    prev.onViewDiffFile !== next.onViewDiffFile ||
     prev.onApprove !== next.onApprove ||
-    prev.onAnswer !== next.onAnswer
+    prev.onAnswer !== next.onAnswer ||
+    prev.thinkingExpandVersion !== next.thinkingExpandVersion ||
+    prev.thinkingExpandTarget !== next.thinkingExpandTarget ||
+    prev.searchQuery !== next.searchQuery ||
+    prev.searchRegex !== next.searchRegex ||
+    prev.searchCaseSensitive !== next.searchCaseSensitive ||
+    prev.isCurrentMatch !== next.isCurrentMatch
   ) {
     return false;
   }
   if (prev.event === next.event) return true;
-  // Never block re-renders for active/streaming or pending interactive events
   if (!TERMINAL_STATUSES.has(next.event.status)) return false;
   return (
     prev.event.seq === next.event.seq &&

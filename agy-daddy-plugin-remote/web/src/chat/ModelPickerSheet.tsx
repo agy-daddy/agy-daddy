@@ -117,8 +117,17 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [selectedMasterId, setSelectedMasterId] = useState<string>('');
   const [query, setQuery] = useState('');
+  const [sheetDragY, setSheetDragY] = useState(0);
+  const [sheetDragging, setSheetDragging] = useState(false);
+  const [pickerDragX, setPickerDragX] = useState(0);
+  const [pickerDragging, setPickerDragging] = useState(false);
 
-  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeRef = useRef<{
+    x: number;
+    y: number;
+    mode: 'pending' | 'vertical' | 'horizontal' | 'locked-out';
+    fromHeader: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -126,6 +135,10 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
       setSelectedGroupId('');
       setSelectedMasterId('');
       setQuery('');
+      setSheetDragY(0);
+      setSheetDragging(false);
+      setPickerDragX(0);
+      setPickerDragging(false);
     }
   }, [open]);
 
@@ -264,23 +277,78 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
   };
 
   const onTouchStartSheet = (e: TouchEvent) => {
-    if (depth === 0 || e.touches.length !== 1) return;
+    if (e.touches.length !== 1) return;
     const target = e.target;
-    if (target instanceof Element && target.closest('input, textarea, select')) return;
+    if (target instanceof Element && target.closest('input, textarea, select, button')) return;
     const t = e.touches[0];
-    swipeRef.current = { x: t.clientX, y: t.clientY };
+    const fromHeader = Boolean(
+      target instanceof Element &&
+        target.closest(`.${styles.handleWrap}, .${styles.header}`)
+    );
+    swipeRef.current = { x: t.clientX, y: t.clientY, mode: 'pending', fromHeader };
+  };
+
+  const onTouchMoveSheet = (e: TouchEvent) => {
+    const start = swipeRef.current;
+    if (!start || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+
+    if (start.mode === 'pending') {
+      if (Math.hypot(dx, dy) < 8) return;
+      if (start.fromHeader && dy > 0 && Math.abs(dy) >= Math.abs(dx)) {
+        start.mode = 'vertical';
+        setSheetDragging(true);
+      } else if (depth > 0 && dx > 0 && Math.abs(dx) > Math.abs(dy) * 1.1) {
+        start.mode = 'horizontal';
+        setPickerDragging(true);
+      } else {
+        start.mode = 'locked-out';
+        return;
+      }
+    }
+
+    if (start.mode === 'vertical') {
+      setSheetDragY(Math.max(0, dy));
+    } else if (start.mode === 'horizontal') {
+      setPickerDragX(Math.max(0, dx));
+    }
   };
 
   const onTouchEndSheet = (e: TouchEvent) => {
     const start = swipeRef.current;
     swipeRef.current = null;
-    if (!start || depth === 0 || e.changedTouches.length !== 1) return;
+    if (!start) return;
+
     const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (dx > 56 && Math.abs(dy) < Math.abs(dx) * 0.75) {
-      handleBack();
+    const dx = t ? t.clientX - start.x : pickerDragX;
+    const dy = t ? t.clientY - start.y : sheetDragY;
+
+    if (start.mode === 'vertical') {
+      setSheetDragging(false);
+      if (dy > 80) {
+        setSheetDragY(0);
+        onClose();
+        return;
+      }
+      setSheetDragY(0);
+      return;
     }
+
+    if (start.mode === 'horizontal' || (start.mode === 'pending' && depth > 0)) {
+      setPickerDragging(false);
+      setPickerDragX(0);
+      if (dx > 56 && Math.abs(dy) < Math.abs(dx) * 0.75) {
+        handleBack();
+      }
+      return;
+    }
+
+    setSheetDragging(false);
+    setPickerDragging(false);
+    setSheetDragY(0);
+    setPickerDragX(0);
   };
 
   const headerTitle =
@@ -389,8 +457,12 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
     >
       <div
         className={styles.sheet}
+        data-dragging={sheetDragging ? '1' : '0'}
+        style={{ '--sheet-drag-y': `${sheetDragY}px` } as Record<string, string>}
         onTouchStart={onTouchStartSheet}
+        onTouchMove={onTouchMoveSheet}
         onTouchEnd={onTouchEndSheet}
+        onTouchCancel={onTouchEndSheet}
       >
         <div className={styles.handleWrap}>
           <span className={styles.handle} />
@@ -432,6 +504,8 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
             className={styles.slideTrack}
             data-testid="model-picker-track"
             data-depth={String(depth)}
+            data-dragging={pickerDragging ? '1' : '0'}
+            style={{ '--picker-drag-x': `${pickerDragX}px` } as Record<string, string>}
           >
             {/* Stage 0: Model List */}
             <section className={styles.slidePane} aria-hidden={depth !== 0}>

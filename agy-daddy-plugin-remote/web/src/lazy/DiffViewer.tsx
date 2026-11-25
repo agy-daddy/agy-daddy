@@ -5,6 +5,7 @@ import styles from './lazy.module.css';
 
 interface DiffViewerProps {
   rootPath: string;
+  inspectTargetFile?: string;
   onInjectQuote?: (snippet: string) => void;
   onRefreshDiffBadge?: () => void;
 }
@@ -65,6 +66,7 @@ function parseUnifiedDiff(diffText: string): ParsedDiffSection[] {
 
 export default function DiffViewer({
   rootPath,
+  inspectTargetFile,
   onInjectQuote,
   onRefreshDiffBadge
 }: DiffViewerProps) {
@@ -119,6 +121,26 @@ export default function DiffViewer({
   }, [rootPath]);
 
   const allSections = useMemo(() => parseUnifiedDiff(diffText), [diffText]);
+
+  useEffect(() => {
+    const raw = (inspectTargetFile || '').trim();
+    if (!raw) return;
+    const clean = raw.replace(/^file:\/\//i, '');
+    const candidates = [
+      ...files.map((f) => f.path),
+      ...allSections.map((s) => s.file)
+    ];
+    if (candidates.length === 0) return;
+    const base = clean.split('/').pop() || clean;
+    const match =
+      candidates.find((c) => c === clean) ||
+      candidates.find((c) => clean.endsWith(`/${c}`) || c.endsWith(`/${clean}`) || clean.endsWith(c)) ||
+      candidates.find((c) => (c.split('/').pop() || c) === base);
+    if (match) {
+      setSelectedFile(match);
+      setExpandedFiles({ [match]: true });
+    }
+  }, [inspectTargetFile, files, allSections]);
 
   const sectionByFile = useMemo(() => {
     const map = new Map<string, ParsedDiffSection>();

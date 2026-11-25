@@ -1,24 +1,34 @@
 import type {
   ArtifactItem,
+  BackgroundTaskDetailDto,
+  BackgroundTasksListResponse,
   BootstrapResponse,
+  ChannelsListResponse,
   ChatMode,
-  ComposerPreset,
+  ComposerStateResponse,
+  DiagnosticsResponse,
   DispatchMode,
   FsTreeEntry,
   GitDiffResponse,
   GitWorktreeInfo,
   HostProject,
+  LocaleResponse,
   OrchestratorMasterKey,
   OrchestratorThinkingMap,
   OrchestratorThinkingTier,
   PinKind,
   PtySessionInfo,
   QueuedMessage,
+  RedeemTicketResponse,
+  SafeCommandsResponse,
   SessionDetail,
   SessionEvent,
   SessionGroup,
   SessionPins,
   SessionSummary,
+  StopBackgroundTaskResponse,
+  SupportedLocale,
+  SwitchTicketResponse,
   TelemetryPanels
 } from '../types';
 import { getClientId, getDeviceHint } from './token';
@@ -31,9 +41,44 @@ export interface ApiError extends Error {
 
 export type ConfirmCallback = (hint: string) => Promise<boolean>;
 
+const API_ORIGIN_KEY = 'agy_remote_api_origin';
+
 let tokenProvider: () => string = () => '';
 let confirmCallback: ConfirmCallback = async () => false;
 let lastConfirmedToken = '';
+let apiBaseOrigin = '';
+
+try {
+  if (typeof window !== 'undefined') {
+    const saved = window.sessionStorage?.getItem(API_ORIGIN_KEY) || '';
+    if (saved) apiBaseOrigin = saved.replace(/\/+$/, '');
+  }
+} catch {}
+
+export function setApiBaseOrigin(origin: string): void {
+  apiBaseOrigin = String(origin || '').trim().replace(/\/+$/, '');
+  try {
+    if (typeof window !== 'undefined') {
+      if (apiBaseOrigin) window.sessionStorage?.setItem(API_ORIGIN_KEY, apiBaseOrigin);
+      else window.sessionStorage?.removeItem(API_ORIGIN_KEY);
+    }
+  } catch {}
+}
+
+export function getApiBaseOrigin(): string {
+  return apiBaseOrigin;
+}
+
+export function resolveApiUrl(path: string): string {
+  if (!path.startsWith('/')) return path;
+  if (!apiBaseOrigin) return path;
+  try {
+    if (typeof window !== 'undefined' && window.location?.origin === apiBaseOrigin) {
+      return path;
+    }
+  } catch {}
+  return `${apiBaseOrigin}${path}`;
+}
 
 export function configureApiClient(opts: {
   getToken: () => string;
@@ -49,9 +94,9 @@ export function getLastL2ConfirmToken(): string {
 
 async function requestJson<T>(
   path: string,
-  init: RequestInit & { confirmable?: boolean } = {}
+  init: RequestInit & { confirmable?: boolean; skipAuth?: boolean } = {}
 ): Promise<T> {
-  const token = tokenProvider();
+  const token = init.skipAuth ? '' : tokenProvider();
   const headers = new Headers(init.headers || {});
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -62,12 +107,14 @@ async function requestJson<T>(
     headers.set('Content-Type', 'application/json');
   }
 
+  const targetUrl = resolveApiUrl(path);
+
   const doFetch = async (extraConfirm?: string) => {
     const reqHeaders = new Headers(headers);
     if (extraConfirm) {
       reqHeaders.set('X-Agy-Confirm', extraConfirm);
     }
-    const res = await fetch(path, { ...init, headers: reqHeaders, cache: 'no-store' });
+    const res = await fetch(targetUrl, { ...init, headers: reqHeaders, cache: 'no-store' });
     const text = await res.text();
     let data: Record<string, unknown> = {};
     try {
@@ -218,6 +265,16 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 
+  compactSession: (sessionId: string) =>
+    requestJson<{ ok: boolean; action?: string; sessionId?: string; dispatched?: boolean }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/compact`,
+      {
+        method: 'POST',
+        confirmable: true,
+        body: '{}'
+      }
+    ),
+
   listSessionQueue: (sessionId: string) =>
     requestJson<{ ok: boolean; cascadeId: string; queue: QueuedMessage[] }>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/queue`
@@ -276,16 +333,18 @@ export const api = {
       }
     ),
 
-  getPresets: () =>
-    requestJson<{
-      ok: boolean;
-      presets?: ComposerPreset[];
-      quickPrompts?: ComposerPreset[];
-      frequentPrompts?: ComposerPreset[];
-    }>('/api/v1/composer/presets'),
+  getPresets: () => requestJson<ComposerStateResponse>('/api/v1/composer/presets'),
+
+  getComposerState: () => requestJson<ComposerStateResponse>('/api/v1/composer/state'),
 
   optimizePrompt: (text: string) =>
-    requestJson<{ ok: boolean; optimizedText?: string; text?: string }>('/api/v1/composer/optimize', {
+    requestJson<{
+      ok: boolean;
+      optimizedText?: string;
+      text?: string;
+      source?: string;
+      unchanged?: boolean;
+    }>('/api/v1/composer/optimize', {
       method: 'POST',
       body: JSON.stringify({ text })
     }),
@@ -375,6 +434,65 @@ export const api = {
   listPtySessions: () =>
     requestJson<{ ok: boolean; sessions: PtySessionInfo[] }>('/api/v1/pty/sessions'),
 
+  listTasks: () => requestJson<BackgroundTasksListResponse>('/api/v1/tasks'),
+
+  getTaskDetail: (taskId: string) =>
+    requestJson<{ ok: boolean; task: BackgroundTaskDetailDto }>(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}`
+    ),
+
+  stopTask: (taskId: string) =>
+    requestJson<StopBackgroundTaskResponse>(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/stop`,
+      {
+        method: 'POST',
+        confirmable: true,
+        body: '{}'
+      }
+    ),
+
+  getChannels: () => requestJson<ChannelsListResponse>('/api/v1/channels'),
+
+  createSwitchTicket: (payload: {
+    targetChannel: string;
+    sessionId?: string | null;
+    draftText?: string;
+  }) =>
+    requestJson<SwitchTicketResponse>('/api/v1/channels/switch-ticket', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  redeemSwitchTicket: (ticket: string) =>
+    requestJson<RedeemTicketResponse>('/api/v1/channels/redeem-ticket', {
+      method: 'POST',
+      skipAuth: true,
+      body: JSON.stringify({ ticket })
+    }),
+
+  getLocale: () => requestJson<LocaleResponse>('/api/v1/locale'),
+
+  setLocale: (locale: SupportedLocale) =>
+    requestJson<{
+      ok: boolean;
+      locale: SupportedLocale;
+      syncedToHost: boolean;
+      localOnly: boolean;
+    }>('/api/v1/locale', {
+      method: 'PUT',
+      body: JSON.stringify({ locale })
+    }),
+
+  getDiagnostics: () => requestJson<DiagnosticsResponse>('/api/v1/diagnostics'),
+
+  listCommands: () => requestJson<SafeCommandsResponse>('/api/v1/commands'),
+
+  runCommand: (commandId: string) =>
+    requestJson<{ ok: boolean; commandId: string; result?: unknown }>('/api/v1/commands/run', {
+      method: 'POST',
+      body: JSON.stringify({ commandId })
+    }),
+
   getVapidKey: () =>
     requestJson<{ ok: boolean; publicKey?: string; vapidPublicKey?: string }>('/api/v1/push/vapid-key'),
 
@@ -396,11 +514,21 @@ export const api = {
       body: '{}'
     }),
 
-  pingLatency: async (): Promise<number> => {
+  pingLatency: async (probeUrl?: string, timeoutMs = 2200): Promise<number> => {
+    const target = probeUrl || resolveApiUrl('/api/ping');
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const res = await fetch('/api/ping', { cache: 'no-store' });
-    if (!res.ok) throw new Error('PING_FAILED');
-    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    return Math.max(1, Math.round(t1 - t0));
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    try {
+      const res = await fetch(target, {
+        cache: 'no-store',
+        signal: ctrl?.signal
+      });
+      if (!res.ok) throw new Error('PING_FAILED');
+      const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      return Math.max(1, Math.round(t1 - t0));
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 };

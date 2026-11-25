@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-context",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agy-Daddy context ring, audit panel, attachment inspector, and composer pulse capsule plugin",
   "license": "MIT",
   "repository": {

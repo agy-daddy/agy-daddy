@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "agy-daddy.proxy",
   "publisher": "agy-daddy",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "license": "MIT",
   "displayName": {
     "zh-CN": "免重启网络代理网关",

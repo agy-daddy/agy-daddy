@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-proxy",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agy-Daddy zero-restart local forwarding proxy gateway plugin (127.0.0.1:18766 HTTP/CONNECT/SOCKS5/DIRECT)",
   "license": "MIT",
   "repository": {

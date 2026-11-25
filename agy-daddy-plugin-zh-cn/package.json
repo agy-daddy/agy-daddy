@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-zh-cn",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agy-Daddy reversible 10-language client localization (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en) and zero-token dictionary/regex translator plugin",
   "license": "MIT",
   "repository": {

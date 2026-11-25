@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-cli",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agy-Daddy multi-platform terminal and multiplexer (Rex/WezTerm/tmux) CLI launcher plugin",
   "license": "MIT",
   "repository": {

@@ -1,127 +1,127 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-24T15:45:22Z",
+  "updatedAt": "2026-11-25T07:55:20Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
       "shortName": "proxy",
       "layer": 1,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-proxy",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-proxy",
       "localRepo": "agy-daddy-plugin-proxy",
-      "manifestSha512": "sha512-cG+SkVn9CDEGo2UPMSfhcCzhUQA6eq0pi4ov0SUHsAWXbdEn7wd96ZMaTW95VJlCgIaRkYOg8l2fkxE+7W5new=="
+      "manifestSha512": "sha512-G8tVe3uuN1emyf01ByTJksX7QIGpfDWet3ZYWPDfMuaOC+BZO7jMWKQIc98n/xoaPLrEFcrIuwGPuzIHw8SyhQ=="
     },
     {
       "id": "agy-daddy.zh-cn",
       "shortName": "zh-cn",
       "layer": 1,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-zh-cn",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-zh-cn",
       "localRepo": "agy-daddy-plugin-zh-cn",
-      "manifestSha512": "sha512-tnyMpjUYL75t6CCatkrbik0FKxHe/CqV3vchetCb3G8PK+xTcpo6lDrI5JV6YHtH7Ii8MRX/64HcELfgvZkciA=="
+      "manifestSha512": "sha512-b/GDaWvShJ7RbzV4uzOHgmU2jKqLZ0+XLBPGBIvLiQ5N0rOqfX8CU6btdmjyVDQJdwsdSXYEYJO2i6uQBGOH5Q=="
     },
     {
       "id": "agy-daddy.cli",
       "shortName": "cli",
       "layer": 1,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-cli",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-cli",
       "localRepo": "agy-daddy-plugin-cli",
-      "manifestSha512": "sha512-NHq1Go699ICKpMBVajjvPxV/WOABohR202XEdbF17lGOIXM8CwDU/3HQOHyrdzzjJK/PVEw6YSVdmSlTurTfiA=="
+      "manifestSha512": "sha512-OupvvxB6SVIuit8odxAn3GphEZ4Zke9vcOOl0ya33HjNZnupDghfQ4UfU6sDyb2Ss+QJgssaQDyDn9Ubp/8QMg=="
     },
     {
       "id": "agy-daddy.context",
       "shortName": "context",
       "layer": 2,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-context",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-context",
       "localRepo": "agy-daddy-plugin-context",
-      "manifestSha512": "sha512-t2nLY1bTvvBBOriWret+BhSzz/go0D71MsukHDw5KVHeaqhcaCZIsGrMO5hx7yMjoHHetXWkyk7rjtKNenqErQ=="
+      "manifestSha512": "sha512-u1nGxZKbTCsML//fsEgoauLZT2hrj48GwMGLCsqHn0ILYkcaTlANziU8rsbXMiRhkusOJeO24EpxYxip+1sKpw=="
     },
     {
       "id": "agy-daddy.usage",
       "shortName": "usage",
       "layer": 2,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-usage",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-usage",
       "localRepo": "agy-daddy-plugin-usage",
-      "manifestSha512": "sha512-+Zw7aRLhngYhjgFeUfHA1MFIQ18mTMvQD24ULY0RBlH3SxUMQIRKB/25zn8H2zSnCW24TyN6JobLQHkvLJVKsQ=="
+      "manifestSha512": "sha512-nn0ZEeBSULQCpQUL7ki09woSt+IcjqkHpr7gHatJmI3wo5A8yP60emTGdegh9iKwA3hm7WHp/wnqhuwLe8mKFg=="
     },
     {
       "id": "agy-daddy.chat-nav",
       "shortName": "chat-nav",
       "layer": 2,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-chat-nav",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-chat-nav",
       "localRepo": "agy-daddy-plugin-chat-nav",
-      "manifestSha512": "sha512-Nl6CqVQyLKdGnyv+hzGqXV3qMg4q+MnxdbXOHBBmb/S8tn0kUuRLeK3aYe3x6jOivB2sZOtJJWGcWdOw4aC37A=="
+      "manifestSha512": "sha512-iB9f5RvQ7G0LbuvoT5bx6P2kpmhgZ9Pttm5zYTE+BbXIYMKRTIn4uZuOphngWOdsZCZPRpT8nnhqI+yA+K9uhQ=="
     },
     {
       "id": "agy-daddy.quota",
       "shortName": "quota",
       "layer": 3,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-quota",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-quota",
       "localRepo": "agy-daddy-plugin-quota",
-      "manifestSha512": "sha512-ZjvMX2DWVIMIGsnxzJ8m4MmfkL3PR5wwR/OLXPa78HfCi+Hm+dw6lrOTdcrJKeVClacUb1IuNc+6+m9B4Ce+NA=="
+      "manifestSha512": "sha512-KF2x1Ob4KycLpUV/CUfGB5UgktdhbuIHCb1SLXixrsCjJ2AMo5agTXBB9pKA+AIaVkr/yiZVPd7WPPa/eSxijg=="
     },
     {
       "id": "agy-daddy.composer",
       "shortName": "composer",
       "layer": 3,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-composer",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-composer",
       "localRepo": "agy-daddy-plugin-composer",
-      "manifestSha512": "sha512-7i06IcVS7+StMn8/HjxhC5p1aZhjZOUizkX1vqzVULu85etUXxoN4qX1MRAYKHGPAijYlIjxECWvqGfwwzoQyA=="
+      "manifestSha512": "sha512-p5qUzKzfur2WrA9HhdQSHOVBl+ULgslJQziAbN+doy515yra25STAUcZNxh6sI+Vdu6T1VUXXkkkt+vc2xtVrg=="
     },
     {
       "id": "agy-daddy.remote",
       "shortName": "remote",
       "layer": 4,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-remote",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-remote",
       "localRepo": "agy-daddy-plugin-remote",
-      "manifestSha512": "sha512-3dUeA4pciStPz/alEg6lOnymdA3djz/gVlzSzHGhQEG5g9dTv2PD5j9tOVCKMkUzRw1N5YDVFgcQ6ydoPAe70g=="
+      "manifestSha512": "sha512-dP3vHYJGp8xTf1CKRs2F7gaNycHK5UqJJhLzusG5Q5nIqf9Tts1GoOr0+47MKZZs3LCBnjmSebAmBqheVwkTHQ=="
     },
     {
       "id": "agy-daddy.web",
       "shortName": "web",
       "layer": 4,
       "trustLevel": "T0",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "npmPackage": "@agy-daddy/plugin-web",
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-web",
       "localRepo": "agy-daddy-plugin-web",
-      "manifestSha512": "sha512-7JEYlJDMURcput2jWfjC7QXEWYk+gy4Zhvy+RTzQLigxWbynuAtjcX5LJQjEnYG1E/RVtNbUNZHNzsxVALCdLg=="
+      "manifestSha512": "sha512-TeQNGypx3EHvnwwCdLkHi5E3ytuMtrm/QHYd/pE5gkOA5Q4FwEU0FJp3sTC6YBPy8GuW0bFDz5zklkfLOTI9ag=="
     }
   ]
 }

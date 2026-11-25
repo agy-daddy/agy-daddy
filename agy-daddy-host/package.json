@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/host",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Zero-patch CDP plugin host and open extensibility foundation for Google Antigravity Desktop.",
   "license": "MIT",
   "repository": {

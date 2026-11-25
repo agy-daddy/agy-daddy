@@ -1,6 +1,6 @@
 {
   "name": "@agy-daddy/plugin-chat-nav",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agy-Daddy floating chat navigation, thinking expand guard, search slot, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external link plugin",
   "license": "MIT",
   "repository": {

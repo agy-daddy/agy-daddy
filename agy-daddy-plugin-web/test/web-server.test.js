@@ -8,7 +8,8 @@ const path = require('node:path');
 const http = require('node:http');
 const url = require('node:url');
 
-const { WebServer, createWebServer, SECURITY_HEADERS } = require('../src/web-server');
+const { WebServer, createWebServer, SECURITY_HEADERS, isLoopbackSameOrigin } = require('../src/web-server');
+const { readAccessSettings } = require('../src/node');
 const { createWorkspaceMetaStore } = require('../src/workspace-meta-store');
 const { createWorkspaceService } = require('../src/workspace-service');
 const { createHostProxy } = require('../src/host-proxy');
@@ -1296,6 +1297,22 @@ test('D17: bindHostMode is hot-applied and a rejected policy commits nothing', (
   assert.equal(applied.host, '0.0.0.0');
   assert.equal(srv.bindHostMode, 'lan');
   assert.equal(srv.getAccessStatus().bindHost, '0.0.0.0');
+});
+
+test('D18: isLoopbackSameOrigin enforces port matching and readAccessSettings guards invalid bindHost', () => {
+  assert.equal(isLoopbackSameOrigin('http://localhost:18767', 18767, '127.0.0.1:18767', 'loopback'), true);
+  assert.equal(isLoopbackSameOrigin('http://localhost:18767', 18767, '', 'loopback'), true);
+  assert.equal(isLoopbackSameOrigin('http://localhost:9999', 18767, '127.0.0.1:18767', 'loopback'), false);
+  assert.equal(isLoopbackSameOrigin('https://ag.example.com', 18767, 'ag.example.com', 'cloudflare'), true);
+  assert.equal(isLoopbackSameOrigin('http://ag.example.com:9999', 18767, 'ag.example.com', 'cloudflare'), false);
+  assert.equal(isLoopbackSameOrigin('https://ag.example.com:9999', 18767, 'ag.example.com', 'cloudflare'), false);
+
+  const guarded = readAccessSettings({ bindHost: 'lan', loopback: true, lan: false });
+  assert.equal(guarded.bindHostMode, 'auto');
+  assert.equal(guarded.channels.loopback, true);
+
+  const preserved = readAccessSettings({ bindHost: 'lan', loopback: true, lan: true });
+  assert.equal(preserved.bindHostMode, 'lan');
 });
 
 test('D8: internal/subagent filtering, user-created session protection, read-state + completion SSE sync, raw artifact streaming, and previewers', async () => {

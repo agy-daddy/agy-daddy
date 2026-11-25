@@ -97,8 +97,15 @@ function readAccessSettings(settings) {
     // safest channel instead of refusing to serve.
     channels.loopback = true;
   }
+  let bindHostMode = normalizeBindHostMode(settings?.bindHost);
+  const hasNonLoopback = Boolean(
+    channels.lan || channels.tailscale || channels.bonjour || channels.cloudflare
+  );
+  if (bindHostMode === 'lan' && !hasNonLoopback) {
+    bindHostMode = 'auto';
+  }
   return {
-    bindHostMode: normalizeBindHostMode(settings?.bindHost),
+    bindHostMode,
     channels,
     permissionLevel: normalizePermissionLevel(settings?.remotePermissionLevel),
     tunnelHostname: normalizeTunnelHostname(settings?.tunnelHostname)
@@ -246,7 +253,10 @@ async function activate(host) {
   async function reconcileAccess() {
     if (!runtime.webServer) return;
     const next = readAccessSettings(readStoredSettings(host));
+    const previousAccess = runtimeAccess;
     const previousHost = runtime.webServer.host;
+    const previousBindHostMode = runtime.webServer.bindHostMode;
+    const previousChannels = { ...runtime.webServer.channels };
     let result;
     try {
       result = runtime.webServer.updateAccessConfig({
@@ -270,7 +280,13 @@ async function activate(host) {
       await runtime.webServer.stop();
       await runtime.webServer.start();
     } catch {
-      // Keep serving on the previous socket; the next settings change retries.
+      runtimeAccess = previousAccess;
+      runtime.webServer.host = previousHost;
+      runtime.webServer.bindHostMode = previousBindHostMode;
+      runtime.webServer.channels = previousChannels;
+      try {
+        await runtime.webServer.start();
+      } catch {}
     }
     publishStatus();
   }
@@ -473,5 +489,6 @@ async function deactivate() {
 
 module.exports = {
   activate,
-  deactivate
+  deactivate,
+  readAccessSettings
 };

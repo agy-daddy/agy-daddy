@@ -123,14 +123,16 @@ function isLoopbackSameOrigin(originHeader, serverPort, reqHostHeader, channel =
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
   if (!hostname) return false;
-  const originPort = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
-  const hostHeader = parseHostHeader(reqHostHeader, originPort);
+  const schemeDefaultPort = parsed.protocol === 'https:' ? 443 : 80;
+  const originPort = Number(parsed.port) || schemeDefaultPort;
+  const hostHeader = parseHostHeader(reqHostHeader, schemeDefaultPort);
   if (hostHeader && hostHeader.hostname === hostname && hostHeader.port === originPort) {
     return true;
   }
   if (channel !== 'loopback') return false;
+  if (parsed.protocol !== 'http:') return false;
   if (!ALLOWED_LOOPBACK_HOSTS.has(hostname) && hostname !== 'localhost') return false;
-  const expectedPort = serverPort ? String(serverPort) : '';
+  const expectedPort = Number(serverPort) || 0;
   if (expectedPort && originPort !== expectedPort) return false;
   return true;
 }
@@ -516,7 +518,7 @@ class WebServer {
   async _handleRequest(req, res) {
     try {
       const method = String(req.method || 'GET').toUpperCase();
-      const urlObj = new URL(req.url || '/', `http://${this.host === '::1' ? '[::1]' : this.host}`);
+      const urlObj = new URL(req.url || '/', `http://${this.host.includes(':') ? `[${this.host}]` : this.host}`);
       const pathname = urlObj.pathname;
       const channel = this.resolveChannel
         ? this.resolveChannel(req)

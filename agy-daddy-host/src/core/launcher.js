@@ -8,6 +8,8 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./storage');
 const { AgyDaddyDaemon, isPidAlive } = require('./daemon');
 const { TrayManager } = require('./tray-manager');
 const { createLiveWatchdog } = require('./live-watchdog');
+const { FAULT_CHANGED, UPGRADE_TAKEOVER_FAILED } = require('./health-snapshot');
+const { registerStandaloneDiagnostics } = require('./diagnostics-page');
 const { inspectAntigravityHostProcess, resolveActiveCdpTarget } = require('./cdp');
 const { findAntigravityApp, relaunchAntigravityWithCdp } = require('./lifecycle');
 
@@ -38,6 +40,34 @@ function defaultOpenBrowserUrl(url) {
   }
 }
 
+function defaultSendSystemNotification(payload = {}, options = {}) {
+  const platform = options.platform || process.platform;
+  const spawnFn = options.spawnFn || spawn;
+  if (platform !== 'darwin') {
+    return { ok: false, skipped: true, reason: 'UNSUPPORTED_PLATFORM' };
+  }
+  const title = String(payload.title || 'Agy-Daddy Launcher');
+  const subtitle = String(payload.subtitle || '');
+  const message = String(payload.message || '');
+  try {
+    const child = spawnFn('osascript', [
+      '-e', 'on run argv',
+      '-e', 'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv)',
+      '-e', 'end run',
+      message,
+      title,
+      subtitle
+    ], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    if (typeof child?.unref === 'function') child.unref();
+    return { ok: true, via: 'osascript' };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
 function createLauncherController(options = {}) {
   const platform = options.platform || process.platform;
   const env = options.env || process.env;
@@ -49,7 +79,11 @@ function createLauncherController(options = {}) {
   const inspectHostProcess = options.inspectHostProcess || (() => inspectAntigravityHostProcess({ platform, env }));
   const resolveCdpTarget = options.resolveCdpTarget || resolveActiveCdpTarget;
   const relaunchAntigravity = options.relaunchAntigravity || relaunchAntigravityWithCdp;
+  const hasCustomOpenBrowser = typeof options.openBrowserFn === 'function';
   const openBrowserFn = options.openBrowserFn || defaultOpenBrowserUrl;
+  const hasCustomNotifier = typeof (options.sendNotification || options.notifyFn) === 'function';
+  const sendNotificationFn = options.sendNotification || options.notifyFn ||
+    ((payload) => defaultSendSystemNotification(payload, { platform, spawnFn }));
 
   const trayManager = options.trayManager || new TrayManager({
     stateDir,
@@ -62,10 +96,13 @@ function createLauncherController(options = {}) {
 
   let daemon = null;
   let watchdog = null;
+  let unregisterDiagnostics = null;
+  let unsubDaemonHealth = null;
   let running = false;
   let restartingPromise = null;
   let quittingPromise = null;
   let restartCount = 0;
+  const notifiedUpgradeFailures = new Set();
   const launcherLockPath = path.join(stateDir, 'launcher.lock');
 
   function writeLauncherLock(port = null) {
@@ -86,6 +123,121 @@ function createLauncherController(options = {}) {
         fs.unlinkSync(launcherLockPath);
       }
     } catch {}
+  }
+
+  async function syncTrayWithHealth() {
+    if (!daemon) return null;
+    const snap = daemon.getHostHealth();
+    if (typeof trayManager.applyHostHealth === 'function') {
+      await trayManager.applyHostHealth(snap);
+    }
+    if (running) {
+      writeLauncherLock(daemon?.bridge?.port || null);
+    }
+    return snap;
+  }
+
+  async function notifyUpgradeTakeoverFailed(event = {}) {
+    const pid = event?.pid ?? null;
+    const reason = String(event?.reason || 'UNKNOWN');
+    const version = event?.version ? String(event.version) : null;
+    const dedupKey = `${pid ?? 'unknown'}:${reason}`;
+    if (notifiedUpgradeFailures.has(dedupKey)) {
+      return { ok: true, deduped: true, key: dedupKey };
+    }
+    notifiedUpgradeFailures.add(dedupKey);
+    const payload = {
+      pid,
+      reason,
+      version,
+      key: dedupKey,
+      title: 'Agy-Daddy 升级接管失败',
+      subtitle: version ? `Antigravity ${version} (PID ${pid ?? '—'})` : `Antigravity (PID ${pid ?? '—'})`,
+      message: `升级后未能接管 CDP 调试端口（${reason}），请点击托盘「一键补参重启 Antigravity」或打开独立诊断面板。`
+    };
+    if (isTestMode() && !hasCustomNotifier && !options.notifyInTest) {
+      return { ok: true, deduped: false, skippedInTest: true, key: dedupKey, payload };
+    }
+    try {
+      const res = await sendNotificationFn(payload);
+      return { ok: res?.ok !== false, deduped: false, key: dedupKey, payload, result: res };
+    } catch (err) {
+      return { ok: false, deduped: false, key: dedupKey, error: err?.message || String(err) };
+    }
+  }
+
+  function wireDaemonIntegrations(targetDaemon) {
+    if (unsubDaemonHealth) {
+      try { unsubDaemonHealth(); } catch {}
+      unsubDaemonHealth = null;
+    }
+    if (unregisterDiagnostics) {
+      try { unregisterDiagnostics(); } catch {}
+      unregisterDiagnostics = null;
+    }
+    if (!targetDaemon) return;
+
+    const onFaultChanged = () => {
+      void syncTrayWithHealth().catch(() => {});
+    };
+    const onUpgradeFailed = (ev) => {
+      void notifyUpgradeTakeoverFailed(ev);
+    };
+    targetDaemon.on?.(FAULT_CHANGED, onFaultChanged);
+    targetDaemon.on?.(UPGRADE_TAKEOVER_FAILED, onUpgradeFailed);
+    unsubDaemonHealth = () => {
+      targetDaemon.off?.(FAULT_CHANGED, onFaultChanged);
+      targetDaemon.off?.(UPGRADE_TAKEOVER_FAILED, onUpgradeFailed);
+    };
+    unregisterDiagnostics = registerStandaloneDiagnostics(targetDaemon, {
+      onRelaunch: () => relaunchAntigravityWithCdpAction()
+    });
+  }
+
+  async function relaunchAntigravityWithCdpAction() {
+    if (!daemon) {
+      return { ok: false, reason: 'DAEMON_NOT_STARTED' };
+    }
+    const hostProc = inspectHostProcess() || { running: false, pid: null, hasDebugSwitch: false };
+    if (!hostProc.running) {
+      const res = await launchAntigravityEnhanced();
+      await syncTrayWithHealth();
+      return res;
+    }
+    const targetAppPath = hostProc.appPath || appPath;
+    const spec = await daemon.collectHostLaunchSpec(targetAppPath);
+    const relaunchRes = await relaunchAntigravity({
+      appPath: targetAppPath,
+      proxyEnv: spec.env,
+      extraArgs: spec.args,
+      onlyIfBare: false,
+      allowSelfTerminate: Boolean(options.allowSelfTerminate),
+      stateDir,
+      env,
+      platform
+    });
+    daemon.health?.recordRelaunch?.(relaunchRes, hostProc.pid);
+    if (relaunchRes?.discovery || relaunchRes?.port || relaunchRes?.targets) {
+      const nextProc = inspectHostProcess() || hostProc;
+      daemon.health?.observe?.(nextProc, relaunchRes.discovery || { port: relaunchRes.port, targets: relaunchRes.targets || [] });
+    }
+    if (relaunchRes?.ok && Array.isArray(relaunchRes.targets) && relaunchRes.targets.length > 0 && !options.skipInject) {
+      const injectRes = await daemon.injectActiveTargets({ resetCircuitOnLaunch: true });
+      await syncTrayWithHealth();
+      return { ok: true, action: 'relaunched', relaunch: relaunchRes, inject: injectRes };
+    }
+    await syncTrayWithHealth();
+    return { ok: Boolean(relaunchRes?.ok), action: 'relaunch-attempted', relaunch: relaunchRes };
+  }
+
+  async function openDiagnosticsPage() {
+    if (!daemon || !daemon.bridge?.port) {
+      return { ok: false, reason: 'DAEMON_NOT_STARTED' };
+    }
+    const url = `http://127.0.0.1:${daemon.bridge.port}/diagnostics`;
+    const shouldInvoke = hasCustomOpenBrowser || !isTestMode() || Boolean(options.openBrowserInTest);
+    const opened = shouldInvoke ? Boolean(openBrowserFn(url)) : true;
+    return { ok: opened, via: 'diagnostics-url', url };
   }
 
   function buildDaemon() {
@@ -217,6 +369,14 @@ function createLauncherController(options = {}) {
           watchdog.stop();
           watchdog = null;
         }
+        if (unsubDaemonHealth) {
+          try { unsubDaemonHealth(); } catch {}
+          unsubDaemonHealth = null;
+        }
+        if (unregisterDiagnostics) {
+          try { unregisterDiagnostics(); } catch {}
+          unregisterDiagnostics = null;
+        }
         if (daemon) {
           await daemon.stop().catch(() => {});
           daemon = null;
@@ -224,6 +384,7 @@ function createLauncherController(options = {}) {
 
         daemon = buildDaemon();
         const started = await daemon.start();
+        wireDaemonIntegrations(daemon);
         trayManager.setActionHandlers({
           executeCommand: (cmdId, args, opts) => daemon.executeCommand(cmdId, args, opts)
         });
@@ -239,6 +400,7 @@ function createLauncherController(options = {}) {
         restartCount++;
         const hideTrayIcon = Boolean(daemon.getHostSettings()?.hideTrayIcon);
         await trayManager.setVisible(!hideTrayIcon);
+        await syncTrayWithHealth();
         writeLauncherLock(started.port);
         if (trayManager.started) {
           await trayManager.refreshMenu(true);
@@ -263,6 +425,14 @@ function createLauncherController(options = {}) {
     if (watchdog) {
       watchdog.stop();
       watchdog = null;
+    }
+    if (unsubDaemonHealth) {
+      try { unsubDaemonHealth(); } catch {}
+      unsubDaemonHealth = null;
+    }
+    if (unregisterDiagnostics) {
+      try { unregisterDiagnostics(); } catch {}
+      unregisterDiagnostics = null;
     }
     removeLauncherLock();
     await trayManager.dispose().catch(() => {});
@@ -289,6 +459,8 @@ function createLauncherController(options = {}) {
 
   trayManager.setActionHandlers({
     onLaunchAntigravity: () => launchAntigravityEnhanced(),
+    onRelaunchAntigravity: () => relaunchAntigravityWithCdpAction(),
+    onOpenDiagnostics: () => openDiagnosticsPage(),
     onOpenPluginSettings: () => openPluginSettings(),
     onRestartDaemon: () => restartDaemon(),
     onQuit: () => quit()
@@ -307,6 +479,7 @@ function createLauncherController(options = {}) {
     daemon = buildDaemon();
     const started = await daemon.start();
     try {
+      wireDaemonIntegrations(daemon);
       trayManager.setActionHandlers({
         executeCommand: (cmdId, args, opts) => daemon.executeCommand(cmdId, args, opts)
       });
@@ -314,8 +487,17 @@ function createLauncherController(options = {}) {
       const hideTrayIcon = Boolean(daemon.getHostSettings()?.hideTrayIcon);
       await trayManager.setVisible(!hideTrayIcon);
       running = true;
+      await syncTrayWithHealth();
       writeLauncherLock(started.port);
     } catch (err) {
+      if (unsubDaemonHealth) {
+        try { unsubDaemonHealth(); } catch {}
+        unsubDaemonHealth = null;
+      }
+      if (unregisterDiagnostics) {
+        try { unregisterDiagnostics(); } catch {}
+        unregisterDiagnostics = null;
+      }
       removeLauncherLock();
       await daemon.stop().catch(() => {});
       daemon = null;
@@ -339,6 +521,7 @@ function createLauncherController(options = {}) {
         await watchdog.tick().catch(() => {});
       }
     }
+    await syncTrayWithHealth();
 
     return {
       ok: true,
@@ -357,11 +540,14 @@ function createLauncherController(options = {}) {
     start,
     stop,
     launchAntigravityEnhanced,
+    relaunchAntigravityWithCdp: relaunchAntigravityWithCdpAction,
+    openDiagnosticsPage,
     openPluginSettings,
     restartDaemon,
     quit,
     getDaemon: () => daemon,
     getTrayManager: () => trayManager,
+    getNotifiedUpgradeKeys: () => Array.from(notifiedUpgradeFailures),
     getState: () => ({
       running,
       restartCount,

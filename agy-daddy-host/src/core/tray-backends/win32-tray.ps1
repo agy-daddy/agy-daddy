@@ -114,10 +114,10 @@ $timer.Add_Tick({
         if ($cmd.items) {
           Add-MenuItems $contextMenu.Items $cmd.items
         }
-        if ($cmd.tooltip) {
-          $tip = [string]$cmd.tooltip
-          $notifyIcon.Text = if ($tip.Length -gt 63) { $tip.Substring(0, 63) } else { $tip }
-        }
+        $title = if ($cmd.title) { [string]$cmd.title } else { "" }
+        $tipBase = if ($cmd.tooltip) { [string]$cmd.tooltip } else { $Tooltip }
+        $tip = if ($title) { "$title $tipBase" } else { $tipBase }
+        $notifyIcon.Text = if ($tip.Length -gt 63) { $tip.Substring(0, 63) } else { $tip }
       } elseif ($cmd.type -eq "quit") {
         $timer.Stop()
         $notifyIcon.Visible = $false

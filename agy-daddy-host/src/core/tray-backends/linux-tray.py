@@ -98,12 +98,17 @@ class LinuxTrayApp:
         ctype = cmd.get("type")
         if ctype == "update-menu":
             self.menu = self.build_menu(cmd.get("items") or [])
+            title = str(cmd.get("title") or "").strip()
+            tooltip = str(cmd.get("tooltip") or self.tooltip)
             if self.indicator is not None:
                 self.indicator.set_menu(self.menu)
-                if cmd.get("tooltip"):
-                    self.indicator.set_title(str(cmd["tooltip"]))
-            elif self.status_icon is not None and cmd.get("tooltip"):
-                self.status_icon.set_tooltip_text(str(cmd["tooltip"]))
+                self.indicator.set_title(title or tooltip)
+                try:
+                    self.indicator.set_label(title, "")
+                except Exception:
+                    pass
+            elif self.status_icon is not None:
+                self.status_icon.set_tooltip_text(f"{title} - {tooltip}" if title else tooltip)
         elif ctype == "quit":
             Gtk.main_quit()
 

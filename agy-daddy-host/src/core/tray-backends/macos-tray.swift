@@ -154,17 +154,25 @@ final class AgyTrayDelegate: NSObject, NSApplicationDelegate {
     button.setAccessibilityLabel(effectiveTip)
     button.setAccessibilityTitle(effectiveTip)
 
+    let alertTitle = (title?.isEmpty == false) ? title! : nil
+    statusItem.length = alertTitle != nil ? NSStatusItem.variableLength : NSStatusItem.squareLength
+
     if let path = iconPath, !path.isEmpty, FileManager.default.fileExists(atPath: path),
        let img = NSImage(contentsOfFile: path) {
       img.size = NSSize(width: 18, height: 18)
       img.isTemplate = isTemplate
       button.image = img
-      button.imagePosition = .imageOnly
-      button.title = ""
+      if let alert = alertTitle {
+        button.imagePosition = .imageLeading
+        button.title = " \(alert)"
+      } else {
+        button.imagePosition = .imageOnly
+        button.title = ""
+      }
       return
     }
     button.image = nil
-    button.title = (title?.isEmpty == false) ? title! : "AD"
+    button.title = alertTitle ?? "AD"
   }
 
   private func loadItemIcon(_ rawIcon: String?) -> (image: NSImage?, prefix: String?) {

@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+launcher="$dir/../Resources/launch.sh"
+tray="$dir/../Resources/Agy-Daddy Tray.app"
+if [ -d "$tray" ]; then
+  export AGY_DADDY_TRAY_APP="$tray"
+fi
+
+if [ "${1:-}" = --terminal ]; then
+  exec "$launcher"
+fi
+
+log_dir="$HOME/Library/Logs/agy-daddy"
+log="$log_dir/wrapper.log"
+mkdir -p -- "$log_dir"
+if "$launcher" >>"$log" 2>&1; then
+  exit 0
+else
+  status=$?
+fi
+
+/usr/bin/osascript - "$log" <<'APPLESCRIPT' || true
+on run argv
+  display alert "Agy-Daddy Launcher could not start" message ("Open Install & Launch.command to see the error, or check " & item 1 of argv & ".") as critical
+end run
+APPLESCRIPT
+exit "$status"

@@ -82,9 +82,9 @@ jobs:
         run: node scripts/release.js plan --env "${{ steps.resolve.outputs.environment }}" --target "${{ steps.resolve.outputs.target }}"
 
   pack-snapshot:
-    name: Pack Tarball Snapshot
+    name: Pack Tarball and Launcher Snapshot
     needs: preflight-verify
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -103,11 +103,23 @@ jobs:
             --out-dir ".release-artifacts/snapshot" \
             --skip-verify
 
+      - name: Build three launcher downloads
+        env:
+          RELEASE_CHANNEL: ${{ needs.preflight-verify.outputs.environment }}
+        run: |
+          npm_tag=latest
+          if [ "$RELEASE_CHANNEL" = staging ]; then npm_tag=next; fi
+          native_tray=".release-artifacts/macos-tray/Agy-Daddy Tray.app"
+          bash scripts/wrappers/macos/prepare-tray.sh "$native_tray"
+          npm run build:wrappers -- --tag "$npm_tag" --macos-tray "$native_tray" \
+            --out-dir ".release-artifacts/snapshot/wrappers"
+
       - name: Upload release snapshot artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-snapshot
           path: .release-artifacts/snapshot/
+          if-no-files-found: error
           retention-days: 30
 
   publish-npm:
@@ -186,6 +198,10 @@ jobs:
           npm run build
           node scripts/release.js healthcheck --mode local
 
+      - name: Verify downloaded launcher checksums
+        working-directory: .release-artifacts/snapshot/wrappers
+        run: sha256sum -c agy-daddy-wrappers-sha256sums.txt
+
       - name: Verify npm registry healthcheck
         if: needs.preflight-verify.outputs.dry_run != 'true'
         run: |
@@ -200,11 +216,19 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') && needs.preflight-verify.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ needs.preflight-verify.outputs.environment }}
         run: |
+          release_flags=()
+          if [ "$RELEASE_CHANNEL" = staging ]; then release_flags+=(--prerelease); fi
+          wrapper_dir=".release-artifacts/snapshot/wrappers"
           gh release create "${GITHUB_REF_NAME}" \
             .release-artifacts/snapshot/release-manifest.json \
+            "$wrapper_dir/agy-daddy-launcher-macos.zip" \
+            "$wrapper_dir/agy-daddy-launcher-windows.zip" \
+            "$wrapper_dir/agy-daddy-launcher-linux.tar.gz" \
+            "$wrapper_dir/agy-daddy-wrappers-sha256sums.txt" \
             --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+            --generate-notes "${release_flags[@]}"
 
       - name: Emit rollback instructions & optional webhook on failure
         if: failure()

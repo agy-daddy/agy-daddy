@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "node scripts/monorepo.js build",
+    "build:wrappers": "node scripts/build-wrappers.js",
     "verify:gates": "node scripts/monorepo.js gates",
     "test": "node scripts/monorepo.js test",
     "analyze": "node scripts/monorepo.js analyze",

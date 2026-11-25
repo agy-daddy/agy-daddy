@@ -60,9 +60,18 @@ All release-related environment variable templates are defined in the root [`.en
   - **Manual Run/Rehearsal (`workflow_dispatch`)**: Selectable `staging` / `production`, target scope (`all` or specific package/tag), defaulting to `dry_run: true` to prevent accidental execution.
 - **4-Stage Pipeline**:
   1. `preflight-verify`: Web UI build validation + `npm run verify` + `scripts/release.js plan` version and `registry.json` SHA-512 consistency checks.
-  2. `pack-snapshot`: Runs `scripts/release.js pack` to generate all `.tgz` archives and `release-manifest.json` containing `sha512` checksums, uploaded as a GitHub Artifact snapshot retained for 30 days.
+  2. `pack-snapshot`: Runs `scripts/release.js pack` to generate target `.tgz` archives and `release-manifest.json` containing `sha512` checksums. Precompiles the universal-architecture macOS native tray helper on a macOS runner and runs `npm run build:wrappers` (including on manual `dry_run` dispatches). Uploads the `release-snapshot` GitHub Artifact retained for 30 days, with launcher wrappers placed under `wrappers/`.
   3. `publish-npm`: Binds to the single GitHub Environment `npm-release` with `id-token: write`, verifies `npm >= 11.5.1`, strips `NODE_AUTH_TOKEN` / `NPM_TOKEN`, and performs idempotent publishing with `npm publish --access public --tag <distTag>` via pure OIDC Trusted Publishing (automatically generating Provenance).
-  4. `post-release-verify`: Executes local and remote npm metadata health checks. Upon successful tag-based release, automatically generates a GitHub Release with `release-manifest.json` attached.
+  4. `post-release-verify`: Executes local and remote npm metadata health checks and verifies launcher wrapper SHA-256 checksums. Upon successful tag-based release, automatically creates a GitHub Release (marked as `--prerelease` for `staging` pre-release tags using the `next` npm channel, or standard release for `latest`), uploading `release-manifest.json` and the four wrapper assets below:
+
+| Release Asset | Purpose |
+|---|---|
+| `agy-daddy-launcher-macos.zip` | macOS `.app` bundle and Terminal `.command` launch entry |
+| `agy-daddy-launcher-windows.zip` | Windows hidden-window (`.vbs`) and console (`.cmd`) launch entries |
+| `agy-daddy-launcher-linux.tar.gz` | Linux launch script and desktop menu entry installer |
+| `agy-daddy-wrappers-sha256sums.txt` | SHA-256 checksum manifest for the three wrapper archives |
+
+Running `npm run build:wrappers` locally writes the four assets to `.release-artifacts/wrappers/`. Extraction tests use system `tar` and `unzip` (or `tar.exe` and PowerShell on Windows). On macOS, run `bash scripts/wrappers/macos/prepare-tray.sh ".release-artifacts/macos-tray/Agy-Daddy Tray.app"` first and pass `-- --macos-tray ".release-artifacts/macos-tray/Agy-Daddy Tray.app"` to match the release pipeline's bundled tray helper layout; if the installed Host's Swift source hash differs from the bundled helper, the Host falls back to compiling the helper locally.
 
 ### 3.3 Initial Interactive 2FA Release & Trusted Publishing Binding
 

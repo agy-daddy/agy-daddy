@@ -13,7 +13,7 @@ import {
   formatCompactModelBadge,
   remoteStore,
   resolveUnifiedModelName,
-  useRemoteStore
+  useRemoteSelector
 } from './store/useRemoteStore';
 import styles from './App.module.css';
 
@@ -68,8 +68,101 @@ export function App() {
   );
 }
 
+function ConnectedComposer() {
+  const s = useRemoteSelector((st) => {
+    const activeSummary = st.sessions.find((item) => item.cascadeId === st.activeSessionId);
+    const statusUpper = (st.activeSession?.status || activeSummary?.status || '').toUpperCase();
+    return {
+      composerText: st.composerText,
+      composerImages: st.composerImages,
+      presets: st.presets,
+      models: st.models,
+      bootstrapModels: st.bootstrap?.models,
+      voiceSupported: Boolean(st.bootstrap?.voiceSupported),
+      modelGroups: st.modelGroups,
+      selectedModelId: st.selectedModelId,
+      orchestratorThinking: st.orchestratorThinking,
+      activeOrchestratorMaster: st.activeOrchestratorMaster,
+      chatMode: st.chatMode,
+      permissionLevel: st.permissionLevel,
+      permissionInfo: st.permissionInfo,
+      running: statusUpper.includes('RUNNING')
+    };
+  });
+
+  const catalogModels = useMemo(
+    () => (s.models.length > 0 ? s.models : s.bootstrapModels || []),
+    [s.models, s.bootstrapModels]
+  );
+
+  return (
+    <Composer
+      text={s.composerText}
+      images={s.composerImages}
+      presets={s.presets}
+      models={catalogModels}
+      modelGroups={s.modelGroups}
+      selectedModelId={s.selectedModelId}
+      orchestratorThinking={s.orchestratorThinking}
+      activeOrchestratorMaster={s.activeOrchestratorMaster}
+      chatMode={s.chatMode}
+      permissionLevel={s.permissionLevel}
+      permissionInfo={s.permissionInfo}
+      running={s.running}
+      voiceSupported={s.voiceSupported}
+      onTextChange={(next) => remoteStore.setComposerText(next)}
+      onAddImage={(img) => remoteStore.addComposerImage(img)}
+      onRemoveImage={(id) => remoteStore.removeComposerImage(id)}
+      onModelChange={(id) => remoteStore.setModelId(id)}
+      onSelectOrchestrator={(id, master, tier) =>
+        remoteStore.setOrchestratorModel(id, master, tier)
+      }
+      onOpenModelPicker={() => remoteStore.setModelPickerOpen(true)}
+      onChatModeChange={(mode) => remoteStore.setChatMode(mode)}
+      onSend={(dm) => remoteStore.sendMessage(dm)}
+      onCancel={() => remoteStore.cancelActiveSession()}
+      onOptimize={() => remoteStore.optimizeComposerPrompt()}
+    />
+  );
+}
+
 function AppInner() {
-  const s = useRemoteStore();
+  const s = useRemoteSelector((st) => ({
+    token: st.token,
+    authError: st.authError,
+    online: st.online,
+    bootstrap: st.bootstrap,
+    channel: st.channel,
+    permissionLevel: st.permissionLevel,
+    models: st.models,
+    modelGroups: st.modelGroups,
+    modelPickerOpen: st.modelPickerOpen,
+    orchestratorThinking: st.orchestratorThinking,
+    activeOrchestratorMaster: st.activeOrchestratorMaster,
+    sessions: st.sessions,
+    groups: st.groups,
+    projects: st.projects,
+    pins: st.pins,
+    activeSessionId: st.activeSessionId,
+    events: st.events,
+    loadingSession: st.loadingSession,
+    telemetry: st.telemetry,
+    selectedModelId: st.selectedModelId,
+    queue: st.queue,
+    changedFilesCount: st.changedFilesCount,
+    appearance: st.appearance,
+    soundAlert: st.soundAlert,
+    vibrateAlert: st.vibrateAlert,
+    pushSubscribed: st.pushSubscribed,
+    pushBusy: st.pushBusy,
+    leftOpen: st.leftOpen,
+    rightOpen: st.rightOpen,
+    rightTab: st.rightTab,
+    contextExpanded: st.contextExpanded,
+    confirmPrompt: st.confirmPrompt,
+    toast: st.toast,
+    inspectTargetFile: st.inspectTargetFile
+  }));
   const [manualToken, setManualToken] = useState('');
 
   useEffect(() => {
@@ -95,7 +188,6 @@ function AppInner() {
   );
 
   const activeRoot = remoteStore.getActiveWorkspaceRoot();
-  const running = remoteStore.isSessionRunning();
   const activeTitle =
     activeSessionSummary?.title ||
     (s.activeSessionId ? `会话 ${s.activeSessionId.slice(0, 8)}` : 'Agy-Daddy Remote');
@@ -271,33 +363,7 @@ function AppInner() {
           onAnswer={(seq, answers) => remoteStore.answerStep(seq, answers)}
         />
 
-        <Composer
-          text={s.composerText}
-          images={s.composerImages}
-          presets={s.presets}
-          models={catalogModels}
-          modelGroups={s.modelGroups}
-          selectedModelId={s.selectedModelId}
-          orchestratorThinking={s.orchestratorThinking}
-          activeOrchestratorMaster={s.activeOrchestratorMaster}
-          chatMode={s.chatMode}
-          permissionLevel={s.permissionLevel}
-          permissionInfo={s.permissionInfo}
-          running={running}
-          voiceSupported={Boolean(s.bootstrap?.voiceSupported)}
-          onTextChange={(next) => remoteStore.setComposerText(next)}
-          onAddImage={(img) => remoteStore.addComposerImage(img)}
-          onRemoveImage={(id) => remoteStore.removeComposerImage(id)}
-          onModelChange={(id) => remoteStore.setModelId(id)}
-          onSelectOrchestrator={(id, master, tier) =>
-            remoteStore.setOrchestratorModel(id, master, tier)
-          }
-          onOpenModelPicker={() => remoteStore.setModelPickerOpen(true)}
-          onChatModeChange={(mode) => remoteStore.setChatMode(mode)}
-          onSend={(dm) => remoteStore.sendMessage(dm)}
-          onCancel={() => remoteStore.cancelActiveSession()}
-          onOptimize={() => remoteStore.optimizeComposerPrompt()}
-        />
+        <ConnectedComposer />
       </main>
 
       <ModelPickerSheet

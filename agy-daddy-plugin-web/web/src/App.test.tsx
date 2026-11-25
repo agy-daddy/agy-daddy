@@ -200,6 +200,33 @@ describe('mergeEventsBySeq & reconcileFullSessionEvents', () => {
     );
     expect(reconciled.map((e) => e.seq)).toEqual([0, 1, 2]);
   });
+
+  it('appends and patches 200-step tail increments via O(K) fast path and falls back on out-of-order replay', () => {
+    const history: SessionEvent[] = Array.from({ length: 200 }, (_, seq) =>
+      seq % 2 === 0 ? makeUserEvent(seq, `user-${seq}`) : makeAssistantEvent(seq, `assistant-${seq}`),
+    );
+
+    const tailUpdate = makeAssistantEvent(199, 'assistant-199-updated');
+    const tailAppend = makeUserEvent(200, 'user-200');
+    const fastMerged = mergeEventsBySeq(history, [tailUpdate, tailAppend]);
+
+    expect(fastMerged).toHaveLength(201);
+    expect(fastMerged[199]).toEqual(tailUpdate);
+    expect(fastMerged[200]).toEqual(tailAppend);
+    expect(fastMerged.slice(0, 199)).toEqual(history.slice(0, 199));
+
+    // Out-of-order incoming falls back cleanly to full Map + sort
+    const outOfOrder = mergeEventsBySeq(fastMerged, [
+      makeAssistantEvent(202, 'assistant-202'),
+      makeUserEvent(201, 'user-201'),
+    ]);
+    expect(outOfOrder.slice(199).map((e) => e.seq)).toEqual([199, 200, 201, 202]);
+
+    // Earlier replay falls back cleanly
+    const replayed = mergeEventsBySeq(outOfOrder, [makeAssistantEvent(50, 'user-50-replayed')]);
+    expect(replayed).toHaveLength(203);
+    expect(replayed[50].payload).toEqual({ response: 'user-50-replayed' });
+  });
 });
 
 describe('App optimistic send flow', () => {

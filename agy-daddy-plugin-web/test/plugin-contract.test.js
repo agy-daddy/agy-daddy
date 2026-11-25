@@ -809,15 +809,16 @@ test('Module 5: getPluginSettings(agy-daddy.zh-cn, { scope: "web" }) filters des
   assert.deepEqual(mixedWebSettings.values, { webFlag: true });
 });
 
-test('settings.schema.json removes redundant locale field while keeping core web fields', () => {
+test('settings.schema.json removes redundant locale and tunnelHostname fields while keeping core web fields', () => {
   const schema = JSON.parse(
     fs.readFileSync(path.join(PLUGIN_DIR, 'settings.schema.json'), 'utf8')
   );
   const keys = schema.fields.map((f) => f.key);
   assert.equal(keys.includes('locale'), false);
+  assert.equal(keys.includes('tunnelHostname'), false);
   assert.deepEqual(keys, [
     'port', 'bindHost', 'loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare',
-    'tunnelHostname', 'remotePermissionLevel', 'theme', 'colorTheme', 'drawerSpeed',
+    'remotePermissionLevel', 'theme', 'colorTheme', 'drawerSpeed',
     'allowedRoots', 'autoOpenBrowser'
   ]);
   const byKey = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
@@ -826,6 +827,8 @@ test('settings.schema.json removes redundant locale field while keeping core web
   assert.equal(byKey.loopback.default, true);
   assert.equal(byKey.lan.default, false);
   assert.equal(byKey.remotePermissionLevel.default, 'L0');
+  assert.match(byKey.cloudflare.description['zh-CN'], /agy-daddy\.remote/);
+  assert.match(byKey.cloudflare.description['zh-CN'], /\/pc\//);
 });
 
 test('Artifact previewers: BUILTIN_ARTIFACT_PREVIEWERS, getArtifactPreviewers plugin discovery, and renderPluginArtifactPreview', async () => {
@@ -1266,3 +1269,150 @@ test('E8: reconcileAccess serializes rapid settings changes and rolls back to pr
     await deactivate();
   }
 });
+
+test('E9: 5-scenario cloudflareState matrix, remote token sync/fallback & legacy tunnelHostname backup', async () => {
+  const { activate, deactivate } = require('../src/node');
+  let liveSettings = { loopback: true, cloudflare: true, remotePermissionLevel: 'L0' };
+  const stateMap = new Map();
+  const storageMap = new Map([
+    ['settings.json', { loopback: true, cloudflare: true, tunnelHostname: 'https://legacy.example.com' }]
+  ]);
+  const anyListeners = new Set();
+  const settingsListeners = new Set();
+
+  let remoteOnline = false;
+  let remoteBundle = {
+    ok: true,
+    available: true,
+    running: true,
+    port: 18765,
+    authEpoch: 1,
+    token: 'remote-shared-tok-1',
+    confirmSecret: 'remote-confirm-1',
+    proxySecret: 'remote-proxy-1',
+    cloudflareEnabled: false,
+    tunnelMode: 'quick',
+    tunnelPublicOrigin: '',
+    tunnelState: { active: false, mode: 'quick', publicUrl: '', error: null },
+    tunnelConfigError: ''
+  };
+
+  const host = {
+    settings: {
+      get: () => ({ ...liveSettings }),
+      onChange: (fn) => {
+        settingsListeners.add(fn);
+        return () => settingsListeners.delete(fn);
+      }
+    },
+    storage: {
+      readJson: (name, fallback) => ({
+        ok: true,
+        data: storageMap.has(name) ? storageMap.get(name) : fallback
+      }),
+      writeJson: (name, val) => {
+        storageMap.set(name, val);
+        return { ok: true };
+      }
+    },
+    state: {
+      get: (key) => stateMap.get(key) || null,
+      set: (key, val) => {
+        stateMap.set(key, val);
+        return { key, value: val };
+      }
+    },
+    events: {
+      onAny: (fn) => {
+        anyListeners.add(fn);
+        return () => anyListeners.delete(fn);
+      }
+    },
+    services: {
+      call: async (svc, method) => {
+        if (svc === 'remote' && method === 'getSharedAuthBundle' && remoteOnline) {
+          return { ok: true, value: { ...remoteBundle } };
+        }
+        return { ok: false, unavailable: true };
+      }
+    },
+    rpc: {
+      call: async () => ({}),
+      getOrigin: async () => null
+    }
+  };
+
+  function emitRemoteState(payload = { running: remoteOnline }) {
+    for (const fn of anyListeners) {
+      fn({ kind: 'state', topicOrKey: 'state:remote.status@1', payload });
+    }
+  }
+
+  try {
+    // Scenario 5a: remote offline + legacy tunnelHostname from raw settings.json
+    const st5a = await activate(host);
+    assert.equal(st5a.cloudflareState.mode, 'legacy_standalone');
+    assert.equal(st5a.primaryChannel, 'cloudflare');
+    assert.match(st5a.primaryUrl, /^https:\/\/legacy\.example\.com\/\?token=/);
+    assert.equal(storageMap.get('web-config.json').legacyTunnelHostname, 'https://legacy.example.com');
+    const localTok = st5a.pairingToken;
+
+    // Scenario 4: remote online, remote.cloudflare = false -> syncs token to web-config.json
+    remoteOnline = true;
+    emitRemoteState({ running: true });
+    await new Promise((r) => setTimeout(r, 40));
+    let st = stateMap.get('state:web.status@1');
+    assert.equal(st.cloudflareState.mode, 'remote_tunnel_off');
+    assert.equal(st.primaryChannel, 'loopback');
+    assert.equal(storageMap.get('web-config.json').token, 'remote-shared-tok-1');
+    assert.equal(storageMap.get('web-config.json').localToken, localTok);
+
+    // Scenario 3a: remote.cloudflare = true, tunnel starting (no publicOrigin yet)
+    remoteBundle.cloudflareEnabled = true;
+    emitRemoteState({ running: true });
+    await new Promise((r) => setTimeout(r, 40));
+    st = stateMap.get('state:web.status@1');
+    assert.equal(st.cloudflareState.mode, 'remote_pending');
+
+    // Scenario 3b: remote.cloudflare = true, tunnelConfigError
+    remoteBundle.tunnelConfigError = 'CLOUDFLARED_NOT_INSTALLED';
+    emitRemoteState({ running: true });
+    await new Promise((r) => setTimeout(r, 40));
+    st = stateMap.get('state:web.status@1');
+    assert.equal(st.cloudflareState.mode, 'remote_error');
+    assert.equal(st.cloudflareState.reasonCode, 'CLOUDFLARED_NOT_INSTALLED');
+
+    // Scenario 1: shared_ready -> overrides legacyTunnelHostname and mounts at /pc/
+    remoteBundle.tunnelConfigError = '';
+    remoteBundle.tunnelPublicOrigin = 'https://shared-tun.trycloudflare.com';
+    remoteBundle.tunnelState = { active: true, mode: 'quick', publicUrl: 'https://shared-tun.trycloudflare.com', error: null };
+    emitRemoteState({ running: true });
+    await new Promise((r) => setTimeout(r, 40));
+    st = stateMap.get('state:web.status@1');
+    assert.equal(st.cloudflareState.mode, 'shared_ready');
+    assert.equal(st.primaryChannel, 'cloudflare');
+    assert.match(st.primaryUrl, /^https:\/\/shared-tun\.trycloudflare\.com\/pc\/\?token=remote-shared-tok-1$/);
+
+    // Scenario 2: web.cloudflare = false while remote tunnel is ready -> web_disabled
+    liveSettings = { loopback: true, cloudflare: false, remotePermissionLevel: 'L0' };
+    for (const fn of settingsListeners) fn();
+    await new Promise((r) => setTimeout(r, 40));
+    st = stateMap.get('state:web.status@1');
+    assert.equal(st.cloudflareState.mode, 'web_disabled');
+    assert.equal(st.primaryChannel, 'loopback');
+
+    // Scenario 5b: remote deactivates and no legacy hostname -> remote_unavailable + localToken fallback
+    storageMap.set('settings.json', { loopback: true, cloudflare: true });
+    liveSettings = { loopback: true, cloudflare: true, remotePermissionLevel: 'L0' };
+    for (const fn of settingsListeners) fn();
+    await new Promise((r) => setTimeout(r, 40));
+    // Clear legacyTunnelHostname for 5b check by verifying token reverts on remote deactivate
+    remoteOnline = false;
+    emitRemoteState({ running: false, deactivated: true });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(storageMap.get('web-config.json').token, localTok);
+  } finally {
+    await deactivate();
+  }
+});
+

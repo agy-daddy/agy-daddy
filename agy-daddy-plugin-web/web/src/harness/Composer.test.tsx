@@ -230,4 +230,53 @@ describe('Composer', () => {
     fireEvent.click(screen.getByTestId('composer-cancel-btn'));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it('clears textarea immediately on send and restores draft on reject only if still empty', async () => {
+    let rejectFirst!: (err: Error) => void;
+    const onSend = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      );
+
+    render(
+      <I18nProvider defaultLocale="en">
+        <Composer models={MODELS} onSend={onSend} />
+      </I18nProvider>,
+    );
+
+    const textarea = screen.getByTestId('composer-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'First message' } });
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+
+    // Cleared immediately while promise is still pending
+    expect(onSend).toHaveBeenCalledWith('First message', 'MODEL_PLACEHOLDER_M533');
+    expect(textarea.value).toBe('');
+
+    // Rejecting while textarea is still empty restores draft
+    rejectFirst(new Error('502 Bad Gateway'));
+    await waitFor(() => {
+      expect(textarea.value).toBe('First message');
+    });
+
+    // Send again, then type a new draft before rejection
+    fireEvent.click(screen.getByTestId('composer-send-btn'));
+    expect(textarea.value).toBe('');
+    fireEvent.change(textarea, { target: { value: 'Next draft in progress' } });
+
+    rejectFirst(new Error('502 Bad Gateway'));
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+    expect(textarea.value).toBe('Next draft in progress');
+  });
 });

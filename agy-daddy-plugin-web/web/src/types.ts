@@ -211,6 +211,8 @@ export interface UserEventPayload extends Record<string, unknown> {
   userResponse?: string | null;
   text?: string;
   clientMessageId?: string | null;
+  clientTempId?: string;
+  optimistic?: boolean;
 }
 
 export interface PlannerResponsePayload extends Record<string, unknown> {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
-import type { SessionEvent } from '../types';
+import type { SessionEvent, UserEventPayload } from '../types';
 import {
   findMatchingEventSeqs,
   serializeEventsToHtml,
@@ -274,6 +274,9 @@ export const SessionStream = React.memo(function SessionStream({
 
   const lastEvent = visibleEvents.length > 0 ? visibleEvents[visibleEvents.length - 1] : null;
   const lastEventFingerprint = computeLightweightEventFingerprint(lastEvent);
+  const isLastEventOptimistic =
+    lastEvent?.kind === 'user' &&
+    Boolean((lastEvent.payload as UserEventPayload | undefined)?.optimistic);
 
   useEffect(() => {
     const grew = visibleEvents.length > prevCountRef.current;
@@ -285,12 +288,12 @@ export const SessionStream = React.memo(function SessionStream({
       return;
     }
 
-    if (stickyBottomRef.current) {
+    if (stickyBottomRef.current || (grew && isLastEventOptimistic)) {
       scrollToBottom();
     } else if (grew) {
       setShowJumpToLatest(true);
     }
-  }, [visibleEvents.length, lastEventFingerprint, scrollToBottom]);
+  }, [visibleEvents.length, lastEventFingerprint, isLastEventOptimistic, scrollToBottom]);
 
   const jumpTargetSeq = scrollToSeq ?? activeSearchMatchSeq ?? null;
 

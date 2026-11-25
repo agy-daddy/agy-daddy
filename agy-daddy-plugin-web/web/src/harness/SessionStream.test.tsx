@@ -669,6 +669,41 @@ describe('SessionStream & SessionEventCard', () => {
     expect(screen.queryByTestId('thinking-content')).not.toBeInTheDocument();
     expect(screen.getByTestId('session-event-1')).not.toHaveAttribute('data-search-hit');
   });
+
+  it('renders optimistic user bubble with lightweight sending state and auto-scrolls', () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 0,
+        kind: 'user',
+        status: 'done',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: { text: 'Earlier message' },
+      },
+      {
+        seq: -1,
+        kind: 'user',
+        status: 'pending',
+        rawType: 'CORTEX_STEP_TYPE_USER_INPUT',
+        payload: {
+          text: 'Optimistic message',
+          userResponse: 'Optimistic message',
+          items: [{ text: 'Optimistic message' }],
+          clientTempId: 'opt_1',
+          optimistic: true,
+        },
+      },
+    ];
+
+    render(<SessionStream events={events} sessionId="cid-opt" />);
+
+    const optCard = screen.getByTestId('session-event--1');
+    expect(optCard).toHaveAttribute('data-optimistic', 'true');
+    expect(optCard).toHaveAttribute('data-event-kind', 'user');
+    expect(optCard).toHaveTextContent('Optimistic message');
+    expect(screen.getByTestId('event-status-optimistic')).toBeInTheDocument();
+    expect(screen.queryByTestId('event-status-pending')).not.toBeInTheDocument();
+    expect(optCard).not.toHaveTextContent('#-1');
+  });
 });
 
 describe('SessionSidebar', () => {

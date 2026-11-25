@@ -297,6 +297,8 @@ export function Composer({
   const [ghostIndex, setGhostIndex] = useState(0);
   const [ghostDismissed, setGhostDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const textRef = useRef<string>(text);
+  textRef.current = text;
 
   const defaultModelId = useMemo(() => {
     const flaggedDefault = models.find((m) => m.isDefault && !m.disabled);
@@ -391,6 +393,7 @@ export function Composer({
   const canSend = trimmed.length > 0 && !disabled && !sending;
 
   const handleTextChange = (nextVal: string) => {
+    textRef.current = nextVal;
     setText(nextVal);
     if (preOptimizeText !== null && nextVal !== optimizedResultText) {
       setPreOptimizeText(null);
@@ -401,7 +404,16 @@ export function Composer({
   const submitMessage = async () => {
     if (!canSend) return;
     const payload = trimmed;
+    const draftBeforeSend = text;
+    const prevPreOptimize = preOptimizeText;
+    const prevOptimizedResult = optimizedResultText;
     const modelToUse = activeModelId || undefined;
+
+    textRef.current = '';
+    setText('');
+    setPreOptimizeText(null);
+    setOptimizedResultText(null);
+
     try {
       const result = activeThinkingLevel
         ? onSend(payload, modelToUse, activeThinkingLevel)
@@ -409,11 +421,14 @@ export function Composer({
       if (result && typeof (result as Promise<void>).then === 'function') {
         await result;
       }
-      setText('');
-      setPreOptimizeText(null);
-      setOptimizedResultText(null);
     } catch {
-      // Preserve draft text if send rejects so the user can retry.
+      // Restore draft only if the user hasn't started typing a new message while send was in-flight.
+      if (textRef.current === '') {
+        textRef.current = draftBeforeSend;
+        setText(draftBeforeSend);
+        setPreOptimizeText(prevPreOptimize);
+        setOptimizedResultText(prevOptimizedResult);
+      }
     }
   };
 

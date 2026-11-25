@@ -1180,10 +1180,14 @@ async function activate(host) {
   }
 
   function getEffectiveAllowedRoots() {
-    if (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0) {
-      return [...config.allowedRoots];
-    }
-    return Array.from(discoveredSessionRoots);
+    const org = sessionOrgStore ? sessionOrgStore.loadPersistedOrg() : null;
+    const persistedRoots = Array.isArray(org?.projects)
+      ? org.projects.map((p) => p.rootPath).filter(Boolean)
+      : [];
+    const baseRoots = (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0)
+      ? config.allowedRoots
+      : Array.from(discoveredSessionRoots);
+    return Array.from(new Set([...baseRoots, ...persistedRoots]));
   }
 
   const brainDir = process.env.AGY_DADDY_BRAIN_DIR
@@ -1205,8 +1209,26 @@ async function activate(host) {
     idleTimeoutMs: isTestMode() ? 60000 : 600000
   });
 
-  const sessionOrgStore = createSessionOrgStore({
-    getAllowedRoots: getEffectiveAllowedRoots
+  var sessionOrgStore = null;
+  let sseBrokerRef = null;
+  sessionOrgStore = createSessionOrgStore({
+    pluginId: 'agy-daddy.remote',
+    getAllowedRoots: getEffectiveAllowedRoots,
+    onOrgChanged: (_org, summary) => {
+      if (typeof host?.state?.set === 'function') {
+        host.state.set('state:session.org@1', summary);
+      }
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('state.patch', { key: 'state:session.org@1', value: summary });
+        sseBrokerRef.emit('org.updated', summary);
+      }
+    },
+    onExternalOrgChanged: (_org, summary) => {
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('state.patch', { key: 'state:session.org@1', value: summary });
+        sseBrokerRef.emit('org.updated', summary);
+      }
+    }
   });
 
   async function callHarness(method, args = []) {
@@ -1255,6 +1277,7 @@ async function activate(host) {
       ? Number(opts.limit)
       : DEFAULT_SESSION_LIMIT;
     const includeSubagents = Boolean(opts.includeSubagents);
+    const includeArchived = Boolean(opts.includeArchived);
     try {
       const res = await callHarness('listSessions', [{ limit: Math.max(requestedLimit, DEFAULT_SESSION_LIMIT), includeSubagents }]);
       const sessions = Array.isArray(res?.sessions) ? res.sessions : [];
@@ -1263,32 +1286,50 @@ async function activate(host) {
         rpcSessions: sessions,
         allowedRoots: getEffectiveAllowedRoots(),
         includeSubagents,
+        includeArchived,
         limit: requestedLimit
       });
       return {
         ok: true,
+        version: 2,
+        revision: enriched.revision,
         rpcConnected: true,
         offline: false,
         sessions: enriched.sessions,
         groups: enriched.groups,
         projects: enriched.projects,
-        pins: enriched.pins
+        pins: enriched.pins,
+        groupOrder: enriched.groupOrder,
+        projectOrder: enriched.projectOrder,
+        sessionOrder: enriched.sessionOrder,
+        archivedCount: enriched.archivedCount,
+        ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
+        defaultSessionPath: enriched.defaultSessionPath
       };
     } catch {
       const enriched = sessionOrgStore.enrichSessionsAndOrg({
         rpcSessions: [],
         allowedRoots: getEffectiveAllowedRoots(),
         includeSubagents,
+        includeArchived,
         limit: requestedLimit
       });
       return {
         ok: true,
+        version: 2,
+        revision: enriched.revision,
         rpcConnected: false,
         offline: true,
         sessions: [],
         groups: enriched.groups,
         projects: enriched.projects,
-        pins: enriched.pins
+        pins: enriched.pins,
+        groupOrder: enriched.groupOrder,
+        projectOrder: enriched.projectOrder,
+        sessionOrder: enriched.sessionOrder,
+        archivedCount: enriched.archivedCount,
+        ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
+        defaultSessionPath: enriched.defaultSessionPath
       };
     }
   }
@@ -1456,6 +1497,7 @@ async function activate(host) {
       }
     }
   });
+  sseBrokerRef = sseBroker;
 
   function buildChannelUrls() {
     const localUrl = server?.getLocalUrl() || '';
@@ -1720,9 +1762,16 @@ async function activate(host) {
           usageCounts: { ...config.modelUsageCounts }
         },
         workspaces: rootItems,
+        version: 2,
+        revision: sessionsRes.revision ?? 0,
         groups: sessionsRes.groups || [],
         projects: sessionsRes.projects || [],
         pins: sessionsRes.pins || { sessions: [], projects: [], groups: [] },
+        groupOrder: sessionsRes.groupOrder || { pinned: [], normal: [] },
+        projectOrder: sessionsRes.projectOrder || {},
+        sessionOrder: sessionsRes.sessionOrder || {},
+        archivedCount: sessionsRes.archivedCount ?? 0,
+        defaultSessionPath: sessionsRes.defaultSessionPath,
         vapidPublicKey: webPush.getPublicKey(),
         voiceSupported: false,
         telemetry: { panels: snap.panels, channel }
@@ -1731,13 +1780,22 @@ async function activate(host) {
     async listSessions(opts) {
       return await safeListSessions(opts);
     },
-    async getSessionOrg() {
-      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT });
+    async getSessionOrg(opts = {}) {
+      const includeArchived = Boolean(opts?.includeArchived);
+      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived });
       return {
         ok: true,
+        version: 2,
+        revision: res.revision ?? 0,
         groups: res.groups || [],
         projects: res.projects || [],
-        pins: res.pins || { sessions: [], projects: [], groups: [] }
+        pins: res.pins || { sessions: [], projects: [], groups: [] },
+        groupOrder: res.groupOrder || { pinned: [], normal: [] },
+        projectOrder: res.projectOrder || {},
+        sessionOrder: res.sessionOrder || {},
+        archivedCount: res.archivedCount ?? 0,
+        ...(includeArchived ? { archivedSessions: res.archivedSessions || {} } : {}),
+        defaultSessionPath: res.defaultSessionPath
       };
     },
     async togglePin(body) {
@@ -1820,6 +1878,9 @@ async function activate(host) {
         }
       }
       const res = await callHarness('sendMessage', [id, body]);
+      if (!res || res.ok !== false) {
+        sessionOrgStore.reconcileSessionsLifecycle([], { forceUnarchiveIds: [id] });
+      }
       sseBroker.triggerPoll(id);
       return { ...(isPlainObject(res) ? res : { ok: true }), queued: false };
     },
@@ -2306,6 +2367,10 @@ async function activate(host) {
       }
     }).catch(() => {});
   });
+  const stopOrgStateSub = host.state?.subscribe?.('state:session.org@1', (val, meta) => {
+    if (meta?.publisher === 'agy-daddy.remote') return;
+    sessionOrgStore.syncFromExternalSignal(val);
+  });
   const stopStatusRoute = await host.bridge.registerRoute('/status', async () => {
     await refreshPcWebStatus();
     return serviceMethods.getStatus();
@@ -2399,6 +2464,8 @@ async function activate(host) {
   disposers.push(
     stopSettingsSub,
     stopWebStateSub,
+    stopOrgStateSub,
+    () => { sessionOrgStore.dispose(); },
     () => { sseBroker.dispose(); },
     () => { ptyManager.disposeAll(); },
     async () => { await cloudflared.stop(); },

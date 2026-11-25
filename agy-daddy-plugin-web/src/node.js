@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { createHarnessAdapter } = require('./harness-adapter');
 const { createWorkspaceService, normalizeInputRoot, isForbiddenSystemRoot } = require('./workspace-service');
 const { createWorkspaceMetaStore, normalizeLocalPath } = require('./workspace-meta-store');
-const { createSessionOrgBridge } = require('./session-org-bridge');
+const { createSessionOrgBridge, buildOrgBusSummary } = require('./session-org-bridge');
 const { createHostProxy } = require('./host-proxy');
 const { createPtyManager } = require('./pty-manager');
 const { createSideChatService } = require('./side-chat-service');
@@ -171,7 +171,33 @@ async function activate(host) {
   const localConfirmSecret = crypto.randomBytes(32).toString('hex');
   let runtimeAccess = readAccessSettings(settings);
 
-  const workspaceMetaStore = createWorkspaceMetaStore({ storage: host.storage });
+  let runtime = null;
+  const sessionOrgBridge = createSessionOrgBridge({
+    pluginId: 'agy-daddy.web',
+    onOrgChanged: (_org, summary) => {
+      if (typeof host?.state?.set === 'function') {
+        host.state.set('state:session.org@1', summary);
+      }
+      if (runtime && activeRuntime === runtime && runtime.webServer) {
+        runtime.webServer.broadcast('state.patch', {
+          key: 'state:session.org@1',
+          value: summary
+        });
+      }
+    },
+    onExternalOrgChanged: (_org, summary) => {
+      if (runtime && activeRuntime === runtime && runtime.webServer) {
+        runtime.webServer.broadcast('state.patch', {
+          key: 'state:session.org@1',
+          value: summary
+        });
+      }
+    }
+  });
+  const workspaceMetaStore = createWorkspaceMetaStore({
+    storage: host.storage,
+    sessionOrgBridge
+  });
   let discoveredSessionRoots = [];
   let discoveredSessionRootsUpdatedAt = 0;
 
@@ -236,12 +262,11 @@ async function activate(host) {
 
   const harnessAdapter = createHarnessAdapter({ rpc: host.rpc });
   const workspaceService = createWorkspaceService({ getAllowedRoots, brainDir });
-  const sessionOrgBridge = createSessionOrgBridge();
   let ptyManager = null;
   let sideChatService = null;
   let taskManager = null;
 
-  const runtime = {
+  runtime = {
     host,
     webConfig,
     localToken,
@@ -742,6 +767,12 @@ async function activate(host) {
             });
             return;
           }
+          if (ev.topicOrKey === 'state:session.org@1') {
+            if (ev.meta?.publisher !== 'agy-daddy.web') {
+              sessionOrgBridge.syncFromExternalSignal(ev.payload);
+            }
+            return;
+          }
           runtime.webServer.broadcast('state.patch', {
             key: ev.topicOrKey,
             value: ev.payload,
@@ -800,6 +831,7 @@ async function activate(host) {
     publishStatus();
     if (typeof host?.state?.set === 'function') {
       host.state.set('state:session.readState@1', workspaceMetaStore.getReadStateSnapshot());
+      host.state.set('state:session.org@1', buildOrgBusSummary(sessionOrgBridge.loadPersistedOrg(), 'agy-daddy.web'));
     }
 
     return getStatus();
@@ -844,6 +876,12 @@ async function deactivate() {
     }
   } catch {}
   runtime.ptyManager = null;
+
+  try {
+    if (runtime.sessionOrgBridge) {
+      runtime.sessionOrgBridge.dispose?.();
+    }
+  } catch {}
 
   try {
     if (runtime.webServer) {

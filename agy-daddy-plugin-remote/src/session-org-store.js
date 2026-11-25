@@ -41,25 +41,116 @@ const THINKING_LABEL_MAP = Object.freeze({
   thinking: 'Thinking'
 });
 
+const IS_CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
+const PERCENT_ENCODED_RE = /%[0-9A-Fa-f]{2}/;
+const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
+const RUNNING_STATUS_RE = /RUNNING|GENERATING/i;
+const LOCK_STALE_MS = 2000;
+const LOCK_RETRY_WAIT_MS = 15;
+const LOCK_TIMEOUT_MS = 500;
+const WATCH_DEBOUNCE_MS = 120;
+const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(SLEEP_BUF, 0, 0, Math.max(1, ms));
+  } catch {
+    const end = Date.now() + Math.max(1, ms);
+    while (Date.now() < end) {
+      // Fallback
+    }
+  }
+}
+
 function isTestMode() {
-  return process.env.AGY_DADDY_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  return (
+    process.env.AGY_DADDY_TEST_MODE === '1'
+    || process.env.NODE_ENV === 'test'
+    || Boolean(process.env.NODE_TEST_CONTEXT)
+  );
 }
 
 function isPlainObject(val) {
   return Boolean(val) && typeof val === 'object' && !Array.isArray(val);
 }
 
+function expandTilde(input) {
+  if (input === '~') return os.homedir();
+  if (input.startsWith('~/') || input.startsWith('~\\')) {
+    return path.join(os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+function safeRealpath(targetPath) {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+function canonicalKey(p) {
+  const s = String(p || '').replace(/\\/g, '/');
+  const trimmed = s.length > 1 && !/^[A-Za-z]:\/$/.test(s) ? s.replace(/\/+$/, '') : s;
+  return IS_CASE_INSENSITIVE_FS ? trimmed.toLowerCase() : trimmed;
+}
+
+function getPathLookupKeys(normalizedPath) {
+  if (!normalizedPath) return [];
+  const keys = [canonicalKey(normalizedPath)];
+  const real = safeRealpath(normalizedPath);
+  if (real) {
+    const realKey = canonicalKey(real);
+    if (!keys.includes(realKey)) keys.push(realKey);
+  }
+  return keys;
+}
+
+function normalizeLocalPath(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw.trim();
+  if (!s || s.includes('\0')) return '';
+
+  let fromFileUrl = false;
+  if (/^file:\/\//i.test(s)) {
+    fromFileUrl = true;
+    try {
+      s = decodeURIComponent(new URL(s).pathname);
+      if (WINDOWS_DRIVE_RE.test(s.slice(1))) s = s.slice(1);
+    } catch {
+      s = s.replace(/^file:\/\//i, '');
+      if (/^localhost\//i.test(s)) s = s.slice('localhost'.length);
+      if (PERCENT_ENCODED_RE.test(s)) {
+        try { s = decodeURIComponent(s); } catch {}
+      }
+    }
+  }
+
+  if (!fromFileUrl && PERCENT_ENCODED_RE.test(s)) {
+    const expandedRaw = expandTilde(s);
+    if (!fs.existsSync(expandedRaw)) {
+      try { s = decodeURIComponent(s); } catch {}
+    }
+  }
+
+  s = expandTilde(s);
+  if (!s || s.includes('\0')) return '';
+
+  if (WINDOWS_DRIVE_RE.test(s) && process.platform !== 'win32') {
+    const slashed = s.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+    return slashed.length > 3 ? slashed.replace(/\/+$/, '') : slashed;
+  }
+
+  return path.resolve(s);
+}
+
 function normalizeUriToPath(uriOrPath) {
   const s = String(uriOrPath || '').trim();
   if (!s) return '';
-  if (s.startsWith('file://')) {
-    try {
-      return decodeURIComponent(new URL(s).pathname).replace(/\/+$/, '') || '/';
-    } catch {
-      return s.slice(7).replace(/\/+$/, '') || '/';
-    }
-  }
-  return s.replace(/\/+$/, '') || '/';
+  const norm = normalizeLocalPath(s);
+  if (!norm) return '';
+  return norm.length > 1 && !/^[A-Za-z]:\/$/.test(norm) ? norm.replace(/\/+$/, '') : norm;
 }
 
 function pathToFileUri(fsPath) {
@@ -512,18 +603,97 @@ function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroup
   };
 }
 
+function makeAppSyncedProjectId(normPath) {
+  const digest = crypto.createHash('sha1').update(canonicalKey(normPath)).digest('hex').slice(0, 12);
+  return `app:${digest}`;
+}
+
+function makeImplicitProjectId(normPath) {
+  const digest = crypto.createHash('sha1').update(canonicalKey(normPath)).digest('hex').slice(0, 12);
+  return `implicit:${digest}`;
+}
+
+function makeStableProjectId(normPath) {
+  const digest = crypto.createHash('sha1').update(canonicalKey(normPath)).digest('hex').slice(0, 12);
+  return `proj_${digest}`;
+}
+
+function dedupeStrings(arr) {
+  return Array.from(new Set(
+    (Array.isArray(arr) ? arr : [])
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+  ));
+}
+
+function sanitizeZoneOrder(raw) {
+  return {
+    pinned: dedupeStrings(raw?.pinned),
+    normal: dedupeStrings(raw?.normal)
+  };
+}
+
+function sanitizeRemoteMeta(raw) {
+  if (!isPlainObject(raw)) return null;
+  const provider = typeof raw.provider === 'string' ? raw.provider.trim() : '';
+  if (!provider) return null;
+  const out = { provider };
+  for (const k of ['ownerRepo', 'repoUrl', 'branch', 'driveMode', 'account', 'remoteName', 'remoteFolderId']) {
+    if (typeof raw[k] === 'string' && raw[k].trim()) {
+      out[k] = raw[k].trim();
+    }
+  }
+  return out;
+}
+
+function sanitizePinTimestamps(raw) {
+  const out = { sessions: {}, projects: {}, groups: {} };
+  if (!isPlainObject(raw)) return out;
+  for (const bucket of ['sessions', 'projects', 'groups']) {
+    if (!isPlainObject(raw[bucket])) continue;
+    for (const [k, v] of Object.entries(raw[bucket])) {
+      const ck = String(k || '').trim();
+      if (ck && typeof v === 'string' && v.trim()) {
+        out[bucket][ck] = v.trim();
+      }
+    }
+  }
+  return out;
+}
+
 function createEmptyPersistedOrg() {
   return {
-    version: 1,
+    version: 2,
+    revision: 0,
+    updatedAt: null,
+    updatedBy: null,
+    defaultSessionPath: null,
     groups: [],
+    projects: [],
     pins: {
       sessions: [],
       projects: [],
       groups: []
     },
+    pinTimestamps: {
+      sessions: {},
+      projects: {},
+      groups: {}
+    },
     projectGroupMap: {},
     sessionGroupMap: {},
-    updatedAt: null
+    sessionProjectOverrides: {},
+    groupOrder: {
+      pinned: [],
+      normal: []
+    },
+    projectOrder: {},
+    sessionOrder: {},
+    archivedSessions: {},
+    deletedSessions: {},
+    migrations: {
+      workspaceMetaV1At: null
+    }
   };
 }
 
@@ -531,18 +701,22 @@ function sanitizePersistedOrg(raw) {
   const base = createEmptyPersistedOrg();
   if (!isPlainObject(raw)) return base;
 
-  const dedupeStrings = (arr) => Array.from(new Set(
-    (Array.isArray(arr) ? arr : [])
-      .map((s) => String(s || '').trim())
-      .filter(Boolean)
-  ));
+  const rev = Number(raw.revision);
+  base.revision = Number.isInteger(rev) && rev >= 0 ? rev : 0;
+  base.updatedAt = typeof raw.updatedAt === 'string' && raw.updatedAt.trim() ? raw.updatedAt.trim() : null;
+  base.updatedBy = typeof raw.updatedBy === 'string' && raw.updatedBy.trim() ? raw.updatedBy.trim() : null;
+  base.defaultSessionPath = typeof raw.defaultSessionPath === 'string' && raw.defaultSessionPath.trim()
+    ? (normalizeLocalPath(raw.defaultSessionPath) || null)
+    : null;
 
   base.pins = {
     sessions: dedupeStrings(raw.pins?.sessions),
     projects: dedupeStrings(raw.pins?.projects),
     groups: dedupeStrings(raw.pins?.groups)
   };
+  base.pinTimestamps = sanitizePinTimestamps(raw.pinTimestamps);
 
+  const nowIso = base.updatedAt || new Date().toISOString();
   if (Array.isArray(raw.groups)) {
     const seen = new Set();
     base.groups = raw.groups
@@ -555,20 +729,63 @@ function sanitizePersistedOrg(raw) {
           id,
           name: String(g.name || id).trim() || id,
           source: g.source === 'host' ? 'host' : 'user',
-          order: Number.isFinite(Number(g.order)) ? Number(g.order) : idx,
+          collapsed: Boolean(g.collapsed),
+          order: Number.isFinite(Number(g.order)) ? Number(g.order) : (Number.isFinite(Number(g.sortOrder)) ? Number(g.sortOrder) : idx),
           projectIds: dedupeStrings(g.projectIds),
           workspaceUris: dedupeStrings(g.workspaceUris),
-          sessionIds: dedupeStrings(g.sessionIds)
+          sessionIds: dedupeStrings(g.sessionIds),
+          createdAt: typeof g.createdAt === 'string' && g.createdAt.trim() ? g.createdAt.trim() : nowIso,
+          updatedAt: typeof g.updatedAt === 'string' && g.updatedAt.trim() ? g.updatedAt.trim() : nowIso
         };
       })
       .filter(Boolean);
   }
+
+  const groupIdSet = new Set(base.groups.map((g) => g.id));
 
   if (isPlainObject(raw.projectGroupMap)) {
     for (const [k, v] of Object.entries(raw.projectGroupMap)) {
       const ck = String(k || '').trim();
       const cv = String(v || '').trim();
       if (ck && cv) base.projectGroupMap[ck] = cv;
+    }
+  }
+
+  if (Array.isArray(raw.projects)) {
+    const seenIds = new Set();
+    const seenPaths = new Set();
+    for (const p of raw.projects) {
+      if (!isPlainObject(p) || !String(p.id || '').trim()) continue;
+      const id = String(p.id).trim();
+      if (seenIds.has(id)) continue;
+      const rootPath = normalizeLocalPath(p.rootPath || p.path || p.uri);
+      if (!rootPath) continue;
+      const pKey = canonicalKey(rootPath);
+      if (seenPaths.has(pKey)) continue;
+      seenIds.add(id);
+      seenPaths.add(pKey);
+
+      const rawGid = base.projectGroupMap[id] || (typeof p.groupId === 'string' ? p.groupId.trim() : '');
+      const gid = rawGid && groupIdSet.has(rawGid) ? rawGid : null;
+      if (gid) base.projectGroupMap[id] = gid;
+      else delete base.projectGroupMap[id];
+
+      const aliases = dedupeStrings([...(Array.isArray(p.aliases) ? p.aliases : [])]).filter((a) => a !== id);
+      const remote = sanitizeRemoteMeta(p.remote);
+
+      base.projects.push({
+        id,
+        aliases,
+        name: String(p.name || path.basename(rootPath) || id).trim() || id,
+        rootPath,
+        uri: typeof p.uri === 'string' && p.uri.trim().startsWith('file://') ? p.uri.trim() : (pathToFileUri(rootPath) || ''),
+        groupId: gid,
+        source: typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'local',
+        syncedFromApp: Boolean(p.syncedFromApp),
+        ...(remote ? { remote } : {}),
+        createdAt: typeof p.createdAt === 'string' && p.createdAt.trim() ? p.createdAt.trim() : nowIso,
+        updatedAt: typeof p.updatedAt === 'string' && p.updatedAt.trim() ? p.updatedAt.trim() : nowIso
+      });
     }
   }
 
@@ -580,8 +797,247 @@ function sanitizePersistedOrg(raw) {
     }
   }
 
-  base.updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : null;
+  if (isPlainObject(raw.sessionProjectOverrides)) {
+    for (const [k, v] of Object.entries(raw.sessionProjectOverrides)) {
+      const ck = String(k || '').trim();
+      if (!ck) continue;
+      if (v === null) {
+        base.sessionProjectOverrides[ck] = null;
+      } else if (typeof v === 'string' && v.trim()) {
+        base.sessionProjectOverrides[ck] = v.trim();
+      }
+    }
+  }
+
+  if (isPlainObject(raw.groupOrder)) {
+    base.groupOrder = sanitizeZoneOrder(raw.groupOrder);
+  }
+
+  if (isPlainObject(raw.projectOrder)) {
+    for (const [k, v] of Object.entries(raw.projectOrder)) {
+      const ck = String(k || '').trim();
+      if (ck && isPlainObject(v)) {
+        base.projectOrder[ck] = sanitizeZoneOrder(v);
+      }
+    }
+  }
+
+  if (isPlainObject(raw.sessionOrder)) {
+    for (const [k, v] of Object.entries(raw.sessionOrder)) {
+      const ck = String(k || '').trim();
+      if (!ck) continue;
+      if (ck === '__pinned__' && Array.isArray(v)) {
+        base.sessionOrder.__pinned__ = dedupeStrings(v);
+      } else if (isPlainObject(v)) {
+        base.sessionOrder[ck] = sanitizeZoneOrder(v);
+      }
+    }
+  }
+
+  if (isPlainObject(raw.archivedSessions)) {
+    for (const [cid, entry] of Object.entries(raw.archivedSessions)) {
+      const cleanCid = String(cid || '').trim();
+      if (!cleanCid || !isPlainObject(entry)) continue;
+      base.archivedSessions[cleanCid] = {
+        archivedAt: typeof entry.archivedAt === 'string' && entry.archivedAt.trim() ? entry.archivedAt.trim() : nowIso,
+        archivedAtStepCount: Number.isFinite(Number(entry.archivedAtStepCount)) ? Math.max(0, Math.floor(Number(entry.archivedAtStepCount))) : 0,
+        archivedWasRunning: Boolean(entry.archivedWasRunning),
+        projectId: typeof entry.projectId === 'string' && entry.projectId.trim() ? entry.projectId.trim() : null,
+        projectName: typeof entry.projectName === 'string' && entry.projectName.trim() ? entry.projectName.trim() : null,
+        titleSnapshot: typeof entry.titleSnapshot === 'string' ? entry.titleSnapshot : ''
+      };
+    }
+  }
+
+  if (isPlainObject(raw.deletedSessions)) {
+    for (const [cid, entry] of Object.entries(raw.deletedSessions)) {
+      const cleanCid = String(cid || '').trim();
+      if (!cleanCid || !isPlainObject(entry)) continue;
+      base.deletedSessions[cleanCid] = {
+        deletedAt: typeof entry.deletedAt === 'string' && entry.deletedAt.trim() ? entry.deletedAt.trim() : nowIso,
+        mode: entry.mode === 'host_deleted' ? 'host_deleted' : 'local_tombstone'
+      };
+    }
+  }
+
+  if (isPlainObject(raw.migrations)) {
+    base.migrations = {
+      workspaceMetaV1At: typeof raw.migrations.workspaceMetaV1At === 'string' && raw.migrations.workspaceMetaV1At.trim()
+        ? raw.migrations.workspaceMetaV1At.trim()
+        : null
+    };
+  }
+
   return base;
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+function isLockStale(lockPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    const ts = Number(parsed?.ts || 0);
+    const pid = Number(parsed?.pid || 0);
+    if (Date.now() - ts > LOCK_STALE_MS) return true;
+    if (pid > 0 && !isProcessAlive(pid)) return true;
+    return false;
+  } catch {
+    try {
+      const st = fs.statSync(lockPath);
+      return (Date.now() - st.mtimeMs) > LOCK_STALE_MS;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function acquireFileLockSync(lockPath) {
+  const dir = path.dirname(lockPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }), 0, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      return true;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      if (isLockStale(lockPath)) {
+        try {
+          fs.unlinkSync(lockPath);
+          continue;
+        } catch {}
+      }
+      if (Date.now() >= deadline) {
+        try { fs.unlinkSync(lockPath); } catch {}
+        const fd = fs.openSync(lockPath, 'wx');
+        try {
+          fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }), 0, 'utf8');
+        } finally {
+          fs.closeSync(fd);
+        }
+        return true;
+      }
+      sleepSync(LOCK_RETRY_WAIT_MS);
+    }
+  }
+}
+
+function writeJsonAtomicSync(targetPath, data) {
+  const dir = path.dirname(targetPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${targetPath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(data, null, 2), 0, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, targetPath);
+}
+
+function buildOrgBusSummary(org, updatedBy) {
+  return {
+    revision: org.revision,
+    updatedAt: org.updatedAt,
+    updatedBy: updatedBy || org.updatedBy || null,
+    pins: org.pins,
+    groups: org.groups,
+    projectGroupMap: org.projectGroupMap,
+    groupOrder: org.groupOrder,
+    projectOrder: org.projectOrder,
+    sessionOrder: org.sessionOrder,
+    archivedCount: Object.keys(org.archivedSessions || {}).length
+  };
+}
+
+function remapProjectIdReferences(org, oldId, canonicalId) {
+  if (!oldId || !canonicalId || oldId === canonicalId) return;
+  if (org.pins.projects.includes(oldId)) {
+    org.pins.projects = dedupeStrings(org.pins.projects.map((id) => (id === oldId ? canonicalId : id)));
+    if (org.pinTimestamps.projects[oldId] && !org.pinTimestamps.projects[canonicalId]) {
+      org.pinTimestamps.projects[canonicalId] = org.pinTimestamps.projects[oldId];
+    }
+    delete org.pinTimestamps.projects[oldId];
+  }
+  if (org.projectGroupMap[oldId]) {
+    if (!org.projectGroupMap[canonicalId]) {
+      org.projectGroupMap[canonicalId] = org.projectGroupMap[oldId];
+    }
+    delete org.projectGroupMap[oldId];
+  }
+  for (const g of org.groups) {
+    if (g.projectIds.includes(oldId)) {
+      g.projectIds = dedupeStrings(g.projectIds.map((id) => (id === oldId ? canonicalId : id)));
+    }
+  }
+  for (const container of Object.values(org.projectOrder)) {
+    if (!isPlainObject(container)) continue;
+    for (const zone of ['pinned', 'normal']) {
+      if (Array.isArray(container[zone]) && container[zone].includes(oldId)) {
+        container[zone] = dedupeStrings(container[zone].map((id) => (id === oldId ? canonicalId : id)));
+      }
+    }
+  }
+  for (const [cid, pid] of Object.entries(org.sessionProjectOverrides)) {
+    if (pid === oldId) org.sessionProjectOverrides[cid] = canonicalId;
+  }
+  if (org.sessionOrder[oldId] && !org.sessionOrder[canonicalId]) {
+    org.sessionOrder[canonicalId] = org.sessionOrder[oldId];
+    delete org.sessionOrder[oldId];
+  }
+}
+
+function findPersistedProject(org, { id, rootPath, workspaceUri } = {}) {
+  const normPath = normalizeLocalPath(rootPath || workspaceUri);
+  if (normPath) {
+    const keys = getPathLookupKeys(normPath);
+    for (const proj of org.projects) {
+      const projKeys = getPathLookupKeys(proj.rootPath);
+      if (projKeys.some((k) => keys.includes(k))) {
+        return proj;
+      }
+    }
+  }
+  const cleanId = typeof id === 'string' ? id.trim() : '';
+  if (cleanId) {
+    const direct = org.projects.find((p) => p.id === cleanId);
+    if (direct) return direct;
+    const byAlias = org.projects.find((p) => Array.isArray(p.aliases) && p.aliases.includes(cleanId));
+    if (byAlias) return byAlias;
+  }
+  return null;
+}
+
+function computeKnownAliasesForPath(normPath, extraIds = []) {
+  const aliases = [...extraIds];
+  if (normPath) {
+    const wsId = deriveProjectIdFromWorkspace(normPath);
+    const appId = makeAppSyncedProjectId(normPath);
+    const impId = makeImplicitProjectId(normPath);
+    if (wsId) aliases.push(wsId);
+    if (appId) aliases.push(appId);
+    if (impId) aliases.push(impId);
+  }
+  return dedupeStrings(aliases);
+}
+
+function removeFromOrderArray(arr, id) {
+  if (!Array.isArray(arr)) return arr;
+  return arr.filter((x) => x !== id);
 }
 
 function readConversationSummariesDb(dbPath) {
@@ -624,10 +1080,12 @@ function readConversationSummariesDb(dbPath) {
  * Persisted to ~/.agy-daddy/session-org.json so Remote and Web stay in sync.
  */
 function createSessionOrgStore(options = {}) {
-  const explicitOrgPath = options.orgPath || process.env.AGY_DADDY_SESSION_ORG_PATH || '';
+  const explicitOrgPath = options.orgPath !== undefined
+    ? options.orgPath
+    : (process.env.AGY_DADDY_SESSION_ORG_PATH || '');
   const orgPath = explicitOrgPath
     ? path.resolve(explicitOrgPath)
-    : (isTestMode() ? null : path.join(os.homedir(), '.agy-daddy', 'session-org.json'));
+    : (explicitOrgPath === null || isTestMode() ? null : path.join(os.homedir(), '.agy-daddy', 'session-org.json'));
 
   const explicitDbPath = options.dbPath !== undefined
     ? options.dbPath
@@ -637,38 +1095,288 @@ function createSessionOrgStore(options = {}) {
     : (isTestMode() ? null : path.join(os.homedir(), '.gemini', 'antigravity', 'conversation_summaries.db'));
 
   const getAllowedRoots = typeof options.getAllowedRoots === 'function' ? options.getAllowedRoots : () => [];
+  const pluginId = typeof options.pluginId === 'string' && options.pluginId.trim()
+    ? options.pluginId.trim()
+    : 'agy-daddy.remote';
+  const onOrgChanged = typeof options.onOrgChanged === 'function' ? options.onOrgChanged : null;
+  const onExternalOrgChanged = typeof options.onExternalOrgChanged === 'function' ? options.onExternalOrgChanged : null;
 
   let memoryOrg = createEmptyPersistedOrg();
   let dbCache = { loadedAt: 0, rows: [] };
+  let localLoadedRevision = 0;
+  let fsWatcher = null;
+  let watchDebounceTimer = null;
+  const containerRevisions = new Map();
+
+  function readDiskOrgRaw() {
+    if (!orgPath || !fs.existsSync(orgPath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(orgPath, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
 
   function loadPersistedOrg() {
     if (!orgPath) {
       return sanitizePersistedOrg(memoryOrg);
     }
+    const raw = readDiskOrgRaw();
+    const org = raw ? sanitizePersistedOrg(raw) : createEmptyPersistedOrg();
+    if (org.revision > localLoadedRevision) {
+      localLoadedRevision = org.revision;
+    }
+    return org;
+  }
+
+  function mutateOrgAtomically(mutatorFn, opts = {}) {
+    const updatedBy = opts.updatedBy || pluginId;
+    const lockPath = orgPath ? `${orgPath}.lock` : null;
+    if (lockPath) {
+      acquireFileLockSync(lockPath);
+    }
     try {
-      if (!fs.existsSync(orgPath)) return createEmptyPersistedOrg();
-      const raw = JSON.parse(fs.readFileSync(orgPath, 'utf8'));
-      return sanitizePersistedOrg(raw);
-    } catch {
-      return createEmptyPersistedOrg();
+      const latest = loadPersistedOrg();
+      const outcome = mutatorFn(latest);
+      if (outcome && outcome.abort) {
+        return outcome.result;
+      }
+      latest.revision = (Number.isInteger(latest.revision) ? latest.revision : 0) + 1;
+      latest.updatedAt = new Date().toISOString();
+      latest.updatedBy = updatedBy;
+      const clean = sanitizePersistedOrg(latest);
+      if (orgPath) {
+        writeJsonAtomicSync(orgPath, clean);
+      } else {
+        memoryOrg = clean;
+      }
+      localLoadedRevision = clean.revision;
+      if (opts.emitChange !== false && onOrgChanged) {
+        try {
+          onOrgChanged(clean, buildOrgBusSummary(clean, updatedBy));
+        } catch {}
+      }
+      if (outcome && Object.prototype.hasOwnProperty.call(outcome, 'buildResult')) {
+        return outcome.buildResult(clean);
+      }
+      return { ok: true, org: clean, revision: clean.revision };
+    } finally {
+      if (lockPath) {
+        try { fs.unlinkSync(lockPath); } catch {}
+      }
     }
   }
 
-  function savePersistedOrg(nextOrg) {
-    const clean = sanitizePersistedOrg({
-      ...nextOrg,
-      updatedAt: new Date().toISOString()
-    });
+  function syncFromExternalSignal(payload = {}) {
     if (!orgPath) {
-      memoryOrg = clean;
-      return clean;
+      const incomingRev = Number(payload?.revision || 0);
+      if (incomingRev > localLoadedRevision) {
+        localLoadedRevision = incomingRev;
+        if (onExternalOrgChanged) {
+          try {
+            onExternalOrgChanged(loadPersistedOrg(), payload);
+          } catch {}
+        }
+        return true;
+      }
+      return false;
     }
-    const dir = path.dirname(orgPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${orgPath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(clean, null, 2), 'utf8');
-    fs.renameSync(tmp, orgPath);
-    return clean;
+    const prevRev = localLoadedRevision;
+    const disk = loadPersistedOrg();
+    if (disk.revision > prevRev || Number(payload?.revision || 0) > prevRev) {
+      localLoadedRevision = Math.max(prevRev, disk.revision);
+      if (onExternalOrgChanged) {
+        try {
+          onExternalOrgChanged(disk, buildOrgBusSummary(disk, disk.updatedBy));
+        } catch {}
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function startWatching() {
+    if (!orgPath || fsWatcher) return;
+    if (isTestMode() && options.watchDisk !== true) return;
+    try {
+      const dir = path.dirname(orgPath);
+      const base = path.basename(orgPath);
+      fs.mkdirSync(dir, { recursive: true });
+      fsWatcher = fs.watch(dir, { persistent: false }, (_eventType, filename) => {
+        if (filename && String(filename) !== base) return;
+        if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
+        watchDebounceTimer = setTimeout(() => {
+          watchDebounceTimer = null;
+          const prevRev = localLoadedRevision;
+          const disk = loadPersistedOrg();
+          if (disk.revision > prevRev && onExternalOrgChanged) {
+            try {
+              onExternalOrgChanged(disk, buildOrgBusSummary(disk, disk.updatedBy));
+            } catch {}
+          }
+        }, WATCH_DEBOUNCE_MS);
+        watchDebounceTimer.unref?.();
+      });
+      fsWatcher.unref?.();
+    } catch {
+      fsWatcher = null;
+    }
+  }
+
+  function dispose() {
+    if (watchDebounceTimer) {
+      clearTimeout(watchDebounceTimer);
+      watchDebounceTimer = null;
+    }
+    if (fsWatcher) {
+      try { fsWatcher.close(); } catch {}
+      fsWatcher = null;
+    }
+  }
+
+  if (options.watchDisk === true || (!isTestMode() && orgPath)) {
+    startWatching();
+  }
+
+  function materializeProjectInOrg(org, candidate = {}) {
+    const normPath = normalizeLocalPath(candidate.rootPath || candidate.path || candidate.workspaceUri);
+    const existing = findPersistedProject(org, {
+      id: candidate.id,
+      rootPath: normPath,
+      workspaceUri: candidate.workspaceUri
+    });
+
+    if (existing) {
+      const extraAliases = [];
+      if (candidate.id && candidate.id !== existing.id) extraAliases.push(candidate.id);
+      if (Array.isArray(candidate.aliases)) extraAliases.push(...candidate.aliases);
+      const mergedAliases = computeKnownAliasesForPath(existing.rootPath, [...(existing.aliases || []), ...extraAliases])
+        .filter((a) => a !== existing.id);
+      existing.aliases = mergedAliases;
+      for (const alias of mergedAliases) {
+        remapProjectIdReferences(org, alias, existing.id);
+      }
+      return existing;
+    }
+
+    if (!normPath) return null;
+
+    const rawId = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+    const stableId = rawId || makeStableProjectId(normPath);
+    const aliases = computeKnownAliasesForPath(normPath, Array.isArray(candidate.aliases) ? candidate.aliases : [])
+      .filter((a) => a !== stableId);
+
+    const nowIso = new Date().toISOString();
+    const gid = typeof candidate.groupId === 'string' && org.groups.some((g) => g.id === candidate.groupId.trim())
+      ? candidate.groupId.trim()
+      : null;
+
+    const entry = {
+      id: stableId,
+      aliases,
+      name: String(candidate.name || path.basename(normPath) || stableId).trim() || stableId,
+      rootPath: normPath,
+      uri: pathToFileUri(normPath) || '',
+      groupId: gid,
+      source: typeof candidate.source === 'string' && candidate.source.trim()
+        ? candidate.source.trim()
+        : (candidate.syncedFromApp ? 'app' : 'local'),
+      syncedFromApp: Boolean(candidate.syncedFromApp),
+      ...(sanitizeRemoteMeta(candidate.remote) ? { remote: sanitizeRemoteMeta(candidate.remote) } : {}),
+      createdAt: typeof candidate.createdAt === 'string' && candidate.createdAt.trim() ? candidate.createdAt.trim() : nowIso,
+      updatedAt: nowIso
+    };
+    org.projects.push(entry);
+
+    for (const alias of aliases) {
+      remapProjectIdReferences(org, alias, entry.id);
+    }
+    if (org.projectGroupMap[entry.id] && !entry.groupId) {
+      const mappedGid = org.projectGroupMap[entry.id];
+      if (org.groups.some((g) => g.id === mappedGid)) entry.groupId = mappedGid;
+      else delete org.projectGroupMap[entry.id];
+    } else if (entry.groupId) {
+      org.projectGroupMap[entry.id] = entry.groupId;
+    }
+    if (entry.groupId) {
+      const grp = org.groups.find((g) => g.id === entry.groupId);
+      if (grp && !grp.projectIds.includes(entry.id)) {
+        grp.projectIds.push(entry.id);
+      }
+    }
+    return entry;
+  }
+
+  function reconcileSessionsLifecycle(sessions = [], { forceUnarchiveIds = [] } = {}) {
+    const current = loadPersistedOrg();
+    const archivedEntries = current.archivedSessions || {};
+    const archivedIds = Object.keys(archivedEntries);
+    if (archivedIds.length === 0) {
+      return { changed: false, unarchivedIds: [], org: current };
+    }
+
+    const sessionById = new Map();
+    for (const s of (Array.isArray(sessions) ? sessions : [])) {
+      const cid = String(s?.cascadeId || s?.id || '').trim();
+      if (cid) sessionById.set(cid, s);
+    }
+
+    const forceSet = new Set((Array.isArray(forceUnarchiveIds) ? forceUnarchiveIds : []).map((x) => String(x || '').trim()).filter(Boolean));
+    const toUnarchive = [];
+    const toClearWasRunning = [];
+
+    for (const cid of archivedIds) {
+      if (forceSet.has(cid)) {
+        toUnarchive.push(cid);
+        continue;
+      }
+      const s = sessionById.get(cid);
+      if (!s) continue;
+      const arch = archivedEntries[cid];
+      const status = String(s.status || '');
+      const isRunningNow = Boolean(s.isRunning || RUNNING_STATUS_RE.test(status) || s.notFullyIdle);
+      const needsAttentionNow = Boolean(s.needsAttention || /PENDING|WAITING|ERROR/i.test(status));
+
+      if (needsAttentionNow) {
+        toUnarchive.push(cid);
+      } else if (arch.archivedWasRunning && !isRunningNow) {
+        toClearWasRunning.push(cid);
+      } else if (!arch.archivedWasRunning && isRunningNow) {
+        toUnarchive.push(cid);
+      }
+    }
+
+    if (toUnarchive.length === 0 && toClearWasRunning.length === 0) {
+      return { changed: false, unarchivedIds: [], org: current };
+    }
+
+    const unarchivedSet = new Set(toUnarchive);
+    const clearSet = new Set(toClearWasRunning);
+    return mutateOrgAtomically((org) => {
+      let modified = false;
+      for (const cid of unarchivedSet) {
+        if (org.archivedSessions[cid]) {
+          delete org.archivedSessions[cid];
+          modified = true;
+        }
+      }
+      for (const cid of clearSet) {
+        if (org.archivedSessions[cid] && org.archivedSessions[cid].archivedWasRunning) {
+          org.archivedSessions[cid].archivedWasRunning = false;
+          modified = true;
+        }
+      }
+      if (!modified) {
+        return { abort: true, result: { changed: false, unarchivedIds: [], org } };
+      }
+      return {
+        buildResult: (saved) => ({
+          changed: true,
+          unarchivedIds: Array.from(unarchivedSet),
+          org: saved
+        })
+      };
+    });
   }
 
   function loadDbRows(forceRefresh = false) {
@@ -686,9 +1394,11 @@ function createSessionOrgStore(options = {}) {
     rpcSessions = [],
     allowedRoots = null,
     includeSubagents = false,
+    includeArchived = false,
     limit = DEFAULT_SESSION_LIMIT
   } = {}) {
-    const persisted = loadPersistedOrg();
+    const reconciled = reconcileSessionsLifecycle(rpcSessions);
+    const persisted = reconciled.org || loadPersistedOrg();
     const dbRows = loadDbRows();
     const roots = Array.isArray(allowedRoots) ? allowedRoots : getAllowedRoots();
 
@@ -701,8 +1411,10 @@ function createSessionOrgStore(options = {}) {
     const pinnedSessions = new Set(persisted.pins.sessions);
     const pinnedProjects = new Set(persisted.pins.projects);
     const pinnedGroups = new Set(persisted.pins.groups);
+    const archivedMap = persisted.archivedSessions || {};
+    const deletedMap = persisted.deletedSessions || {};
+    const overridesMap = persisted.sessionProjectOverrides || {};
 
-    // Map group membership from persisted groups
     const groupBySession = new Map(Object.entries(persisted.sessionGroupMap));
     const groupByProject = new Map(Object.entries(persisted.projectGroupMap));
     const groupByWorkspace = new Map();
@@ -719,63 +1431,110 @@ function createSessionOrgStore(options = {}) {
       }
     }
 
-    // Build project registry keyed by canonical projectId (or canonical workspace path)
     const projectsById = new Map();
-    const projectIdByPath = new Map();
+    const projectByPathKey = new Map();
+    const projectIdByAlias = new Map();
+
+    // 0. Seed persisted Schema v2 projects first (canonical source of truth)
+    for (const pp of (persisted.projects || [])) {
+      const normPath = normalizeUriToPath(pp.rootPath || pp.uri);
+      const gid = groupByProject.get(pp.id) || pp.groupId || null;
+      const entry = {
+        id: pp.id,
+        aliases: Array.isArray(pp.aliases) ? [...pp.aliases] : [],
+        name: pp.name,
+        uri: pp.uri || (normPath ? pathToFileUri(normPath) : null),
+        path: normPath || null,
+        rootPath: normPath || null,
+        groupId: gid,
+        pinned: pinnedProjects.has(pp.id),
+        source: pp.source || 'local',
+        syncedFromApp: Boolean(pp.syncedFromApp),
+        ...(pp.remote ? { remote: pp.remote } : {}),
+        branchName: null,
+        sessionCount: 0,
+        lastModifiedTime: null
+      };
+      projectsById.set(pp.id, entry);
+      if (normPath) {
+        for (const k of getPathLookupKeys(normPath)) {
+          if (!projectByPathKey.has(k)) projectByPathKey.set(k, entry);
+        }
+      }
+      for (const alias of entry.aliases) {
+        if (!projectIdByAlias.has(alias)) projectIdByAlias.set(alias, pp.id);
+      }
+    }
 
     function registerProject({ id, uri, fsPath, name, branchName = null, lastModifiedTime = null, groupId = null }) {
       if (isTempBridgeWorkspace(fsPath || uri) || isTempBridgeWorkspace(name)) return null;
       const normPath = normalizeUriToPath(fsPath || uri);
       const normUri = uri && String(uri).startsWith('file://') ? String(uri).trim() : (normPath ? pathToFileUri(normPath) : null);
+
+      // 1st priority: match by canonical path key against existing projects
+      if (normPath) {
+        for (const k of getPathLookupKeys(normPath)) {
+          const pathHit = projectByPathKey.get(k);
+          if (pathHit) {
+            if (!pathHit.uri && normUri) pathHit.uri = normUri;
+            if (!pathHit.branchName && branchName) pathHit.branchName = branchName;
+            if (!pathHit.groupId && groupId) pathHit.groupId = groupId;
+            if (lastModifiedTime && (!pathHit.lastModifiedTime || Date.parse(lastModifiedTime) > Date.parse(pathHit.lastModifiedTime))) {
+              pathHit.lastModifiedTime = lastModifiedTime;
+            }
+            return pathHit;
+          }
+        }
+      }
+
+      // 2nd priority: match by id or alias
       let resolvedId = !isGenericDbProjectId(id) ? String(id).trim() : '';
+      if (resolvedId && projectIdByAlias.has(resolvedId)) {
+        resolvedId = projectIdByAlias.get(resolvedId);
+      }
+      if (resolvedId && projectsById.has(resolvedId)) {
+        const hit = projectsById.get(resolvedId);
+        if (!hit.uri && normUri) hit.uri = normUri;
+        if (!hit.branchName && branchName) hit.branchName = branchName;
+        if (!hit.groupId && groupId) hit.groupId = groupId;
+        if (lastModifiedTime && (!hit.lastModifiedTime || Date.parse(lastModifiedTime) > Date.parse(hit.lastModifiedTime))) {
+          hit.lastModifiedTime = lastModifiedTime;
+        }
+        return hit;
+      }
 
       if (!resolvedId && normPath) {
-        resolvedId = projectIdByPath.get(normPath) || deriveProjectIdFromWorkspace(normPath);
+        resolvedId = deriveProjectIdFromWorkspace(normPath);
       }
       if (!resolvedId) return null;
 
-      // Unify same path under existing DB project_id if already registered
-      if (normPath && projectIdByPath.has(normPath)) {
-        const existingId = projectIdByPath.get(normPath);
-        if (existingId && projectsById.has(existingId)) {
-          resolvedId = existingId;
-        }
-      } else if (normPath) {
-        projectIdByPath.set(normPath, resolvedId);
-      }
-
-      const existing = projectsById.get(resolvedId);
       const resolvedGroupId = groupByProject.get(resolvedId)
         || (normPath ? groupByWorkspace.get(normPath) : null)
         || groupId
-        || existing?.groupId
         || null;
 
-      if (!existing) {
-        projectsById.set(resolvedId, {
-          id: resolvedId,
-          name: String(name || extractWorkspaceDisplayName(normPath || normUri) || resolvedId),
-          uri: normUri,
-          path: normPath || null,
-          groupId: resolvedGroupId,
-          pinned: pinnedProjects.has(resolvedId),
-          branchName: branchName || null,
-          sessionCount: 0,
-          lastModifiedTime: lastModifiedTime || null
-        });
-      } else {
-        if (!existing.uri && normUri) existing.uri = normUri;
-        if (!existing.path && normPath) existing.path = normPath;
-        if (!existing.branchName && branchName) existing.branchName = branchName;
-        if (!existing.groupId && resolvedGroupId) existing.groupId = resolvedGroupId;
-        if (lastModifiedTime && (!existing.lastModifiedTime || Date.parse(lastModifiedTime) > Date.parse(existing.lastModifiedTime))) {
-          existing.lastModifiedTime = lastModifiedTime;
+      const entry = {
+        id: resolvedId,
+        name: String(name || extractWorkspaceDisplayName(normPath || normUri) || resolvedId),
+        uri: normUri,
+        path: normPath || null,
+        rootPath: normPath || null,
+        groupId: resolvedGroupId,
+        pinned: pinnedProjects.has(resolvedId),
+        branchName: branchName || null,
+        sessionCount: 0,
+        lastModifiedTime: lastModifiedTime || null
+      };
+      projectsById.set(resolvedId, entry);
+      if (normPath) {
+        for (const k of getPathLookupKeys(normPath)) {
+          if (!projectByPathKey.has(k)) projectByPathKey.set(k, entry);
         }
       }
-      return projectsById.get(resolvedId);
+      return entry;
     }
 
-    // 1. Seed projects from DB rows (for accurate project_id <-> workspace path mapping)
+    // 1. Seed projects from DB rows
     const hostGroupIds = new Set();
     for (const row of dbRows) {
       const dbGroup = String(row?.group_id || '').trim();
@@ -813,7 +1572,8 @@ function createSessionOrgStore(options = {}) {
     for (const s of (Array.isArray(rpcSessions) ? rpcSessions : [])) {
       if (!isPlainObject(s)) continue;
       const cid = String(s.cascadeId || s.id || '').trim();
-      if (!cid) continue;
+      if (!cid || deletedMap[cid]) continue;
+
       const dbRow = dbById.get(cid) || null;
       const dbUris = dbRow ? parseWorkspaceUrisField(dbRow.workspace_uris) : [];
       const rpcUris = Array.isArray(s.workspaces)
@@ -830,25 +1590,34 @@ function createSessionOrgStore(options = {}) {
       const dbGroupId = String(dbRow?.group_id || '').trim();
       if (dbGroupId) hostGroupIds.add(dbGroupId);
 
-      const proj = ((primaryWsUri && !isTempBridgeWorkspace(primaryWsUri)) || !isGenericDbProjectId(dbProjectId))
-        ? registerProject({
-            id: dbProjectId,
-            uri: primaryWsUri,
-            name: s.repoName || extractWorkspaceDisplayName(primaryWsUri),
-            branchName: s.branchName || null,
-            lastModifiedTime: s.lastModifiedTime || s.createdTime || dbRow?.last_modified_time || null,
-            groupId: dbGroupId || null
-          })
-        : null;
+      let proj = null;
+      if (Object.prototype.hasOwnProperty.call(overridesMap, cid)) {
+        const overridePid = overridesMap[cid];
+        if (overridePid) {
+          const mappedPid = projectIdByAlias.get(overridePid) || overridePid;
+          proj = projectsById.get(mappedPid) || null;
+        }
+      } else if ((primaryWsUri && !isTempBridgeWorkspace(primaryWsUri)) || !isGenericDbProjectId(dbProjectId)) {
+        proj = registerProject({
+          id: dbProjectId,
+          uri: primaryWsUri,
+          name: s.repoName || extractWorkspaceDisplayName(primaryWsUri),
+          branchName: s.branchName || null,
+          lastModifiedTime: s.lastModifiedTime || s.createdTime || dbRow?.last_modified_time || null,
+          groupId: dbGroupId || null
+        });
+      }
 
-      const projectId = proj?.id || (!isGenericDbProjectId(dbProjectId) ? dbProjectId : null);
-      const projectName = proj?.name || s.repoName || extractWorkspaceDisplayName(primaryWsUri) || null;
+      const projectId = proj?.id || (Object.prototype.hasOwnProperty.call(overridesMap, cid) ? overridesMap[cid] : (!isGenericDbProjectId(dbProjectId) ? dbProjectId : null));
+      const projectName = proj?.name || (projectId === null ? null : (s.repoName || extractWorkspaceDisplayName(primaryWsUri) || null));
       const parentConversationId = String(dbRow?.parent_conversation_id || s.parentConversationId || '').trim() || null;
       const nestingDepth = Number.isFinite(Number(dbRow?.nesting_depth))
         ? Number(dbRow.nesting_depth)
         : (Number.isFinite(Number(s.nestingDepth)) ? Number(s.nestingDepth) : 0);
       const agentName = String(dbRow?.agent_name || s.agentName || '').trim() || null;
       const isSubagent = Boolean(s.isSubagent || parentConversationId || nestingDepth > 0);
+      const archEntry = archivedMap[cid] || null;
+      const archived = Boolean(archEntry);
 
       const groupId = groupBySession.get(cid)
         || (projectId ? groupByProject.get(projectId) : null)
@@ -857,6 +1626,7 @@ function createSessionOrgStore(options = {}) {
         || (proj?.groupId || null);
 
       const pinned = pinnedSessions.has(cid);
+      const pinnedAt = pinned ? (persisted.pinTimestamps?.sessions?.[cid] || null) : null;
       const enriched = {
         ...s,
         cascadeId: cid,
@@ -865,6 +1635,9 @@ function createSessionOrgStore(options = {}) {
         projectId: projectId || null,
         projectName,
         pinned,
+        pinnedAt,
+        archived,
+        ...(archived ? { archivedAt: archEntry.archivedAt } : {}),
         parentConversationId,
         nestingDepth,
         agentName,
@@ -872,19 +1645,27 @@ function createSessionOrgStore(options = {}) {
       };
       enrichedAll.push(enriched);
 
-      if (proj && (!isSubagent || includeSubagents)) {
+      if (proj && !archived && (!isSubagent || includeSubagents)) {
         proj.sessionCount += 1;
       }
     }
 
-    // Filter subagents unless explicitly requested
-    const visibleSessions = includeSubagents
-      ? enrichedAll
-      : enrichedAll.filter((s) => !s.isSubagent);
+    const visibleSessions = enrichedAll.filter((s) => {
+      if (!includeSubagents && s.isSubagent) return false;
+      if (!includeArchived && s.archived) return false;
+      return true;
+    });
 
-    // Sort: pinned first, then lastModifiedTime desc
+    const pinnedGlobalOrder = Array.isArray(persisted.sessionOrder?.__pinned__) ? persisted.sessionOrder.__pinned__ : [];
+    const pinnedGlobalIdx = new Map(pinnedGlobalOrder.map((id, idx) => [id, idx]));
+
     visibleSessions.sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (a.pinned && b.pinned) {
+        if (pinnedGlobalIdx.has(a.cascadeId) && pinnedGlobalIdx.has(b.cascadeId)) {
+          return pinnedGlobalIdx.get(a.cascadeId) - pinnedGlobalIdx.get(b.cascadeId);
+        }
+      }
       const tb = Date.parse(b.lastModifiedTime || b.createdTime || '') || 0;
       const ta = Date.parse(a.lastModifiedTime || a.createdTime || '') || 0;
       return tb - ta;
@@ -903,6 +1684,7 @@ function createSessionOrgStore(options = {}) {
         id: g.id,
         name: g.name,
         source: g.source || 'user',
+        collapsed: Boolean(g.collapsed),
         pinned: pinnedGroups.has(g.id),
         order: g.order,
         projectIds: [...g.projectIds],
@@ -917,6 +1699,7 @@ function createSessionOrgStore(options = {}) {
           id: hgid,
           name: hgid,
           source: 'host',
+          collapsed: false,
           pinned: pinnedGroups.has(hgid),
           order: hostOrder++,
           projectIds: [],
@@ -926,7 +1709,6 @@ function createSessionOrgStore(options = {}) {
       }
     }
 
-    // Populate group membership arrays from resolved projects & sessions
     for (const proj of projectsById.values()) {
       if (proj.groupId && groupsById.has(proj.groupId)) {
         const g = groupsById.get(proj.groupId);
@@ -941,21 +1723,49 @@ function createSessionOrgStore(options = {}) {
       }
     }
 
+    // Sort projects using projectOrder per container if present, else pinned -> lastModifiedTime
+    const projectOrderMap = persisted.projectOrder || {};
     const projects = Array.from(projectsById.values()).sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      const ga = a.groupId || '__ungrouped__';
+      const gb = b.groupId || '__ungrouped__';
+      if (ga === gb && projectOrderMap[ga]) {
+        const zoneArr = a.pinned ? projectOrderMap[ga].pinned : projectOrderMap[ga].normal;
+        if (Array.isArray(zoneArr) && zoneArr.length > 0) {
+          const ia = zoneArr.indexOf(a.id);
+          const ib = zoneArr.indexOf(b.id);
+          if (ia >= 0 && ib >= 0) return ia - ib;
+          if (ia >= 0) return 1; // New unpositioned item goes to top of normal zone
+          if (ib >= 0) return -1;
+        }
+      }
       const tb = Date.parse(b.lastModifiedTime || '') || 0;
       const ta = Date.parse(a.lastModifiedTime || '') || 0;
       if (tb !== ta) return tb - ta;
       return a.name.localeCompare(b.name);
     });
 
+    const grpPinnedIdx = new Map((persisted.groupOrder?.pinned || []).map((id, idx) => [id, idx]));
+    const grpNormalIdx = new Map((persisted.groupOrder?.normal || []).map((id, idx) => [id, idx]));
+
     const groups = Array.from(groupsById.values()).sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (a.pinned) {
+        const ia = grpPinnedIdx.has(a.id) ? grpPinnedIdx.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const ib = grpPinnedIdx.has(b.id) ? grpPinnedIdx.get(b.id) : Number.MAX_SAFE_INTEGER;
+        if (ia !== ib) return ia - ib;
+      } else {
+        const ia = grpNormalIdx.has(a.id) ? grpNormalIdx.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const ib = grpNormalIdx.has(b.id) ? grpNormalIdx.get(b.id) : Number.MAX_SAFE_INTEGER;
+        if (ia !== ib) return ia - ib;
+      }
       if (a.order !== b.order) return a.order - b.order;
       return a.name.localeCompare(b.name);
     });
 
     return {
+      version: 2,
+      revision: persisted.revision,
       sessions: boundedSessions,
       totalVisibleSessions: visibleSessions.length,
       groups,
@@ -964,7 +1774,17 @@ function createSessionOrgStore(options = {}) {
         sessions: [...persisted.pins.sessions],
         projects: [...persisted.pins.projects],
         groups: [...persisted.pins.groups]
-      }
+      },
+      pinTimestamps: persisted.pinTimestamps,
+      projectGroupMap: persisted.projectGroupMap,
+      sessionGroupMap: persisted.sessionGroupMap,
+      sessionProjectOverrides: persisted.sessionProjectOverrides,
+      groupOrder: persisted.groupOrder,
+      projectOrder: persisted.projectOrder,
+      sessionOrder: persisted.sessionOrder,
+      archivedCount: Object.keys(archivedMap).length,
+      ...(includeArchived ? { archivedSessions: archivedMap } : {}),
+      defaultSessionPath: persisted.defaultSessionPath || path.join(os.homedir(), 'antigravity-workspace')
     };
   }
 
@@ -972,13 +1792,25 @@ function createSessionOrgStore(options = {}) {
     const res = enrichSessionsAndOrg({ ...opts, limit: MAX_SESSION_LIMIT });
     return {
       ok: true,
+      version: 2,
+      revision: res.revision,
       groups: res.groups,
       projects: res.projects,
-      pins: res.pins
+      pins: res.pins,
+      pinTimestamps: res.pinTimestamps,
+      projectGroupMap: res.projectGroupMap,
+      sessionGroupMap: res.sessionGroupMap,
+      sessionProjectOverrides: res.sessionProjectOverrides,
+      groupOrder: res.groupOrder,
+      projectOrder: res.projectOrder,
+      sessionOrder: res.sessionOrder,
+      archivedCount: res.archivedCount,
+      ...(opts?.includeArchived ? { archivedSessions: res.archivedSessions || {} } : {}),
+      defaultSessionPath: res.defaultSessionPath
     };
   }
 
-  function togglePin({ type, id, pinned } = {}) {
+  function togglePin({ type, id, pinned, workspaceUri, rootPath, projectName } = {}) {
     const cleanType = String(type || '').trim().toLowerCase();
     const cleanId = String(id || '').trim();
     const bucketMap = {
@@ -993,26 +1825,98 @@ function createSessionOrgStore(options = {}) {
     if (!bucketKey || !cleanId) {
       return { ok: false, statusCode: 400, error: 'INVALID_PIN_PARAMS' };
     }
-    const org = loadPersistedOrg();
-    const list = org.pins[bucketKey] || [];
-    const exists = list.includes(cleanId);
-    const nextPinned = typeof pinned === 'boolean' ? pinned : !exists;
-    if (nextPinned && !exists) {
-      list.push(cleanId);
-    } else if (!nextPinned && exists) {
-      org.pins[bucketKey] = list.filter((x) => x !== cleanId);
-    } else {
-      org.pins[bucketKey] = list;
-    }
-    const saved = savePersistedOrg(org);
-    const singular = bucketKey.slice(0, -1);
-    return {
-      ok: true,
-      type: singular,
-      id: cleanId,
-      pinned: nextPinned,
-      pins: saved.pins
-    };
+
+    return mutateOrgAtomically((org) => {
+      if (bucketKey === 'sessions') {
+        if (org.deletedSessions[cleanId]) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'SESSION_NOT_FOUND' } };
+        }
+        const willPin = typeof pinned === 'boolean' ? pinned : !org.pins.sessions.includes(cleanId);
+        if (willPin && org.archivedSessions[cleanId]) {
+          return { abort: true, result: { ok: false, statusCode: 409, error: 'SESSION_ARCHIVED' } };
+        }
+      }
+
+      let resolvedId = cleanId;
+      if (bucketKey === 'projects') {
+        let proj = findPersistedProject(org, { id: cleanId, rootPath, workspaceUri });
+        if (!proj && (rootPath || workspaceUri)) {
+          proj = materializeProjectInOrg(org, {
+            id: cleanId,
+            rootPath,
+            workspaceUri,
+            name: projectName,
+            syncedFromApp: cleanId.startsWith('app:'),
+            source: cleanId.startsWith('app:') ? 'app' : (cleanId.startsWith('implicit:') ? 'implicit' : 'local')
+          });
+        }
+        if (proj) {
+          resolvedId = proj.id;
+        }
+      }
+
+      const list = org.pins[bucketKey] || [];
+      const exists = list.includes(resolvedId);
+      const nextPinned = typeof pinned === 'boolean' ? pinned : !exists;
+      const nowIso = new Date().toISOString();
+
+      if (nextPinned && !exists) {
+        list.push(resolvedId);
+        org.pinTimestamps[bucketKey][resolvedId] = nowIso;
+      } else if (!nextPinned && exists) {
+        org.pins[bucketKey] = list.filter((x) => x !== resolvedId);
+        delete org.pinTimestamps[bucketKey][resolvedId];
+      } else {
+        org.pins[bucketKey] = list;
+        if (nextPinned && !org.pinTimestamps[bucketKey][resolvedId]) {
+          org.pinTimestamps[bucketKey][resolvedId] = nowIso;
+        }
+      }
+
+      if (bucketKey === 'groups') {
+        org.groupOrder.pinned = removeFromOrderArray(org.groupOrder.pinned, resolvedId);
+        org.groupOrder.normal = removeFromOrderArray(org.groupOrder.normal, resolvedId);
+        if (nextPinned && org.groupOrder.pinned.length > 0) org.groupOrder.pinned.push(resolvedId);
+        if (!nextPinned && org.groupOrder.normal.length > 0) org.groupOrder.normal.unshift(resolvedId);
+      } else if (bucketKey === 'projects') {
+        const gid = org.projectGroupMap[resolvedId] || '__ungrouped__';
+        const ord = org.projectOrder[gid];
+        if (ord) {
+          ord.pinned = removeFromOrderArray(ord.pinned, resolvedId);
+          ord.normal = removeFromOrderArray(ord.normal, resolvedId);
+          if (nextPinned && ord.pinned.length > 0) ord.pinned.push(resolvedId);
+          if (!nextPinned && ord.normal.length > 0) ord.normal.unshift(resolvedId);
+        }
+      } else if (bucketKey === 'sessions') {
+        if (Array.isArray(org.sessionOrder.__pinned__)) {
+          org.sessionOrder.__pinned__ = removeFromOrderArray(org.sessionOrder.__pinned__, resolvedId);
+          if (nextPinned) org.sessionOrder.__pinned__.unshift(resolvedId);
+        }
+        for (const [ck, ord] of Object.entries(org.sessionOrder)) {
+          if (ck === '__pinned__' || !isPlainObject(ord)) continue;
+          const had = (ord.pinned || []).includes(resolvedId) || (ord.normal || []).includes(resolvedId);
+          if (!had) continue;
+          ord.pinned = removeFromOrderArray(ord.pinned, resolvedId);
+          ord.normal = removeFromOrderArray(ord.normal, resolvedId);
+          if (nextPinned) ord.pinned.push(resolvedId);
+          else ord.normal.unshift(resolvedId);
+        }
+      }
+
+      const singular = bucketKey.slice(0, -1);
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          type: singular,
+          id: resolvedId,
+          pinned: nextPinned,
+          pinnedAt: saved.pinTimestamps[bucketKey][resolvedId] || null,
+          pins: saved.pins,
+          pinTimestamps: saved.pinTimestamps,
+          revision: saved.revision
+        })
+      };
+    });
   }
 
   function mutateGroup(body = {}) {
@@ -1020,93 +1924,459 @@ function createSessionOrgStore(options = {}) {
       return { ok: false, statusCode: 400, error: 'INVALID_GROUP_BODY' };
     }
     const action = String(body.action || 'upsert').trim().toLowerCase();
-    const org = loadPersistedOrg();
 
-    if (action === 'delete') {
-      const id = String(body.id || '').trim();
-      if (!id) return { ok: false, statusCode: 400, error: 'MISSING_GROUP_ID' };
-      org.groups = org.groups.filter((g) => g.id !== id);
-      org.pins.groups = org.pins.groups.filter((gid) => gid !== id);
-      for (const [k, v] of Object.entries(org.projectGroupMap)) {
-        if (v === id) delete org.projectGroupMap[k];
+    return mutateOrgAtomically((org) => {
+      if (action === 'delete') {
+        const id = String(body.id || '').trim();
+        if (!id) return { abort: true, result: { ok: false, statusCode: 400, error: 'MISSING_GROUP_ID' } };
+        org.groups = org.groups.filter((g) => g.id !== id);
+        org.pins.groups = org.pins.groups.filter((gid) => gid !== id);
+        delete org.pinTimestamps.groups[id];
+        org.groupOrder.pinned = removeFromOrderArray(org.groupOrder.pinned, id);
+        org.groupOrder.normal = removeFromOrderArray(org.groupOrder.normal, id);
+        for (const [k, v] of Object.entries(org.projectGroupMap)) {
+          if (v === id) delete org.projectGroupMap[k];
+        }
+        for (const p of org.projects) {
+          if (p.groupId === id) p.groupId = null;
+        }
+        for (const [k, v] of Object.entries(org.sessionGroupMap)) {
+          if (v === id) delete org.sessionGroupMap[k];
+        }
+        if (org.projectOrder[id]) {
+          const prevOrd = org.projectOrder[id];
+          if (org.projectOrder.__ungrouped__) {
+            org.projectOrder.__ungrouped__.pinned = dedupeStrings([...org.projectOrder.__ungrouped__.pinned, ...(prevOrd.pinned || [])]);
+            org.projectOrder.__ungrouped__.normal = dedupeStrings([...org.projectOrder.__ungrouped__.normal, ...(prevOrd.normal || [])]);
+          }
+          delete org.projectOrder[id];
+        }
+        return {
+          buildResult: (saved) => ({
+            ok: true,
+            action: 'delete',
+            id,
+            groups: saved.groups,
+            pins: saved.pins,
+            revision: saved.revision
+          })
+        };
       }
-      for (const [k, v] of Object.entries(org.sessionGroupMap)) {
-        if (v === id) delete org.sessionGroupMap[k];
-      }
-      const saved = savePersistedOrg(org);
-      return { ok: true, action: 'delete', id, groups: saved.groups, pins: saved.pins };
-    }
 
-    if (action === 'assign') {
-      const groupId = body.groupId ? String(body.groupId).trim() : null;
-      const projectId = body.projectId ? String(body.projectId).trim() : '';
-      const sessionId = body.sessionId ? String(body.sessionId).trim() : '';
-      const workspaceUri = body.workspaceUri ? String(body.workspaceUri).trim() : '';
-      if (!projectId && !sessionId && !workspaceUri) {
-        return { ok: false, statusCode: 400, error: 'MISSING_ASSIGN_TARGET' };
+      if (action === 'assign') {
+        const groupId = body.groupId ? String(body.groupId).trim() : null;
+        let projectId = body.projectId ? String(body.projectId).trim() : '';
+        const sessionId = body.sessionId ? String(body.sessionId).trim() : '';
+        const workspaceUri = body.workspaceUri ? String(body.workspaceUri).trim() : '';
+        const rootPath = body.rootPath ? String(body.rootPath).trim() : '';
+        if (!projectId && !sessionId && !workspaceUri && !rootPath) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: 'MISSING_ASSIGN_TARGET' } };
+        }
+        if (groupId && !org.groups.some((g) => g.id === groupId)) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+        }
+        if (projectId || rootPath || workspaceUri) {
+          let proj = findPersistedProject(org, { id: projectId, rootPath, workspaceUri });
+          if (!proj && (rootPath || workspaceUri)) {
+            proj = materializeProjectInOrg(org, { id: projectId, rootPath, workspaceUri });
+          }
+          if (proj) projectId = proj.id;
+        }
+        if (projectId) {
+          const prevGid = org.projectGroupMap[projectId] || '__ungrouped__';
+          if (groupId) org.projectGroupMap[projectId] = groupId;
+          else delete org.projectGroupMap[projectId];
+          for (const p of org.projects) {
+            if (p.id === projectId) {
+              p.groupId = groupId;
+              p.updatedAt = new Date().toISOString();
+            }
+          }
+          for (const g of org.groups) {
+            g.projectIds = g.projectIds.filter((p) => p !== projectId);
+            if (groupId && g.id === groupId) g.projectIds.push(projectId);
+          }
+          const nextGid = groupId || '__ungrouped__';
+          if (prevGid !== nextGid) {
+            const isPinned = org.pins.projects.includes(projectId);
+            if (org.projectOrder[prevGid]) {
+              org.projectOrder[prevGid].pinned = removeFromOrderArray(org.projectOrder[prevGid].pinned, projectId);
+              org.projectOrder[prevGid].normal = removeFromOrderArray(org.projectOrder[prevGid].normal, projectId);
+            }
+            if (org.projectOrder[nextGid]) {
+              if (isPinned) org.projectOrder[nextGid].pinned.push(projectId);
+              else org.projectOrder[nextGid].normal.unshift(projectId);
+            }
+          }
+        }
+        if (sessionId) {
+          if (groupId) org.sessionGroupMap[sessionId] = groupId;
+          else delete org.sessionGroupMap[sessionId];
+          for (const g of org.groups) {
+            g.sessionIds = g.sessionIds.filter((s) => s !== sessionId);
+            if (groupId && g.id === groupId) g.sessionIds.push(sessionId);
+          }
+        }
+        if (workspaceUri) {
+          const normPath = normalizeUriToPath(workspaceUri);
+          for (const g of org.groups) {
+            g.workspaceUris = g.workspaceUris.filter((u) => normalizeUriToPath(u) !== normPath);
+            if (groupId && g.id === groupId) g.workspaceUris.push(workspaceUri);
+          }
+        }
+        return {
+          buildResult: (saved) => ({
+            ok: true,
+            action: 'assign',
+            groupId,
+            projectId: projectId || undefined,
+            groups: saved.groups,
+            pins: saved.pins,
+            revision: saved.revision
+          })
+        };
       }
-      if (projectId) {
-        if (groupId) org.projectGroupMap[projectId] = groupId;
-        else delete org.projectGroupMap[projectId];
-        for (const g of org.groups) {
-          g.projectIds = g.projectIds.filter((p) => p !== projectId);
-          if (groupId && g.id === groupId) g.projectIds.push(projectId);
+
+      const name = String(body.name || '').trim();
+      const id = String(body.id || '').trim() || `grp_${crypto.randomBytes(4).toString('hex')}`;
+      const existingIdx = org.groups.findIndex((g) => g.id === id);
+      if (!name && existingIdx < 0) {
+        return { abort: true, result: { ok: false, statusCode: 400, error: 'MISSING_GROUP_NAME' } };
+      }
+      const prev = existingIdx >= 0 ? org.groups[existingIdx] : null;
+      const nowIso = new Date().toISOString();
+      const nextGroup = {
+        id,
+        name: name || prev?.name || id,
+        source: prev?.source || 'user',
+        collapsed: typeof body.collapsed === 'boolean' ? body.collapsed : Boolean(prev?.collapsed),
+        order: Number.isFinite(Number(body.order)) ? Number(body.order) : (prev ? prev.order : org.groups.length),
+        projectIds: Array.isArray(body.projectIds) ? dedupeStrings(body.projectIds) : (prev?.projectIds || []),
+        workspaceUris: Array.isArray(body.workspaceUris) ? dedupeStrings(body.workspaceUris) : (prev?.workspaceUris || []),
+        sessionIds: Array.isArray(body.sessionIds) ? dedupeStrings(body.sessionIds) : (prev?.sessionIds || []),
+        createdAt: prev?.createdAt || nowIso,
+        updatedAt: nowIso
+      };
+      if (existingIdx >= 0) {
+        org.groups[existingIdx] = nextGroup;
+      } else {
+        org.groups.push(nextGroup);
+        if (org.groupOrder.normal.length > 0 && !org.groupOrder.normal.includes(id)) {
+          org.groupOrder.normal.push(id);
         }
       }
-      if (sessionId) {
-        if (groupId) org.sessionGroupMap[sessionId] = groupId;
-        else delete org.sessionGroupMap[sessionId];
-        for (const g of org.groups) {
-          g.sessionIds = g.sessionIds.filter((s) => s !== sessionId);
-          if (groupId && g.id === groupId) g.sessionIds.push(sessionId);
-        }
+      for (const pid of nextGroup.projectIds) {
+        org.projectGroupMap[pid] = id;
+        const pObj = org.projects.find((p) => p.id === pid);
+        if (pObj) pObj.groupId = id;
       }
-      if (workspaceUri) {
-        const normPath = normalizeUriToPath(workspaceUri);
-        for (const g of org.groups) {
-          g.workspaceUris = g.workspaceUris.filter((u) => normalizeUriToPath(u) !== normPath);
-          if (groupId && g.id === groupId) g.workspaceUris.push(workspaceUri);
-        }
-      }
-      const saved = savePersistedOrg(org);
-      return { ok: true, action: 'assign', groupId, groups: saved.groups, pins: saved.pins };
+      for (const sid of nextGroup.sessionIds) org.sessionGroupMap[sid] = id;
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          action: 'upsert',
+          group: nextGroup,
+          groups: saved.groups,
+          pins: saved.pins,
+          revision: saved.revision
+        })
+      };
+    });
+  }
+
+  function reorderOrg(body = {}) {
+    if (!isPlainObject(body)) {
+      return { ok: false, statusCode: 400, error: 'INVALID_REORDER_BODY' };
+    }
+    const targetType = String(body.targetType || '').trim();
+    const zone = String(body.zone || '').trim();
+    const containerId = body.containerId !== undefined && body.containerId !== null
+      ? String(body.containerId).trim()
+      : (targetType === 'project' ? '__ungrouped__' : (targetType === 'session' ? '__standalone__' : '__groups__'));
+    const rawOrderedIds = Array.isArray(body.orderedIds) ? dedupeStrings(body.orderedIds) : null;
+    const expectedRevision = Number.isInteger(Number(body.expectedRevision)) ? Number(body.expectedRevision) : null;
+    const movedProject = isPlainObject(body.movedProject) ? body.movedProject : null;
+
+    if (!['group', 'project', 'session'].includes(targetType)) {
+      return { ok: false, statusCode: 400, error: 'INVALID_TARGET_TYPE' };
+    }
+    if (!['pinned', 'normal'].includes(zone)) {
+      return { ok: false, statusCode: 400, error: 'INVALID_ZONE' };
+    }
+    if (!rawOrderedIds) {
+      return { ok: false, statusCode: 400, error: 'INVALID_ORDERED_IDS' };
     }
 
-    // Default: upsert group
-    const name = String(body.name || '').trim();
-    const id = String(body.id || '').trim() || `grp_${crypto.randomBytes(4).toString('hex')}`;
-    if (!name && !org.groups.some((g) => g.id === id)) {
-      return { ok: false, statusCode: 400, error: 'MISSING_GROUP_NAME' };
+    const containerKey = `${targetType}:${containerId}:${zone}`;
+
+    return mutateOrgAtomically((org) => {
+      if (expectedRevision !== null && expectedRevision < org.revision) {
+        const lastContRev = containerRevisions.get(containerKey) || 0;
+        if (lastContRev > expectedRevision) {
+          return {
+            abort: true,
+            result: {
+              ok: false,
+              statusCode: 409,
+              error: 'REVISION_CONFLICT',
+              revision: org.revision,
+              org: getOrg()
+            }
+          };
+        }
+      }
+
+      if (targetType === 'group') {
+        const pinnedSet = new Set(org.pins.groups);
+        for (const id of rawOrderedIds) {
+          if (pinnedSet.has(id) !== (zone === 'pinned')) {
+            return {
+              abort: true,
+              result: { ok: false, statusCode: 409, error: 'ZONE_PIN_MISMATCH', id, zone, revision: org.revision }
+            };
+          }
+        }
+        org.groupOrder[zone] = rawOrderedIds;
+        const fullSeq = [...org.groupOrder.pinned, ...org.groupOrder.normal];
+        for (const g of org.groups) {
+          const pos = fullSeq.indexOf(g.id);
+          if (pos >= 0) g.order = pos;
+        }
+        return {
+          buildResult: (saved) => {
+            containerRevisions.set(containerKey, saved.revision);
+            return { ok: true, revision: saved.revision, org: getOrg() };
+          }
+        };
+      }
+
+      if (targetType === 'project') {
+        let movedCanonicalId = '';
+        let toGroupId = containerId === '__ungrouped__' ? null : containerId;
+        if (movedProject) {
+          const rawToGid = movedProject.toGroupId === undefined ? toGroupId : movedProject.toGroupId;
+          toGroupId = rawToGid && String(rawToGid).trim() && String(rawToGid).trim() !== '__ungrouped__'
+            ? String(rawToGid).trim()
+            : null;
+          if (toGroupId && !org.groups.some((g) => g.id === toGroupId)) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+          }
+          const rawPid = String(movedProject.projectId || '').trim();
+          const wsUri = movedProject.workspaceUri ? String(movedProject.workspaceUri).trim() : '';
+          let proj = findPersistedProject(org, { id: rawPid, workspaceUri: wsUri });
+          if (!proj && wsUri) {
+            proj = materializeProjectInOrg(org, {
+              id: rawPid,
+              workspaceUri: wsUri,
+              syncedFromApp: rawPid.startsWith('app:'),
+              source: rawPid.startsWith('app:') ? 'app' : (rawPid.startsWith('implicit:') ? 'implicit' : 'local')
+            });
+          }
+          movedCanonicalId = proj ? proj.id : rawPid;
+          if (!movedCanonicalId) {
+            return { abort: true, result: { ok: false, statusCode: 400, error: 'MISSING_MOVED_PROJECT' } };
+          }
+          const fromGroupId = movedProject.fromGroupId ? String(movedProject.fromGroupId).trim() : (org.projectGroupMap[movedCanonicalId] || null);
+          const fromKey = fromGroupId || '__ungrouped__';
+          if (org.projectOrder[fromKey]) {
+            org.projectOrder[fromKey].pinned = removeFromOrderArray(org.projectOrder[fromKey].pinned, movedCanonicalId);
+            org.projectOrder[fromKey].normal = removeFromOrderArray(org.projectOrder[fromKey].normal, movedCanonicalId);
+          }
+          if (toGroupId) org.projectGroupMap[movedCanonicalId] = toGroupId;
+          else delete org.projectGroupMap[movedCanonicalId];
+          for (const p of org.projects) {
+            if (p.id === movedCanonicalId) {
+              p.groupId = toGroupId;
+              p.updatedAt = new Date().toISOString();
+            }
+          }
+          for (const g of org.groups) {
+            g.projectIds = g.projectIds.filter((p) => p !== movedCanonicalId);
+            if (toGroupId && g.id === toGroupId) g.projectIds.push(movedCanonicalId);
+          }
+        }
+
+        const targetContainer = toGroupId || '__ungrouped__';
+        if (targetContainer !== '__ungrouped__' && !org.groups.some((g) => g.id === targetContainer)) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+        }
+
+        const normalizedIds = rawOrderedIds.map((id) => {
+          const found = findPersistedProject(org, { id });
+          return found ? found.id : id;
+        });
+        if (movedCanonicalId && !normalizedIds.includes(movedCanonicalId)) {
+          normalizedIds.push(movedCanonicalId);
+        }
+
+        const pinnedSet = new Set(org.pins.projects);
+        for (const id of normalizedIds) {
+          if (pinnedSet.has(id) !== (zone === 'pinned')) {
+            return {
+              abort: true,
+              result: { ok: false, statusCode: 409, error: 'ZONE_PIN_MISMATCH', id, zone, revision: org.revision }
+            };
+          }
+        }
+
+        if (!org.projectOrder[targetContainer]) {
+          org.projectOrder[targetContainer] = { pinned: [], normal: [] };
+        }
+        org.projectOrder[targetContainer][zone] = dedupeStrings(normalizedIds);
+
+        return {
+          buildResult: (saved) => {
+            containerRevisions.set(containerKey, saved.revision);
+            return { ok: true, revision: saved.revision, org: getOrg() };
+          }
+        };
+      }
+
+      const pinnedSet = new Set(org.pins.sessions);
+      if (containerId === '__pinned__' && zone !== 'pinned') {
+        return {
+          abort: true,
+          result: { ok: false, statusCode: 409, error: 'ZONE_PIN_MISMATCH', zone, revision: org.revision }
+        };
+      }
+      for (const id of rawOrderedIds) {
+        if (pinnedSet.has(id) !== (zone === 'pinned')) {
+          return {
+            abort: true,
+            result: { ok: false, statusCode: 409, error: 'ZONE_PIN_MISMATCH', id, zone, revision: org.revision }
+          };
+        }
+      }
+      if (containerId === '__pinned__') {
+        org.sessionOrder.__pinned__ = rawOrderedIds;
+      } else {
+        const foundProj = containerId === '__standalone__' ? null : findPersistedProject(org, { id: containerId });
+        const resolvedCid = foundProj ? foundProj.id : containerId;
+        if (!isPlainObject(org.sessionOrder[resolvedCid])) {
+          org.sessionOrder[resolvedCid] = { pinned: [], normal: [] };
+        }
+        org.sessionOrder[resolvedCid][zone] = rawOrderedIds;
+      }
+
+      return {
+        buildResult: (saved) => {
+          containerRevisions.set(containerKey, saved.revision);
+          return { ok: true, revision: saved.revision, org: getOrg() };
+        }
+      };
+    });
+  }
+
+  function archiveSession(cascadeId, { archived, stepCount = 0, isRunning = false, projectId = null, projectName = null, titleSnapshot = '' } = {}) {
+    const cleanId = String(cascadeId || '').trim();
+    if (!cleanId) {
+      return { ok: false, statusCode: 400, error: 'INVALID_CASCADE_ID' };
     }
-    const existingIdx = org.groups.findIndex((g) => g.id === id);
-    const prev = existingIdx >= 0 ? org.groups[existingIdx] : null;
-    const nextGroup = {
-      id,
-      name: name || prev?.name || id,
-      source: prev?.source || 'user',
-      order: Number.isFinite(Number(body.order)) ? Number(body.order) : (prev ? prev.order : org.groups.length),
-      projectIds: Array.isArray(body.projectIds) ? body.projectIds.map((x) => String(x || '').trim()).filter(Boolean) : (prev?.projectIds || []),
-      workspaceUris: Array.isArray(body.workspaceUris) ? body.workspaceUris.map((x) => String(x || '').trim()).filter(Boolean) : (prev?.workspaceUris || []),
-      sessionIds: Array.isArray(body.sessionIds) ? body.sessionIds.map((x) => String(x || '').trim()).filter(Boolean) : (prev?.sessionIds || [])
-    };
-    if (existingIdx >= 0) {
-      org.groups[existingIdx] = nextGroup;
-    } else {
-      org.groups.push(nextGroup);
+    if (typeof archived !== 'boolean') {
+      return { ok: false, statusCode: 400, error: 'INVALID_ARCHIVE_FLAG' };
     }
-    for (const pid of nextGroup.projectIds) org.projectGroupMap[pid] = id;
-    for (const sid of nextGroup.sessionIds) org.sessionGroupMap[sid] = id;
-    const saved = savePersistedOrg(org);
-    return { ok: true, action: 'upsert', group: nextGroup, groups: saved.groups, pins: saved.pins };
+
+    return mutateOrgAtomically((org) => {
+      if (org.deletedSessions[cleanId]) {
+        return { abort: true, result: { ok: false, statusCode: 404, error: 'SESSION_NOT_FOUND' } };
+      }
+
+      let unpinned = false;
+      if (archived) {
+        const wasPinned = org.pins.sessions.includes(cleanId);
+        if (wasPinned) {
+          unpinned = true;
+          org.pins.sessions = org.pins.sessions.filter((id) => id !== cleanId);
+          delete org.pinTimestamps.sessions[cleanId];
+          if (Array.isArray(org.sessionOrder.__pinned__)) {
+            org.sessionOrder.__pinned__ = removeFromOrderArray(org.sessionOrder.__pinned__, cleanId);
+          }
+          for (const [ck, ord] of Object.entries(org.sessionOrder)) {
+            if (ck === '__pinned__' || !isPlainObject(ord)) continue;
+            ord.pinned = removeFromOrderArray(ord.pinned, cleanId);
+          }
+        }
+        const prevArch = org.archivedSessions[cleanId];
+        org.archivedSessions[cleanId] = {
+          archivedAt: prevArch?.archivedAt || new Date().toISOString(),
+          archivedAtStepCount: Number.isFinite(Number(stepCount)) ? Math.max(0, Math.floor(Number(stepCount))) : (prevArch?.archivedAtStepCount ?? 0),
+          archivedWasRunning: Boolean(isRunning),
+          projectId: projectId || prevArch?.projectId || null,
+          projectName: projectName || prevArch?.projectName || null,
+          titleSnapshot: typeof titleSnapshot === 'string' && titleSnapshot ? titleSnapshot : (prevArch?.titleSnapshot || '')
+        };
+      } else {
+        delete org.archivedSessions[cleanId];
+      }
+
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          cascadeId: cleanId,
+          archived,
+          unpinned,
+          revision: saved.revision,
+          archivedCount: Object.keys(saved.archivedSessions || {}).length
+        })
+      };
+    });
+  }
+
+  function deleteSessionOrgRecord(cascadeId, { mode = 'host_deleted' } = {}) {
+    const cleanId = String(cascadeId || '').trim();
+    if (!cleanId) {
+      return { ok: false, statusCode: 400, error: 'INVALID_CASCADE_ID' };
+    }
+    return mutateOrgAtomically((org) => {
+      org.pins.sessions = org.pins.sessions.filter((id) => id !== cleanId);
+      delete org.pinTimestamps.sessions[cleanId];
+      delete org.archivedSessions[cleanId];
+      delete org.sessionGroupMap[cleanId];
+      delete org.sessionProjectOverrides[cleanId];
+      if (Array.isArray(org.sessionOrder.__pinned__)) {
+        org.sessionOrder.__pinned__ = removeFromOrderArray(org.sessionOrder.__pinned__, cleanId);
+      }
+      for (const [ck, ord] of Object.entries(org.sessionOrder)) {
+        if (ck === '__pinned__' || !isPlainObject(ord)) continue;
+        ord.pinned = removeFromOrderArray(ord.pinned, cleanId);
+        ord.normal = removeFromOrderArray(ord.normal, cleanId);
+      }
+      if (mode === 'local_tombstone') {
+        org.deletedSessions[cleanId] = {
+          deletedAt: new Date().toISOString(),
+          mode: 'local_tombstone'
+        };
+      }
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          cascadeId: cleanId,
+          deletionMode: mode,
+          hostCleaned: mode === 'host_deleted',
+          revision: saved.revision,
+          archivedCount: Object.keys(saved.archivedSessions || {}).length
+        })
+      };
+    });
   }
 
   return {
     orgPath,
     dbPath,
+    loadPersistedOrg,
+    mutateOrgAtomically,
+    materializeProjectInOrg,
+    syncFromExternalSignal,
+    startWatching,
+    dispose,
     enrichSessionsAndOrg,
     getOrg,
     togglePin,
-    mutateGroup
+    mutateGroup,
+    reorderOrg,
+    archiveSession,
+    deleteSessionOrgRecord,
+    reconcileSessionsLifecycle
   };
 }
 
@@ -1118,5 +2388,11 @@ module.exports = {
   parseModelMetadata,
   buildModelGroups,
   sanitizeModelCatalogResult,
-  createSessionOrgStore
+  createSessionOrgStore,
+  createEmptyPersistedOrg,
+  sanitizePersistedOrg,
+  buildOrgBusSummary,
+  normalizeLocalPath,
+  canonicalKey,
+  makeStableProjectId
 };

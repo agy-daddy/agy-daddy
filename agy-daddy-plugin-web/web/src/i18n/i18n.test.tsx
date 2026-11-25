@@ -198,4 +198,139 @@ describe('I18nProvider & formatSessionTitle', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('covers 100% of new feature keys across all 10 locales without English fallback leakage', () => {
+    const REQUIRED_NEW_FEATURE_KEYS: I18nKey[] = [
+      'topbar.sessionRunning',
+      'topbar.sessionIdle',
+      'topbar.tasks',
+      'topbar.tasksRunningCount',
+      'topbar.customMenu',
+      'topbar.diffReview',
+      'menu.title',
+      'menu.connectionStatus',
+      'menu.channelLabel',
+      'menu.refreshSession',
+      'menu.pluginsSection',
+      'menu.openFullAdmin',
+      'menu.viewAllPlugins',
+      'menu.pluginSettings',
+      'menu.disableWebTitle',
+      'menu.disableWebConfirm',
+      'menu.disableWebAction',
+      'menu.permLockedL0L1',
+      'menu.preferencesSection',
+      'menu.themeMode',
+      'menu.language',
+      'menu.backgroundTasks',
+      'admin.confirmNativeUninstall',
+      'admin.confirmNativeUninstallYes',
+      'admin.confirmNativeUninstallNo',
+      'admin.permLockedL0L1',
+      'contextBar.label',
+      'contextBar.cacheHit',
+      'contextBar.speed',
+      'contextBar.compactBtn',
+      'contextBar.warnLabel',
+      'contextBar.cliffLabel',
+      'models.level3Title',
+      'models.pickerTitle',
+      'dock.tab.terminal',
+      'dock.tab.sideChat',
+      'terminal.sessionSelect',
+      'terminal.newSession',
+      'terminal.clear',
+      'terminal.closeSession',
+      'terminal.reconnect',
+      'terminal.emptyTitle',
+      'terminal.emptyDesc',
+      'terminal.statusConnecting',
+      'terminal.statusConnected',
+      'terminal.statusDisconnected',
+      'terminal.statusExited',
+      'terminal.permLocked',
+      'terminal.unavailableTitle',
+      'terminal.unavailableDesc',
+      'terminal.sessionLimitReached',
+      'terminal.inputPlaceholder',
+      'sideChat.title',
+      'sideChat.isolationBadge',
+      'sideChat.scopeLabel',
+      'sideChat.scopeNone',
+      'sideChat.scopeSession',
+      'sideChat.scopeSelection',
+      'sideChat.modelAuto',
+      'sideChat.emptyTitle',
+      'sideChat.emptyDesc',
+      'sideChat.placeholder',
+      'sideChat.send',
+      'sideChat.stop',
+      'sideChat.clear',
+      'sideChat.clearConfirm',
+      'sideChat.copy',
+      'sideChat.copied',
+      'sideChat.insertToComposer',
+      'sideChat.insertedNotice',
+      'sideChat.l0ReadOnly',
+      'tasks.title',
+      'tasks.runningSection',
+      'tasks.recentSection',
+      'tasks.empty',
+      'tasks.kind.command',
+      'tasks.kind.session',
+      'tasks.kind.subagent',
+      'tasks.kind.pty',
+      'tasks.status.running',
+      'tasks.status.pending',
+      'tasks.status.stopping',
+      'tasks.status.done',
+      'tasks.status.error',
+      'tasks.status.canceled',
+      'tasks.viewDetail',
+      'tasks.stop',
+      'tasks.backToList',
+      'tasks.jumpToSession',
+      'tasks.autoScroll',
+      'tasks.copyLog',
+      'tasks.truncatedNotice',
+      'tasks.noOutput',
+      'tasks.stopConfirmTitle',
+      'tasks.stopConfirmSessionScope',
+      'tasks.stopConfirmPtyScope',
+      'tasks.stopConfirmDefaultScope',
+      'tasks.alreadyFinishedNotice',
+      'tasks.l0StopDisabled',
+      'tasks.l1PtyStopDisabled',
+    ];
+
+    const ALL_LOCALES: Locale[] = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'fr', 'ru', 'it'];
+    const NON_ENGLISH_LOCALES = ALL_LOCALES.filter((l) => l !== 'en');
+
+    for (const loc of ALL_LOCALES) {
+      const t = createTranslator(loc);
+      for (const k of REQUIRED_NEW_FEATURE_KEYS) {
+        const val = t(k, { count: 2, tier: 'L0', rate: 42, model: 'Neon', code: 0, reason: 'missing', max: 8, status: 'done' });
+        expect(val, `${loc} missing ${k}`).toBeTruthy();
+        expect(val, `${loc} leaked raw key ${k}`).not.toBe(k);
+      }
+    }
+
+    const DISTINCT_UI_KEYS: I18nKey[] = [
+      'dock.tab.sideChat',
+      'topbar.tasks',
+      'menu.title',
+      'sideChat.isolationBadge',
+    ];
+    for (const loc of NON_ENGLISH_LOCALES) {
+      const tLoc = createTranslator(loc);
+      const tEn = createTranslator('en');
+      for (const k of DISTINCT_UI_KEYS) {
+        expect(tLoc(k), `${loc} fell back to English for ${k}`).not.toBe(tEn(k));
+      }
+    }
+    expect(createTranslator('zh-CN')('dock.tab.sideChat')).toBe('旁路对话');
+    expect(createTranslator('zh-TW')('dock.tab.sideChat')).toBe('旁路對話');
+    expect(createTranslator('ja')('dock.tab.sideChat')).toBe('サイドチャット');
+    expect(createTranslator('ko')('dock.tab.sideChat')).toBe('사이드 대화');
+  });
 });

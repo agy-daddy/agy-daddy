@@ -618,6 +618,115 @@ export interface I18nMessages {
   'webAccess.confirm.confirmBtn': string;
   'webAccess.confirm.cancelBtn': string;
   'errors.confirmationCancelled': string;
+
+  'topbar.sessionRunning': string;
+  'topbar.sessionIdle': string;
+  'topbar.tasks': string;
+  'topbar.tasksRunningCount': string;
+  'topbar.customMenu': string;
+  'topbar.diffReview': string;
+
+  'menu.title': string;
+  'menu.connectionStatus': string;
+  'menu.channelLabel': string;
+  'menu.refreshSession': string;
+  'menu.pluginsSection': string;
+  'menu.openFullAdmin': string;
+  'menu.viewAllPlugins': string;
+  'menu.pluginSettings': string;
+  'menu.disableWebTitle': string;
+  'menu.disableWebConfirm': string;
+  'menu.disableWebAction': string;
+  'menu.permLockedL0L1': string;
+  'menu.preferencesSection': string;
+  'menu.themeMode': string;
+  'menu.language': string;
+  'menu.backgroundTasks': string;
+
+  'admin.confirmNativeUninstall': string;
+  'admin.confirmNativeUninstallYes': string;
+  'admin.confirmNativeUninstallNo': string;
+  'admin.permLockedL0L1': string;
+
+  'contextBar.label': string;
+  'contextBar.cacheHit': string;
+  'contextBar.speed': string;
+  'contextBar.compactBtn': string;
+  'contextBar.warnLabel': string;
+  'contextBar.cliffLabel': string;
+
+  'models.level3Title': string;
+  'models.pickerTitle': string;
+
+  'dock.tab.terminal': string;
+  'dock.tab.sideChat': string;
+
+  'terminal.sessionSelect': string;
+  'terminal.newSession': string;
+  'terminal.clear': string;
+  'terminal.closeSession': string;
+  'terminal.reconnect': string;
+  'terminal.emptyTitle': string;
+  'terminal.emptyDesc': string;
+  'terminal.statusConnecting': string;
+  'terminal.statusConnected': string;
+  'terminal.statusDisconnected': string;
+  'terminal.statusExited': string;
+  'terminal.permLocked': string;
+  'terminal.unavailableTitle': string;
+  'terminal.unavailableDesc': string;
+  'terminal.sessionLimitReached': string;
+  'terminal.inputPlaceholder': string;
+
+  'sideChat.title': string;
+  'sideChat.isolationBadge': string;
+  'sideChat.scopeLabel': string;
+  'sideChat.scopeNone': string;
+  'sideChat.scopeSession': string;
+  'sideChat.scopeSelection': string;
+  'sideChat.modelAuto': string;
+  'sideChat.emptyTitle': string;
+  'sideChat.emptyDesc': string;
+  'sideChat.placeholder': string;
+  'sideChat.send': string;
+  'sideChat.stop': string;
+  'sideChat.clear': string;
+  'sideChat.clearConfirm': string;
+  'sideChat.copy': string;
+  'sideChat.copied': string;
+  'sideChat.insertToComposer': string;
+  'sideChat.insertedNotice': string;
+  'sideChat.l0ReadOnly': string;
+
+  'tasks.title': string;
+  'tasks.runningSection': string;
+  'tasks.recentSection': string;
+  'tasks.empty': string;
+  'tasks.kind.command': string;
+  'tasks.kind.session': string;
+  'tasks.kind.subagent': string;
+  'tasks.kind.pty': string;
+  'tasks.status.running': string;
+  'tasks.status.pending': string;
+  'tasks.status.stopping': string;
+  'tasks.status.done': string;
+  'tasks.status.error': string;
+  'tasks.status.canceled': string;
+  'tasks.viewDetail': string;
+  'tasks.stop': string;
+  'tasks.backToList': string;
+  'tasks.jumpToSession': string;
+  'tasks.autoScroll': string;
+  'tasks.copyLog': string;
+  'tasks.truncatedNotice': string;
+  'tasks.noOutput': string;
+  'tasks.stopConfirmTitle': string;
+  'tasks.stopConfirmSessionScope': string;
+  'tasks.stopConfirmPtyScope': string;
+  'tasks.stopConfirmDefaultScope': string;
+  'tasks.alreadyFinishedNotice': string;
+  'tasks.l0StopDisabled': string;
+  'tasks.l1PtyStopDisabled': string;
 }
 
 export type I18nKey = keyof I18nMessages;

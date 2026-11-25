@@ -100,7 +100,10 @@ test('workspace-browser: single-level browse, showHidden, isGitRepo, shortcuts, 
   const resMissing = await browser.browse({ path: missingPath });
   assert.equal(resMissing.ok, true);
   assert.equal(resMissing.exists, false);
-  assert.equal(resMissing.resolvedPath, fs.realpathSync(tmp));
+  const expectedTmpReal = typeof fs.realpathSync.native === 'function'
+    ? fs.realpathSync.native(tmp)
+    : fs.realpathSync(tmp);
+  assert.equal(resMissing.resolvedPath, expectedTmpReal);
   assert.equal(resMissing.willCreateRelative, path.join('new-org', 'new-proj'));
 });
 
@@ -117,12 +120,18 @@ test('workspace-browser: blocks system roots, traversal to /etc, symlinks to /et
   assert.equal(etcRes.statusCode, 403);
   assert.equal(etcRes.error, 'FORBIDDEN_SYSTEM_ROOT');
 
+  const winSysRes = await browser.browse({ path: 'D:\\Windows\\System32' });
+  assert.equal(winSysRes.ok, false);
+  assert.equal(winSysRes.statusCode, 403);
+  assert.equal(winSysRes.error, 'FORBIDDEN_SYSTEM_ROOT');
+
   const sshRes = await browser.browse({ path: path.join(os.homedir(), '.ssh') });
   assert.equal(sshRes.ok, false);
   assert.equal(sshRes.statusCode, 403);
   assert.equal(sshRes.error, 'FORBIDDEN_SYSTEM_ROOT');
 
-  const travRes = await browser.browse({ path: path.join(tmp, '..', '..', '..', '..', '..', 'etc') });
+  const rootSystemSeg = process.platform === 'win32' ? 'Windows' : 'etc';
+  const travRes = await browser.browse({ path: path.join(tmp, ...Array(12).fill('..'), rootSystemSeg) });
   assert.equal(travRes.ok, false);
   assert.equal(travRes.statusCode, 403);
   assert.equal(travRes.error, 'FORBIDDEN_SYSTEM_ROOT');

@@ -150,7 +150,7 @@ function normalizeUriToPath(uriOrPath) {
   if (!s) return '';
   const norm = normalizeLocalPath(s);
   if (!norm) return '';
-  return norm.length > 1 && !/^[A-Za-z]:\/$/.test(norm) ? norm.replace(/\/+$/, '') : norm;
+  return norm.length > 1 && !/^[A-Za-z]:[\\/]$/.test(norm) ? norm.replace(/[\\/]+$/, '') : norm;
 }
 
 function pathToFileUri(fsPath) {
@@ -166,16 +166,18 @@ const INTERNAL_TEMP_DIRNAME_RE = /^(?:magpie-agy-bridge-|agy-model-probe-|agy-pr
 function isTempBridgeWorkspace(uriOrPath) {
   const p = normalizeUriToPath(uriOrPath);
   if (!p) return false;
-  if (INTERNAL_TEMP_WORKSPACE_RE.test(p)) return true;
-  const base = extractWorkspaceDisplayName(p);
+  const slashed = p.replace(/\\/g, '/');
+  if (INTERNAL_TEMP_WORKSPACE_RE.test(slashed)) return true;
+  const base = extractWorkspaceDisplayName(slashed);
   return INTERNAL_TEMP_DIRNAME_RE.test(base);
 }
 
 function extractWorkspaceDisplayName(uriOrPath) {
   const p = normalizeUriToPath(uriOrPath);
   if (!p) return '';
-  const parts = p.split('/').filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : p;
+  const slashed = p.replace(/\\/g, '/');
+  const parts = slashed.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : slashed;
 }
 
 function parseWorkspaceUrisField(raw) {

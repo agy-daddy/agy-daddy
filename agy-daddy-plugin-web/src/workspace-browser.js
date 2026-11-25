@@ -22,7 +22,9 @@ function expandTilde(input) {
 
 function safeRealpathSync(targetPath) {
   try {
-    return fs.realpathSync(targetPath);
+    return typeof fs.realpathSync.native === 'function'
+      ? fs.realpathSync.native(targetPath)
+      : fs.realpathSync(targetPath);
   } catch {
     return null;
   }
@@ -92,8 +94,10 @@ function getForbiddenPrefixes() {
     '/private/var/root',
     path.join(home, '.ssh'),
     path.join(home, '.aws'),
-    path.join(home, '.gnupg')
-  ];
+    path.join(home, '.gnupg'),
+    process.env.SystemRoot,
+    process.env.WINDIR
+  ].filter((p) => typeof p === 'string' && p.trim());
   const out = [];
   const seen = new Set();
   for (const p of candidates) {
@@ -111,6 +115,8 @@ function getForbiddenPrefixes() {
   return out;
 }
 
+const WIN_FORBIDDEN_ROOT_RE = /^(?:file:\/\/\/?)?[A-Za-z]:\/(?:windows|system|etc|private\/etc|usr|bin|sbin|var\/root|private\/var\/root)(?:\/|$)/i;
+
 function isForbiddenSystemRoot(rawPath) {
   if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) {
     return true;
@@ -120,13 +126,13 @@ function isForbiddenSystemRoot(rawPath) {
     return true;
   }
   const winSlashed = trimmed.replace(/\\/g, '/');
-  if (/^c:\/windows(?:\/|$)/i.test(winSlashed) || /^file:\/\/\/?c:\/windows(?:\/|$)/i.test(winSlashed)) {
+  if (WIN_FORBIDDEN_ROOT_RE.test(winSlashed)) {
     return true;
   }
 
   const normalized = normalizeLocalPath(trimmed);
   if (!normalized) return true;
-  if (/^c:\/windows(?:\/|$)/i.test(normalized.replace(/\\/g, '/'))) {
+  if (WIN_FORBIDDEN_ROOT_RE.test(normalized.replace(/\\/g, '/'))) {
     return true;
   }
 
@@ -135,7 +141,7 @@ function isForbiddenSystemRoot(rawPath) {
   const prefixes = getForbiddenPrefixes();
   for (const candidate of candidates) {
     const slashed = candidate.replace(/\\/g, '/');
-    if (slashed === '/' || /^[A-Za-z]:\/?$/.test(slashed)) return true;
+    if (slashed === '/' || /^[A-Za-z]:\/?$/.test(slashed) || WIN_FORBIDDEN_ROOT_RE.test(slashed)) return true;
     for (const prefix of prefixes) {
       if (isSameOrInside(candidate, prefix, IS_CASE_INSENSITIVE_FS)) {
         return true;

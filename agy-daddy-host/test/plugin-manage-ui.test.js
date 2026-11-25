@@ -450,7 +450,10 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
       assert.equal(fs.existsSync(targetNativeDir), true);
 
       shadow.querySelector('[data-plugin-uninstall="agy-daddy.nativedemo"]').click();
-      shadow.querySelector('#agy-native-uninstall-confirm-btn').click();
+      await waitFor(() => shadow.querySelector('#agy-native-uninstall-confirm-btn')?.disabled === false);
+      const confirmUninstall = shadow.querySelector('#agy-native-uninstall-confirm-btn');
+      assert.equal(confirmUninstall?.disabled, false);
+      confirmUninstall.click();
       await waitFor(() => readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'] === undefined && !fs.existsSync(targetNativeDir));
 
       assert.equal(readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'], undefined);

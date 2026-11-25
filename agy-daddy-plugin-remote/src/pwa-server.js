@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -7,6 +8,8 @@ const {
   DEFAULT_CHANNELS,
   classifyRequestChannel,
   isChannelAllowed,
+  isLanIp,
+  isTailscaleIp,
   normalizePermissionLevel,
   isPermissionAtLeast,
   createConfirmToken,
@@ -221,6 +224,7 @@ class MobileRemoteServer {
     this.v1Handlers = options.v1Handlers && typeof options.v1Handlers === 'object' ? options.v1Handlers : {};
     this.sseBroker = options.sseBroker || null;
     this.ptyManager = options.ptyManager || null;
+    this.taskManager = options.taskManager || null;
     this.webPush = options.webPush || null;
     this.mobileWorkspace = options.mobileWorkspace || null;
     this.onPtyUpgrade = typeof options.onPtyUpgrade === 'function' ? options.onPtyUpgrade : null;
@@ -230,6 +234,8 @@ class MobileRemoteServer {
     this.sockets = new Set();
     this.clients = new Map();
     this.devices = new Map();
+    this.switchTickets = new Map();
+    this.redeemRateLimits = new Map();
   }
 
   recordClientVisit(req, channel) {
@@ -572,6 +578,132 @@ class MobileRemoteServer {
     return true;
   }
 
+  _isAllowedCorsOrigin(origin, req, channel) {
+    if (!origin || typeof origin !== 'string') return false;
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const hostname = String(parsed.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (!hostname) return false;
+
+    if (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1') {
+      return true;
+    }
+    if (isLanIp(hostname) || hostname.endsWith('.local')) {
+      return true;
+    }
+    if (isTailscaleIp(hostname) || hostname.endsWith('.ts.net')) {
+      return true;
+    }
+
+    const reqHost = String(req?.headers?.host || '').trim().toLowerCase();
+    if (reqHost && parsed.host.toLowerCase() === reqHost) {
+      return true;
+    }
+
+    const tunnelCfg = String(this.getTunnelHostname() || '').trim();
+    if (tunnelCfg) {
+      try {
+        if (new URL(tunnelCfg).origin === parsed.origin) return true;
+      } catch {}
+    }
+
+    if (channel === 'cloudflare' || this.getChannels()?.cloudflare === true) {
+      try {
+        const bundle = this.getChannelEntries(this.getToken(), { req, channel }) || {};
+        for (const ent of Array.isArray(bundle.entries) ? bundle.entries : []) {
+          if (ent?.key !== 'cloudflare') continue;
+          for (const rawCandidate of [ent.origin, ent.probeUrl, ent.enterUrl]) {
+            if (!rawCandidate || rawCandidate.startsWith('/')) continue;
+            try {
+              if (new URL(rawCandidate).origin === parsed.origin) return true;
+            } catch {}
+          }
+          if (ent.displayHost && parsed.host.toLowerCase() === String(ent.displayHost).toLowerCase()) {
+            return true;
+          }
+        }
+      } catch {}
+    }
+
+    return false;
+  }
+
+  _applyApiCorsHeaders(req, res, pathname, channel) {
+    if (!pathname.startsWith('/api/')) return {};
+    const origin = String(req.headers?.origin || '').trim();
+    if (!origin) return {};
+    if (!this._isAllowedCorsOrigin(origin, req, channel)) {
+      res.setHeader('Vary', 'Origin');
+      return { Vary: 'Origin' };
+    }
+    const headers = {
+      'Access-Control-Allow-Origin': origin,
+      Vary: 'Origin',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-AG-Client-Id, X-AG-Device-Hint, X-Agy-Confirm, X-Agy-Token, Last-Event-ID',
+      'Access-Control-Max-Age': '600'
+    };
+    for (const [k, v] of Object.entries(headers)) {
+      res.setHeader(k, v);
+    }
+    return headers;
+  }
+
+  _pruneExpiredSwitchTickets(now = Date.now()) {
+    for (const [k, v] of this.switchTickets.entries()) {
+      if (!v || now > v.expiresAt) {
+        this.switchTickets.delete(k);
+      }
+    }
+  }
+
+  _checkRedeemRateLimit(req, now = Date.now()) {
+    const ip = String(req?.socket?.remoteAddress || req?.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+    const windowMs = 60 * 1000;
+    const maxAttempts = 20;
+    const prev = this.redeemRateLimits.get(ip);
+    if (!prev || now >= prev.resetAt) {
+      this.redeemRateLimits.set(ip, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+    if (prev.count >= maxAttempts) {
+      return false;
+    }
+    prev.count += 1;
+    return true;
+  }
+
+  async _handleRedeemSwitchTicket(req, res) {
+    const now = Date.now();
+    if (!this._checkRedeemRateLimit(req, now)) {
+      sendJson(res, 429, { ok: false, error: 'TOO_MANY_REQUESTS' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const ticket = typeof body?.ticket === 'string' ? body.ticket.trim() : '';
+    this._pruneExpiredSwitchTickets(now);
+    const entry = ticket ? this.switchTickets.get(ticket) : null;
+    if (ticket) {
+      this.switchTickets.delete(ticket);
+    }
+    if (!entry || now > entry.expiresAt) {
+      sendJson(res, 401, { ok: false, error: 'INVALID_OR_EXPIRED_TICKET' });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      authToken: this.getToken(),
+      sessionId: entry.sessionId ?? null,
+      draftText: entry.draftText || '',
+      targetChannel: entry.targetChannel || ''
+    });
+  }
+
   async _handleRequest(req, res) {
     const method = String(req.method || 'GET').toUpperCase();
     const urlObj = new URL(req.url || '/', 'http://127.0.0.1');
@@ -584,6 +716,18 @@ class MobileRemoteServer {
       return;
     }
 
+    if (pathname.startsWith('/api/')) {
+      const corsHeaders = this._applyApiCorsHeaders(req, res, pathname, channel);
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          ...SECURITY_HEADERS,
+          ...corsHeaders
+        });
+        res.end();
+        return;
+      }
+    }
+
     if (pathname === '/pc' || pathname.startsWith('/pc/')) {
       this._handlePcWebProxy(req, res, method, urlObj, channel);
       return;
@@ -591,7 +735,10 @@ class MobileRemoteServer {
 
     if ((method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html' || pathname === '/entry')) {
       const channelsCfg = this.getChannels();
-      const enterConsole = urlObj.searchParams.get('enter') === '1' || urlObj.searchParams.get('direct') === '1';
+      const enterConsole =
+        urlObj.searchParams.get('enter') === '1' ||
+        urlObj.searchParams.get('direct') === '1' ||
+        Boolean(urlObj.searchParams.get('switch_ticket'));
       const shouldShowLanding =
         (pathname === '/entry' && channelsCfg?.cloudflare === true) ||
         ((pathname === '/' || pathname === '/index.html') && channel === 'cloudflare' && channelsCfg?.cloudflare === true && !enterConsole);
@@ -720,6 +867,10 @@ class MobileRemoteServer {
       }
       const body = await readJsonBody(req);
       const result = await this.onAction(body, { clientId, channel });
+      if (result && result.ok === false && Number.isInteger(result.statusCode)) {
+        sendResult(res, result);
+        return;
+      }
       sendJson(res, 200, result && typeof result === 'object' ? result : { ok: true });
       return;
     }
@@ -735,10 +886,17 @@ class MobileRemoteServer {
 
   async _handleV1Request(req, res, method, urlObj, channel) {
     const pathname = urlObj.pathname;
+    const h = this.v1Handlers;
+
+    // 免 Bearer 跨协议一次性票据兑换（置于鉴权守卫前，内置 IP 限速与单次消费）
+    if (method === 'POST' && pathname === '/api/v1/channels/redeem-ticket') {
+      await this._handleRedeemSwitchTicket(req, res);
+      return;
+    }
+
     if (!this._authenticate(req, res, urlObj)) return;
     const { clientId } = this.recordClientVisit(req, channel);
     const permissionLevel = this._resolvePermission();
-    const h = this.v1Handlers;
 
     if (method === 'GET' && pathname === '/api/v1/bootstrap') {
       if (typeof h.getBootstrap === 'function') {
@@ -747,6 +905,7 @@ class MobileRemoteServer {
         return;
       }
       const snap = await this.getSnapshot();
+      const taskSummary = this.taskManager ? await this.taskManager.listTasks(permissionLevel).catch(() => null) : null;
       sendJson(res, 200, {
         ok: true,
         channel,
@@ -772,6 +931,7 @@ class MobileRemoteServer {
         pins: { sessions: [], projects: [], groups: [] },
         vapidPublicKey: this.webPush ? this.webPush.getPublicKey() : null,
         voiceSupported: false,
+        runningTasksCount: taskSummary?.runningCount ?? 0,
         telemetry: snap
       });
       return;
@@ -944,6 +1104,25 @@ class MobileRemoteServer {
       return;
     }
 
+    if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/compact$/))) {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, '/api/v1/sessions/compact')) return;
+      const id = decodeURIComponent(match[1]);
+      const body = await readJsonBody(req);
+      if (typeof h.compactSession === 'function') {
+        const result = await h.compactSession(id, body);
+        sendResult(res, result);
+        return;
+      }
+      if (typeof h.sendMessage === 'function') {
+        const result = await h.sendMessage(id, { text: '/compact', dispatchMode: 'queue' });
+        sendResult(res, { ...(result && typeof result === 'object' ? result : { ok: true }), action: 'compact', sessionId: id, dispatched: true });
+        return;
+      }
+      sendJson(res, 503, { ok: false, error: 'SESSIONS_UNAVAILABLE' });
+      return;
+    }
+
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/cancel$/))) {
       if (!this._requirePermission(res, 'L1')) return;
       if (typeof h.cancelSession !== 'function') {
@@ -985,13 +1164,24 @@ class MobileRemoteServer {
       return;
     }
 
-    if (method === 'GET' && pathname === '/api/v1/composer/presets') {
+    if (method === 'GET' && (pathname === '/api/v1/composer/presets' || pathname === '/api/v1/composer/state')) {
       if (typeof h.getComposerPresets === 'function') {
         const result = await h.getComposerPresets();
         sendResult(res, result);
         return;
       }
-      sendJson(res, 200, { ok: true, presets: [], quickPrompts: [], frequentPrompts: [] });
+      sendJson(res, 200, {
+        ok: true,
+        available: false,
+        settings: {
+          showQuickBar: true,
+          ghostSuggest: true,
+          showPromptOptimizer: true
+        },
+        presets: [],
+        quickPrompts: [],
+        frequentPrompts: []
+      });
       return;
     }
 
@@ -1297,6 +1487,178 @@ class MobileRemoteServer {
         id: s.sessionId || s.id
       }));
       sendJson(res, 200, { ok: true, sessions: list });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/tasks') {
+      if (typeof h.listTasks === 'function') {
+        const result = await h.listTasks({ permissionLevel });
+        sendResult(res, result);
+        return;
+      }
+      if (this.taskManager) {
+        const result = await this.taskManager.listTasks(permissionLevel);
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 200, { ok: true, runningCount: 0, running: [], recent: [] });
+      return;
+    }
+
+    if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/stop$/))) {
+      const taskId = decodeURIComponent(match[1]);
+      if (taskId.startsWith('pty:')) {
+        if (!this._requirePermission(res, 'L2')) return;
+      } else {
+        if (!this._requirePermission(res, 'L1')) return;
+      }
+      if (!this._requireCloudflareConfirm(req, res, channel, '/api/v1/tasks/stop')) return;
+      await readJsonBody(req);
+      let result;
+      if (typeof h.stopTask === 'function') {
+        result = await h.stopTask(taskId, { permissionLevel });
+      } else if (this.taskManager) {
+        result = await this.taskManager.stopTask(taskId, permissionLevel);
+      } else {
+        sendJson(res, 503, { ok: false, error: 'TASK_MANAGER_UNAVAILABLE' });
+        return;
+      }
+      if (result?.ok && !result.alreadyFinished && this.sseBroker) {
+        const listRes = typeof h.listTasks === 'function'
+          ? await h.listTasks({ permissionLevel }).catch(() => null)
+          : (this.taskManager ? await this.taskManager.listTasks(permissionLevel).catch(() => null) : null);
+        this.sseBroker.emit('task.updated', {
+          runningCount: listRes?.runningCount ?? 0,
+          task: result.task
+        });
+      }
+      sendResult(res, result);
+      return;
+    }
+
+    if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/tasks\/([^/]+)$/))) {
+      const taskId = decodeURIComponent(match[1]);
+      if (typeof h.getTaskDetail === 'function') {
+        const result = await h.getTaskDetail(taskId, { permissionLevel });
+        sendResult(res, result);
+        return;
+      }
+      if (this.taskManager) {
+        const result = await this.taskManager.getTaskDetail(taskId, permissionLevel);
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/channels') {
+      if (typeof h.getChannels === 'function') {
+        const result = await h.getChannels({ req, channel });
+        sendResult(res, result);
+        return;
+      }
+      const bundle = this.getChannelEntries('', { req, channel }) || {};
+      const hostHdr = String(req.headers?.host || '').trim();
+      const isHttpsReq = channel === 'cloudflare' || String(req.headers?.['x-forwarded-proto'] || '').toLowerCase().includes('https') || Boolean(req.socket?.encrypted);
+      const currentOrigin = hostHdr ? `${isHttpsReq ? 'https' : 'http'}://${hostHdr}` : (this.getLocalUrl() || '');
+      sendJson(res, 200, {
+        ok: true,
+        currentChannel: channel,
+        currentOrigin,
+        tunnelMode: bundle.tunnelMode === 'named' ? 'named' : 'quick',
+        tunnelState: 'stopped',
+        entries: []
+      });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/channels/switch-ticket') {
+      const body = await readJsonBody(req);
+      const draftText = typeof body?.draftText === 'string' ? body.draftText : '';
+      if (Buffer.byteLength(draftText, 'utf8') > 32 * 1024) {
+        sendJson(res, 413, { ok: false, error: 'DRAFT_TOO_LARGE' });
+        return;
+      }
+      const now = Date.now();
+      this._pruneExpiredSwitchTickets(now);
+      while (this.switchTickets.size >= 32) {
+        const oldestKey = this.switchTickets.keys().next().value;
+        if (!oldestKey) break;
+        this.switchTickets.delete(oldestKey);
+      }
+      const ticket = `st_${crypto.randomBytes(24).toString('hex')}`;
+      this.switchTickets.set(ticket, {
+        targetChannel: String(body?.targetChannel || '').trim(),
+        sessionId: typeof body?.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : null,
+        draftText,
+        createdAt: now,
+        expiresAt: now + 30000
+      });
+      sendJson(res, 200, { ok: true, ticket, expiresInMs: 30000 });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/locale') {
+      if (typeof h.getLocale === 'function') {
+        const result = await h.getLocale();
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 200, { ok: true, locale: 'en', supportedLocales: [] });
+      return;
+    }
+
+    if (method === 'PUT' && pathname === '/api/v1/locale') {
+      const body = await readJsonBody(req);
+      if (typeof h.setLocale === 'function') {
+        const result = await h.setLocale(body, { permissionLevel });
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 503, { ok: false, error: 'LOCALE_UNAVAILABLE' });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/diagnostics') {
+      if (typeof h.getDiagnostics === 'function') {
+        const result = await h.getDiagnostics({ req, channel, permissionLevel });
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'readonly-safe',
+        hostControlAvailable: false,
+        checkedAt: Date.now(),
+        summary: { okCount: 0, warnCount: 0, failCount: 0 },
+        checks: []
+      });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/commands') {
+      if (typeof h.listCommands === 'function') {
+        const result = await h.listCommands({ permissionLevel });
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 200, { ok: true, commands: [] });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/commands/run') {
+      const body = await readJsonBody(req);
+      if (typeof h.runCommand === 'function') {
+        const result = await h.runCommand(body, {
+          permissionLevel,
+          channel,
+          requirePermission: (minLevel) => isPermissionAtLeast(permissionLevel, minLevel)
+        });
+        sendResult(res, result);
+        return;
+      }
+      sendJson(res, 403, { ok: false, error: 'COMMAND_FORBIDDEN_ON_MOBILE' });
       return;
     }
 

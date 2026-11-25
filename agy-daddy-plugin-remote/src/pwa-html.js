@@ -6,7 +6,7 @@ function generatePwaHtml(options = {}) {
 <html lang="zh-CN" data-appearance="auto" data-remote-version="${version}">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
   <title>Agy-Daddy Remote Console v${version}</title>
   <style>
     :root {

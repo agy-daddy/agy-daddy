@@ -732,6 +732,14 @@ function createSseBroker(options = {}) {
     };
   }
 
+  function emitTelemetryPatch(tel) {
+    if (disposed || !tel || typeof tel !== 'object') return null;
+    const serialized = JSON.stringify(tel);
+    if (serialized === lastTelemetryJson) return null;
+    lastTelemetryJson = serialized;
+    return emit('telemetry.patch', tel);
+  }
+
   function dispose() {
     if (disposed) return;
     disposed = true;
@@ -758,6 +766,7 @@ function createSseBroker(options = {}) {
   return {
     handleStreamRequest,
     emit,
+    emitTelemetryPatch,
     enqueueMessage,
     listQueue,
     removeQueuedMessage,

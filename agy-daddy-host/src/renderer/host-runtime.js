@@ -2958,6 +2958,12 @@
       }
       if (field.type === 'enum') {
         const allowed = (field.options || []).map((o) => (isPlainObject(o) ? o.value : o));
+        if (field.optionsCommand) {
+          if (allowed.includes(value) || typeof value === 'string') {
+            return { ok: true, value };
+          }
+          return { ok: false, error: `无效选项：${String(value)}` };
+        }
         if (allowed.length > 0 && !allowed.includes(value)) {
           return { ok: false, error: `无效选项：${String(value)}` };
         }
@@ -6869,6 +6875,9 @@
         for (const k of Array.from(state.catalogItems.keys())) {
           if (k.startsWith(prefix)) state.catalogItems.delete(k);
         }
+        for (const k of Array.from(state.comboboxOptions.keys())) {
+          if (k.startsWith(prefix)) state.comboboxOptions.delete(k);
+        }
       };
 
       if (fields.length === 0) {
@@ -6926,15 +6935,50 @@
           state.comboboxOptions.set(comboKey, {
             loaded: Boolean(prevEntry?.loaded),
             loading: true,
+            failed: false,
+            fallback: false,
+            emptyReason: '',
             options: prevEntry?.options || []
           });
           try {
             const res = await executeCommand(p.id, field.optionsCommand, [{ values: valuesSnapshot, fieldKey: field.key }]);
-            const rawList = res?.result?.options || res?.options || (Array.isArray(res?.result) ? res.result : []);
-            const normalized = Array.isArray(rawList) ? rawList.map(normalizeStringOption) : [];
-            state.comboboxOptions.set(comboKey, { loaded: true, loading: false, options: normalized });
+            const payload = (res && isPlainObject(res.result)) ? res.result : (isPlainObject(res) ? res : {});
+            if (res?.ok === false || payload?.ok === false) {
+              throw new Error(payload?.error || res?.error || 'OPTIONS_COMMAND_FAILED');
+            }
+            const rawList = payload.options ?? res?.options ?? (Array.isArray(res?.result) ? res.result : null);
+            if (!Array.isArray(rawList)) {
+              state.comboboxOptions.set(comboKey, {
+                loaded: true,
+                loading: false,
+                failed: true,
+                fallback: true,
+                emptyReason: '',
+                options: prevEntry?.options || []
+              });
+            } else {
+              const normalized = rawList.map(normalizeStringOption);
+              const emptyReasonText = payload.emptyReason !== undefined
+                ? pickLocaleText(payload.emptyReason, '')
+                : '';
+              state.comboboxOptions.set(comboKey, {
+                loaded: true,
+                loading: false,
+                failed: false,
+                fallback: payload.fallback === true,
+                emptyReason: emptyReasonText,
+                options: normalized
+              });
+            }
           } catch {
-            state.comboboxOptions.set(comboKey, { loaded: true, loading: false, options: prevEntry?.options || [] });
+            state.comboboxOptions.set(comboKey, {
+              loaded: true,
+              loading: false,
+              failed: true,
+              fallback: true,
+              emptyReason: '',
+              options: prevEntry?.options || []
+            });
           }
           if (state.settingsMode !== 'closed' && state.selectedPluginId === p.id) {
             renderSettingsBody();
@@ -7254,7 +7298,7 @@
         };
 
         for (const vf of visibleFields) {
-          if (vf.type === 'string' && vf.optionsCommand) {
+          if ((vf.type === 'string' || vf.type === 'enum') && vf.optionsCommand) {
             const comboKey = `${p.id}:${vf.key}`;
             const cached = state.comboboxOptions.get(comboKey);
             if (!cached) {
@@ -7518,21 +7562,89 @@
             sel.className = 'settings-input';
             sel.setAttribute('data-setting-key', field.key);
             sel.setAttribute('aria-label', labelText);
-            for (const opt of field.options || []) {
+
+            const staticOptions = (field.options || []).map(normalizeStringOption);
+            const comboKey = `${p.id}:${field.key}`;
+            const cached = field.optionsCommand ? state.comboboxOptions.get(comboKey) : null;
+            const currentValStr = val !== undefined && val !== null ? String(val) : '';
+
+            let sourceKind = 'static';
+            let resolvedOptions = staticOptions;
+            let enumHintText = '';
+
+            if (field.optionsCommand) {
+              if (cached?.loaded && !cached.failed && !cached.fallback) {
+                sourceKind = 'dynamic';
+                resolvedOptions = Array.isArray(cached.options) ? [...cached.options] : [];
+                if (resolvedOptions.length === 0) {
+                  enumHintText = cached.emptyReason || '当前模型不支持调节思考等级';
+                }
+              } else {
+                sourceKind = cached?.loading ? 'loading' : 'fallback';
+                resolvedOptions = (cached?.loaded && !cached.failed && cached.fallback && Array.isArray(cached.options) && cached.options.length > 0)
+                  ? [...cached.options]
+                  : staticOptions;
+                if (cached?.loaded && (cached.failed || cached.fallback)) {
+                  enumHintText = '宿主模型目录尚未就绪，已回退至默认候选项';
+                }
+              }
+            }
+
+            let hasPreservedValue = false;
+            if (currentValStr !== '' && !resolvedOptions.some((o) => o.value === currentValStr)) {
+              const staticMatch = staticOptions.find((o) => o.value === currentValStr);
+              const baseLbl = staticMatch?.label || currentValStr;
+              resolvedOptions = [
+                {
+                  value: currentValStr,
+                  label: sourceKind === 'dynamic'
+                    ? `${baseLbl}（当前已选 · 目录未返回）`
+                    : `${baseLbl}（当前已选）`,
+                  description: ''
+                },
+                ...resolvedOptions
+              ];
+              hasPreservedValue = true;
+            }
+
+            if (resolvedOptions.length === 0) {
+              resolvedOptions = [
+                {
+                  value: '',
+                  label: enumHintText || '无可用选项',
+                  description: ''
+                }
+              ];
+              sel.disabled = true;
+            }
+
+            sel.setAttribute('data-options-source', sourceKind);
+            if (hasPreservedValue) {
+              sel.setAttribute('data-preserved-value', currentValStr);
+            }
+
+            for (const opt of resolvedOptions) {
               const o = doc.createElement('option');
-              const optVal = isPlainObject(opt) ? opt.value : opt;
-              const optLbl = isPlainObject(opt) ? pickLocaleText(opt.label, String(optVal)) : String(optVal);
-              o.value = String(optVal);
-              o.textContent = optLbl;
-              if (optVal === val) o.selected = true;
+              o.value = opt.value;
+              o.textContent = opt.label;
+              if (opt.value === currentValStr) o.selected = true;
               sel.appendChild(o);
             }
-            sel.value = val !== undefined ? String(val) : '';
+            sel.value = currentValStr !== '' || resolvedOptions.some((o) => o.value === '')
+              ? currentValStr
+              : (resolvedOptions[0]?.value ?? '');
             sel.addEventListener('change', () => {
               void commitFieldValue(field, sel.value);
             });
             fTop.appendChild(sel);
             fRow.appendChild(fTop);
+            if (enumHintText) {
+              const hintEl = doc.createElement('div');
+              hintEl.className = 'ag-field-hint';
+              hintEl.setAttribute('data-enum-options-hint', field.key);
+              hintEl.textContent = enumHintText;
+              fRow.appendChild(hintEl);
+            }
           } else if (field.type === 'number') {
             const input = doc.createElement('input');
             input.type = 'number';
@@ -11354,6 +11466,9 @@
 
     async function openSettings(opts = {}) {
       ensureDomShell();
+      if (state.settingsMode === 'closed') {
+        state.comboboxOptions.clear();
+      }
       if (opts?.safeMode === true) {
         return openSafeModeDiagnostics();
       }

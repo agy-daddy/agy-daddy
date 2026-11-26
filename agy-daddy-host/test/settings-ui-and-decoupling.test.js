@@ -3646,3 +3646,204 @@ test('Settings UI: catalog-filter-sort 支持模型名称/维度过滤、重置�
     await host.dispose();
   }
 });
+
+test('enum 字段支持 optionsCommand 动态选项、新档位校验、已选值保留、不支持提示与离线回退', async () => {
+  const doc = createMockDocument();
+  let mode = 'dynamic'; // 'dynamic' | 'empty' | 'fallback' | 'error'
+  const currentSettings = {
+    carbonThinking: 'high',
+    argonThinking: 'xhigh',
+    neonThinking: 'high'
+  };
+
+  const { fetchFn } = createMockBridgeFetch({
+    '/host/plugins': () => ({ ok: true, plugins: [], catalog: [] }),
+    '/host/settings': (body) => {
+      Object.assign(currentSettings, body.values || {});
+      return { ok: true, values: { ...currentSettings }, changedKeys: Object.keys(body.values || {}) };
+    },
+    '/host/commands/run': (body) => {
+      if (body.commandId !== 'demo.listThinking') return { ok: true, result: {} };
+      const arg = (body.args && body.args[0]) || {};
+      if (mode === 'error') {
+        return { ok: false, error: 'HOST_OFFLINE' };
+      }
+      if (mode === 'fallback') {
+        return {
+          ok: true,
+          result: {
+            ok: true,
+            fallback: true,
+            options: [
+              { value: 'low', label: 'Low' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'high', label: 'High' },
+              { value: 'xhigh', label: 'XHigh' }
+            ]
+          }
+        };
+      }
+      if (mode === 'empty' && arg.fieldKey === 'neonThinking') {
+        return {
+          ok: true,
+          result: {
+            ok: true,
+            fallback: false,
+            supported: false,
+            emptyReason: '当前主控模型不支持调节思考等级',
+            options: []
+          }
+        };
+      }
+      if (arg.fieldKey === 'carbonThinking') {
+        return {
+          ok: true,
+          result: {
+            ok: true,
+            options: [
+              { value: 'minimal', label: 'Minimal · 极速' },
+              { value: 'low', label: 'Low · 快速' }
+            ]
+          }
+        };
+      }
+      if (arg.fieldKey === 'argonThinking') {
+        return {
+          ok: true,
+          result: {
+            ok: true,
+            options: [
+              { value: 'off', label: 'Off · 关闭' },
+              { value: 'medium', label: 'Medium · 均衡' },
+              { value: 'high', label: 'High · 深度' }
+            ]
+          }
+        };
+      }
+      return {
+        ok: true,
+        result: {
+          ok: true,
+          options: [
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' }
+          ]
+        }
+      };
+    }
+  });
+
+  const host = createHostRuntime({
+    document: doc,
+    window: { location: { href: 'https://127.0.0.1:51410/' } },
+    fetch: fetchFn,
+    bridgePort: 19997,
+    hostToken: 'secret-token',
+    anchorsRegistry: buildFullAnchorsRegistry(),
+    pluginMeta: {
+      'demo.thinking': {
+        id: 'demo.thinking',
+        displayName: '动态思考等级测试',
+        trustLevel: 'T0',
+        world: 'isolated',
+        enabled: true,
+        active: true,
+        settingsSchema: {
+          title: '思考等级',
+          fields: [
+            {
+              key: 'carbonThinking',
+              type: 'enum',
+              default: 'high',
+              label: 'Carbon 思考等级',
+              options: [
+                { value: 'low', label: 'Low' },
+                { value: 'medium', label: 'Medium' },
+                { value: 'high', label: 'High' },
+                { value: 'xhigh', label: 'XHigh' }
+              ],
+              optionsCommand: 'demo.listThinking'
+            },
+            {
+              key: 'argonThinking',
+              type: 'enum',
+              default: 'high',
+              label: 'Argon 思考等级',
+              options: [
+                { value: 'low', label: 'Low' },
+                { value: 'medium', label: 'Medium' },
+                { value: 'high', label: 'High' },
+                { value: 'xhigh', label: 'XHigh' }
+              ],
+              optionsCommand: 'demo.listThinking'
+            },
+            {
+              key: 'neonThinking',
+              type: 'enum',
+              default: 'high',
+              label: 'Neon 思考等级',
+              options: [
+                { value: 'low', label: 'Low' },
+                { value: 'medium', label: 'Medium' },
+                { value: 'high', label: 'High' },
+                { value: 'xhigh', label: 'XHigh' }
+              ],
+              optionsCommand: 'demo.listThinking'
+            }
+          ]
+        },
+        settingsValues: { ...currentSettings }
+      }
+    }
+  });
+
+  try {
+    // 1. 动态渲染真实支持档位 + 保留不在动态列表中的已选值
+    await host.openSettings({ tab: 'plugins', pluginId: 'demo.thinking' });
+    await new Promise((r) => setTimeout(r, 40));
+    const shadow = doc.getElementById('agy-daddy-host').shadowRoot;
+
+    const carbonSel = shadow.querySelector('[data-setting-key="carbonThinking"]');
+    assert.equal(carbonSel.getAttribute('data-options-source'), 'dynamic');
+    assert.equal(carbonSel.getAttribute('data-preserved-value'), 'high');
+    assert.equal(carbonSel.value, 'high');
+    // 已保留 high + 动态返回 minimal, low 共 3 项（不硬编码补齐 medium/xhigh）
+    assert.deepEqual(Array.from(carbonSel.children).map((o) => o.value), ['high', 'minimal', 'low']);
+
+    // 切换至动态新档位 minimal，不被本地校验拦截
+    carbonSel.value = 'minimal';
+    carbonSel.dispatchEvent({ type: 'change', target: carbonSel });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(host.getPluginSettings('demo.thinking').carbonThinking, 'minimal');
+
+    const argonSel = shadow.querySelector('[data-setting-key="argonThinking"]');
+    argonSel.value = 'off';
+    argonSel.dispatchEvent({ type: 'change', target: argonSel });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(host.getPluginSettings('demo.thinking').argonThinking, 'off');
+
+    // 2. 不支持思考等级时如实展示提示且不伪造 4 档（同时保留原值可见）
+    host.closeSettings();
+    mode = 'empty';
+    await host.openSettings({ tab: 'plugins', pluginId: 'demo.thinking' });
+    await new Promise((r) => setTimeout(r, 40));
+    const neonSelEmpty = shadow.querySelector('[data-setting-key="neonThinking"]');
+    assert.equal(neonSelEmpty.getAttribute('data-options-source'), 'dynamic');
+    assert.equal(neonSelEmpty.getAttribute('data-preserved-value'), 'high');
+    assert.deepEqual(Array.from(neonSelEmpty.children).map((o) => o.value), ['high']);
+    assert.match(shadow.querySelector('[data-enum-options-hint="neonThinking"]')?.textContent || '', /不支持/);
+
+    // 3. 命令报错时优雅回退至静态 field.options，且保留当前已保存的 off 值
+    host.closeSettings();
+    mode = 'error';
+    await host.openSettings({ tab: 'plugins', pluginId: 'demo.thinking' });
+    await new Promise((r) => setTimeout(r, 40));
+    const argonFallback = shadow.querySelector('[data-setting-key="argonThinking"]');
+    assert.equal(argonFallback.getAttribute('data-options-source'), 'fallback');
+    assert.equal(argonFallback.getAttribute('data-preserved-value'), 'off');
+    assert.equal(argonFallback.value, 'off');
+    assert.ok(shadow.querySelector('[data-enum-options-hint="argonThinking"]'));
+  } finally {
+    await host.dispose();
+  }
+});

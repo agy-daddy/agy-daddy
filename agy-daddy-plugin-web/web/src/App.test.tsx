@@ -1086,4 +1086,288 @@ describe('App optimistic send flow', () => {
       { timeout: 5000 },
     );
   });
+
+  it('HUB-332: sends browser notifications only when enabled, granted, and page inactive, and handles click focus', async () => {
+    const originalNotification = window.Notification;
+    const originalHasFocus = document.hasFocus;
+    const originalVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+
+    const createdNotifications: Array<{
+      title: string;
+      options?: NotificationOptions;
+      close: ReturnType<typeof vi.fn>;
+      onclick: ((this: Notification, ev: Event) => unknown) | null;
+    }> = [];
+    let mockPermission: NotificationPermission = 'default';
+    const requestPermission = vi.fn().mockImplementation(async () => {
+      mockPermission = 'granted';
+      return 'granted' as NotificationPermission;
+    });
+
+    const MockNotification = vi.fn().mockImplementation(function (
+      this: Record<string, unknown>,
+      title: string,
+      options?: NotificationOptions,
+    ) {
+      const inst = {
+        title,
+        options,
+        close: vi.fn(),
+        onclick: null as ((this: Notification, ev: Event) => unknown) | null,
+      };
+      createdNotifications.push(inst);
+      return inst;
+    }) as unknown as typeof Notification;
+
+    Object.defineProperty(MockNotification, 'permission', {
+      configurable: true,
+      get: () => mockPermission,
+    });
+    (MockNotification as unknown as { requestPermission: typeof requestPermission }).requestPermission =
+      requestPermission;
+
+    Object.defineProperty(window, 'Notification', {
+      configurable: true,
+      writable: true,
+      value: MockNotification,
+    });
+
+    const windowFocusSpy = vi.spyOn(window, 'focus').mockImplementation(() => {});
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    document.hasFocus = vi.fn(() => false);
+
+    try {
+      mocks.listSessions.mockResolvedValue({
+        ok: true,
+        sessions: [
+          {
+            cascadeId: 'sess-1',
+            title: 'Session One',
+            summary: '',
+            status: 'CASCADE_RUN_STATUS_RUNNING',
+            stepCount: 1,
+            lastModifiedTime: '2026-11-26T00:00:00Z',
+            createdTime: '2026-11-26T00:00:00Z',
+            workspaceUri: null,
+            gitRootUri: null,
+            repoName: null,
+            branchName: null,
+            workspaces: [],
+          },
+          {
+            cascadeId: 'sess-2',
+            title: 'Session Two',
+            summary: '',
+            status: 'CASCADE_RUN_STATUS_IDLE',
+            stepCount: 1,
+            lastModifiedTime: '2026-11-26T00:01:00Z',
+            createdTime: '2026-11-26T00:00:00Z',
+            workspaceUri: null,
+            gitRootUri: null,
+            repoName: null,
+            branchName: null,
+            workspaces: [],
+          },
+        ],
+      });
+      mocks.getSessionDetail.mockResolvedValue({
+        ok: true,
+        session: {
+          cascadeId: 'sess-1',
+          trajectoryId: null,
+          trajectoryType: null,
+          status: 'CASCADE_RUN_STATUS_RUNNING',
+          numTotalSteps: 1,
+          source: null,
+          metadata: null,
+          generatorMetadata: [],
+        },
+        events: [makeUserEvent(0, 'Start task')],
+      });
+      mocks.getPluginSettings.mockResolvedValue({
+        ok: true,
+        values: { enableNotifications: false },
+      });
+      mocks.listBackgroundTasks.mockResolvedValue({
+        ok: true,
+        runningCount: 1,
+        totalRunningCount: 1,
+        running: [
+          {
+            taskId: 'cmd:sess-2:1',
+            kind: 'command',
+            title: 'npm run build',
+            commandLine: 'npm run build',
+            cwd: '/workspace',
+            projectPath: '/workspace',
+            projectName: 'workspace',
+            sessionId: 'sess-2',
+            sessionTitle: 'Session Two',
+            status: 'running',
+            startedAt: '2026-11-26T00:00:00Z',
+            endedAt: null,
+            durationMs: 1000,
+            exitCode: null,
+            stopCapability: { supported: true, scope: 'cascade_invocation', reason: null },
+          },
+        ],
+        recent: [],
+        serverTime: Date.now(),
+      });
+      mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+        mockSseCallbacks.onDelta = cbs.onDelta;
+        mockSseCallbacks.onStatePatch = cbs.onStatePatch;
+        mockSseCallbacks.onTaskUpdated = cbs.onTaskUpdated;
+        return () => {};
+      });
+
+      renderApp();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Session One');
+      });
+
+      // Never auto-requests permission on page load
+      expect(requestPermission).not.toHaveBeenCalled();
+
+      // Even if browser permission is granted, enableNotifications=false strictly blocks notifications
+      mockPermission = 'granted';
+      act(() => {
+        mockSseCallbacks.onDelta?.({
+          cascadeId: 'sess-1',
+          status: 'CASCADE_RUN_STATUS_RUNNING',
+          totalSteps: 2,
+          events: [
+            {
+              seq: 1,
+              kind: 'command',
+              status: 'pending',
+              rawType: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+              title: 'Run dangerous command',
+              payload: { commandLine: 'rm -rf tmp' },
+            },
+          ],
+        });
+      });
+      expect(MockNotification).not.toHaveBeenCalled();
+
+      // Enable via SSE state.patch while browser permission is 'default' -> shows explicit grant banner
+      mockPermission = 'default';
+      act(() => {
+        mockSseCallbacks.onStatePatch?.({
+          key: 'state:plugin.settings@1',
+          value: { pluginId: 'agy-daddy.web', values: { enableNotifications: true } },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('notification-grant-btn')).toBeInTheDocument();
+      });
+      expect(requestPermission).not.toHaveBeenCalled();
+
+      // Clicking explicit grant button requests permission
+      fireEvent.click(screen.getByTestId('notification-grant-btn'));
+      await waitFor(() => {
+        expect(requestPermission).toHaveBeenCalledTimes(1);
+        expect(screen.queryByTestId('notification-permission-banner')).not.toBeInTheDocument();
+      });
+
+      // Now trigger agent approval step while page is hidden -> notifies
+      act(() => {
+        mockSseCallbacks.onDelta?.({
+          cascadeId: 'sess-1',
+          status: 'CASCADE_RUN_STATUS_RUNNING',
+          totalSteps: 3,
+          events: [
+            {
+              seq: 2,
+              kind: 'command',
+              status: 'pending',
+              rawType: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+              title: 'Approve deploy',
+              payload: { commandLine: 'npm publish' },
+            },
+          ],
+        });
+      });
+      expect(createdNotifications).toHaveLength(1);
+      expect(createdNotifications[0].title).toContain('Session One');
+
+      // Trigger agent run completion -> notifies
+      act(() => {
+        mockSseCallbacks.onDelta?.({
+          cascadeId: 'sess-1',
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          totalSteps: 3,
+          events: [],
+        });
+      });
+      expect(createdNotifications).toHaveLength(2);
+
+      // Trigger Task Manager transition running -> done -> notifies and clicking selects sess-2 + opens task detail
+      mocks.listBackgroundTasks.mockResolvedValue({
+        ok: true,
+        runningCount: 0,
+        totalRunningCount: 0,
+        running: [],
+        recent: [
+          {
+            taskId: 'cmd:sess-2:1',
+            kind: 'command',
+            title: 'npm run build',
+            commandLine: 'npm run build',
+            cwd: '/workspace',
+            projectPath: '/workspace',
+            projectName: 'workspace',
+            sessionId: 'sess-2',
+            sessionTitle: 'Session Two',
+            status: 'done',
+            startedAt: '2026-11-26T00:00:00Z',
+            endedAt: '2026-11-26T00:01:00Z',
+            durationMs: 60000,
+            exitCode: 0,
+            stopCapability: { supported: false, scope: 'none', reason: 'already_finished' },
+          },
+        ],
+        serverTime: Date.now(),
+      });
+
+      act(() => {
+        mockSseCallbacks.onTaskUpdated?.({ runningCount: 0 });
+      });
+
+      await waitFor(() => {
+        expect(createdNotifications).toHaveLength(3);
+      });
+      expect(createdNotifications[2].title).toContain('npm run build');
+
+      // Click the task notification -> window.focus(), close(), switches to sess-2
+      act(() => {
+        createdNotifications[2].onclick?.call(
+          createdNotifications[2] as unknown as Notification,
+          new Event('click'),
+        );
+      });
+      expect(windowFocusSpy).toHaveBeenCalled();
+      expect(createdNotifications[2].close).toHaveBeenCalled();
+      await waitFor(() => {
+        expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Session Two');
+      });
+    } finally {
+      Object.defineProperty(window, 'Notification', {
+        configurable: true,
+        writable: true,
+        value: originalNotification,
+      });
+      document.hasFocus = originalHasFocus;
+      if (originalVisibility) {
+        Object.defineProperty(document, 'visibilityState', originalVisibility);
+      } else {
+        delete (document as { visibilityState?: unknown }).visibilityState;
+      }
+    }
+  });
 });

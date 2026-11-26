@@ -553,4 +553,145 @@ describe('TopbarCapsules & HostAdminModal (Modules 2 & 5)', () => {
       expect(JSON.parse(String(puts[0][1]?.body))).toEqual({ patch: { colorTheme: 'blue' } });
     });
   });
+
+  it('renders field groups and requests notification permission only when enableNotifications is turned on', async () => {
+    const user = userEvent.setup();
+    const requestPermission = vi.fn().mockResolvedValue('granted');
+    const originalNotification = window.Notification;
+    const MockNotification = vi.fn() as unknown as typeof Notification;
+    Object.defineProperty(MockNotification, 'permission', {
+      configurable: true,
+      get: () => 'default',
+    });
+    (MockNotification as unknown as { requestPermission: typeof requestPermission }).requestPermission =
+      requestPermission;
+    Object.defineProperty(window, 'Notification', {
+      configurable: true,
+      writable: true,
+      value: MockNotification,
+    });
+
+    const onWebSettingsUpdated = vi.fn();
+    let storedValues: Record<string, unknown> = { enableNotifications: false };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/v1/host/plugins?')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            plugins: [
+              {
+                id: 'agy-daddy.web',
+                displayName: 'PC Web Workbench',
+                version: '1.1.1',
+                trustLevel: 'T0',
+                badge: 'built-in',
+                world: 'isolated',
+                enabled: true,
+                active: true,
+                hasNative: false,
+                hasRollback: false,
+                permissions: [],
+                sourceKind: 'builtin',
+                sourceSpec: 'builtin',
+              },
+            ],
+            catalog: [],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith('/api/v1/host/plugins/agy-daddy.web/settings') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body));
+        storedValues = { ...storedValues, ...body.patch };
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            values: { ...storedValues },
+            schema: {
+              version: 1,
+              fields: [
+                {
+                  key: 'enableNotifications',
+                  type: 'boolean',
+                  default: false,
+                  group: { en: 'Notifications & Alerts', 'zh-CN': '通知与提醒' },
+                  label: { en: 'Browser Notifications', 'zh-CN': '浏览器系统通知' },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith('/api/v1/host/plugins/agy-daddy.web/settings')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            values: { ...storedValues },
+            schema: {
+              version: 1,
+              fields: [
+                {
+                  key: 'enableNotifications',
+                  type: 'boolean',
+                  default: false,
+                  group: { en: 'Notifications & Alerts', 'zh-CN': '通知与提醒' },
+                  label: { en: 'Browser Notifications', 'zh-CN': '浏览器系统通知' },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      render(
+        <I18nProvider defaultLocale="en">
+          <ThemeProvider>
+            <HostAdminModal
+              open
+              initialSelectedPluginId="agy-daddy.web"
+              channel="loopback"
+              permissionLevel="L2"
+              onClose={vi.fn()}
+              onWebSettingsUpdated={onWebSettingsUpdated}
+            />
+          </ThemeProvider>
+        </I18nProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByText('Notifications & Alerts')).toBeInTheDocument());
+      const checkbox = screen.getByRole('checkbox', { name: /Browser Notifications/i }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
+
+      // Saving while disabled never requests permission
+      await user.click(screen.getByRole('button', { name: /Save Settings/i }));
+      await waitFor(() => expect(onWebSettingsUpdated).toHaveBeenCalledWith({ enableNotifications: false }));
+      expect(requestPermission).not.toHaveBeenCalled();
+
+      // Re-query checkbox after HostAdminModal finishes reloading scoped settings
+      const reloadedCheckbox = (await screen.findByRole('checkbox', {
+        name: /Browser Notifications/i,
+      })) as HTMLInputElement;
+      await waitFor(() => expect(reloadedCheckbox).not.toBeDisabled());
+
+      // Enabling and saving triggers Notification.requestPermission() once
+      await user.click(reloadedCheckbox);
+      expect(reloadedCheckbox.checked).toBe(true);
+      await user.click(screen.getByRole('button', { name: /Save Settings/i }));
+      await waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+      expect(onWebSettingsUpdated).toHaveBeenLastCalledWith({ enableNotifications: true });
+    } finally {
+      Object.defineProperty(window, 'Notification', {
+        configurable: true,
+        writable: true,
+        value: originalNotification,
+      });
+    }
+  });
 });

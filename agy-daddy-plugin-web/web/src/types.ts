@@ -1108,6 +1108,7 @@ export interface SettingsEnumOption {
 export interface SettingsSchemaField {
   key: string;
   type: SettingsFieldType;
+  group?: LocalizedText;
   label?: LocalizedText;
   description?: LocalizedText;
   default?: unknown;
@@ -1345,6 +1346,7 @@ export interface WebAccessStatusResponse {
   allowRemoteWrite?: boolean;
   tunnelHostname?: string;
   cloudflareState?: CloudflareStateInfo | null;
+  enableNotifications?: boolean;
 }
 
 export interface OptimizePromptResponse {

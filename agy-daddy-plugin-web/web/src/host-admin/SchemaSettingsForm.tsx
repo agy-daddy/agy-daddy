@@ -329,6 +329,262 @@ export function SchemaSettingsForm({
     }
   };
 
+  const renderField = (field: SettingsSchemaField) => {
+    const inputId = `${baseId}-${field.key}`;
+    const labelText = localizeText(field.label, locale) || field.key;
+    const fieldDesc = localizeText(field.description, locale);
+    const fieldErr = fieldErrors[field.key];
+    const secret = isSecretField(field, secretState);
+
+    if (field.type === 'boolean') {
+      return (
+        <div key={field.key} className={`${styles.fieldRow} ${styles.fieldRowInline}`}>
+          <div>
+            <label htmlFor={inputId} className={styles.fieldLabel}>
+              {labelText}
+            </label>
+            {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+          </div>
+          <input
+            id={inputId}
+            type="checkbox"
+            className={styles.checkbox}
+            checked={Boolean(draft[field.key])}
+            disabled={isFormDisabled}
+            onChange={(e) =>
+              setDraft((prev) => ({
+                ...prev,
+                [field.key]: e.target.checked,
+              }))
+            }
+          />
+        </div>
+      );
+    }
+
+    if (field.type === 'enum') {
+      const options = (field.options || []).map((opt) => normalizeEnumOption(opt, locale));
+      return (
+        <div key={field.key} className={styles.fieldRow}>
+          <label htmlFor={inputId} className={styles.fieldLabel}>
+            {labelText}
+          </label>
+          {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+          <select
+            id={inputId}
+            className={styles.select}
+            value={String(draft[field.key] ?? '')}
+            disabled={isFormDisabled}
+            onChange={(e) =>
+              setDraft((prev) => ({
+                ...prev,
+                [field.key]: e.target.value,
+              }))
+            }
+          >
+            {options.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
+        </div>
+      );
+    }
+
+    if (field.type === 'number') {
+      return (
+        <div key={field.key} className={styles.fieldRow}>
+          <label htmlFor={inputId} className={styles.fieldLabel}>
+            {labelText}
+          </label>
+          {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+          <input
+            id={inputId}
+            type="number"
+            className={styles.input}
+            min={field.min}
+            max={field.max}
+            value={numberDrafts[field.key] ?? ''}
+            placeholder={localizeText(field.placeholder, locale)}
+            disabled={isFormDisabled}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              setNumberDrafts((prev) => ({ ...prev, [field.key]: nextVal }));
+              setFieldErrors((prev) => {
+                if (!prev[field.key]) return prev;
+                const next = { ...prev };
+                delete next[field.key];
+                return next;
+              });
+            }}
+          />
+          {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
+        </div>
+      );
+    }
+
+    if (field.type === 'list') {
+      const items = Array.isArray(draft[field.key]) ? (draft[field.key] as string[]) : [];
+      const atLimit = typeof field.maxItems === 'number' && items.length >= field.maxItems;
+      const listPlaceholder = localizeText(field.placeholder, locale) || t('schema.addItemPlaceholder');
+      return (
+        <div key={field.key} className={styles.fieldRow}>
+          <div className={styles.fieldHeader}>
+            <label htmlFor={inputId} className={styles.fieldLabel}>
+              {labelText}
+            </label>
+            {typeof field.maxItems === 'number' && (
+              <span className={styles.listHint}>
+                {items.length} / {field.maxItems}
+              </span>
+            )}
+          </div>
+          {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+          <div className={styles.listContainer}>
+            {items.length > 0 && (
+              <div className={styles.listChips}>
+                {items.map((item, idx) => (
+                  <span key={`${item}-${idx}`} className={styles.listChip}>
+                    <span>{item}</span>
+                    <button
+                      type="button"
+                      className={styles.listRemoveBtn}
+                      aria-label={t('schema.removeItem', { item })}
+                      disabled={isFormDisabled}
+                      onClick={() => handleRemoveListItem(field.key, idx)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className={styles.inputGroup}>
+              <input
+                id={inputId}
+                type="text"
+                className={styles.input}
+                value={listInputs[field.key] ?? ''}
+                placeholder={listPlaceholder}
+                disabled={isFormDisabled || atLimit}
+                onChange={(e) =>
+                  setListInputs((prev) => ({ ...prev, [field.key]: e.target.value }))
+                }
+                onKeyDown={(e) => handleListKeyDown(e, field)}
+              />
+              <button
+                type="button"
+                className={styles.smallBtn}
+                disabled={isFormDisabled || atLimit}
+                onClick={() => handleAddListItem(field)}
+              >
+                {t('schema.add')}
+              </button>
+            </div>
+          </div>
+          {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
+        </div>
+      );
+    }
+
+    if (secret) {
+      const meta = getSecretMeta(field, values, secretState);
+      const revealed = Boolean(revealedSecrets[field.key]);
+      const placeholder =
+        meta.masked ||
+        localizeText(field.placeholder, locale) ||
+        (meta.configured ? t('schema.secretKeepExisting') : t('schema.secretInputPlaceholder'));
+
+      return (
+        <div key={field.key} className={styles.fieldRow}>
+          <div className={styles.fieldHeader}>
+            <label htmlFor={inputId} className={styles.fieldLabel}>
+              {labelText}
+            </label>
+            <span
+              className={`${styles.secretBadge} ${!meta.configured ? styles.secretBadgeUnset : ''}`.trim()}
+            >
+              {meta.configured ? t('schema.secretConfigured') : t('schema.secretUnset')}
+            </span>
+          </div>
+          {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+          <div className={styles.inputGroup}>
+            <input
+              id={inputId}
+              type={revealed ? 'text' : 'password'}
+              className={styles.input}
+              autoComplete="off"
+              value={secretDrafts[field.key] ?? ''}
+              placeholder={placeholder}
+              disabled={isFormDisabled}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSecretDrafts((prev) => ({ ...prev, [field.key]: next }));
+                setDirtySecrets((prev) => ({ ...prev, [field.key]: next.length > 0 }));
+              }}
+            />
+            <button
+              type="button"
+              className={styles.smallBtn}
+              onClick={() =>
+                setRevealedSecrets((prev) => ({ ...prev, [field.key]: !prev[field.key] }))
+              }
+            >
+              {revealed ? t('schema.hide') : t('schema.show')}
+            </button>
+          </div>
+          {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
+        </div>
+      );
+    }
+
+    return (
+      <div key={field.key} className={styles.fieldRow}>
+        <label htmlFor={inputId} className={styles.fieldLabel}>
+          {labelText}
+        </label>
+        {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+        <input
+          id={inputId}
+          type="text"
+          className={styles.input}
+          value={String(draft[field.key] ?? '')}
+          placeholder={localizeText(field.placeholder, locale)}
+          disabled={isFormDisabled}
+          onChange={(e) =>
+            setDraft((prev) => ({
+              ...prev,
+              [field.key]: e.target.value,
+            }))
+          }
+        />
+        {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
+      </div>
+    );
+  };
+
+  const fieldsList = schema.fields || [];
+  const hasGroups = fieldsList.some((f) => Boolean(localizeText(f.group, locale)));
+  const groupedBuckets = hasGroups
+    ? Array.from(
+        fieldsList
+          .reduce((acc, field) => {
+            const title = localizeText(field.group, locale);
+            const key = title || '__default__';
+            const existing = acc.get(key);
+            if (existing) {
+              existing.fields.push(field);
+            } else {
+              acc.set(key, { key, title, fields: [field] });
+            }
+            return acc;
+          }, new Map<string, { key: string; title: string; fields: SettingsSchemaField[] }>())
+          .values(),
+      )
+    : null;
+
   return (
     <form className={`${styles.form} ${className || ''}`.trim()} onSubmit={handleSubmit} noValidate>
       {(titleText || descText) && (
@@ -339,241 +595,18 @@ export function SchemaSettingsForm({
       )}
 
       <div className={styles.fields}>
-        {(schema.fields || []).map((field) => {
-          const inputId = `${baseId}-${field.key}`;
-          const labelText = localizeText(field.label, locale) || field.key;
-          const fieldDesc = localizeText(field.description, locale);
-          const fieldErr = fieldErrors[field.key];
-          const secret = isSecretField(field, secretState);
-
-          if (field.type === 'boolean') {
-            return (
-              <div key={field.key} className={`${styles.fieldRow} ${styles.fieldRowInline}`}>
-                <div>
-                  <label htmlFor={inputId} className={styles.fieldLabel}>
-                    {labelText}
-                  </label>
-                  {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
+        {groupedBuckets
+          ? groupedBuckets.map((bucket) =>
+              bucket.title ? (
+                <div key={bucket.key} className={styles.groupBlock}>
+                  <div className={styles.groupTitle}>{bucket.title}</div>
+                  {bucket.fields.map(renderField)}
                 </div>
-                <input
-                  id={inputId}
-                  type="checkbox"
-                  className={styles.checkbox}
-                  checked={Boolean(draft[field.key])}
-                  disabled={isFormDisabled}
-                  onChange={(e) =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      [field.key]: e.target.checked,
-                    }))
-                  }
-                />
-              </div>
-            );
-          }
-
-          if (field.type === 'enum') {
-            const options = (field.options || []).map((opt) => normalizeEnumOption(opt, locale));
-            return (
-              <div key={field.key} className={styles.fieldRow}>
-                <label htmlFor={inputId} className={styles.fieldLabel}>
-                  {labelText}
-                </label>
-                {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
-                <select
-                  id={inputId}
-                  className={styles.select}
-                  value={String(draft[field.key] ?? '')}
-                  disabled={isFormDisabled}
-                  onChange={(e) =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      [field.key]: e.target.value,
-                    }))
-                  }
-                >
-                  {options.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
-              </div>
-            );
-          }
-
-          if (field.type === 'number') {
-            return (
-              <div key={field.key} className={styles.fieldRow}>
-                <label htmlFor={inputId} className={styles.fieldLabel}>
-                  {labelText}
-                </label>
-                {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
-                <input
-                  id={inputId}
-                  type="number"
-                  className={styles.input}
-                  min={field.min}
-                  max={field.max}
-                  value={numberDrafts[field.key] ?? ''}
-                  placeholder={localizeText(field.placeholder, locale)}
-                  disabled={isFormDisabled}
-                  onChange={(e) => {
-                    const nextVal = e.target.value;
-                    setNumberDrafts((prev) => ({ ...prev, [field.key]: nextVal }));
-                    setFieldErrors((prev) => {
-                      if (!prev[field.key]) return prev;
-                      const next = { ...prev };
-                      delete next[field.key];
-                      return next;
-                    });
-                  }}
-                />
-                {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
-              </div>
-            );
-          }
-
-          if (field.type === 'list') {
-            const items = Array.isArray(draft[field.key]) ? (draft[field.key] as string[]) : [];
-            const atLimit = typeof field.maxItems === 'number' && items.length >= field.maxItems;
-            const listPlaceholder = localizeText(field.placeholder, locale) || t('schema.addItemPlaceholder');
-            return (
-              <div key={field.key} className={styles.fieldRow}>
-                <div className={styles.fieldHeader}>
-                  <label htmlFor={inputId} className={styles.fieldLabel}>
-                    {labelText}
-                  </label>
-                  {typeof field.maxItems === 'number' && (
-                    <span className={styles.listHint}>
-                      {items.length} / {field.maxItems}
-                    </span>
-                  )}
-                </div>
-                {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
-                <div className={styles.listContainer}>
-                  {items.length > 0 && (
-                    <div className={styles.listChips}>
-                      {items.map((item, idx) => (
-                        <span key={`${item}-${idx}`} className={styles.listChip}>
-                          <span>{item}</span>
-                          <button
-                            type="button"
-                            className={styles.listRemoveBtn}
-                            aria-label={t('schema.removeItem', { item })}
-                            disabled={isFormDisabled}
-                            onClick={() => handleRemoveListItem(field.key, idx)}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className={styles.inputGroup}>
-                    <input
-                      id={inputId}
-                      type="text"
-                      className={styles.input}
-                      value={listInputs[field.key] ?? ''}
-                      placeholder={listPlaceholder}
-                      disabled={isFormDisabled || atLimit}
-                      onChange={(e) =>
-                        setListInputs((prev) => ({ ...prev, [field.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => handleListKeyDown(e, field)}
-                    />
-                    <button
-                      type="button"
-                      className={styles.smallBtn}
-                      disabled={isFormDisabled || atLimit}
-                      onClick={() => handleAddListItem(field)}
-                    >
-                      {t('schema.add')}
-                    </button>
-                  </div>
-                </div>
-                {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
-              </div>
-            );
-          }
-
-          if (secret) {
-            const meta = getSecretMeta(field, values, secretState);
-            const revealed = Boolean(revealedSecrets[field.key]);
-            const placeholder =
-              meta.masked ||
-              localizeText(field.placeholder, locale) ||
-              (meta.configured ? t('schema.secretKeepExisting') : t('schema.secretInputPlaceholder'));
-
-            return (
-              <div key={field.key} className={styles.fieldRow}>
-                <div className={styles.fieldHeader}>
-                  <label htmlFor={inputId} className={styles.fieldLabel}>
-                    {labelText}
-                  </label>
-                  <span
-                    className={`${styles.secretBadge} ${!meta.configured ? styles.secretBadgeUnset : ''}`.trim()}
-                  >
-                    {meta.configured ? t('schema.secretConfigured') : t('schema.secretUnset')}
-                  </span>
-                </div>
-                {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
-                <div className={styles.inputGroup}>
-                  <input
-                    id={inputId}
-                    type={revealed ? 'text' : 'password'}
-                    className={styles.input}
-                    autoComplete="off"
-                    value={secretDrafts[field.key] ?? ''}
-                    placeholder={placeholder}
-                    disabled={isFormDisabled}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setSecretDrafts((prev) => ({ ...prev, [field.key]: next }));
-                      setDirtySecrets((prev) => ({ ...prev, [field.key]: next.length > 0 }));
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className={styles.smallBtn}
-                    onClick={() =>
-                      setRevealedSecrets((prev) => ({ ...prev, [field.key]: !prev[field.key] }))
-                    }
-                  >
-                    {revealed ? t('schema.hide') : t('schema.show')}
-                  </button>
-                </div>
-                {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
-              </div>
-            );
-          }
-
-          return (
-            <div key={field.key} className={styles.fieldRow}>
-              <label htmlFor={inputId} className={styles.fieldLabel}>
-                {labelText}
-              </label>
-              {fieldDesc && <div className={styles.fieldDesc}>{fieldDesc}</div>}
-              <input
-                id={inputId}
-                type="text"
-                className={styles.input}
-                value={String(draft[field.key] ?? '')}
-                placeholder={localizeText(field.placeholder, locale)}
-                disabled={isFormDisabled}
-                onChange={(e) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    [field.key]: e.target.value,
-                  }))
-                }
-              />
-              {fieldErr && <div className={styles.fieldError}>{fieldErr}</div>}
-            </div>
-          );
-        })}
+              ) : (
+                bucket.fields.map(renderField)
+              ),
+            )
+          : fieldsList.map(renderField)}
       </div>
 
       {schema.actions && schema.actions.length > 0 && (

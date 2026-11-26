@@ -725,7 +725,8 @@ async function activate(host) {
   taskManager = createTaskManager({
     rpc: host.rpc,
     harnessAdapter,
-    ptyManager
+    ptyManager,
+    workspaceMetaStore
   });
   runtime.ptyManager = ptyManager;
   runtime.sideChatService = sideChatService;

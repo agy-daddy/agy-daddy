@@ -430,6 +430,9 @@ class WebServer {
 
     const parsedBurst = options.burstWindowMs === undefined ? DEFAULT_BURST_WINDOW_MS : Number(options.burstWindowMs);
     this.burstWindowMs = Number.isFinite(parsedBurst) && parsedBurst >= 0 ? parsedBurst : DEFAULT_BURST_WINDOW_MS;
+    this.sessionDetailTimeoutMs = Number.isFinite(Number(options.sessionDetailTimeoutMs)) && Number(options.sessionDetailTimeoutMs) > 0
+      ? Number(options.sessionDetailTimeoutMs)
+      : 15000;
 
     this.server = null;
     this.port = null;
@@ -1489,7 +1492,32 @@ class WebServer {
       if (method === 'GET' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)$/))) {
         const adapter = this._requireDep(this.harnessAdapter, 'HARNESS_ADAPTER');
         const id = decodeURIComponent(match[1]);
-        const result = await adapter.getSessionDetail(id);
+        const result = await new Promise((resolve, reject) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            const err = new Error('Session timeline request timed out');
+            err.statusCode = 504;
+            err.code = 'SESSION_DETAIL_TIMEOUT';
+            reject(err);
+          }, this.sessionDetailTimeoutMs);
+          timer.unref?.();
+          Promise.resolve(adapter.getSessionDetail(id)).then(
+            (val) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve(val);
+            },
+            (err) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              reject(err);
+            }
+          );
+        });
         if (!result) {
           sendJson(res, 404, { ok: false, error: 'SESSION_NOT_FOUND' });
           return;
@@ -2275,7 +2303,9 @@ class WebServer {
 
       if (method === 'GET' && pathname === '/api/v1/tasks') {
         const mgr = this._requireDep(this.taskManager, 'TASK_MANAGER');
-        const result = await mgr.listTasks();
+        const sessionId = String(urlObj.searchParams.get('sessionId') || '').trim() || null;
+        const project = String(urlObj.searchParams.get('project') || '').trim() || null;
+        const result = await mgr.listTasks({ sessionId, project });
         sendActionResult(res, result);
         return;
       }
@@ -2295,7 +2325,7 @@ class WebServer {
         if (result?.ok) {
           const listRes = await mgr.listTasks().catch(() => null);
           this.broadcast('task.updated', {
-            runningCount: listRes?.runningCount ?? 0,
+            runningCount: listRes?.totalRunningCount ?? listRes?.runningCount ?? 0,
             taskId,
             status: result.status
           });

@@ -107,7 +107,7 @@ test('静态门禁：workspace-meta-store.js 零外部依赖且不含禁用主�
   }
 });
 
-test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺失库优雅降级', async () => {
+test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺失库优雅降级', () => {
   const prevTestMode = process.env.AGY_DADDY_TEST_MODE;
   process.env.AGY_DADDY_TEST_MODE = '1';
   const tmpDir = makeTempDir('agy-meta-db-');
@@ -127,11 +127,14 @@ test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺�
     ]);
 
     const storage = createInMemoryStorage();
+    const conversationDbTtlMs = 1500;
+    let nowMs = 0;
     const store = createWorkspaceMetaStore({
       storage,
       conversationDbPath: dbPath,
       sharedReadStatePath: null,
-      conversationDbTtlMs: 80
+      conversationDbTtlMs,
+      now: () => nowMs
     });
 
     const enriched1 = store.enrichSessions([
@@ -152,7 +155,7 @@ test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺�
     assert.equal(enriched1[0].summary, 'DB preview summary text');
     assert.equal(enriched1[0].isRunning, true); // dbRow.not_fully_idle = 1
 
-    // Mutate DB directly: within TTL cache window, old title remains cached
+    // Mutate DB directly: within 1.5s TTL cache window, old title remains cached
     const db = new DatabaseSync(dbPath);
     try {
       db.prepare('UPDATE conversation_summaries SET title = ?, not_fully_idle = 0 WHERE conversation_id = ?')
@@ -161,6 +164,7 @@ test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺�
       db.close();
     }
 
+    nowMs = conversationDbTtlMs - 1;
     const cachedRes = store.enrichSessions([
       {
         cascadeId: 'cid-hydrated',
@@ -172,9 +176,10 @@ test('W1: conversation_summaries.db 只读补全、1.5s TTL 缓存与损坏/缺�
       }
     ]);
     assert.equal(cachedRes[0].title, 'DB Title Hydrated');
+    assert.equal(cachedRes[0].isRunning, true);
 
-    // After TTL expires, fresh DB values are loaded
-    await new Promise((r) => setTimeout(r, 100));
+    // Once controllable clock reaches TTL boundary, fresh DB values are loaded
+    nowMs = conversationDbTtlMs;
     const freshRes = store.enrichSessions([
       {
         cascadeId: 'cid-hydrated',

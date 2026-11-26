@@ -544,13 +544,13 @@ test('CLI launcher 平滑接管已运行的无托盘后台 daemon，并在已有
   let headlessProc = null;
   let launcherProc = null;
 
-  const waitForFile = async (filePath, timeoutMs = 4000) => {
+  const waitForCondition = async (pred, timeoutMs = 4000) => {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      if (fs.existsSync(filePath)) return true;
+      if (pred()) return true;
       await new Promise((r) => setTimeout(r, 40));
     }
-    return false;
+    return Boolean(pred());
   };
 
   try {
@@ -560,7 +560,7 @@ test('CLI launcher 平滑接管已运行的无托盘后台 daemon，并在已有
       stdio: ['ignore', 'pipe', 'pipe']
     });
     const lockPath = path.join(root, 'daemon.lock');
-    assert.equal(await waitForFile(lockPath), true, 'daemon.lock should be created by headless daemon');
+    assert.equal(await waitForCondition(() => fs.existsSync(lockPath)), true, 'daemon.lock should be created by headless daemon');
     const oldPid = JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid;
     assert.equal(oldPid, headlessProc.pid);
 
@@ -573,13 +573,17 @@ test('CLI launcher 平滑接管已运行的无托盘后台 daemon，并在已有
     launcherProc.stdout.on('data', (d) => { launcherStdout += d.toString('utf8'); });
 
     const launcherLockPath = path.join(root, 'launcher.lock');
-    assert.equal(await waitForFile(launcherLockPath, 5000), true, 'launcher.lock should be created after takeover');
+    assert.equal(await waitForCondition(() => fs.existsSync(launcherLockPath), 5000), true, 'launcher.lock should be created after takeover');
     const launcherLock = JSON.parse(fs.readFileSync(launcherLockPath, 'utf8'));
     assert.equal(launcherLock.pid, launcherProc.pid);
     assert.equal(launcherLock.hasTray, true);
     const newDaemonLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     assert.equal(newDaemonLock.pid, launcherProc.pid);
-    assert.ok(launcherStdout.includes('"appName": "Agy-Daddy Launcher"'));
+    assert.equal(
+      await waitForCondition(() => launcherStdout.includes('"appName": "Agy-Daddy Launcher"'), 4000),
+      true,
+      `Expected launcher stdout to include appName, got: ${launcherStdout}`
+    );
 
     // 3. Running launcher a second time returns alreadyRunning cleanly without spawning a duplicate tray
     const dupRes = spawnSync(process.execPath, [CLI_JS, 'launcher', '--skip-inject', '--json'], {

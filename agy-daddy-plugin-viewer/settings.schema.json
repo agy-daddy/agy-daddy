@@ -1,0 +1,336 @@
+{
+  "title": {
+    "zh-CN": "全能文件检视台",
+    "en": "Omni File Viewer & Diff"
+  },
+  "fields": [
+    {
+      "key": "enabled",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "通用", "en": "General" },
+      "label": { "zh-CN": "启用侧边栏增强", "en": "Enable Sidebar Enhancements" },
+      "description": { "zh-CN": "插件总开关；关闭后停止本地流式网关并完全恢复宿主原生侧边栏行为", "en": "Master switch; disables the local streaming gateway and restores native sidebar behavior when turned off" }
+    },
+    {
+      "key": "officialFirstDeferral",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "通用", "en": "General" },
+      "label": { "zh-CN": "官方优先礼让策略", "en": "Official-first deferral" },
+      "description": { "zh-CN": "宿主原生可轻量预览的文件优先保持原生处理，仅在超出体积/行数阈值或无原生预览时自动原位接管", "en": "Keep lightweight files in host native preview and only auto-takeover when exceeding thresholds or lacking native preview" }
+    },
+    {
+      "key": "showHeaderSwitchButton",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "通用", "en": "General" },
+      "label": { "zh-CN": "在文件头显示切换按钮", "en": "Show viewer mode toggle in header" },
+      "description": { "zh-CN": "在文件查看器标题栏注入 [Omni 检视] 与 [行内 Diff] 快捷控制胶囊", "en": "Show [Omni Viewer] and [Inline Diff] quick toggle pills in the File Viewer header" }
+    },
+    {
+      "key": "allowedRoots",
+      "type": "list",
+      "maxItems": 32,
+      "default": [],
+      "group": { "zh-CN": "通用", "en": "General" },
+      "label": { "zh-CN": "授权工作区根目录白名单", "en": "Allowed workspace root directories" },
+      "description": { "zh-CN": "允许只读流式网关与 Git Diff 访问的本地根目录；留空时默认仅允许宿主当前活跃工作区", "en": "Local root directories accessible to the read-only streaming gateway and Git Diff; defaults to active workspace when empty" },
+      "browse": {
+        "command": "viewer.browseAllowedRoot",
+        "label": { "zh-CN": "浏览添加", "en": "Browse" }
+      }
+    },
+    {
+      "key": "enableMediaViewer",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "音视频检视", "en": "Media Viewer" },
+      "label": { "zh-CN": "启用超大音视频流式检视", "en": "Enable streaming media inspector" },
+      "description": { "zh-CN": "支持 HTTP 206 按需拖动、毫秒时间码、逐帧步进与波形打点", "en": "Enable HTTP 206 range seeking, millisecond timecode, frame stepping, and waveform cue markers" }
+    },
+    {
+      "key": "mediaThresholdMB",
+      "type": "number",
+      "default": 5,
+      "min": 0,
+      "max": 2048,
+      "group": { "zh-CN": "音视频检视", "en": "Media Viewer" },
+      "visibleWhen": { "key": "enableMediaViewer", "equals": true },
+      "label": { "zh-CN": "音视频自动接管阈值 (MB)", "en": "Media auto-takeover threshold (MB)" },
+      "description": { "zh-CN": "达到该体积（或宿主无可用播放器控件）时自动接管；设为 0 表示支持格式全部自动接管", "en": "Auto-takeover when file size reaches this threshold or host has no native media player; 0 takes over all supported media" }
+    },
+    {
+      "key": "mediaDefaultFps",
+      "type": "enum",
+      "default": "30",
+      "group": { "zh-CN": "音视频检视", "en": "Media Viewer" },
+      "visibleWhen": { "key": "enableMediaViewer", "equals": true },
+      "label": { "zh-CN": "逐帧步进默认帧率", "en": "Default frame-step FPS" },
+      "description": { "zh-CN": "视频逐帧前进/后退的默认帧率步长基准", "en": "Default FPS baseline for single-frame forward/backward stepping" },
+      "options": [
+        { "value": "24", "label": { "zh-CN": "24 fps（电影）", "en": "24 fps" } },
+        { "value": "25", "label": { "zh-CN": "25 fps（PAL）", "en": "25 fps" } },
+        { "value": "30", "label": { "zh-CN": "30 fps（标准）", "en": "30 fps (Default)" } },
+        { "value": "60", "label": { "zh-CN": "60 fps（高帧率）", "en": "60 fps" } }
+      ]
+    },
+    {
+      "key": "mediaWaveformMaxMB",
+      "type": "number",
+      "default": 100,
+      "min": 10,
+      "max": 500,
+      "group": { "zh-CN": "音视频检视", "en": "Media Viewer" },
+      "visibleWhen": { "key": "enableMediaViewer", "equals": true },
+      "label": { "zh-CN": "波形渲染体积上限 (MB)", "en": "Max size for waveform decode (MB)" },
+      "description": { "zh-CN": "超过此体积时自动熔断全量波形解码以保护内存，流式拖动与打点仍正常可用", "en": "Skip full audio waveform decoding above this size to save memory while keeping seeking and cue markers active" }
+    },
+    {
+      "key": "enableCsvViewer",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "表格检视", "en": "CSV / TSV Viewer" },
+      "label": { "zh-CN": "启用大体积 CSV 流式检视", "en": "Enable streaming CSV/TSV inspector" },
+      "description": { "zh-CN": "支持流式分块索引、虚拟滚动、冻结表头与按列检索筛选", "en": "Enable streaming row indexing, virtual scrolling, frozen headers, and column/keyword filtering" }
+    },
+    {
+      "key": "csvThresholdMB",
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 500,
+      "group": { "zh-CN": "表格检视", "en": "CSV / TSV Viewer" },
+      "visibleWhen": { "key": "enableCsvViewer", "equals": true },
+      "label": { "zh-CN": "CSV 自动接管体积阈值 (MB)", "en": "CSV auto-takeover size threshold (MB)" },
+      "description": { "zh-CN": "CSV/TSV 文件体积达到或超过该值时自动进入流式表格检视", "en": "Auto-takeover CSV/TSV files at or above this size" }
+    },
+    {
+      "key": "csvThresholdLines",
+      "type": "number",
+      "default": 2000,
+      "min": 100,
+      "max": 1000000,
+      "group": { "zh-CN": "表格检视", "en": "CSV / TSV Viewer" },
+      "visibleWhen": { "key": "enableCsvViewer", "equals": true },
+      "label": { "zh-CN": "CSV 自动接管行数阈值", "en": "CSV auto-takeover line threshold" },
+      "description": { "zh-CN": "基于文件头部 64KB 样本估算总行数达到该阈值时自动接管", "en": "Auto-takeover when estimated line count from 64KB header sample reaches this threshold" }
+    },
+    {
+      "key": "csvChunkSize",
+      "type": "number",
+      "default": 200,
+      "min": 50,
+      "max": 2000,
+      "group": { "zh-CN": "表格检视", "en": "CSV / TSV Viewer" },
+      "visibleWhen": { "key": "enableCsvViewer", "equals": true },
+      "label": { "zh-CN": "每次流式加载行数", "en": "Chunk rows per fetch" },
+      "description": { "zh-CN": "虚拟滚动每次向本地网关请求的数据行分块大小", "en": "Number of rows fetched per chunk from the local streaming gateway" }
+    },
+    {
+      "key": "csvFirstRowHeader",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "表格检视", "en": "CSV / TSV Viewer" },
+      "visibleWhen": { "key": "enableCsvViewer", "equals": true },
+      "label": { "zh-CN": "默认首行为冻结表头", "en": "Treat first row as frozen header" },
+      "description": { "zh-CN": "关闭后将首行作为普通数据行，并自动生成 C1..Cn 列头", "en": "When disabled, treats row 1 as data and generates C1..Cn column headers" }
+    },
+    {
+      "key": "enableSvgViewer",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "label": { "zh-CN": "启用 SVG 矢量画布检视", "en": "Enable lossless SVG canvas inspector" },
+      "description": { "zh-CN": "支持安全脚本剥离、10%–1600% 无损矢量缩放平移与三态背景切换", "en": "Enable script-sanitized lossless 10%–1600% pan/zoom SVG canvas and background presets" }
+    },
+    {
+      "key": "svgTakeoverMode",
+      "type": "enum",
+      "default": "threshold",
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "enableSvgViewer", "equals": true },
+      "label": { "zh-CN": "SVG 接管模式", "en": "SVG takeover mode" },
+      "description": { "zh-CN": "控制打开 .svg 文件时何时自动切入矢量画布检视", "en": "Control when opening .svg files automatically switches into canvas view" },
+      "options": [
+        { "value": "threshold", "label": { "zh-CN": "超体积阈值自动接管", "en": "Above size threshold" } },
+        { "value": "always", "label": { "zh-CN": "始终自动接管", "en": "Always auto-takeover" } },
+        { "value": "manual", "label": { "zh-CN": "仅手动切换", "en": "Manual toggle only" } }
+      ]
+    },
+    {
+      "key": "svgThresholdKB",
+      "type": "number",
+      "default": 64,
+      "min": 1,
+      "max": 10240,
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "svgTakeoverMode", "equals": "threshold" },
+      "label": { "zh-CN": "SVG 自动接管体积阈值 (KB)", "en": "SVG auto-takeover threshold (KB)" },
+      "description": { "zh-CN": "仅在接管模式为「超体积阈值自动接管」时生效", "en": "Effective when SVG takeover mode is set to threshold" }
+    },
+    {
+      "key": "svgDefaultBackground",
+      "type": "enum",
+      "default": "checkerboard",
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "enableSvgViewer", "equals": true },
+      "label": { "zh-CN": "SVG 画布默认背景", "en": "Default SVG canvas background" },
+      "description": { "zh-CN": "预设矢量画布衬底模式，便于观察深色或浅色线条", "en": "Default backdrop style for inspecting light or dark vector strokes" },
+      "options": [
+        { "value": "checkerboard", "label": { "zh-CN": "透明棋盘格", "en": "Transparency checkerboard" } },
+        { "value": "light", "label": { "zh-CN": "亮白画板", "en": "Light backdrop" } },
+        { "value": "dark", "label": { "zh-CN": "深灰画板", "en": "Dark backdrop" } }
+      ]
+    },
+    {
+      "key": "enableFontViewer",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "label": { "zh-CN": "启用字体样张检视", "en": "Enable font specimen inspector" },
+      "description": { "zh-CN": "支持 .ttf / .otf / .woff2 / .woff 多字号瀑布流样张与字形网格预览", "en": "Preview .ttf, .otf, .woff2, and .woff files with multi-size waterfalls and glyph grids" }
+    },
+    {
+      "key": "fontAutoTakeover",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "enableFontViewer", "equals": true },
+      "label": { "zh-CN": "自动接管字体文件", "en": "Auto-takeover font files" },
+      "description": { "zh-CN": "打开字体文件时自动进入样张检视台（宿主无原生字体预览）", "en": "Automatically open font specimen inspector for font files" }
+    },
+    {
+      "key": "fontMaxSizeMB",
+      "type": "number",
+      "default": 50,
+      "min": 1,
+      "max": 200,
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "enableFontViewer", "equals": true },
+      "label": { "zh-CN": "字体加载安全上限 (MB)", "en": "Max font file size (MB)" },
+      "description": { "zh-CN": "超过此体积的字体文件拒绝注入内存并显示安全提示", "en": "Refuse automatic FontFace injection above this file size" }
+    },
+    {
+      "key": "fontSampleText",
+      "type": "string",
+      "default": "",
+      "group": { "zh-CN": "矢量与字体", "en": "SVG & Fonts" },
+      "visibleWhen": { "key": "enableFontViewer", "equals": true },
+      "label": { "zh-CN": "自定义默认样张文案", "en": "Custom default sample text" },
+      "description": { "zh-CN": "留空则使用内置中英数字符号全要素样张", "en": "Leave blank to use built-in multilingual pangram and symbol specimen" }
+    },
+    {
+      "key": "enableGitDiff",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "label": { "zh-CN": "启用 Git 安全行内 Diff", "en": "Enable Git safe inline diff" },
+      "description": { "zh-CN": "在文件查看器及变更抽屉中提供严格只读的工作区代码差异对比", "en": "Provide strictly read-only workspace inline diff in File Viewer and Changes Drawer" }
+    },
+    {
+      "key": "diffDefaultScope",
+      "type": "enum",
+      "default": "head",
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "默认 Diff 对比范围", "en": "Default diff scope" },
+      "description": { "zh-CN": "打开行内 Diff 时的默认 Git 比较基准", "en": "Default comparison baseline when opening Git inline diff" },
+      "options": [
+        { "value": "head", "label": { "zh-CN": "全部未提交 (vs HEAD)", "en": "All uncommitted (vs HEAD)" } },
+        { "value": "unstaged", "label": { "zh-CN": "仅未暂存 (Working)", "en": "Unstaged only (Working)" } },
+        { "value": "staged", "label": { "zh-CN": "仅已暂存 (Staged)", "en": "Staged only" } }
+      ]
+    },
+    {
+      "key": "diffDefaultLayout",
+      "type": "enum",
+      "default": "unified",
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "默认对比布局", "en": "Default diff layout" },
+      "description": { "zh-CN": "桌面侧边栏窄宽度推荐使用单栏行内对比（Unified）", "en": "Unified single-column layout is recommended for narrow sidebars" },
+      "options": [
+        { "value": "unified", "label": { "zh-CN": "单栏行内 (Unified)", "en": "Inline Unified" } },
+        { "value": "split", "label": { "zh-CN": "双栏并排 (Split)", "en": "Side-by-side Split" } }
+      ]
+    },
+    {
+      "key": "diffShowWordHighlight",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "高亮行内词级差异", "en": "Highlight word-level changes" },
+      "description": { "zh-CN": "对连续增删行计算并高亮具体修改的字符/词组片段", "en": "Highlight intraline changed tokens across paired deletion/addition lines" }
+    },
+    {
+      "key": "diffContextLines",
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 20,
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "变更上下文行数", "en": "Context lines around hunks" },
+      "description": { "zh-CN": "每个变更块（Hunk）上下默认保留的未修改代码行数", "en": "Unchanged context lines shown above and below each diff hunk" }
+    },
+    {
+      "key": "diffMaxFileSizeMB",
+      "type": "number",
+      "default": 2,
+      "min": 1,
+      "max": 20,
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "单文件 Diff 体积熔断上限 (MB)", "en": "Max file size for diff (MB)" },
+      "description": { "zh-CN": "超出该体积时安全截断并提示熔断横幅，防止大文本卡死渲染线程", "en": "Truncate diff output and display a safety banner above this file size" }
+    },
+    {
+      "key": "diffMaxLines",
+      "type": "number",
+      "default": 5000,
+      "min": 500,
+      "max": 50000,
+      "group": { "zh-CN": "Git 行内 Diff", "en": "Git Inline Diff" },
+      "visibleWhen": { "key": "enableGitDiff", "equals": true },
+      "label": { "zh-CN": "单文件 Diff 最大行数熔断", "en": "Max diff lines" },
+      "description": { "zh-CN": "单次渲染的最大差异行数上限，超出时截断保护", "en": "Maximum diff lines rendered before safety truncation" }
+    },
+    {
+      "key": "gatewayPortMode",
+      "type": "enum",
+      "default": "auto",
+      "group": { "zh-CN": "本地网关", "en": "Local Gateway" },
+      "label": { "zh-CN": "本地网关端口策略", "en": "Local gateway port mode" },
+      "description": { "zh-CN": "底层强制仅绑定 127.0.0.1；推荐使用动态随机空闲端口", "en": "Strictly bound to 127.0.0.1; dynamic random free port is recommended" },
+      "options": [
+        { "value": "auto", "label": { "zh-CN": "动态随机端口（推荐）", "en": "Dynamic random port (Recommended)" } },
+        { "value": "fixed", "label": { "zh-CN": "固定回环端口", "en": "Fixed loopback port" } }
+      ]
+    },
+    {
+      "key": "gatewayPort",
+      "type": "number",
+      "default": 18770,
+      "min": 1024,
+      "max": 65535,
+      "group": { "zh-CN": "本地网关", "en": "Local Gateway" },
+      "visibleWhen": { "key": "gatewayPortMode", "equals": "fixed" },
+      "label": { "zh-CN": "固定监听端口 (127.0.0.1)", "en": "Fixed loopback port (127.0.0.1)" },
+      "description": { "zh-CN": "避开 18765(remote)/18766(proxy)/18767(web)；若被占用将自动回退随机空闲端口并记录告警", "en": "Avoids 18765–18767; automatically falls back to an ephemeral port if occupied" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "check-gateway",
+      "command": "viewer.gatewayStatus",
+      "label": { "zh-CN": "查看本地网关状态", "en": "Check Local Gateway Status" }
+    },
+    {
+      "id": "open-git-diff",
+      "command": "viewer.openGitDiff",
+      "label": { "zh-CN": "打开工作区 Git 变更", "en": "Open Workspace Git Changes" }
+    }
+  ]
+}

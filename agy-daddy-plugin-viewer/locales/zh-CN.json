@@ -1,0 +1,11 @@
+{
+  "capsule.omni": "Omni 检视",
+  "capsule.native": "切回原生",
+  "capsule.diff": "行内 Diff",
+  "error.pathOutOfBounds": "出于本地安全隔离策略，已拦截越界或非本地路径访问请求",
+  "error.gatewayDisabled": "本地流式检视网关已禁用",
+  "diff.notGitRepo": "当前目录不是 Git 仓库",
+  "diff.noChanges": "当前工作区无未提交变更",
+  "diff.binaryFile": "二进制文件变更，不支持文本行内对比",
+  "diff.truncated": "变更内容过大，已安全截断前段以防界面卡顿"
+}

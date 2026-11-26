@@ -1,0 +1,11 @@
+{
+  "capsule.omni": "Omni Viewer",
+  "capsule.native": "Native View",
+  "capsule.diff": "Inline Diff",
+  "error.pathOutOfBounds": "Blocked out-of-bounds or non-local path access under local security isolation",
+  "error.gatewayDisabled": "Local streaming gateway is disabled",
+  "diff.notGitRepo": "Current directory is not a Git repository",
+  "diff.noChanges": "No uncommitted changes in current workspace",
+  "diff.binaryFile": "Binary file changed; inline text diff is unavailable",
+  "diff.truncated": "Diff content exceeds safety limits and has been truncated"
+}

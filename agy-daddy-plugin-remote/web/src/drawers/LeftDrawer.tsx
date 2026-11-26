@@ -55,6 +55,7 @@ export interface LeftDrawerProps {
   appearance: AppearanceMode;
   soundAlert: boolean;
   vibrateAlert: boolean;
+  enablePushNotifications?: boolean;
   pushSubscribed: boolean;
   pushBusy: boolean;
   onSelectSession: (cascadeId: string) => void;
@@ -211,6 +212,7 @@ export function LeftDrawer({
   appearance,
   soundAlert,
   vibrateAlert,
+  enablePushNotifications = true,
   pushSubscribed,
   pushBusy,
   onSelectSession,
@@ -2276,13 +2278,18 @@ export function LeftDrawer({
             <div className={styles.footerRow}>
               <button
                 type="button"
-                className={`ag-pill-btn ${pushSubscribed ? 'ag-pill-btn-primary' : ''}`}
-                disabled={pushBusy}
+                className={`ag-pill-btn ${pushSubscribed && enablePushNotifications ? 'ag-pill-btn-primary' : ''}`}
+                disabled={pushBusy || (!enablePushNotifications && !pushSubscribed)}
                 onClick={onTogglePush}
+                data-testid="left-push-toggle-btn"
               >
-                {pushSubscribed ? t('menu.pushEnabled') : t('menu.pushEnable')}
+                {!enablePushNotifications && !pushSubscribed
+                  ? t('menu.pushHostDisabledNote')
+                  : pushSubscribed
+                    ? t('menu.pushEnabled')
+                    : t('menu.pushEnable')}
               </button>
-              {pushSubscribed && (
+              {pushSubscribed && enablePushNotifications && (
                 <button type="button" className="ag-pill-btn" onClick={onTestPush}>
                   {t('menu.pushTest')}
                 </button>

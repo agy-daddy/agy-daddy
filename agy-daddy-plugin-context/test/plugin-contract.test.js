@@ -677,3 +677,155 @@ test('跨插件状态广播：emptySnap/snapshot 携带 displayLocation/showSpee
     await harness.cleanup();
   }
 });
+
+test('回归：全新会话未发起消息时不读取历史缓存上下文占用，首次发消息后刷新为当前会话真实占用', async () => {
+  const { createMockDocument } = require(path.join(HOST_ROOT, 'sdk', 'mock-harness'));
+  const doc = createMockDocument();
+  let currentPhase = 'new_empty';
+
+  const harness = createMockHostHarness({
+    document: doc,
+    pageUrl: 'https://127.0.0.1:51410/',
+    onRpc(method, body) {
+      if (method === 'GetAvailableModels') {
+        return {
+          models: {
+            'claude-opus-5-5': { model: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', maxTokens: 1000000 }
+          }
+        };
+      }
+      if (method === 'GetAllCascadeTrajectories') {
+        if (currentPhase === 'first_msg_sent') {
+          return {
+            trajectorySummaries: {
+              '22222222-3333-4444-5555-666666666666': {
+                lastModifiedTime: '2026-11-26T12:00:00Z',
+                annotations: { title: '新会话' }
+              },
+              '11111111-2222-3333-4444-555555555555': {
+                lastModifiedTime: '2026-11-25T10:00:00Z',
+                annotations: { title: '历史会话' }
+              }
+            }
+          };
+        }
+        return {
+          trajectorySummaries: {
+            '11111111-2222-3333-4444-555555555555': {
+              lastModifiedTime: '2026-11-25T10:00:00Z',
+              annotations: { title: '历史会话' }
+            }
+          }
+        };
+      }
+      if (method === 'GetCascadeTrajectoryGeneratorMetadata') {
+        if (body?.cascadeId === '22222222-3333-4444-5555-666666666666') {
+          return {
+            generatorMetadata: [
+              {
+                stepIndices: [0],
+                createdAt: '2026-11-26T12:00:00Z',
+                chatModel: {
+                  model: 'claude-opus-5-5',
+                  modelDisplayName: 'Claude Opus 5.5',
+                  usage: { responseId: 'new-call-0', inputTokens: 1200, cacheReadTokens: 800, outputTokens: 150 },
+                  chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1000000 } }
+                }
+              }
+            ]
+          };
+        }
+        return {
+          generatorMetadata: [
+            {
+              stepIndices: [0],
+              createdAt: '2026-11-25T10:00:00Z',
+              chatModel: {
+                model: 'claude-opus-5-5',
+                modelDisplayName: 'Claude Opus 5.5',
+                usage: { responseId: 'old-call-0', inputTokens: 20000, cacheReadTokens: 230000, outputTokens: 1000 },
+                chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1000000 } }
+              }
+            }
+          ]
+        };
+      }
+      if (method === 'GetCascadeTrajectory') {
+        if (body?.cascadeId === '22222222-3333-4444-5555-666666666666') {
+          return {
+            steps: [
+              { userInput: { userResponse: '你好' } },
+              { plannerResponse: { response: '你好！' } }
+            ]
+          };
+        }
+        return {
+          steps: [
+            { userInput: { userResponse: '历史问题' } },
+            { plannerResponse: { response: '历史回答' } }
+          ]
+        };
+      }
+      return {};
+    }
+  });
+
+  try {
+    const msgList = doc.createElement('div');
+    msgList.setAttribute('data-testid', 'turn-cards-container');
+    doc.body.appendChild(msgList);
+
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const pulseBtn = doc.querySelector('[data-agy-context-capsule="1"]');
+    assert.ok(pulseBtn);
+
+    // 1. 新会话未发送消息前：不读取历史 251k 会话，显示初始 '--' 且 state.hasSession === false
+    assert.equal(pulseBtn.textContent.trim(), '--');
+    assert.doesNotMatch(pulseBtn.textContent, /251k/);
+    const initState = harness.bus.getState('state:context.snapshot@1')?.value;
+    assert.equal(initState?.hasSession, false);
+    assert.equal(initState?.used, null);
+
+    // 即使调用 context-ui.rescan()，空新会话仍不得落回历史会话
+    let contextUi = null;
+    await harness.rendererHost.mountPlugin('test.newchat.observer', {
+      mount(ctx) {
+        contextUi = ctx.services.get('context-ui');
+      }
+    });
+    const rescanEmpty = await contextUi.rescan();
+    assert.equal(rescanEmpty?.hasSession, false);
+    assert.equal(pulseBtn.textContent.trim(), '--');
+
+    // 2. 首次发送消息后：出现消息 DOM，同步刷新为新会话真实占用 (2.1k/1M)
+    currentPhase = 'first_msg_sent';
+    const userMsg = doc.createElement('div');
+    userMsg.setAttribute('data-testid', 'user-message');
+    userMsg.textContent = '你好';
+    msgList.appendChild(userMsg);
+    await new Promise((r) => setTimeout(r, 480));
+
+    assert.match(pulseBtn.textContent, /2\.2k\/1M|2\.1k\/1M/);
+    const activeState = harness.bus.getState('state:context.snapshot@1')?.value;
+    assert.equal(activeState?.hasSession, true);
+    assert.equal(activeState?.cascadeId, '22222222-3333-4444-5555-666666666666');
+    assert.equal(activeState?.used, 2150);
+
+    // 3. 从活跃会话切回全新空白会话 -> 立即重置回 '--'，不再显示 2.2k
+    msgList.textContent = '';
+    await new Promise((r) => setTimeout(r, 480));
+    assert.equal(pulseBtn.textContent.trim(), '--');
+    const resetState = harness.bus.getState('state:context.snapshot@1')?.value;
+    assert.equal(resetState?.hasSession, false);
+    assert.equal(resetState?.used, null);
+
+    await harness.rendererHost.disposePlugin('test.newchat.observer');
+    await harness.unloadPlugin('agy-daddy.context');
+    harness.assertCleanDispose('agy-daddy.context');
+  } finally {
+    await harness.cleanup();
+  }
+});

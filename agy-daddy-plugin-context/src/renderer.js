@@ -214,6 +214,56 @@ async function mount(ctx) {
 
   const docRefGlobal = globalThis.document;
   const speedTracker = createStreamSpeedTracker();
+  let lastObservedCascadeId = null;
+  let lastObservedIsNewEmptyChat = false;
+  let refreshSeq = 0;
+
+  function readDomSessionContext() {
+    const cascadeId = ctx.hostDom?.getSessionId?.() || null;
+    const busy = Boolean(ctx.hostDom?.isAssistantBusy?.());
+    const turnEls = typeof docRefGlobal?.querySelectorAll === 'function'
+      ? docRefGlobal.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]')
+      : [];
+    const turnCount = turnEls ? turnEls.length : 0;
+    const isNewEmptyChat = !cascadeId && !busy && turnCount === 0;
+    return { cascadeId, busy, turnCount, isNewEmptyChat };
+  }
+
+  function buildRendererEmptySnapshot(cascadeId = null) {
+    return {
+      ok: true,
+      hasSession: false,
+      cascadeId: cascadeId || null,
+      status: 'idle',
+      used: null,
+      budget: null,
+      percent: null,
+      remainPercent: null,
+      model: null,
+      speed: null,
+      sessionUsage: {
+        totalTokens: 0,
+        inputTokens: 0,
+        cachedTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        responseTokens: 0,
+        callsCount: 0,
+        avgTps: null,
+        avgStreamingTps: null
+      },
+      groups: null,
+      attachments: { items: [], totals: { count: 0, chars: 0, bytes: 0, low: 0, high: 0 } },
+      alerts: [],
+      referenceCost: null,
+      displayLocation: settings.displayLocation,
+      showSpeed: settings.showSpeed,
+      compactPolicy: settings.compactPolicy,
+      warnThreshold: settings.warnThreshold,
+      cliffThreshold: settings.cliffThreshold,
+      updatedAt: Date.now()
+    };
+  }
 
   const stopPulseStyles = typeof ctx.styles?.inject === 'function'
     ? ctx.styles.inject(PULSE_CAPSULE_CSS, { scope: 'document', id: 'context-pulse-styles' })
@@ -831,7 +881,42 @@ async function mount(ctx) {
     return String(list?.textContent || '');
   }
 
+  function resetToEmptySessionState(cascadeId = null) {
+    speedTracker.reset();
+    latestLiveSpeed = null;
+    pendingAutoCompact = null;
+    showQuickCompact = false;
+    latestSnapshot = buildRendererEmptySnapshot(cascadeId);
+    evaluateCompactState(latestSnapshot, { allowAutoTrigger: false });
+    syncActiveDisplays();
+    try {
+      void ctx.state?.set?.('state:context.snapshot@1', latestSnapshot);
+    } catch {}
+  }
+
+  function syncSessionTransition() {
+    const domCtx = readDomSessionContext();
+    const cascadeChanged = domCtx.cascadeId !== lastObservedCascadeId;
+    const enteredNewEmpty = domCtx.isNewEmptyChat && !lastObservedIsNewEmptyChat;
+    const leftNewEmpty = !domCtx.isNewEmptyChat && lastObservedIsNewEmptyChat;
+    if (!cascadeChanged && !enteredNewEmpty && !leftNewEmpty) {
+      return domCtx;
+    }
+    lastObservedCascadeId = domCtx.cascadeId;
+    lastObservedIsNewEmptyChat = domCtx.isNewEmptyChat;
+
+    if (cascadeChanged || enteredNewEmpty) {
+      refreshSeq += 1;
+      resetToEmptySessionState(domCtx.cascadeId);
+      void refresh(false);
+    } else if (leftNewEmpty) {
+      void refresh(true);
+    }
+    return domCtx;
+  }
+
   function sampleLiveStreaming() {
+    syncSessionTransition();
     const busy = Boolean(ctx.hostDom?.isAssistantBusy?.());
     const text = busy ? getLiveAssistantText() : '';
     const { live, completed } = speedTracker.sample({ busy, text });
@@ -854,10 +939,25 @@ async function mount(ctx) {
   }
 
   async function refresh(force = false) {
+    const seq = ++refreshSeq;
     try {
       const endpoint = force ? '/rescan' : '/snapshot';
-      const cascadeId = ctx.hostDom?.getSessionId?.() || null;
-      const snap = await ctx.bridge.post(endpoint, { cascadeId, force });
+      const domCtx = readDomSessionContext();
+      lastObservedCascadeId = domCtx.cascadeId;
+      lastObservedIsNewEmptyChat = domCtx.isNewEmptyChat;
+      const snap = await ctx.bridge.post(endpoint, {
+        cascadeId: domCtx.cascadeId,
+        isNewChat: domCtx.isNewEmptyChat,
+        force
+      });
+      const afterCtx = readDomSessionContext();
+      if (
+        seq !== refreshSeq
+        || afterCtx.cascadeId !== domCtx.cascadeId
+        || (afterCtx.isNewEmptyChat && !domCtx.isNewEmptyChat)
+      ) {
+        return null;
+      }
       if (snap && typeof snap === 'object') {
         latestSnapshot = snap;
         evaluateCompactState(snap);
@@ -955,6 +1055,12 @@ async function mount(ctx) {
     sampleLiveStreaming: () => sampleLiveStreaming()
   });
 
+  const initDomCtx = readDomSessionContext();
+  lastObservedCascadeId = initDomCtx.cascadeId;
+  lastObservedIsNewEmptyChat = initDomCtx.isNewEmptyChat;
+  if (initDomCtx.isNewEmptyChat) {
+    resetToEmptySessionState(null);
+  }
   syncDisplayLocation();
   await refresh(false);
   startPollLoop();

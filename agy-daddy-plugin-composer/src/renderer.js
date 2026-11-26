@@ -120,6 +120,7 @@ async function mount(ctx, options = {}) {
   let toastTimer = null;
   let activeToastState = null;
   let latestContextSnap = null;
+  let lastSessionId = ctx.hostDom?.getSessionId?.() || '';
   let ghostCandidates = getGhostSuggestions('');
   let ghostIndex = 0;
   let ghostDismissed = false;
@@ -1175,7 +1176,7 @@ async function mount(ctx, options = {}) {
     return true;
   }
 
-  function buildDualLineTooltip(item) {
+  function buildDualLineTooltip(item, contextSnap = null) {
     let tip = `${item.role || item.title || item.label}\n适用场景: ${item.scene || '日常高效交互'}`;
     if (!item.builtin && item.text && item.text !== item.label) {
       tip += `\n实际填充: ${item.text}`;
@@ -1183,8 +1184,8 @@ async function mount(ctx, options = {}) {
     if (item.contextReason) {
       tip += `\n上下文推荐: ${item.contextReason}`;
     }
-    if (item.id === 'compact' && latestContextSnap?.used) {
-      const k = Math.round(latestContextSnap.used / 1000);
+    if (item.id === 'compact' && contextSnap?.used) {
+      const k = Math.round(contextSnap.used / 1000);
       tip += `\n当前上下文: ${k}K`;
     }
     return tip;
@@ -1373,20 +1374,34 @@ async function mount(ctx, options = {}) {
 
   function readContextSignals() {
     const sessionId = ctx.hostDom?.getSessionId?.() || '';
+    if (sessionId !== lastSessionId) {
+      lastSessionId = sessionId;
+      latestContextSnap = null;
+    }
     const turnEls = typeof doc?.querySelectorAll === 'function'
       ? doc.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]')
       : [];
     const msgList = ctx.anchors.query('chat.messageList');
     const hasEmptyChatContainer = Boolean(msgList) && (!turnEls || turnEls.length === 0);
-    const isNewChat = (!sessionId && (!turnEls || turnEls.length === 0))
-      || (hasEmptyChatContainer && !Number(latestContextSnap?.used || 0));
+    const isAssistantBusy = Boolean(ctx.hostDom?.isAssistantBusy?.());
+    const isNewChat = !isAssistantBusy
+      && (!turnEls || turnEls.length === 0)
+      && (!sessionId || hasEmptyChatContainer);
     const assistantEls = typeof doc?.querySelectorAll === 'function'
       ? doc.querySelectorAll('[data-testid="agent-response"]')
       : [];
     const lastAssistantEl = assistantEls && assistantEls.length > 0 ? assistantEls[assistantEls.length - 1] : null;
     const lastAssistantText = String(lastAssistantEl?.innerText || lastAssistantEl?.textContent || '').trim();
-    const isAssistantBusy = Boolean(ctx.hostDom?.isAssistantBusy?.());
-    return { isNewChat, isAssistantBusy, lastAssistantText };
+    return { sessionId, isNewChat, isAssistantBusy, lastAssistantText };
+  }
+
+  function resolveEffectiveContextSnap(signals) {
+    if (!latestContextSnap || latestContextSnap.hasSession === false) return null;
+    if (signals?.isNewChat) return null;
+    if (signals?.sessionId && latestContextSnap.cascadeId && latestContextSnap.cascadeId !== signals.sessionId) {
+      return null;
+    }
+    return latestContextSnap;
   }
 
   function ensurePromptOptimizerMounted(rootEl) {
@@ -1604,6 +1619,7 @@ async function mount(ctx, options = {}) {
     ensureQuickBarMounted(targetRoot);
 
     const signals = readContextSignals();
+    const effectiveContextSnap = resolveEffectiveContextSnap(signals);
     const baseItems = resolveConfiguredQuickItems({
       quickItems: settings.quickItems,
       quickPoolState: settings.quickPoolState,
@@ -1611,7 +1627,7 @@ async function mount(ctx, options = {}) {
     });
     const finalItems = resolveContextualQuickItems({
       baseItems,
-      contextSnap: latestContextSnap,
+      contextSnap: effectiveContextSnap,
       isNewChat: signals.isNewChat,
       isAssistantBusy: signals.isAssistantBusy,
       lastAssistantText: signals.lastAssistantText,
@@ -1619,7 +1635,7 @@ async function mount(ctx, options = {}) {
     });
 
     const nextCandidates = getGhostSuggestions(signals.lastAssistantText, {
-      contextSnap: latestContextSnap,
+      contextSnap: effectiveContextSnap,
       isNewChat: signals.isNewChat
     });
     const ghostSig = `${signals.isNewChat ? '1' : '0'}|${nextCandidates.join('|')}`;
@@ -1635,7 +1651,8 @@ async function mount(ctx, options = {}) {
     const sig = JSON.stringify({
       items: finalItems.map((i) => `${i.id}:${formatQuickItemDisplayLabel(i.label, i)}:${i.risk || ''}:${i.contextSuggested ? 1 : 0}`),
       extra: Array.from(extraActions.keys()),
-      ghost: Boolean(settings.ghostSuggest)
+      ghost: Boolean(settings.ghostSuggest),
+      ctxUsedK: effectiveContextSnap?.used ? Math.round(effectiveContextSnap.used / 1000) : 0
     });
 
     if (!force && sig === lastRenderSig && ownBarNodes.length > 0 && quickBarEl?.parentElement === quickBarHostParent) {
@@ -1659,7 +1676,7 @@ async function mount(ctx, options = {}) {
       btn.setAttribute?.('aria-label', displayLabel);
       if (item.contextSuggested) btn.setAttribute?.('data-context-suggested', 'true');
       if (item.risk) btn.setAttribute?.('data-risk', item.risk);
-      btn.setAttribute?.('title', buildDualLineTooltip({ ...item, label: displayLabel }));
+      btn.setAttribute?.('title', buildDualLineTooltip({ ...item, label: displayLabel }, effectiveContextSnap));
 
       const iconSpan = doc.createElement('span');
       iconSpan.className = 'agy-qcap-icon';
@@ -1944,6 +1961,10 @@ async function mount(ctx, options = {}) {
   }
 
   const stopContextSub = ctx.state.subscribe('state:context.snapshot@1', (snap) => {
+    const curSessionId = ctx.hostDom?.getSessionId?.() || '';
+    if (snap && curSessionId && snap.cascadeId && snap.cascadeId !== curSessionId) {
+      return;
+    }
     latestContextSnap = snap || null;
     renderQuickBar(resolveComposerRoot());
   });

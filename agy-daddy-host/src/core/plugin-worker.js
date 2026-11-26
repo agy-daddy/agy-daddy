@@ -91,8 +91,11 @@ if (require.main === module) {
       if (!pending) return;
       pendingRpc.delete(msg.id);
       clearTimeout(pending.timer);
-      if (msg.error) pending.reject(new Error(msg.error));
-      else pending.resolve(msg.result);
+      if (msg.error) {
+        const err = new Error(msg.error);
+        if (msg.errorCode) err.code = msg.errorCode;
+        pending.reject(err);
+      } else pending.resolve(msg.result);
       return;
     }
 
@@ -254,6 +257,15 @@ if (require.main === module) {
         net: {
           fetch: createScopedNetFetch(pluginId, perms)
         },
+        control: perms.includes('host:control')
+          ? {
+              invoke(routePath, body = {}) {
+                const raw = String(routePath || '').trim();
+                const normalized = raw.startsWith('/') ? raw : `/${raw}`;
+                return callParent('hostControl', { routePath: normalized, body });
+              }
+            }
+          : undefined,
         settings: {
           get() {
             return { ...currentSettings };

@@ -14,6 +14,7 @@ module.exports = {
   anchors: require('./core/anchors'),
   injector: require('./core/injector'),
   installer: require('./core/installer'),
+  customizations: require('./core/customizations'),
   marketplaceStats: require('./core/marketplace-stats'),
   doctor: require('./core/doctor'),
   daemon: require('./core/daemon'),

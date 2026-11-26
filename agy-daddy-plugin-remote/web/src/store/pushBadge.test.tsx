@@ -262,6 +262,8 @@ describe('RemoteStoreController notification settings & App Badge lifecycle', ()
 
     expect(store.getState().enablePushNotifications).toBe(false);
     expect(store.getState().enableAppBadge).toBe(true);
+    expect(clearAppBadge).toHaveBeenCalledTimes(1);
+    clearAppBadge.mockClear();
 
     // 1. Push toggle blocked when host disabled enablePushNotifications
     await store.togglePushSubscription();
@@ -299,6 +301,72 @@ describe('RemoteStoreController notification settings & App Badge lifecycle', ()
     setVisibilityState('hidden');
     document.dispatchEvent(new Event('visibilitychange'));
     expect(setAppBadge).not.toHaveBeenCalled();
+
+    store.destroy();
+  });
+
+  it('syncs badge instead of clearing when cold-started in hidden state', async () => {
+    setVisibilityState('hidden');
+
+    const setAppBadge = vi.fn().mockResolvedValue(undefined);
+    const clearAppBadge = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'setAppBadge', {
+      configurable: true,
+      value: setAppBadge
+    });
+    Object.defineProperty(window.navigator, 'clearAppBadge', {
+      configurable: true,
+      value: clearAppBadge
+    });
+
+    vi.stubGlobal(
+      'EventSource',
+      class MockEventSource {
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        addEventListener() {}
+        close() {}
+      }
+    );
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/bootstrap')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              channel: 'loopback',
+              permissionLevel: 'L1',
+              writeEnabled: true,
+              models: [{ id: 'g25', shortName: 'G2.5' }],
+              workspaces: ['/repo'],
+              runningTasksCount: 2,
+              enablePushNotifications: true,
+              enableAppBadge: true,
+              notifications: { enablePushNotifications: true, enableAppBadge: true }
+            })
+        };
+      }
+      if (url.includes('/api/v1/sessions')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ ok: true, sessions: [] })
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, events: [], queue: [] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    window.history.replaceState(null, '', '/?t=tok-hidden-cold');
+    const store = new RemoteStoreController();
+    await store.init();
+
+    await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(2));
+    expect(clearAppBadge).not.toHaveBeenCalled();
 
     store.destroy();
   });

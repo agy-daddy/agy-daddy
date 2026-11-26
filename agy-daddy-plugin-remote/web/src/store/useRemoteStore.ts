@@ -1414,6 +1414,7 @@ export class RemoteStoreController {
     name: string,
     opts?: {
       id?: string;
+      icon?: string | null;
       pinned?: boolean;
       projectIds?: string[];
       workspaceUris?: string[];
@@ -1428,6 +1429,7 @@ export class RemoteStoreController {
       const res = await api.mutateSessionGroups({
         action: 'upsert',
         ...(opts?.id ? { id: opts.id } : {}),
+        ...(opts?.icon ? { icon: opts.icon } : {}),
         ...(typeof opts?.pinned === 'boolean' ? { pinned: opts.pinned } : {}),
         name: clean,
         projectIds: opts?.projectIds,
@@ -1481,6 +1483,46 @@ export class RemoteStoreController {
             typeof res.revision === 'number' ? res.revision : this.state.orgRevision
         });
       }
+    } catch (err) {
+      this.setState({ groups: prevGroups });
+      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async setGroupIcon(groupId: string, icon: string | null): Promise<void> {
+    if (!groupId) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const current = this.state.groups.find((g) => g.id === groupId);
+    if (!current) return;
+    const prevGroups = this.state.groups;
+    this.setState({
+      groups: prevGroups.map((g) => (g.id === groupId ? { ...g, icon } : g))
+    });
+    try {
+      const res = await api.mutateSessionGroups({
+        action: 'upsert',
+        id: groupId,
+        name: current.name,
+        ...(current.source ? { source: current.source } : {}),
+        icon
+      });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+      this.showToast(this.t('store.groupIconUpdated'));
     } catch (err) {
       this.setState({ groups: prevGroups });
       this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
@@ -1979,6 +2021,39 @@ export class RemoteStoreController {
         });
       }
       this.showToast(this.t('store.projectRenamedToast', { name: clean }));
+    } catch (err) {
+      this.setState({ projects: prevProjects });
+      this.showToast(this.t('store.projectUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async setProjectIcon(projectId: string, icon: string | null): Promise<void> {
+    if (!projectId) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const current = this.state.projects.find((p) => p.id === projectId);
+    const prevProjects = this.state.projects;
+    this.setState({
+      projects: prevProjects.map((p) => (p.id === projectId ? { ...p, icon } : p))
+    });
+    try {
+      const res = await api.updateProject(projectId, {
+        icon,
+        ...(current?.uri ? { workspaceUri: current.uri } : {}),
+        ...(current?.rootPath || current?.path
+          ? { rootPath: current.rootPath || current.path || undefined }
+          : {})
+      });
+      if (res.project) {
+        this.setState({
+          projects: this.state.projects.map((p) =>
+            p.id === projectId ? { ...p, ...res.project } : p
+          ),
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+      this.showToast(this.t('store.projectIconUpdated'));
     } catch (err) {
       this.setState({ projects: prevProjects });
       this.showToast(this.t('store.projectUpdateFailed', { msg: (err as Error).message }));

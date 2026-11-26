@@ -109,6 +109,12 @@ export const ja: Partial<I18nMessages> = {
   'sidebar.moreActions': 'その他の操作',
   'sidebar.filterToggle': 'フィルター切り替え',
   'sidebar.moveToGroup': 'グループに移動',
+  'sidebar.setIcon': 'アイコンを設定',
+  'sidebar.clearIcon': 'リセット',
+  'sidebar.iconPresetGroup': 'アイコン',
+  'sidebar.iconEmojiGroup': '絵文字',
+  'sidebar.iconCustomPlaceholder': '絵文字や記号...',
+  'sidebar.groupIconAria': 'グループアイコンを選択',
 
   'session.untitled': '無題のセッション · #{shortId}',
   'session.untitledWithRepo': '無題 · {repo} #{shortId}',

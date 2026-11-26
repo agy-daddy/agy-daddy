@@ -223,8 +223,8 @@ test('HUB-314: taskManager bounds step-scan concurrency, applies short timeout w
         activeScans += 1;
         maxConcurrentScans = Math.max(maxConcurrentScans, activeScans);
         try {
-          if (params.cascadeId === 'cid-1') {
-            return await new Promise(() => {}); // Hang on cid-1 to verify bounded short timeout
+          if (params.cascadeId === 'cid-5') {
+            return await new Promise(() => {}); // Hang on last session cid-5 to verify bounded short timeout without skewing inflight counter
           }
           await new Promise((r) => setTimeout(r, 15));
           return {

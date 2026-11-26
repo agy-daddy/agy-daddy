@@ -39,7 +39,8 @@ const {
   isTempBridgeWorkspace,
   sanitizeModelCatalogResult,
   createSessionOrgStore,
-  canonicalKey
+  canonicalKey,
+  sanitizeEntityIcon
 } = require('./session-org-store');
 
 const CHANNEL_KEYS = ['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare'];
@@ -1455,6 +1456,12 @@ function applyManagedSettingsToConfig(config, managed = {}, opts = {}) {
   if (Array.isArray(managed.modelFilterOrder)) {
     config.modelFilterOrder = sanitizeModelFilterOrder(managed.modelFilterOrder);
   }
+  if (typeof managed.enablePushNotifications === 'boolean') {
+    config.enablePushNotifications = managed.enablePushNotifications;
+  }
+  if (typeof managed.enableAppBadge === 'boolean') {
+    config.enableAppBadge = managed.enableAppBadge;
+  }
 
   // Bidirectional permissionLevel <-> allowRemoteWrite resolution
   const hasPermField = typeof managed.permissionLevel === 'string' && ['L0', 'L1', 'L2'].includes(managed.permissionLevel.trim().toUpperCase());
@@ -1585,6 +1592,8 @@ async function activate(host) {
     modelSortMode: normalizeModelSortMode(existing.modelSortMode),
     modelFilterOrder: sanitizeModelFilterOrder(existing.modelFilterOrder),
     modelUsageCounts: isPlainObject(existing.modelUsageCounts) ? { ...existing.modelUsageCounts } : {},
+    enablePushNotifications: existing.enablePushNotifications !== false,
+    enableAppBadge: existing.enableAppBadge !== false,
     updatedAt: existing.updatedAt || new Date().toISOString()
   };
 
@@ -1706,7 +1715,9 @@ async function activate(host) {
 
   const webPush = createWebPushManager({
     storage: host.storage,
-    isTestMode: isTestMode()
+    isTestMode: isTestMode(),
+    isEnabled: () => config.enablePushNotifications !== false,
+    isBadgeEnabled: () => config.enableAppBadge !== false
   });
 
   const mobileWorkspace = createMobileWorkspaceService({
@@ -1754,7 +1765,11 @@ async function activate(host) {
     }
   });
 
-  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
+  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null, icon = undefined } = {}) {
+    const iconCheck = sanitizeEntityIcon(icon);
+    if (!iconCheck.ok) {
+      return { ok: false, statusCode: 400, error: iconCheck.error };
+    }
     const normalizedRoot = normalizeLocalPath(rootPath);
     if (!normalizedRoot) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
@@ -1848,6 +1863,7 @@ async function activate(host) {
       const project = sessionOrgStore.materializeProjectInOrg(org, {
         id: `proj_${crypto.randomUUID()}`,
         name: cleanName,
+        ...(iconCheck.value ? { icon: iconCheck.value } : {}),
         rootPath: normalizedRoot,
         groupId: resolvedGroupId,
         source: cleanSource,
@@ -2321,13 +2337,22 @@ async function activate(host) {
     },
     async onAttentionTransition(payload) {
       if (!payload) return;
+      if (config.enablePushNotifications === false) return;
       if (payload.needsAttention || payload.status === 'PENDING' || payload.status === 'ERROR' || payload.status === 'DONE') {
+        const badgeEnabled = config.enableAppBadge !== false;
+        const rawCount = Number(payload.attentionCount);
+        const badgeCount = badgeEnabled
+          ? (Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 1)
+          : 0;
         await webPush.sendNotification({
           type: 'attention',
           sessionId: payload.cascadeId,
           title: payload.title || 'Agy-Daddy Remote',
           body: payload.attentionReason || `会话状态变更: ${payload.status}`,
-          status: payload.status
+          status: payload.status,
+          badgeEnabled,
+          badgeCount,
+          unreadCount: badgeCount
         });
       }
     }
@@ -2428,6 +2453,8 @@ async function activate(host) {
       tunnelConfigError,
       tunnelState: cloudflared.getState(),
       remoteDisplay: { ...config.remoteDisplay },
+      enablePushNotifications: config.enablePushNotifications !== false,
+      enableAppBadge: config.enableAppBadge !== false,
       devicesCount: tracked.devices.length,
       clientsCount: tracked.clients.length,
       tokenPreview: `${config.token.slice(0, 6)}...${config.token.slice(-4)}`,
@@ -2765,6 +2792,12 @@ async function activate(host) {
         archivedCount: sessionsRes.archivedCount ?? 0,
         defaultSessionPath: sessionsRes.defaultSessionPath,
         vapidPublicKey: webPush.getPublicKey(),
+        enablePushNotifications: config.enablePushNotifications !== false,
+        enableAppBadge: config.enableAppBadge !== false,
+        notifications: {
+          enablePushNotifications: config.enablePushNotifications !== false,
+          enableAppBadge: config.enableAppBadge !== false
+        },
         voiceSupported: false,
         runningTasksCount: snap.runningTasksCount ?? 0,
         telemetry: { panels: snap.panels, runningTasksCount: snap.runningTasksCount ?? 0, channel }
@@ -2890,6 +2923,16 @@ async function activate(host) {
       if (Object.prototype.hasOwnProperty.call(patch, 'name') && (!String(patch.name || '').trim())) {
         return { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' };
       }
+      let hasIconChange = false;
+      let nextIcon = null;
+      if (Object.prototype.hasOwnProperty.call(patch, 'icon')) {
+        const iconCheck = sanitizeEntityIcon(patch.icon);
+        if (!iconCheck.ok) {
+          return { ok: false, statusCode: 400, error: iconCheck.error };
+        }
+        hasIconChange = true;
+        nextIcon = iconCheck.value;
+      }
       return sessionOrgStore.mutateOrgAtomically((org) => {
         let proj = org.projects.find((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId))) || null;
         if (!proj) {
@@ -2910,6 +2953,10 @@ async function activate(host) {
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
           proj.name = String(patch.name).trim();
+        }
+        if (hasIconChange) {
+          if (nextIcon) proj.icon = nextIcon;
+          else delete proj.icon;
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
           const nextGid = patch.groupId ? String(patch.groupId).trim() : null;
@@ -3258,7 +3305,9 @@ async function activate(host) {
           id: 'push_sse',
           label: 'SSE & Web Push',
           status: sseBroker ? 'ok' : 'warn',
-          detail: webPush?.getPublicKey?.() ? 'SSE + VAPID Push ready' : 'SSE ready'
+          detail: config.enablePushNotifications === false
+            ? 'SSE ready (Web Push disabled in settings)'
+            : (webPush?.getPublicKey?.() ? 'SSE + VAPID Push ready' : 'SSE ready')
         }
       ];
       const summary = {
@@ -3353,6 +3402,10 @@ async function activate(host) {
     ptyManager,
     taskManager,
     webPush,
+    getNotificationConfig: () => ({
+      enablePushNotifications: config.enablePushNotifications !== false,
+      enableAppBadge: config.enableAppBadge !== false
+    }),
     mobileWorkspace,
     workspaceBrowser,
     remoteProvisioner
@@ -3413,10 +3466,23 @@ async function activate(host) {
     const prevMode = config.tunnelMode;
     const prevHost = config.tunnelHostname;
     const prevTok = config.tunnelToken;
+    const prevPushEnabled = config.enablePushNotifications !== false;
+    const prevBadgeEnabled = config.enableAppBadge !== false;
     const applied = applyManagedSettingsToConfig(config, nextValues, { isInit: false });
     tunnelConfigError = applied.tunnelConfigError;
     persistConfig();
     publishStatus();
+    const nextPushEnabled = config.enablePushNotifications !== false;
+    const nextBadgeEnabled = config.enableAppBadge !== false;
+    if (prevPushEnabled !== nextPushEnabled || prevBadgeEnabled !== nextBadgeEnabled) {
+      sseBroker.emit('state.patch', {
+        key: 'state:remote.notifications@1',
+        value: {
+          enablePushNotifications: nextPushEnabled,
+          enableAppBadge: nextBadgeEnabled
+        }
+      });
+    }
     if (Object.keys(applied.syncBackPatch).length > 0) {
       void syncManagedSettings(applied.syncBackPatch).catch(() => {});
     }

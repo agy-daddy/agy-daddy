@@ -341,6 +341,14 @@ function createSseBroker(options = {}) {
     if (typeof listSessions !== 'function') return;
     const raw = await listSessions();
     const sessions = Array.isArray(raw) ? raw : (Array.isArray(raw?.sessions) ? raw.sessions : []);
+    let attentionCount = 0;
+    for (const item of sessions) {
+      if (!item || typeof item !== 'object') continue;
+      const st = classifyRunStatus(item.status);
+      if (Boolean(item.needsAttention) || ATTENTION_STATES.has(st)) {
+        attentionCount += 1;
+      }
+    }
 
     for (const s of sessions) {
       if (!s || typeof s !== 'object') continue;
@@ -366,6 +374,7 @@ function createSseBroker(options = {}) {
             prevStatus: '',
             needsAttention: nextAttention,
             attentionReason: nextReason,
+            attentionCount,
             title: s.title || '',
             session: s
           };
@@ -389,6 +398,7 @@ function createSseBroker(options = {}) {
           prevStatus: prev.status,
           needsAttention: nextAttention,
           attentionReason: nextReason,
+          attentionCount,
           title: s.title || '',
           session: s
         };

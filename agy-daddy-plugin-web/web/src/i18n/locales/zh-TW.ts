@@ -158,6 +158,12 @@ export const zhTW: Partial<I18nMessages> = {
   'sidebar.settings': '設定',
   'sidebar.newGroupTooltip': '新增分組',
   'sidebar.syncedFromApp': 'App 同步',
+  'sidebar.setIcon': '設定圖示',
+  'sidebar.clearIcon': '恢復預設',
+  'sidebar.iconPresetGroup': '圖示',
+  'sidebar.iconEmojiGroup': '表情符號',
+  'sidebar.iconCustomPlaceholder': '輸入 Emoji 或符號...',
+  'sidebar.groupIconAria': '選擇分組圖示',
 
   'session.untitled': '未命名工作階段 · #{shortId}',
   'session.untitledWithRepo': '未命名工作階段 · {repo} #{shortId}',

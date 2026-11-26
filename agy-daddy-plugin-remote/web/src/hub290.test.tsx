@@ -800,4 +800,102 @@ describe('HUB-290 S4-2 Drawer Org, Drag-Sort, Archive/Delete & NewProject', () =
       expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
     });
   });
+
+  describe('HUB-319 Group & Project Icon Customization', () => {
+    it('renders group/project icons and supports setting icons from LeftDrawer action sheet and store', async () => {
+      const onSetGroupIcon = vi.fn(async () => {});
+      const onSetProjectIcon = vi.fn(async () => {});
+      const onCreateGroup = vi.fn(async () => {});
+
+      const g = makeGroup({ id: 'g1', name: 'Core', icon: 'preset:layers' });
+      const p = makeProject({ id: 'p1', name: 'Alpha', groupId: 'g1', icon: '🚀' });
+
+      render(
+        <I18nProvider locale="en">
+          <ThemeProvider>
+            <LeftDrawer
+              sessions={[makeSession({ cascadeId: 's1', projectId: 'p1', groupId: 'g1' })]}
+              archivedList={[]}
+              archivedCount={0}
+              activeSessionId="s1"
+              workspaces={[]}
+              groups={[g]}
+              projects={[p]}
+              pins={{ sessions: [], projects: [], groups: [] }}
+              channel="loopback"
+              permissionLevel="L2"
+              token="tok"
+              appearance="auto"
+              soundAlert={false}
+              vibrateAlert={false}
+              pushSubscribed={false}
+              pushBusy={false}
+              onSelectSession={vi.fn()}
+              onCreateSession={vi.fn(async () => {})}
+              onCreateGroup={onCreateGroup}
+              onSetGroupIcon={onSetGroupIcon}
+              onSetProjectIcon={onSetProjectIcon}
+              onCycleAppearance={vi.fn()}
+              onToggleSound={vi.fn()}
+              onToggleVibrate={vi.fn()}
+              onTogglePush={vi.fn()}
+              onTestPush={vi.fn()}
+              onClose={vi.fn()}
+            />
+          </ThemeProvider>
+        </I18nProvider>
+      );
+
+      // Existing icons rendered on group header, group filter pill, and project card
+      expect(screen.getByTestId('group-icon-g1').querySelector('[data-entity-icon="preset:layers"]')).toBeTruthy();
+      expect(screen.getByTestId('project-icon-p1')).toHaveTextContent('🚀');
+      expect(screen.getByTestId('group-pill-g1').querySelector('[data-entity-icon="preset:layers"]')).toBeTruthy();
+
+      // Open project action sheet -> Set icon -> select preset
+      fireEvent.click(screen.getByTestId('project-more-p1'));
+      fireEvent.click(screen.getByTestId('action-set-project-icon'));
+      fireEvent.click(screen.getByTestId('sheet-project-icon-p1-preset-code'));
+      await waitFor(() => expect(onSetProjectIcon).toHaveBeenCalledWith('p1', 'preset:code'));
+
+      // Open group action sheet -> Set icon -> clear icon
+      fireEvent.click(screen.getByTestId('group-more-g1'));
+      fireEvent.click(screen.getByTestId('action-set-group-icon'));
+      fireEvent.click(screen.getByTestId('sheet-group-icon-g1-clear'));
+      await waitFor(() => expect(onSetGroupIcon).toHaveBeenCalledWith('g1', null));
+
+      // Store methods call backend APIs
+      const mutateSpy = vi.spyOn(api, 'mutateSessionGroups').mockResolvedValue({
+        ok: true,
+        groups: [{ ...g, icon: '🔥' }],
+        pins: { sessions: [], projects: [], groups: [] },
+        revision: 12
+      });
+      const updProjSpy = vi.spyOn(api, 'updateProject').mockResolvedValue({
+        ok: true,
+        project: { ...p, icon: 'preset:terminal' },
+        revision: 13
+      });
+
+      const ctrl = new RemoteStoreController();
+      (ctrl as unknown as { setState: (patch: Record<string, unknown>) => void }).setState({
+        token: 'tok',
+        online: true,
+        groups: [g],
+        projects: [p],
+        permissionLevel: 'L2'
+      });
+      await ctrl.setGroupIcon('g1', '🔥');
+      expect(mutateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'upsert', id: 'g1', icon: '🔥' })
+      );
+      expect(ctrl.getState().groups[0].icon).toBe('🔥');
+
+      await ctrl.setProjectIcon('p1', 'preset:terminal');
+      expect(updProjSpy).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ icon: 'preset:terminal' })
+      );
+      expect(ctrl.getState().projects[0].icon).toBe('preset:terminal');
+    });
+  });
 });

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-25T07:55:20Z",
+  "updatedAt": "2026-11-26T14:35:00Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
@@ -25,7 +25,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-zh-cn",
       "localRepo": "agy-daddy-plugin-zh-cn",
-      "manifestSha512": "sha512-b/GDaWvShJ7RbzV4uzOHgmU2jKqLZ0+XLBPGBIvLiQ5N0rOqfX8CU6btdmjyVDQJdwsdSXYEYJO2i6uQBGOH5Q=="
+      "manifestSha512": "sha512-V6mKd44CaH3O08BqsgxDi0suDtO20fWdg3aLFM26FvmX+cecRrSYMlTvZlT1AU/yTxLmnq/Z3mZGBAGqG5T0Zw=="
     },
     {
       "id": "agy-daddy.cli",
@@ -73,7 +73,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-chat-nav",
       "localRepo": "agy-daddy-plugin-chat-nav",
-      "manifestSha512": "sha512-iB9f5RvQ7G0LbuvoT5bx6P2kpmhgZ9Pttm5zYTE+BbXIYMKRTIn4uZuOphngWOdsZCZPRpT8nnhqI+yA+K9uhQ=="
+      "manifestSha512": "sha512-vqbzG4KOQFqLGwc2e6bGaImdyGbblOHdPZ31v7pMYbTfuH6BrHSkdn8L771g2IRcGlc/HNzjlI1BeITNco3Ysw=="
     },
     {
       "id": "agy-daddy.quota",
@@ -122,6 +122,29 @@
       "subpath": "agy-daddy-plugin-web",
       "localRepo": "agy-daddy-plugin-web",
       "manifestSha512": "sha512-TeQNGypx3EHvnwwCdLkHi5E3ytuMtrm/QHYd/pE5gkOA5Q4FwEU0FJp3sTC6YBPy8GuW0bFDz5zklkfLOTI9ag=="
+    },
+    {
+      "id": "agy-daddy.theme",
+      "shortName": "theme",
+      "layer": 3,
+      "trustLevel": "T0",
+      "version": "1.1.1",
+      "npmPackage": "@agy-daddy/plugin-theme",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-theme",
+      "localRepo": "agy-daddy-plugin-theme",
+      "manifestSha512": "sha512-bPCgh8vZ/Bnno67RPdmfCLvdwgdiQB/2OvSg8sy9AqE8HkhnUUKYI8dPoEQ3hBTTO/rh3P6dZySuvUc1ZXfMLA=="
+    },
+    {
+      "id": "hubo1989.design",
+      "shortName": "design",
+      "layer": 4,
+      "trustLevel": "T1",
+      "external": true,
+      "version": "0.1.0",
+      "repo": "https://github.com/hubo1989/agy-plugin-design.git",
+      "ref": "v0.1.0",
+      "manifestSha512": "sha512-oBq+/6e2W/jEjD4nUtZq8Tc62xcjUH3hJzwDeL36z2ucPoYKdT27ZFEy4KMbtKrDJWngNeM22UT6Ikn6KR7i9w=="
     }
   ]
 }

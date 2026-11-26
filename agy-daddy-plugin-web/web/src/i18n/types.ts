@@ -183,6 +183,12 @@ export interface I18nMessages {
   'sidebar.activeProjects': string;
   'sidebar.renameProject': string;
   'sidebar.renameGroup': string;
+  'sidebar.setIcon': string;
+  'sidebar.clearIcon': string;
+  'sidebar.iconPresetGroup': string;
+  'sidebar.iconEmojiGroup': string;
+  'sidebar.iconCustomPlaceholder': string;
+  'sidebar.groupIconAria': string;
   'sidebar.markRead': string;
   'sidebar.copySessionId': string;
   'sidebar.copiedId': string;

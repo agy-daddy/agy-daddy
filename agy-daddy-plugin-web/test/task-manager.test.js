@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const url = require('node:url');
 
 const {
   LOG_TAIL_MAX_BYTES,
@@ -291,6 +293,12 @@ test('HUB-314: taskManager bounds step-scan concurrency, applies short timeout w
 });
 
 test('HUB-314: taskManager resolves projectPath/projectName, filters before RECENT_TASKS_LIMIT, and computes global filters + totalRunningCount', async () => {
+  const alphaRoot = path.resolve('/work/alpha-repo');
+  const betaRoot = path.resolve('/work/beta-repo');
+  const standaloneRoot = path.resolve('/work/standalone-default');
+  const alphaUri = url.pathToFileURL(alphaRoot).href;
+  const betaUri = url.pathToFileURL(betaRoot).href;
+
   // Build 25 historical idle sessions so proj-alpha's session sits beyond top 20 recent slice
   const sessions = [];
   for (let i = 0; i < 25; i++) {
@@ -300,7 +308,7 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
       cascadeId: isAlpha ? 'cid-alpha-old' : `cid-beta-${i}`,
       title: isAlpha ? 'Alpha Old Task' : `Beta Task ${i}`,
       status: i === 0 ? 'CASCADE_RUN_STATUS_RUNNING' : 'CASCADE_RUN_STATUS_IDLE',
-      workspaceUri: isAlpha ? 'file:///work/alpha-repo' : 'file:///work/beta-repo',
+      workspaceUri: isAlpha ? alphaUri : betaUri,
       createdTime: `2026-11-26T09:${min}:00Z`,
       lastModifiedTime: `2026-11-26T09:${min}:30Z`
     });
@@ -308,13 +316,13 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
 
   const workspaceMetaStore = {
     getState() {
-      return { defaultSessionPath: '/work/standalone-default' };
+      return { defaultSessionPath: standaloneRoot };
     },
     listProjectsAndGroups() {
       return {
         projects: [
-          { id: 'p-alpha', name: 'Alpha Project', rootPath: '/work/alpha-repo' },
-          { id: 'p-beta', name: 'Beta Project', rootPath: '/work/beta-repo' }
+          { id: 'p-alpha', name: 'Alpha Project', rootPath: alphaRoot },
+          { id: 'p-beta', name: 'Beta Project', rootPath: betaRoot }
         ],
         groups: []
       };
@@ -329,7 +337,7 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
             sessionId: 'pty-alpha',
             title: 'Alpha Dev Server',
             shell: 'zsh',
-            cwd: '/work/alpha-repo/packages/api',
+            cwd: path.join(alphaRoot, 'packages', 'api'),
             alive: true,
             createdAt: Date.parse('2026-11-26T10:00:00Z'),
             lastActivityAt: Date.parse('2026-11-26T10:00:05Z'),
@@ -362,8 +370,8 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
   assert.equal(allRes.totalRunningCount, 2);
   assert.equal(allRes.recent.length, 20);
   assert.equal(allRes.filters.projects.length, 2);
-  const alphaFilterProj = allRes.filters.projects.find((p) => p.path === '/work/alpha-repo');
-  const betaFilterProj = allRes.filters.projects.find((p) => p.path === '/work/beta-repo');
+  const alphaFilterProj = allRes.filters.projects.find((p) => p.path === alphaRoot);
+  const betaFilterProj = allRes.filters.projects.find((p) => p.path === betaRoot);
   assert.equal(alphaFilterProj.name, 'Alpha Project');
   assert.equal(alphaFilterProj.count, 2); // 1 PTY (nested cwd mapped to root) + 1 old session
   assert.equal(betaFilterProj.name, 'Beta Project');
@@ -371,11 +379,11 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
   assert.equal(allRes.filters.sessions.length, 25);
 
   // 2. Filter by project finds old Alpha session beyond top 20 AND Alpha PTY with nested cwd
-  const alphaOnly = await mgr.listTasks({ project: 'file:///work/alpha-repo/' });
+  const alphaOnly = await mgr.listTasks({ project: `${alphaUri}/` });
   assert.equal(alphaOnly.runningCount, 1);
   assert.equal(alphaOnly.totalRunningCount, 2, 'Global running count must stay intact while filtered');
   assert.equal(alphaOnly.running[0].taskId, 'pty:pty-alpha');
-  assert.equal(alphaOnly.running[0].projectPath, '/work/alpha-repo');
+  assert.equal(alphaOnly.running[0].projectPath, alphaRoot);
   assert.equal(alphaOnly.running[0].projectName, 'Alpha Project');
   assert.equal(alphaOnly.recent.length, 1);
   assert.equal(alphaOnly.recent[0].taskId, 'session:cid-alpha-old');
@@ -383,13 +391,13 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
   assert.equal(alphaOnly.filters.sessions.length, 25);
 
   // 3. Combined sessionId + project filter
-  const comboHit = await mgr.listTasks({ sessionId: 'cid-alpha-old', project: '/work/alpha-repo' });
+  const comboHit = await mgr.listTasks({ sessionId: 'cid-alpha-old', project: alphaRoot });
   assert.equal(comboHit.runningCount, 0);
   assert.equal(comboHit.totalRunningCount, 2);
   assert.equal(comboHit.recent.length, 1);
   assert.equal(comboHit.recent[0].sessionId, 'cid-alpha-old');
 
-  const comboMiss = await mgr.listTasks({ sessionId: 'cid-alpha-old', project: '/work/beta-repo' });
+  const comboMiss = await mgr.listTasks({ sessionId: 'cid-alpha-old', project: betaRoot });
   assert.equal(comboMiss.running.length, 0);
   assert.equal(comboMiss.recent.length, 0);
   assert.equal(comboMiss.totalRunningCount, 2);

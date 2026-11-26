@@ -8,6 +8,8 @@ export interface SseClientCallbacks {
   onQueueUpdate: (payload: Record<string, unknown>) => void;
   onStatePatch?: (payload: Record<string, unknown>) => void;
   onTaskUpdated?: (payload: Record<string, unknown>) => void;
+  onOrgUpdated?: (payload: Record<string, unknown>) => void;
+  onProjectJob?: (payload: Record<string, unknown>) => void;
 }
 
 export const SSE_BACKGROUND_SUSPEND_MS = 15_000;
@@ -156,6 +158,8 @@ export class RemoteSseClient {
     bind('queue.update', (d) => this.callbacks.onQueueUpdate(d));
     bind('state.patch', (d) => this.callbacks.onStatePatch?.(d));
     bind('task.updated', (d) => this.callbacks.onTaskUpdated?.(d));
+    bind('org.updated', (d) => this.callbacks.onOrgUpdated?.(d));
+    bind('project.job', (d) => this.callbacks.onProjectJob?.(d));
 
     es.onerror = () => {
       if (this.destroyed || this.suspendedByVisibility) return;

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
+  resolveNextActiveSessionId
+} from '../hooks/useDrawerDragSort';
+import {
   createTranslator,
   LOCALE_STORAGE_KEY,
   normalizeLocale,
@@ -15,6 +18,7 @@ import {
 import type {
   ActiveSheetId,
   AppearanceMode,
+  ArchivedSessionMeta,
   BootstrapResponse,
   ChannelEntryDto,
   ChatMode,
@@ -34,20 +38,24 @@ import type {
   OrchestratorMasterKey,
   OrchestratorThinkingMap,
   OrchestratorThinkingTier,
+  OrgReorderRequest,
   PermissionInfo,
   PermissionLevel,
   PinKind,
   QueuedMessage,
+  RemoteProvisionJob,
   RightTabId,
   SessionDetail,
   SessionEvent,
   SessionGroup,
+  SessionOrderMap,
   SessionPins,
   SessionSummary,
   SupportedLocale,
-  TelemetryPanels
+  TelemetryPanels,
+  ZoneOrder
 } from '../types';
-import { api, configureApiClient, getApiBaseOrigin, setApiBaseOrigin } from './api';
+import { api, type ApiError, configureApiClient, getApiBaseOrigin, setApiBaseOrigin } from './api';
 import {
   flushDraftSave,
   flushSnapshotSave,
@@ -84,7 +92,8 @@ import {
   clearSavedToken,
   extractTokenAndScrubUrl,
   saveToken,
-  scrubSwitchTicketFromUrl
+  scrubSwitchTicketFromUrl,
+  syncSessionUrl
 } from './token';
 
 export {
@@ -99,12 +108,16 @@ export {
 const APPEARANCE_KEY = 'agy_remote_appearance';
 const SOUND_KEY = 'agy_remote_sound_alert';
 const VIBRATE_KEY = 'agy_remote_vibrate_alert';
-const PINS_CACHE_KEY = 'agy_remote_pins_v1';
-const GROUPS_CACHE_KEY = 'agy_remote_groups_v1';
 const ORCH_THINKING_KEY = 'agy_remote_orch_thinking_v1';
 const ORCH_ACTIVE_MASTER_KEY = 'agy_remote_orch_master_v1';
 
 const EMPTY_PINS: SessionPins = { sessions: [], projects: [], groups: [] };
+const EMPTY_ZONE_ORDER: ZoneOrder = { pinned: [], normal: [] };
+
+export interface ToastAction {
+  label: string;
+  onAction: () => void;
+}
 
 export interface RemoteState {
   token: string;
@@ -126,9 +139,18 @@ export interface RemoteState {
   activeOrchestratorMaster: OrchestratorMasterKey | null;
   modelPreferences: ModelPreferences;
   sessions: SessionSummary[];
+  archivedList: SessionSummary[];
+  archivedSessions: Record<string, ArchivedSessionMeta>;
+  archivedCount: number;
   groups: SessionGroup[];
   projects: HostProject[];
   pins: SessionPins;
+  orgRevision: number;
+  groupOrder: ZoneOrder;
+  projectOrder: Record<string, ZoneOrder>;
+  sessionOrder: SessionOrderMap;
+  defaultSessionPath: string;
+  latestJobEvent: RemoteProvisionJob | null;
   activeSessionId: string;
   activeSession: SessionDetail | null;
   events: SessionEvent[];
@@ -165,6 +187,7 @@ export interface RemoteState {
   thinkingExpandTarget: boolean | null;
   confirmPrompt: ConfirmPromptState | null;
   toast: string;
+  toastAction: ToastAction | null;
   inspectTargetFile: string;
 }
 
@@ -211,6 +234,84 @@ function normalizePins(raw: Partial<SessionPins> | null | undefined): SessionPin
     projects: Array.isArray(raw?.projects) ? Array.from(new Set(raw.projects.map(String))) : [],
     groups: Array.isArray(raw?.groups) ? Array.from(new Set(raw.groups.map(String))) : []
   };
+}
+
+function normalizeZoneOrder(raw: unknown): ZoneOrder {
+  const rec = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    pinned: Array.isArray(rec.pinned) ? Array.from(new Set(rec.pinned.map(String))) : [],
+    normal: Array.isArray(rec.normal) ? Array.from(new Set(rec.normal.map(String))) : []
+  };
+}
+
+function normalizeProjectOrderMap(raw: unknown): Record<string, ZoneOrder> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, ZoneOrder> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    out[k] = normalizeZoneOrder(v);
+  }
+  return out;
+}
+
+function normalizeSessionOrderMap(raw: unknown): SessionOrderMap {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: SessionOrderMap = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (k === '__pinned__' && Array.isArray(v)) {
+      out.__pinned__ = Array.from(new Set(v.map(String)));
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      out[k] = normalizeZoneOrder(v);
+    }
+  }
+  return out;
+}
+
+function normalizeArchivedMap(raw: unknown): Record<string, ArchivedSessionMeta> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, ArchivedSessionMeta> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v && typeof v === 'object') {
+      const rec = v as Record<string, unknown>;
+      out[k] = {
+        archivedAt: typeof rec.archivedAt === 'string' ? rec.archivedAt : new Date().toISOString(),
+        ...(typeof rec.archivedAtStepCount === 'number'
+          ? { archivedAtStepCount: rec.archivedAtStepCount }
+          : {}),
+        ...(typeof rec.archivedWasRunning === 'boolean'
+          ? { archivedWasRunning: rec.archivedWasRunning }
+          : {}),
+        ...(typeof rec.projectId === 'string' || rec.projectId === null
+          ? { projectId: rec.projectId as string | null }
+          : {}),
+        ...(typeof rec.projectName === 'string' || rec.projectName === null
+          ? { projectName: rec.projectName as string | null }
+          : {}),
+        ...(typeof rec.titleSnapshot === 'string' ? { titleSnapshot: rec.titleSnapshot } : {})
+      };
+    }
+  }
+  return out;
+}
+
+function splitActiveAndArchivedSessions(
+  rawSessions: SessionSummary[],
+  archivedMap: Record<string, ArchivedSessionMeta>
+): { active: SessionSummary[]; archived: SessionSummary[] } {
+  const active: SessionSummary[] = [];
+  const archived: SessionSummary[] = [];
+  for (const s of rawSessions) {
+    const meta = archivedMap[s.cascadeId];
+    if (s.archived || meta) {
+      archived.push({
+        ...s,
+        archived: true,
+        archivedAt: s.archivedAt ?? meta?.archivedAt ?? null
+      });
+    } else {
+      active.push({ ...s, archived: false });
+    }
+  }
+  return { active, archived };
 }
 
 function applyPinsToOrg(
@@ -533,6 +634,9 @@ export class RemoteStoreController {
   private prevAttentionIds = new Set<string>();
   private initialized = false;
   private pendingUserModelId = '';
+  private isDraggingOrg = false;
+  private pendingOrgRefresh = false;
+  private includeArchivedSynced = false;
 
   private t(key: I18nKey, params?: I18nParams): string {
     return createTranslator(this.state.locale)(key, params);
@@ -555,8 +659,6 @@ export class RemoteStoreController {
         normalizeDrawerSpeed(window.localStorage?.getItem(DRAWER_SPEED_STORAGE_KEY)) || 'normal';
       locale = normalizeLocale(window.localStorage?.getItem(LOCALE_STORAGE_KEY)) || 'zh-CN';
     } catch {}
-    const cachedPins = normalizePins(readJsonPref<SessionPins>(PINS_CACHE_KEY, EMPTY_PINS));
-    const cachedGroups = readJsonPref<SessionGroup[]>(GROUPS_CACHE_KEY, []);
     const cachedOrchThinking = sanitizeOrchestratorThinkingMap(
       readJsonPref<Partial<OrchestratorThinkingMap>>(ORCH_THINKING_KEY, DEFAULT_ORCHESTRATOR_THINKING)
     );
@@ -582,9 +684,18 @@ export class RemoteStoreController {
       activeOrchestratorMaster: matchOrchestratorMasterKey(cachedOrchMaster),
       modelPreferences: { sortMode: 'custom', filterOrder: [], usageCounts: {} },
       sessions: [],
-      groups: Array.isArray(cachedGroups) ? cachedGroups : [],
+      archivedList: [],
+      archivedSessions: {},
+      archivedCount: 0,
+      groups: [],
       projects: [],
-      pins: cachedPins,
+      pins: EMPTY_PINS,
+      orgRevision: 0,
+      groupOrder: EMPTY_ZONE_ORDER,
+      projectOrder: {},
+      sessionOrder: {},
+      defaultSessionPath: '',
+      latestJobEvent: null,
       activeSessionId: urlInit.sessionId,
       activeSession: null,
       events: [],
@@ -621,6 +732,7 @@ export class RemoteStoreController {
       thinkingExpandTarget: null,
       confirmPrompt: null,
       toast: '',
+      toastAction: null,
       inspectTargetFile: ''
     };
 
@@ -642,13 +754,21 @@ export class RemoteStoreController {
     for (const fn of this.listeners) fn();
   }
 
-  public showToast(msg: string, ms = 2600): void {
+  public showToast(msg: string, ms = 2600, action: ToastAction | null = null): void {
     if (this.toastTimer !== null) clearTimeout(this.toastTimer);
-    this.setState({ toast: msg });
+    this.setState({ toast: msg, toastAction: action });
     this.toastTimer = setTimeout(() => {
-      this.setState({ toast: '' });
+      this.setState({ toast: '', toastAction: null });
       this.toastTimer = null;
     }, ms);
+  }
+
+  public dismissToast(): void {
+    if (this.toastTimer !== null) {
+      clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    this.setState({ toast: '', toastAction: null });
   }
 
   private requestConfirm(hint: string): Promise<boolean> {
@@ -730,7 +850,9 @@ export class RemoteStoreController {
       onTelemetryPatch: (payload) => this.handleTelemetryPatch(payload),
       onQueueUpdate: (payload) => this.handleQueueUpdate(payload),
       onStatePatch: (payload) => this.handleStatePatch(payload),
-      onTaskUpdated: (payload) => this.handleTaskUpdated(payload)
+      onTaskUpdated: (payload) => this.handleTaskUpdated(payload),
+      onOrgUpdated: (payload) => this.handleOrgUpdated(payload),
+      onProjectJob: (payload) => this.handleProjectJob(payload)
     });
 
     const [cachedSessions, cachedQueue, cachedDraft] = await Promise.all([
@@ -859,6 +981,20 @@ export class RemoteStoreController {
       const bootPins = boot.pins ? normalizePins(boot.pins) : this.state.pins;
       const bootGroups = Array.isArray(boot.groups) ? boot.groups : this.state.groups;
       const bootProjects = Array.isArray(boot.projects) ? boot.projects : this.state.projects;
+      const bootGroupOrder = boot.groupOrder ? normalizeZoneOrder(boot.groupOrder) : this.state.groupOrder;
+      const bootProjectOrder = boot.projectOrder
+        ? normalizeProjectOrderMap(boot.projectOrder)
+        : this.state.projectOrder;
+      const bootSessionOrder = boot.sessionOrder
+        ? normalizeSessionOrderMap(boot.sessionOrder)
+        : this.state.sessionOrder;
+      const bootArchivedSessions = boot.archivedSessions
+        ? normalizeArchivedMap(boot.archivedSessions)
+        : this.state.archivedSessions;
+      const bootArchivedCount =
+        typeof boot.archivedCount === 'number'
+          ? boot.archivedCount
+          : Object.keys(bootArchivedSessions).length;
 
       this.setState({
         bootstrap: { ...boot, models: catalog },
@@ -876,12 +1012,19 @@ export class RemoteStoreController {
         groups: bootGroups,
         projects: bootProjects,
         pins: bootPins,
+        orgRevision: typeof boot.revision === 'number' ? boot.revision : this.state.orgRevision,
+        groupOrder: bootGroupOrder,
+        projectOrder: bootProjectOrder,
+        sessionOrder: bootSessionOrder,
+        archivedSessions: bootArchivedSessions,
+        archivedCount: bootArchivedCount,
+        defaultSessionPath: boot.defaultSessionPath ?? this.state.defaultSessionPath,
         authError: '',
         ready: true
       });
 
       const [sessRes, presetsRes] = await Promise.all([
-        api.listSessions({ limit: 200 }),
+        api.listSessions({ limit: 200, includeArchived: this.includeArchivedSynced }),
         api.getPresets().catch(() => null)
       ]);
 
@@ -890,16 +1033,39 @@ export class RemoteStoreController {
       const resolvedGroups = Array.isArray(sessRes.groups)
         ? sessRes.groups
         : bootGroups;
-      const resolvedProjects = Array.isArray(sessRes.projects) && sessRes.projects.length > 0
+      const resolvedProjects = Array.isArray(sessRes.projects)
         ? sessRes.projects
         : bootProjects.length > 0
           ? bootProjects
           : buildFallbackProjects(rawSessions, boot.workspaces, resolvedPins);
+      const resolvedArchivedMap = sessRes.archivedSessions
+        ? normalizeArchivedMap(sessRes.archivedSessions)
+        : bootArchivedSessions;
+      const resolvedArchivedCount =
+        typeof sessRes.archivedCount === 'number'
+          ? sessRes.archivedCount
+          : Math.max(bootArchivedCount, Object.keys(resolvedArchivedMap).length);
+      const resolvedRevision =
+        typeof sessRes.revision === 'number'
+          ? sessRes.revision
+          : typeof boot.revision === 'number'
+            ? boot.revision
+            : this.state.orgRevision;
+      const resolvedGroupOrder = sessRes.groupOrder
+        ? normalizeZoneOrder(sessRes.groupOrder)
+        : bootGroupOrder;
+      const resolvedProjectOrder = sessRes.projectOrder
+        ? normalizeProjectOrderMap(sessRes.projectOrder)
+        : bootProjectOrder;
+      const resolvedSessionOrder = sessRes.sessionOrder
+        ? normalizeSessionOrderMap(sessRes.sessionOrder)
+        : bootSessionOrder;
+      const resolvedDefaultSessionPath =
+        sessRes.defaultSessionPath ?? boot.defaultSessionPath ?? this.state.defaultSessionPath;
 
-      const pinnedOrg = applyPinsToOrg(rawSessions, resolvedProjects, resolvedGroups, resolvedPins);
+      const split = splitActiveAndArchivedSessions(rawSessions, resolvedArchivedMap);
+      const pinnedOrg = applyPinsToOrg(split.active, resolvedProjects, resolvedGroups, resolvedPins);
       saveSessionsCache(pinnedOrg.sessions).catch(() => {});
-      writeJsonPref(PINS_CACHE_KEY, resolvedPins);
-      writeJsonPref(GROUPS_CACHE_KEY, pinnedOrg.groups);
       this.recordAttentionSet(pinnedOrg.sessions);
 
       const presets: ComposerPreset[] = presetsRes
@@ -953,13 +1119,24 @@ export class RemoteStoreController {
           pinnedOrg.sessions.some((s) => s.cascadeId === this.state.activeSessionId) &&
           this.state.activeSessionId) ||
         pinnedOrg.sessions[0]?.cascadeId ||
-        this.state.activeSessionId;
+        '';
+      if (this.state.activeSessionId && targetId !== this.state.activeSessionId) {
+        syncSessionUrl(targetId || null);
+      }
 
       this.setState({
         sessions: pinnedOrg.sessions,
+        archivedList: this.includeArchivedSynced ? split.archived : this.state.archivedList,
+        archivedSessions: resolvedArchivedMap,
+        archivedCount: resolvedArchivedCount,
         groups: pinnedOrg.groups,
         projects: pinnedOrg.projects,
         pins: resolvedPins,
+        orgRevision: resolvedRevision,
+        groupOrder: resolvedGroupOrder,
+        projectOrder: resolvedProjectOrder,
+        sessionOrder: resolvedSessionOrder,
+        defaultSessionPath: resolvedDefaultSessionPath,
         presets,
         quickPrompts,
         frequentPrompts,
@@ -998,36 +1175,177 @@ export class RemoteStoreController {
     }
   }
 
-  public async refreshSessionsAndOrg(): Promise<void> {
+  private ensureOrgWriteAllowed(requireL2 = false): boolean {
+    if (this.state.permissionLevel === 'L0') {
+      this.showToast(this.t('store.l0ReadOnly'));
+      return false;
+    }
+    if (requireL2 && this.state.permissionLevel !== 'L2') {
+      this.showToast(this.t('store.l1DeleteDisabled'));
+      return false;
+    }
+    if (!this.state.token || !this.state.online) {
+      this.showToast(this.t('store.networkUnreachable'));
+      return false;
+    }
+    return true;
+  }
+
+  private applyOrgSnapshot(
+    raw: Record<string, unknown>,
+    opts?: { skipIfDragging?: boolean }
+  ): void {
+    if (opts?.skipIfDragging && this.isDraggingOrg) {
+      this.pendingOrgRefresh = true;
+      return;
+    }
+    const src =
+      raw.org && typeof raw.org === 'object' ? (raw.org as Record<string, unknown>) : raw;
+
+    const nextPins = src.pins ? normalizePins(src.pins as Partial<SessionPins>) : this.state.pins;
+    const nextGroups = Array.isArray(src.groups) ? (src.groups as SessionGroup[]) : this.state.groups;
+    const nextProjects = Array.isArray(src.projects)
+      ? (src.projects as HostProject[])
+      : this.state.projects;
+    const nextGroupOrder = src.groupOrder
+      ? normalizeZoneOrder(src.groupOrder)
+      : this.state.groupOrder;
+    const nextProjectOrder = src.projectOrder
+      ? normalizeProjectOrderMap(src.projectOrder)
+      : this.state.projectOrder;
+    const nextSessionOrder = src.sessionOrder
+      ? normalizeSessionOrderMap(src.sessionOrder)
+      : this.state.sessionOrder;
+    const nextArchivedMap = src.archivedSessions
+      ? normalizeArchivedMap(src.archivedSessions)
+      : this.state.archivedSessions;
+    const nextArchivedCount =
+      typeof src.archivedCount === 'number'
+        ? src.archivedCount
+        : src.archivedSessions
+          ? Object.keys(nextArchivedMap).length
+          : this.state.archivedCount;
+    const nextRevision =
+      typeof src.revision === 'number' ? src.revision : this.state.orgRevision;
+    const nextDefaultPath =
+      typeof src.defaultSessionPath === 'string'
+        ? src.defaultSessionPath
+        : this.state.defaultSessionPath;
+
+    const remainingActive = this.state.sessions.filter((s) => !nextArchivedMap[s.cascadeId]);
+    const pinnedOrg = applyPinsToOrg(remainingActive, nextProjects, nextGroups, nextPins);
+    const nextArchivedList = this.state.archivedList
+      .filter((s) => Boolean(nextArchivedMap[s.cascadeId]))
+      .map((s) => ({ ...s, archived: true }));
+
+    let nextActiveId = this.state.activeSessionId;
+    if (nextActiveId && nextArchivedMap[nextActiveId]) {
+      nextActiveId =
+        resolveNextActiveSessionId(pinnedOrg.sessions, nextActiveId, nextActiveId) || '';
+      syncSessionUrl(nextActiveId || null);
+      if (nextActiveId) {
+        void this.selectSession(nextActiveId);
+      }
+    }
+
+    this.setState({
+      sessions: pinnedOrg.sessions,
+      archivedList: nextArchivedList,
+      archivedSessions: nextArchivedMap,
+      archivedCount: nextArchivedCount,
+      groups: pinnedOrg.groups,
+      projects: pinnedOrg.projects,
+      pins: nextPins,
+      orgRevision: nextRevision,
+      groupOrder: nextGroupOrder,
+      projectOrder: nextProjectOrder,
+      sessionOrder: nextSessionOrder,
+      defaultSessionPath: nextDefaultPath,
+      activeSessionId: nextActiveId,
+      ...(nextActiveId ? {} : { activeSession: null, events: [], loadingSession: false })
+    });
+  }
+
+  public setDraggingOrg(dragging: boolean): void {
+    this.isDraggingOrg = dragging;
+    if (!dragging && this.pendingOrgRefresh) {
+      this.pendingOrgRefresh = false;
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
+    }
+  }
+
+  public async loadArchivedSessions(): Promise<void> {
+    this.includeArchivedSynced = true;
+    await this.refreshSessionsAndOrg(true);
+  }
+
+  public async refreshSessionsAndOrg(includeArchived = this.includeArchivedSynced): Promise<void> {
     if (!this.state.token) return;
     try {
-      const sessRes = await api.listSessions({ limit: 200 });
-      const rawSessions = Array.isArray(sessRes.sessions) ? sessRes.sessions : this.state.sessions;
+      const sessRes = await api.listSessions({ limit: 200, includeArchived });
+      const rawSessions = Array.isArray(sessRes.sessions) ? sessRes.sessions : [];
       const resolvedPins = normalizePins(sessRes.pins || this.state.pins);
       const resolvedGroups = Array.isArray(sessRes.groups) ? sessRes.groups : this.state.groups;
-      const resolvedProjects =
-        Array.isArray(sessRes.projects) && sessRes.projects.length > 0
-          ? sessRes.projects
-          : buildFallbackProjects(rawSessions, this.state.bootstrap?.workspaces, resolvedPins);
-      const pinnedOrg = applyPinsToOrg(rawSessions, resolvedProjects, resolvedGroups, resolvedPins);
+      const resolvedProjects = Array.isArray(sessRes.projects)
+        ? sessRes.projects
+        : buildFallbackProjects(rawSessions, this.state.bootstrap?.workspaces, resolvedPins);
+      const resolvedArchivedMap = sessRes.archivedSessions
+        ? normalizeArchivedMap(sessRes.archivedSessions)
+        : this.state.archivedSessions;
+      const resolvedArchivedCount =
+        typeof sessRes.archivedCount === 'number'
+          ? sessRes.archivedCount
+          : Math.max(this.state.archivedCount, Object.keys(resolvedArchivedMap).length);
+      const split = splitActiveAndArchivedSessions(rawSessions, resolvedArchivedMap);
+      const pinnedOrg = applyPinsToOrg(split.active, resolvedProjects, resolvedGroups, resolvedPins);
       saveSessionsCache(pinnedOrg.sessions).catch(() => {});
-      writeJsonPref(PINS_CACHE_KEY, resolvedPins);
-      writeJsonPref(GROUPS_CACHE_KEY, pinnedOrg.groups);
+
+      let nextActiveId = this.state.activeSessionId;
+      if (nextActiveId && !pinnedOrg.sessions.some((s) => s.cascadeId === nextActiveId)) {
+        nextActiveId = pinnedOrg.sessions[0]?.cascadeId || '';
+        syncSessionUrl(nextActiveId || null);
+      }
+
       this.setState({
         sessions: pinnedOrg.sessions,
+        archivedList: includeArchived ? split.archived : this.state.archivedList,
+        archivedSessions: resolvedArchivedMap,
+        archivedCount: resolvedArchivedCount,
         groups: pinnedOrg.groups,
         projects: pinnedOrg.projects,
-        pins: resolvedPins
+        pins: resolvedPins,
+        orgRevision:
+          typeof sessRes.revision === 'number' ? sessRes.revision : this.state.orgRevision,
+        groupOrder: sessRes.groupOrder
+          ? normalizeZoneOrder(sessRes.groupOrder)
+          : this.state.groupOrder,
+        projectOrder: sessRes.projectOrder
+          ? normalizeProjectOrderMap(sessRes.projectOrder)
+          : this.state.projectOrder,
+        sessionOrder: sessRes.sessionOrder
+          ? normalizeSessionOrderMap(sessRes.sessionOrder)
+          : this.state.sessionOrder,
+        defaultSessionPath: sessRes.defaultSessionPath ?? this.state.defaultSessionPath,
+        activeSessionId: nextActiveId
       });
     } catch {}
   }
 
   public async togglePin(kind: PinKind, id: string, explicitPinned?: boolean): Promise<void> {
     if (!id) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
     const key = kind === 'session' ? 'sessions' : kind === 'project' ? 'projects' : 'groups';
     const currentList = this.state.pins[key];
     const isCurrentlyPinned = currentList.includes(id);
     const targetPinned = typeof explicitPinned === 'boolean' ? explicitPinned : !isCurrentlyPinned;
+
+    const prevState = {
+      pins: this.state.pins,
+      sessions: this.state.sessions,
+      projects: this.state.projects,
+      groups: this.state.groups
+    };
 
     const optimisticPins: SessionPins = {
       ...this.state.pins,
@@ -1047,106 +1365,199 @@ export class RemoteStoreController {
       projects: optimisticOrg.projects,
       groups: optimisticOrg.groups
     });
-    writeJsonPref(PINS_CACHE_KEY, optimisticPins);
 
-    if (this.state.token && this.state.online) {
-      try {
-        const res = await api.toggleSessionPin({ type: kind, id, pinned: targetPinned });
-        if (res.pins) {
-          const syncedPins = normalizePins(res.pins);
-          const syncedOrg = applyPinsToOrg(
-            this.state.sessions,
-            this.state.projects,
-            this.state.groups,
-            syncedPins
-          );
-          this.setState({
-            pins: syncedPins,
-            sessions: syncedOrg.sessions,
-            projects: syncedOrg.projects,
-            groups: syncedOrg.groups
-          });
-          writeJsonPref(PINS_CACHE_KEY, syncedPins);
-        }
-      } catch (err) {
-        const code = (err as { code?: string })?.code;
-        if (code === 'PERMISSION_DENIED') {
-          this.showToast(this.t('store.l0PinLocal'));
-        }
+    try {
+      const proj =
+        kind === 'project' ? this.state.projects.find((p) => p.id === id) : undefined;
+      const res = await api.toggleSessionPin({
+        type: kind,
+        id,
+        pinned: targetPinned,
+        workspaceUri: proj?.uri || undefined,
+        rootPath: proj?.path || undefined,
+        projectName: proj?.name || undefined
+      });
+      if (res.pins) {
+        const syncedPins = normalizePins(res.pins);
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          this.state.groups,
+          syncedPins
+        );
+        this.setState({
+          pins: syncedPins,
+          sessions: syncedOrg.sessions,
+          projects: syncedOrg.projects,
+          groups: syncedOrg.groups,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+    } catch (err) {
+      this.setState(prevState);
+      const code = (err as { code?: string })?.code;
+      if (code === 'PERMISSION_DENIED') {
+        this.showToast(this.t('store.l0ReadOnly'));
+      } else {
+        this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
       }
     }
   }
 
   public async createGroup(
     name: string,
-    opts?: { projectIds?: string[]; workspaceUris?: string[]; sessionIds?: string[] }
+    opts?: {
+      id?: string;
+      pinned?: boolean;
+      projectIds?: string[];
+      workspaceUris?: string[];
+      sessionIds?: string[];
+    }
   ): Promise<void> {
     const clean = name.trim();
     if (!clean) return;
-    if (this.state.token && this.state.online) {
-      try {
-        const res = await api.mutateSessionGroups({
-          action: 'upsert',
-          name: clean,
-          projectIds: opts?.projectIds,
-          workspaceUris: opts?.workspaceUris,
-          sessionIds: opts?.sessionIds
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    try {
+      const res = await api.mutateSessionGroups({
+        action: 'upsert',
+        ...(opts?.id ? { id: opts.id } : {}),
+        ...(typeof opts?.pinned === 'boolean' ? { pinned: opts.pinned } : {}),
+        name: clean,
+        projectIds: opts?.projectIds,
+        workspaceUris: opts?.workspaceUris,
+        sessionIds: opts?.sessionIds
+      });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
         });
-        if (Array.isArray(res.groups)) {
-          const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
-          const syncedOrg = applyPinsToOrg(
-            this.state.sessions,
-            this.state.projects,
-            res.groups,
-            syncedPins
-          );
-          this.setState({
-            groups: syncedOrg.groups,
-            pins: syncedPins
-          });
-          writeJsonPref(GROUPS_CACHE_KEY, syncedOrg.groups);
-          this.showToast(this.t('store.groupCreated', { name: clean }));
-          return;
-        }
-      } catch (err) {
-        this.showToast(this.t('store.groupCreateFailed', { msg: (err as Error).message }));
-        return;
       }
+      this.showToast(this.t('store.groupCreated', { name: clean }));
+    } catch (err) {
+      this.showToast(this.t('store.groupCreateFailed', { msg: (err as Error).message }));
     }
-    // Offline fallback
-    const localGroup: SessionGroup = {
-      id: `grp_${Date.now()}`,
-      name: clean,
-      source: 'user',
-      pinned: false,
-      order: this.state.groups.length,
-      projectIds: opts?.projectIds || [],
-      workspaceUris: opts?.workspaceUris || [],
-      sessionIds: opts?.sessionIds || []
-    };
-    const nextGroups = [...this.state.groups, localGroup];
-    this.setState({ groups: nextGroups });
-    writeJsonPref(GROUPS_CACHE_KEY, nextGroups);
-    this.showToast(this.t('store.groupCreatedLocal', { name: clean }));
+  }
+
+  public async renameGroup(groupId: string, name: string): Promise<void> {
+    const clean = name.trim();
+    if (!groupId || !clean) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const prevGroups = this.state.groups;
+    this.setState({
+      groups: prevGroups.map((g) => (g.id === groupId ? { ...g, name: clean } : g))
+    });
+    try {
+      const res = await api.mutateSessionGroups({ action: 'upsert', id: groupId, name: clean });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+    } catch (err) {
+      this.setState({ groups: prevGroups });
+      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async toggleGroupCollapsed(groupId: string, collapsed?: boolean): Promise<void> {
+    if (!groupId) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const current = this.state.groups.find((g) => g.id === groupId);
+    if (!current) return;
+    const nextCollapsed = typeof collapsed === 'boolean' ? collapsed : !current.collapsed;
+    const prevGroups = this.state.groups;
+    this.setState({
+      groups: prevGroups.map((g) => (g.id === groupId ? { ...g, collapsed: nextCollapsed } : g))
+    });
+
+    try {
+      const res = await api.mutateSessionGroups({
+        action: 'upsert',
+        id: groupId,
+        name: current.name,
+        collapsed: nextCollapsed
+      });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+    } catch (err) {
+      this.setState({ groups: prevGroups });
+      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+    }
   }
 
   public async deleteGroup(groupId: string): Promise<void> {
     if (!groupId) return;
-    const prevGroups = this.state.groups;
-    const nextGroups = prevGroups.filter((g) => g.id !== groupId);
-    this.setState({ groups: nextGroups });
-    writeJsonPref(GROUPS_CACHE_KEY, nextGroups);
-    if (this.state.token && this.state.online) {
-      try {
-        const res = await api.mutateSessionGroups({ action: 'delete', id: groupId });
-        if (Array.isArray(res.groups)) {
-          this.setState({ groups: res.groups });
-          writeJsonPref(GROUPS_CACHE_KEY, res.groups);
-        }
-      } catch (err) {
-        this.setState({ groups: prevGroups });
-        this.showToast(this.t('store.groupDeleteFailed', { msg: (err as Error).message }));
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const prevState = {
+      groups: this.state.groups,
+      projects: this.state.projects,
+      sessions: this.state.sessions,
+      pins: this.state.pins
+    };
+    const nextGroups = prevState.groups.filter((g) => g.id !== groupId);
+    const nextProjects = prevState.projects.map((p) =>
+      p.groupId === groupId ? { ...p, groupId: null } : p
+    );
+    const nextSessions = prevState.sessions.map((s) =>
+      s.groupId === groupId ? { ...s, groupId: null } : s
+    );
+    this.setState({ groups: nextGroups, projects: nextProjects, sessions: nextSessions });
+
+    try {
+      const res = await api.mutateSessionGroups({ action: 'delete', id: groupId });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(nextSessions, nextProjects, res.groups, syncedPins);
+        this.setState({
+          groups: syncedOrg.groups,
+          projects: syncedOrg.projects,
+          sessions: syncedOrg.sessions,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
       }
+    } catch (err) {
+      this.setState(prevState);
+      this.showToast(this.t('store.groupDeleteFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1154,42 +1565,454 @@ export class RemoteStoreController {
     groupId: string | null,
     target: { projectId?: string; sessionId?: string; workspaceUri?: string }
   ): Promise<void> {
-    if (this.state.token && this.state.online) {
-      try {
-        const res = await api.mutateSessionGroups({
-          action: 'assign',
-          groupId,
-          projectId: target.projectId,
-          sessionId: target.sessionId,
-          workspaceUri: target.workspaceUri
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const prevState = {
+      groups: this.state.groups,
+      projects: this.state.projects,
+      sessions: this.state.sessions,
+      pins: this.state.pins
+    };
+
+    const optimisticProjects = this.state.projects.map((p) =>
+      (target.projectId && p.id === target.projectId) ||
+      (target.workspaceUri && p.uri === target.workspaceUri)
+        ? { ...p, groupId }
+        : p
+    );
+    const optimisticSessions = this.state.sessions.map((s) =>
+      target.sessionId && s.cascadeId === target.sessionId ? { ...s, groupId } : s
+    );
+    this.setState({ projects: optimisticProjects, sessions: optimisticSessions });
+
+    try {
+      const res = await api.mutateSessionGroups({
+        action: 'assign',
+        groupId,
+        projectId: target.projectId,
+        sessionId: target.sessionId,
+        workspaceUri: target.workspaceUri
+      });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          optimisticSessions,
+          optimisticProjects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          projects: syncedOrg.projects,
+          sessions: syncedOrg.sessions,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
         });
-        if (Array.isArray(res.groups)) {
-          const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
-          const nextProjects = this.state.projects.map((p) =>
-            target.projectId && p.id === target.projectId ? { ...p, groupId } : p
-          );
-          const nextSessions = this.state.sessions.map((s) =>
-            target.sessionId && s.cascadeId === target.sessionId ? { ...s, groupId } : s
-          );
-          const syncedOrg = applyPinsToOrg(nextSessions, nextProjects, res.groups, syncedPins);
-          this.setState({
-            groups: syncedOrg.groups,
-            projects: syncedOrg.projects,
-            sessions: syncedOrg.sessions,
-            pins: syncedPins
-          });
-          writeJsonPref(GROUPS_CACHE_KEY, syncedOrg.groups);
-          return;
+      }
+    } catch (err) {
+      this.setState(prevState);
+      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async reorderOrg(req: OrgReorderRequest): Promise<void> {
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const prevState = {
+      groupOrder: this.state.groupOrder,
+      projectOrder: this.state.projectOrder,
+      sessionOrder: this.state.sessionOrder,
+      projects: this.state.projects,
+      sessions: this.state.sessions,
+      groups: this.state.groups
+    };
+
+    if (req.targetType === 'group') {
+      this.setState({
+        groupOrder: {
+          ...this.state.groupOrder,
+          [req.zone]: req.orderedIds
         }
-      } catch (err) {
-        this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
-        return;
+      });
+    } else if (req.targetType === 'project') {
+      const containerKey = req.movedProject?.toGroupId || req.containerId || '__ungrouped__';
+      const nextProjOrder = {
+        ...this.state.projectOrder,
+        [containerKey]: {
+          ...(this.state.projectOrder[containerKey] || EMPTY_ZONE_ORDER),
+          [req.zone]: req.orderedIds
+        }
+      };
+      let nextProjects = this.state.projects;
+      if (
+        req.movedProject &&
+        req.movedProject.fromGroupId !== req.movedProject.toGroupId
+      ) {
+        const movedId = req.movedProject.projectId;
+        const toGid = req.movedProject.toGroupId ?? null;
+        nextProjects = nextProjects.map((p) =>
+          p.id === movedId ? { ...p, groupId: toGid } : p
+        );
+      }
+      this.setState({ projectOrder: nextProjOrder, projects: nextProjects });
+    } else if (req.targetType === 'session') {
+      const containerKey = req.containerId || '__standalone__';
+      if (containerKey === '__pinned__') {
+        this.setState({
+          sessionOrder: {
+            ...this.state.sessionOrder,
+            __pinned__: req.orderedIds
+          }
+        });
+      } else {
+        const existing = this.state.sessionOrder[containerKey];
+        const baseZone =
+          existing && !Array.isArray(existing) ? existing : EMPTY_ZONE_ORDER;
+        this.setState({
+          sessionOrder: {
+            ...this.state.sessionOrder,
+            [containerKey]: {
+              ...baseZone,
+              [req.zone]: req.orderedIds
+            }
+          }
+        });
       }
     }
-    const nextProjects = this.state.projects.map((p) =>
-      target.projectId && p.id === target.projectId ? { ...p, groupId } : p
-    );
-    this.setState({ projects: nextProjects });
+
+    try {
+      const res = await api.reorderOrg({
+        ...req,
+        expectedRevision: req.expectedRevision ?? this.state.orgRevision
+      });
+      if (res.org) {
+        this.applyOrgSnapshot(res.org as unknown as Record<string, unknown>);
+      } else if (typeof res.revision === 'number') {
+        this.setState({ orgRevision: res.revision });
+      }
+    } catch (err) {
+      this.setState(prevState);
+      this.showToast(this.t('store.reorderFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async archiveSession(cascadeId: string, archived: boolean): Promise<boolean> {
+    if (!cascadeId) return false;
+    if (!this.ensureOrgWriteAllowed(false)) return false;
+
+    const prevState = {
+      sessions: this.state.sessions,
+      archivedList: this.state.archivedList,
+      archivedSessions: this.state.archivedSessions,
+      archivedCount: this.state.archivedCount,
+      pins: this.state.pins,
+      sessionOrder: this.state.sessionOrder,
+      activeSessionId: this.state.activeSessionId,
+      activeSession: this.state.activeSession,
+      events: this.state.events,
+      loadingSession: this.state.loadingSession
+    };
+
+    if (archived) {
+      const target = prevState.sessions.find((s) => s.cascadeId === cascadeId);
+      const nextSessions = prevState.sessions.filter((s) => s.cascadeId !== cascadeId);
+      const nextPins: SessionPins = {
+        ...prevState.pins,
+        sessions: prevState.pins.sessions.filter((id) => id !== cascadeId)
+      };
+      const targetStatus = String(target?.status || '').toUpperCase();
+      const targetRunning = targetStatus.includes('RUNNING') || targetStatus.includes('GENERATING');
+      const meta: ArchivedSessionMeta = {
+        archivedAt: new Date().toISOString(),
+        archivedAtStepCount: target?.stepCount,
+        archivedWasRunning: targetRunning,
+        projectId: target?.projectId ?? null,
+        projectName: target?.projectName ?? null,
+        titleSnapshot: target?.title
+      };
+      const nextArchivedMap = { ...prevState.archivedSessions, [cascadeId]: meta };
+      const nextArchivedList = target
+        ? [
+            { ...target, archived: true, archivedAt: meta.archivedAt, pinned: false },
+            ...prevState.archivedList.filter((s) => s.cascadeId !== cascadeId)
+          ]
+        : prevState.archivedList;
+
+      const nextActiveId =
+        resolveNextActiveSessionId(prevState.sessions, cascadeId, prevState.activeSessionId) || '';
+      const activeChanged = nextActiveId !== prevState.activeSessionId;
+
+      this.setState({
+        sessions: nextSessions,
+        archivedList: nextArchivedList,
+        archivedSessions: nextArchivedMap,
+        archivedCount: Math.max(prevState.archivedCount + 1, Object.keys(nextArchivedMap).length),
+        pins: nextPins,
+        sessionOrder: {
+          ...prevState.sessionOrder,
+          ...(Array.isArray(prevState.sessionOrder.__pinned__)
+            ? {
+                __pinned__: prevState.sessionOrder.__pinned__.filter((id) => id !== cascadeId)
+              }
+            : {})
+        },
+        activeSessionId: nextActiveId,
+        ...(activeChanged && !nextActiveId
+          ? { activeSession: null, events: [], loadingSession: false }
+          : {})
+      });
+      if (activeChanged) {
+        syncSessionUrl(nextActiveId || null);
+      }
+
+      try {
+        const res = await api.archiveSession(cascadeId, {
+          archived: true,
+          stepCount: target?.stepCount,
+          isRunning: targetRunning,
+          projectId: target?.projectId ?? null,
+          projectName: target?.projectName ?? null,
+          titleSnapshot: target?.title
+        });
+        this.setState({
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision,
+          archivedCount:
+            typeof res.archivedCount === 'number'
+              ? res.archivedCount
+              : this.state.archivedCount
+        });
+        if (activeChanged && nextActiveId) {
+          void this.selectSession(nextActiveId);
+        }
+        this.showToast(this.t('store.archivedToast'), 5000, {
+          label: this.t('left.undo'),
+          onAction: () => {
+            void this.archiveSession(cascadeId, false);
+          }
+        });
+        return true;
+      } catch (err) {
+        this.setState(prevState);
+        if (activeChanged) {
+          syncSessionUrl(prevState.activeSessionId || null);
+        }
+        this.showToast(this.t('store.archiveFailed', { msg: (err as Error).message }));
+        return false;
+      }
+    }
+
+    // Restore from archive
+    const target = prevState.archivedList.find((s) => s.cascadeId === cascadeId);
+    const nextArchivedMap = { ...prevState.archivedSessions };
+    delete nextArchivedMap[cascadeId];
+    const nextArchivedList = prevState.archivedList.filter((s) => s.cascadeId !== cascadeId);
+    const nextSessions = target
+      ? [{ ...target, archived: false, archivedAt: null }, ...prevState.sessions]
+      : prevState.sessions;
+
+    this.setState({
+      sessions: nextSessions,
+      archivedList: nextArchivedList,
+      archivedSessions: nextArchivedMap,
+      archivedCount: Math.max(0, prevState.archivedCount - 1)
+    });
+
+    try {
+      const res = await api.archiveSession(cascadeId, { archived: false });
+      this.setState({
+        orgRevision: typeof res.revision === 'number' ? res.revision : this.state.orgRevision,
+        archivedCount:
+          typeof res.archivedCount === 'number' ? res.archivedCount : this.state.archivedCount
+      });
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      if (!this.state.activeSessionId) {
+        await this.selectSession(cascadeId);
+      }
+      this.showToast(this.t('store.restoredToast'));
+      return true;
+    } catch (err) {
+      this.setState(prevState);
+      this.showToast(this.t('store.archiveFailed', { msg: (err as Error).message }));
+      return false;
+    }
+  }
+
+  public async deleteSession(
+    cascadeId: string,
+    mode: 'auto' | 'local_hide' = 'auto'
+  ): Promise<{
+    ok: boolean;
+    canFallbackLocalHide?: boolean;
+    reasonCode?: string;
+    message?: string;
+  }> {
+    if (!cascadeId) return { ok: false };
+    if (!this.ensureOrgWriteAllowed(true)) return { ok: false };
+
+    const prevState = {
+      sessions: this.state.sessions,
+      archivedList: this.state.archivedList,
+      archivedSessions: this.state.archivedSessions,
+      archivedCount: this.state.archivedCount,
+      pins: this.state.pins,
+      sessionOrder: this.state.sessionOrder,
+      activeSessionId: this.state.activeSessionId,
+      activeSession: this.state.activeSession,
+      events: this.state.events,
+      loadingSession: this.state.loadingSession
+    };
+
+    const nextSessions = prevState.sessions.filter((s) => s.cascadeId !== cascadeId);
+    const nextArchivedList = prevState.archivedList.filter((s) => s.cascadeId !== cascadeId);
+    const nextArchivedMap = { ...prevState.archivedSessions };
+    const wasArchived = Boolean(nextArchivedMap[cascadeId]);
+    delete nextArchivedMap[cascadeId];
+
+    const nextActiveId =
+      resolveNextActiveSessionId(prevState.sessions, cascadeId, prevState.activeSessionId) || '';
+    const activeChanged = nextActiveId !== prevState.activeSessionId;
+
+    this.setState({
+      sessions: nextSessions,
+      archivedList: nextArchivedList,
+      archivedSessions: nextArchivedMap,
+      archivedCount: wasArchived
+        ? Math.max(0, prevState.archivedCount - 1)
+        : prevState.archivedCount,
+      pins: {
+        ...prevState.pins,
+        sessions: prevState.pins.sessions.filter((id) => id !== cascadeId)
+      },
+      activeSessionId: nextActiveId,
+      ...(activeChanged && !nextActiveId
+        ? { activeSession: null, events: [], loadingSession: false }
+        : {})
+    });
+    if (activeChanged) {
+      syncSessionUrl(nextActiveId || null);
+    }
+
+    try {
+      await api.deleteSession(cascadeId, mode);
+      if (activeChanged && nextActiveId) {
+        void this.selectSession(nextActiveId);
+      }
+      this.showToast(
+        mode === 'local_hide' ? this.t('store.deletedLocalToast') : this.t('store.deletedHostToast')
+      );
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      return { ok: true };
+    } catch (err) {
+      this.setState(prevState);
+      if (activeChanged) {
+        syncSessionUrl(prevState.activeSessionId || null);
+      }
+      const apiErr = err as ApiError;
+      if (apiErr?.status === 503 && apiErr.canFallbackLocalHide) {
+        return {
+          ok: false,
+          canFallbackLocalHide: true,
+          reasonCode: apiErr.reasonCode,
+          message: apiErr.message
+        };
+      }
+      this.showToast(this.t('store.deleteFailed', { msg: (err as Error).message }));
+      return { ok: false, message: (err as Error).message };
+    }
+  }
+
+  public async createLocalProject(req: {
+    path?: string;
+    rootPath?: string;
+    name?: string;
+    groupId?: string | null;
+    createDir?: boolean;
+  }): Promise<HostProject | null> {
+    if (!this.ensureOrgWriteAllowed(true)) return null;
+    const rootPath = (req.rootPath || req.path || '').trim();
+    if (!rootPath) return null;
+    const fallbackName =
+      rootPath.replace(/\/+$/, '').split('/').filter(Boolean).pop() || rootPath;
+    const name = (req.name || '').trim() || fallbackName;
+    try {
+      const res = await api.createProject({
+        name,
+        rootPath,
+        groupId: req.groupId,
+        createDir: req.createDir
+      });
+      this.applyOrgSnapshot(res as unknown as Record<string, unknown>);
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      this.showToast(this.t('store.projectCreatedToast', { name: res.project.name }));
+      return res.project;
+    } catch (err) {
+      this.showToast(this.t('store.projectCreateFailed', { msg: (err as Error).message }));
+      return null;
+    }
+  }
+
+  public async renameProject(projectId: string, name: string): Promise<void> {
+    const clean = name.trim();
+    if (!projectId || !clean) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const prevProjects = this.state.projects;
+    this.setState({
+      projects: prevProjects.map((p) => (p.id === projectId ? { ...p, name: clean } : p))
+    });
+    try {
+      const res = await api.updateProject(projectId, { name: clean });
+      if (res.project) {
+        this.setState({
+          projects: this.state.projects.map((p) =>
+            p.id === projectId ? { ...p, ...res.project } : p
+          ),
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+      this.showToast(this.t('store.projectRenamedToast', { name: clean }));
+    } catch (err) {
+      this.setState({ projects: prevProjects });
+      this.showToast(this.t('store.projectUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async removeProject(projectId: string): Promise<void> {
+    if (!projectId) return;
+    if (!this.ensureOrgWriteAllowed(true)) return;
+
+    const prevState = {
+      projects: this.state.projects,
+      pins: this.state.pins
+    };
+    this.setState({
+      projects: prevState.projects.filter((p) => p.id !== projectId),
+      pins: {
+        ...prevState.pins,
+        projects: prevState.pins.projects.filter((id) => id !== projectId)
+      }
+    });
+    try {
+      const res = await api.deleteProject(projectId);
+      if (typeof res.revision === 'number') {
+        this.setState({ orgRevision: res.revision });
+      }
+      this.showToast(this.t('store.projectRemovedToast'));
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
+    } catch (err) {
+      this.setState(prevState);
+      this.showToast(this.t('store.projectUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async handleRemoteProjectCreated(project?: HostProject | null): Promise<void> {
+    await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+    if (project?.name) {
+      this.showToast(this.t('store.projectCreatedToast', { name: project.name }));
+    }
   }
 
   public async selectSession(cascadeId: string): Promise<void> {
@@ -1528,6 +2351,28 @@ export class RemoteStoreController {
             : {})
         }
       });
+    } else if (key === 'state:session.org@1' && val) {
+      this.applyOrgSnapshot(val, { skipIfDragging: true });
+    }
+  }
+
+  private handleOrgUpdated(payload: Record<string, unknown>): void {
+    if (this.isDraggingOrg) {
+      this.pendingOrgRefresh = true;
+      return;
+    }
+    this.applyOrgSnapshot(payload);
+    if (this.state.token && this.state.online) {
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
+    }
+  }
+
+  private handleProjectJob(payload: Record<string, unknown>): void {
+    const job = payload as unknown as RemoteProvisionJob;
+    if (!job || typeof job.jobId !== 'string') return;
+    this.setState({ latestJobEvent: job });
+    if (job.status === 'succeeded') {
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
     }
   }
 

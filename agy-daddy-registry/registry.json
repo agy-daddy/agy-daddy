@@ -25,7 +25,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-zh-cn",
       "localRepo": "agy-daddy-plugin-zh-cn",
-      "manifestSha512": "sha512-b/GDaWvShJ7RbzV4uzOHgmU2jKqLZ0+XLBPGBIvLiQ5N0rOqfX8CU6btdmjyVDQJdwsdSXYEYJO2i6uQBGOH5Q=="
+      "manifestSha512": "sha512-V6mKd44CaH3O08BqsgxDi0suDtO20fWdg3aLFM26FvmX+cecRrSYMlTvZlT1AU/yTxLmnq/Z3mZGBAGqG5T0Zw=="
     },
     {
       "id": "agy-daddy.cli",

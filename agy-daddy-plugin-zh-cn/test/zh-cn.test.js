@@ -155,9 +155,14 @@ test('插件契约：isolated 世界多语言 DOM 切换、Popover 选单、命�
   assert.equal(/registerSection/.test(rendererSrc), false, 'Renderer must not use deprecated registerSection');
 
   const fetchCalls = [];
-  const mockFetch = async (url) => {
-    fetchCalls.push(String(url));
-    const m = String(url).match(/[?&]tl=([^&]+)/);
+  const nativeFetch = globalThis.fetch;
+  const mockFetch = async (url, init) => {
+    const urlStr = String(url);
+    if (urlStr.startsWith('http://127.0.0.1:') && urlStr.includes('/plugins/')) {
+      return nativeFetch(url, init);
+    }
+    fetchCalls.push(urlStr);
+    const m = urlStr.match(/[?&]tl=([^&]+)/);
     const tl = m ? decodeURIComponent(m[1]) : 'zh-CN';
     return {
       ok: true,
@@ -210,12 +215,12 @@ test('插件契约：isolated 世界多语言 DOM 切换、Popover 选单、命�
     assert.equal(loaded.manifest.world, 'isolated');
     assert.equal(loaded.trust.world, 'isolated');
     assert.equal(loaded.manifest.permissions.includes('page:main-world'), false);
-    assert.equal(loaded.manifest.permissions.includes('bridge:route'), false);
+    assert.equal(loaded.manifest.permissions.includes('bridge:route'), true);
     assert.equal(loaded.manifest.contributes['topbar.units'], undefined);
     assert.equal(loaded.manifest.contributes['topbar.popovers'], undefined);
     assert.equal('migrations' in (loaded.manifest.contributes || {}), false);
     assert.ok(harness.isolatedWorlds.has('agy-daddy.zh-cn'));
-    assert.equal(harness.bridge.countPluginRoutes('agy-daddy.zh-cn'), 0);
+    assert.ok(harness.bridge.countPluginRoutes('agy-daddy.zh-cn') >= 5);
 
     // 挂载即按默认 zh 翻译，[data-uri] 与 <code> 原封不动
     assert.equal(btn.textContent, '新建对话');

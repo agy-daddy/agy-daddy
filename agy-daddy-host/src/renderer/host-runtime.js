@@ -943,7 +943,13 @@
       settingsBtnEl.id = 'agy-btn-settings';
       settingsBtnEl.type = 'button';
       settingsBtnEl.className = 'ag-unit';
-      settingsBtnEl.textContent = 'Agy';
+      settingsBtnEl.setAttribute('title', state.updateInfo?.hasUpdate ? 'Agy-Daddy 设置（有新版本可用）' : 'Agy-Daddy 设置');
+      settingsBtnEl.setAttribute('aria-label', 'Agy-Daddy 设置');
+      settingsBtnEl.appendChild(createIconEl('settings', 'ag-unit-icon'));
+      const settingsLabelEl = doc.createElement('span');
+      settingsLabelEl.className = 'ag-unit-label';
+      settingsLabelEl.textContent = 'Agy-Daddy 设置';
+      settingsBtnEl.appendChild(settingsLabelEl);
       const dot = doc.createElement('span');
       dot.id = 'agy-update-dot';
       dot.className = 'ag-update-dot';
@@ -10723,7 +10729,7 @@
       topbarEntryLbl.textContent = '右上角显示 Agy-Daddy 入口';
       const topbarEntryDesc = doc.createElement('span');
       topbarEntryDesc.className = 'ag-sv-row-desc';
-      topbarEntryDesc.textContent = '在窗口右上角顶栏显示 Agy 快捷入口按钮';
+      topbarEntryDesc.textContent = '在窗口右上角顶栏显示 Agy-Daddy 设置入口图标';
       topbarEntryInfo.appendChild(topbarEntryLbl);
       topbarEntryInfo.appendChild(topbarEntryDesc);
 
@@ -13333,6 +13339,12 @@
         };
         const dot = shadow?.querySelector ? shadow.querySelector('#agy-update-dot') : null;
         if (dot) setHidden(dot, !state.updateInfo.hasUpdate);
+        if (settingsBtnEl) {
+          settingsBtnEl.setAttribute(
+            'title',
+            state.updateInfo.hasUpdate ? 'Agy-Daddy 设置（有新版本可用）' : 'Agy-Daddy 设置'
+          );
+        }
         if (state.auxSidebarExpanded) {
           renderUnits();
         }

@@ -9,7 +9,8 @@ const url = require('node:url');
 const {
   createSessionOrgBridge,
   aggregateWorktreeProjects,
-  matchWorktreeByLongestPrefix
+  matchWorktreeByLongestPrefix,
+  sanitizeEntityIcon
 } = require('./session-org-bridge');
 
 const META_FILE_NAME = 'workspace-meta.json';
@@ -742,6 +743,7 @@ function createWorkspaceMetaStore({
       groups: (org.groups || []).map((g) => ({
         id: g.id,
         name: g.name,
+        ...(g.icon ? { icon: g.icon } : {}),
         source: g.source || 'user',
         sortOrder: Number.isFinite(Number(g.order)) ? Number(g.order) : 0,
         order: Number.isFinite(Number(g.order)) ? Number(g.order) : 0,
@@ -1202,7 +1204,11 @@ function createWorkspaceMetaStore({
     };
   }
 
-  function createProject({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
+  function createProject({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null, icon = undefined } = {}) {
+    const iconCheck = sanitizeEntityIcon(icon);
+    if (!iconCheck.ok) {
+      return { ok: false, statusCode: 400, error: iconCheck.error };
+    }
     const normalizedRoot = normalizeLocalPath(rootPath);
     if (!normalizedRoot) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
@@ -1281,6 +1287,7 @@ function createWorkspaceMetaStore({
       const project = orgBridge.materializeProjectInOrg(org, {
         id: projectId,
         name: cleanName,
+        ...(iconCheck.value ? { icon: iconCheck.value } : {}),
         rootPath: normalizedRoot,
         groupId: resolvedGroupId,
         source: cleanSource,
@@ -1386,6 +1393,17 @@ function createWorkspaceMetaStore({
         }
       }
 
+      let hasIconChange = false;
+      let nextIcon = null;
+      if (Object.prototype.hasOwnProperty.call(patch, 'icon')) {
+        const iconCheck = sanitizeEntityIcon(patch.icon);
+        if (!iconCheck.ok) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: iconCheck.error } };
+        }
+        hasIconChange = true;
+        nextIcon = iconCheck.value;
+      }
+
       let nextGroupId;
       let hasGroupChange = false;
       if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
@@ -1411,6 +1429,10 @@ function createWorkspaceMetaStore({
 
       if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
         targetProj.name = patch.name.trim();
+      }
+      if (hasIconChange) {
+        if (nextIcon) targetProj.icon = nextIcon;
+        else delete targetProj.icon;
       }
       if (hasGroupChange) {
         const prevGid = org.projectGroupMap[targetProj.id] || '__ungrouped__';
@@ -1515,10 +1537,14 @@ function createWorkspaceMetaStore({
     return outcome;
   }
 
-  function createGroup({ name } = {}) {
+  function createGroup({ name, icon = undefined } = {}) {
     const cleanName = typeof name === 'string' ? name.trim() : '';
     if (!cleanName) {
       return { ok: false, statusCode: 400, error: 'INVALID_GROUP_NAME' };
+    }
+    const iconCheck = sanitizeEntityIcon(icon);
+    if (!iconCheck.ok) {
+      return { ok: false, statusCode: 400, error: iconCheck.error };
     }
 
     const outcome = orgBridge.mutateOrgAtomically((org) => {
@@ -1530,6 +1556,7 @@ function createWorkspaceMetaStore({
       const group = {
         id: `grp_${crypto.randomUUID()}`,
         name: cleanName,
+        ...(iconCheck.value ? { icon: iconCheck.value } : {}),
         source: 'user',
         order: maxOrder + 1,
         collapsed: false,
@@ -1579,6 +1606,14 @@ function createWorkspaceMetaStore({
           return { abort: true, result: { ok: false, statusCode: 400, error: 'INVALID_GROUP_NAME' } };
         }
         next.name = cleanName;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'icon')) {
+        const iconCheck = sanitizeEntityIcon(patch.icon);
+        if (!iconCheck.ok) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: iconCheck.error } };
+        }
+        if (iconCheck.value) next.icon = iconCheck.value;
+        else delete next.icon;
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'collapsed')) {
         next.collapsed = Boolean(patch.collapsed);

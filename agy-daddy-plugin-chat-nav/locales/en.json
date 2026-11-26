@@ -6,5 +6,12 @@
   "nav.think": "Expand Thinking",
   "nav.copyId": "Copy Session ID",
   "nav.exportMd": "Export Conversation",
-  "search.placeholder": "Search messages (regex supported)..."
+  "search.placeholder": "Search messages (regex supported)...",
+  "code.fold": "Collapse",
+  "code.expand": "Expand",
+  "code.copy": "Copy",
+  "outline.title": "Conversation Outline",
+  "outline.all": "All",
+  "outline.questions": "Key Questions",
+  "outline.code": "With Code"
 }

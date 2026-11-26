@@ -911,5 +911,6 @@ module.exports = {
   canonicalKey: defaultWorkspaceOrg.canonicalKey,
   makeStableProjectId: defaultWorkspaceOrg.makeStableProjectId,
   makeWorktreeId: defaultWorkspaceOrg.makeWorktreeId,
-  matchWorktreeByLongestPrefix: defaultWorkspaceOrg.matchWorktreeByLongestPrefix
+  matchWorktreeByLongestPrefix: defaultWorkspaceOrg.matchWorktreeByLongestPrefix,
+  sanitizeEntityIcon: defaultWorkspaceOrg.sanitizeEntityIcon
 };

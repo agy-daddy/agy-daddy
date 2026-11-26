@@ -129,6 +129,7 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
     appearance: st.appearance,
     soundAlert: st.soundAlert,
     vibrateAlert: st.vibrateAlert,
+    enablePushNotifications: st.enablePushNotifications,
     pushSubscribed: st.pushSubscribed,
     pushBusy: st.pushBusy
   }));
@@ -152,19 +153,22 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
       appearance={s.appearance}
       soundAlert={s.soundAlert}
       vibrateAlert={s.vibrateAlert}
+      enablePushNotifications={s.enablePushNotifications}
       pushSubscribed={s.pushSubscribed}
       pushBusy={s.pushBusy}
       onSelectSession={(id) => remoteStore.selectSession(id)}
       onCreateSession={(title, ws) => remoteStore.createNewSession(title, ws)}
       onTogglePin={(kind, id, nextPinned) => remoteStore.togglePin(kind, id, nextPinned)}
-      onCreateGroup={(name) => remoteStore.createGroup(name)}
+      onCreateGroup={(name, icon) => remoteStore.createGroup(name, icon ? { icon } : undefined)}
       onRenameGroup={(groupId, name) => remoteStore.renameGroup(groupId, name)}
+      onSetGroupIcon={(groupId, icon) => remoteStore.setGroupIcon(groupId, icon)}
       onDeleteGroup={(groupId) => remoteStore.deleteGroup(groupId)}
       onToggleGroupCollapsed={(groupId, collapsed) =>
         remoteStore.toggleGroupCollapsed(groupId, collapsed)
       }
       onAssignProjectGroup={(groupId, target) => remoteStore.assignProjectGroup(groupId, target)}
       onRenameProject={(projectId, name) => remoteStore.renameProject(projectId, name)}
+      onSetProjectIcon={(projectId, icon) => remoteStore.setProjectIcon(projectId, icon)}
       onRemoveProject={(projectId) => remoteStore.removeProject(projectId)}
       onReorderOrg={(req) => remoteStore.reorderOrg(req)}
       onArchiveSession={(cascadeId, archived) => remoteStore.archiveSession(cascadeId, archived)}
@@ -591,6 +595,8 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     drawerSpeed: st.drawerSpeed,
     soundAlert: st.soundAlert,
     vibrateAlert: st.vibrateAlert,
+    enablePushNotifications: st.enablePushNotifications,
+    enableAppBadge: st.enableAppBadge,
     pushSubscribed: st.pushSubscribed,
     pushBusy: st.pushBusy
   }));
@@ -746,6 +752,8 @@ const ConnectedSheets = memo(function ConnectedSheets() {
         drawerSpeed={s.drawerSpeed}
         soundAlert={s.soundAlert}
         vibrateAlert={s.vibrateAlert}
+        enablePushNotifications={s.enablePushNotifications}
+        enableAppBadge={s.enableAppBadge}
         pushSubscribed={s.pushSubscribed}
         pushBusy={s.pushBusy}
         onSetAppearance={(next) => remoteStore.setAppearance(next)}

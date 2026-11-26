@@ -216,3 +216,45 @@ test('S3-1 remote org-api: reorder ZONE_PIN_MISMATCH, cross-group move, archive/
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('HUB-319 remote: group & project icon upsert, clear, validation, and enrich preservation', () => {
+  const tmpDir = makeTempDir('agy-remote-icons-');
+  try {
+    const orgPath = path.join(tmpDir, 'session-org.json');
+    const projDir = path.join(tmpDir, 'IconRepo');
+    fs.mkdirSync(projDir, { recursive: true });
+
+    const store = createSessionOrgStore({ orgPath, dbPath: null });
+    const created = store.mutateGroup({ action: 'upsert', name: 'Core', icon: 'preset:rocket' });
+    assert.equal(created.ok, true);
+    assert.equal(created.group.icon, 'preset:rocket');
+
+    const invalid = store.mutateGroup({ action: 'upsert', id: created.group.id, icon: 'preset:INVALID!' });
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.error, 'INVALID_ICON');
+
+    store.mutateOrgAtomically((org) => {
+      store.materializeProjectInOrg(org, {
+        id: 'proj_icon_1',
+        name: 'IconRepo',
+        rootPath: projDir,
+        groupId: created.group.id,
+        icon: '🧩'
+      });
+    });
+
+    const enriched = store.enrichSessionsAndOrg({ rpcSessions: [] });
+    assert.equal(enriched.groups.find((g) => g.id === created.group.id)?.icon, 'preset:rocket');
+    assert.equal(enriched.projects.find((p) => p.id === 'proj_icon_1')?.icon, '🧩');
+
+    // Clear group icon
+    const cleared = store.mutateGroup({ action: 'upsert', id: created.group.id, icon: '' });
+    assert.equal(cleared.ok, true);
+    assert.equal(cleared.group.icon, undefined);
+
+    store.dispose();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

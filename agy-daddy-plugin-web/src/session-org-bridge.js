@@ -57,5 +57,6 @@ module.exports = {
   makeImplicitProjectId: defaultWorkspaceOrg.makeImplicitProjectId,
   makeStableProjectId: defaultWorkspaceOrg.makeStableProjectId,
   makeWorktreeId: defaultWorkspaceOrg.makeWorktreeId,
-  matchWorktreeByLongestPrefix: defaultWorkspaceOrg.matchWorktreeByLongestPrefix
+  matchWorktreeByLongestPrefix: defaultWorkspaceOrg.matchWorktreeByLongestPrefix,
+  sanitizeEntityIcon: defaultWorkspaceOrg.sanitizeEntityIcon
 };

@@ -65,6 +65,49 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
+function resolveBadgeCountFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return 0;
+  if (payload.badgeEnabled === false || payload.enableAppBadge === false) return -1;
+  const raw = payload.badgeCount ?? payload.unreadCount ?? payload.pendingCount ?? payload.count;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed)) {
+    return parsed > 0 ? Math.floor(parsed) : 0;
+  }
+  const hasReminder =
+    payload.type === 'attention' ||
+    payload.type === 'test' ||
+    payload.status === 'DONE' ||
+    payload.status === 'PENDING' ||
+    payload.status === 'ERROR' ||
+    Boolean(payload.title || payload.body);
+  return hasReminder ? 1 : 0;
+}
+
+function updateSwAppBadge(count) {
+  try {
+    const nav = typeof self !== 'undefined' ? self.navigator : undefined;
+    if (!nav || typeof nav !== 'object') return Promise.resolve();
+    if (count > 0 && 'setAppBadge' in nav && typeof nav.setAppBadge === 'function') {
+      return Promise.resolve().then(() => nav.setAppBadge(count)).catch(() => {});
+    }
+    if (count === 0 && 'clearAppBadge' in nav && typeof nav.clearAppBadge === 'function') {
+      return Promise.resolve().then(() => nav.clearAppBadge()).catch(() => {});
+    }
+  } catch {}
+  return Promise.resolve();
+}
+
+function clearSwAppBadge() {
+  try {
+    const nav = typeof self !== 'undefined' ? self.navigator : undefined;
+    if (!nav || typeof nav !== 'object') return Promise.resolve();
+    if ('clearAppBadge' in nav && typeof nav.clearAppBadge === 'function') {
+      return Promise.resolve().then(() => nav.clearAppBadge()).catch(() => {});
+    }
+  } catch {}
+  return Promise.resolve();
+}
+
 self.addEventListener('push', (event) => {
   let payload = { title: 'Agy-Daddy Remote', body: '会话状态更新' };
   try {
@@ -80,15 +123,22 @@ self.addEventListener('push', (event) => {
   }
   const sessionId = payload.sessionId || (payload.data && payload.data.sessionId) || '';
   const targetUrl = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/';
+  const badgeCount = resolveBadgeCountFromPayload(payload);
+  const badgeTask = badgeCount >= 0
+    ? updateSwAppBadge(badgeCount)
+    : (payload.clearBadge === true ? clearSwAppBadge() : Promise.resolve());
   event.waitUntil(
-    self.registration.showNotification(payload.title || 'Agy-Daddy Remote', {
-      body: payload.body || '',
-      icon: '/icon.svg',
-      badge: '/icon.svg',
-      tag: payload.tag || (sessionId ? `agy-session-${sessionId}` : 'agy-remote'),
-      renotify: true,
-      data: { url: targetUrl, sessionId }
-    })
+    Promise.all([
+      self.registration.showNotification(payload.title || 'Agy-Daddy Remote', {
+        body: payload.body || '',
+        icon: '/icon.svg',
+        badge: '/icon.svg',
+        tag: payload.tag || (sessionId ? `agy-session-${sessionId}` : 'agy-remote'),
+        renotify: true,
+        data: { url: targetUrl, sessionId }
+      }),
+      badgeTask
+    ])
   );
 });
 
@@ -99,20 +149,31 @@ self.addEventListener('notificationclick', (event) => {
   const targetUrl = data.url || (sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/');
 
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clientList) => {
-      for (const client of clientList) {
-        if ('focus' in client) {
-          await client.focus();
-          if (sessionId) {
-            client.postMessage({ type: 'NAVIGATE_SESSION', sessionId });
+    Promise.all([
+      clearSwAppBadge(),
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clientList) => {
+        for (const client of clientList) {
+          if ('focus' in client) {
+            await client.focus();
+            if (sessionId) {
+              client.postMessage({ type: 'NAVIGATE_SESSION', sessionId });
+            }
+            return;
           }
-          return;
         }
-      }
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
-      }
-      return undefined;
-    })
+        if (self.clients.openWindow) {
+          return self.clients.openWindow(targetUrl);
+        }
+        return undefined;
+      })
+    ])
   );
+});
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'CLEAR_APP_BADGE') {
+    event.waitUntil(clearSwAppBadge());
+  }
 });

@@ -121,6 +121,8 @@ export interface I18nMessages {
   'menu.pushEnable': string;
   'menu.pushEnabled': string;
   'menu.pushTest': string;
+  'menu.pushHostDisabledNote': string;
+  'menu.appBadge': string;
   'menu.sound': string;
   'menu.vibrate': string;
   'menu.diagnostics': string;
@@ -383,6 +385,12 @@ export interface I18nMessages {
   'left.unpinGroup': string;
   'left.renameProject': string;
   'left.renameGroup': string;
+  'left.setIcon': string;
+  'left.clearIcon': string;
+  'left.iconPresetLabel': string;
+  'left.iconEmojiLabel': string;
+  'left.iconCustomPlaceholder': string;
+  'left.groupIconAria': string;
   'left.deleteGroup': string;
   'left.moveToGroup': string;
   'left.removeProject': string;
@@ -597,6 +605,7 @@ export interface I18nMessages {
   'store.projectCreatedToast': string;
   'store.projectCreateFailed': string;
   'store.projectRenamedToast': string;
+  'store.projectIconUpdated': string;
   'store.projectRemovedToast': string;
   'store.projectUpdateFailed': string;
   'store.groupCreated': string;
@@ -604,6 +613,7 @@ export interface I18nMessages {
   'store.groupCreatedLocal': string;
   'store.groupDeleteFailed': string;
   'store.groupUpdateFailed': string;
+  'store.groupIconUpdated': string;
   'store.newSessionFailed': string;
   'store.sendFailed': string;
   'store.sendFailedMsg': string;
@@ -627,6 +637,7 @@ export interface I18nMessages {
   'store.localeLocalOnly': string;
   'store.pushDisabled': string;
   'store.pushEnabled': string;
+  'store.pushHostDisabled': string;
   'store.pushFailed': string;
   'store.testPushSent': string;
   'store.testPushFailed': string;

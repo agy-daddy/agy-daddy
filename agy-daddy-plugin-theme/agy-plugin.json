@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.theme",
+  "publisher": "agy-daddy",
+  "version": "1.1.1",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "视觉主题与光学定制",
+    "en": "Visual Theme & Optics"
+  },
+  "description": {
+    "zh-CN": "独立视觉主题插件：默认零变动保持宿主原版外观，支持深空黑曜/暖炭玄岩/冷晶白/暖白画册光学预设、组件级样式自由定制与可选动效余晖开关",
+    "en": "Independent opt-in visual theme plugin: zero native UI changes by default, with optical presets, per-component style customization, and optional motion/afterglow controls"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": [
+      "topbar.rightCluster",
+      "composer.root",
+      "chat.messageList"
+    ]
+  },
+  "provides": {
+    "services": {
+      "theme": { "version": "1.0.0", "realm": "node" }
+    },
+    "states": ["state:theme.config@1"],
+    "surfaces": []
+  },
+  "permissions": ["dom:read", "dom:write"],
+  "contributes": {
+    "topbar.units": [{ "id": "theme-studio", "order": 85 }],
+    "topbar.popovers": [{ "id": "theme-popover", "anchorId": "theme-studio" }],
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      {
+        "id": "theme.toggle-enabled",
+        "title": { "zh-CN": "启用 / 关闭视觉主题增强", "en": "Toggle Visual Theme Enhancement" }
+      },
+      {
+        "id": "theme.set-preset",
+        "title": { "zh-CN": "切换光学配色预设", "en": "Switch Optical Theme Preset" }
+      },
+      {
+        "id": "theme.toggle-power-save",
+        "title": { "zh-CN": "切换静默省电模式", "en": "Toggle Quiet Power-Save Mode" }
+      },
+      {
+        "id": "theme.reset-native",
+        "title": { "zh-CN": "重置为宿主原生外观", "en": "Reset to Host Native Appearance" }
+      }
+    ],
+    "locales": "./locales"
+  }
+}

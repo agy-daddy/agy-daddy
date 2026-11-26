@@ -105,6 +105,8 @@ export const ZH_CN: I18nMessages = {
   'menu.pushEnable': '开启',
   'menu.pushEnabled': '已开启',
   'menu.pushTest': '测试',
+  'menu.pushHostDisabledNote': '已在桌面宿主机设置中关闭远程推送',
+  'menu.appBadge': 'PWA 图标角标',
   'menu.sound': '提示音',
   'menu.vibrate': '短震',
   'menu.diagnostics': '系统诊断（只读）',
@@ -367,6 +369,12 @@ export const ZH_CN: I18nMessages = {
   'left.unpinGroup': '取消置顶分组',
   'left.renameProject': '重命名项目',
   'left.renameGroup': '重命名分组',
+  'left.setIcon': '设置图标',
+  'left.clearIcon': '恢复默认',
+  'left.iconPresetLabel': '预设图标',
+  'left.iconEmojiLabel': '表情符号',
+  'left.iconCustomPlaceholder': '输入 Emoji 或符号...',
+  'left.groupIconAria': '选择分组图标',
   'left.deleteGroup': '删除分组',
   'left.moveToGroup': '移动到分组…',
   'left.removeProject': '从列表移除项目',
@@ -581,6 +589,7 @@ export const ZH_CN: I18nMessages = {
   'store.projectCreatedToast': '项目「{name}」创建成功',
   'store.projectCreateFailed': '创建项目失败: {msg}',
   'store.projectRenamedToast': '项目已重命名为「{name}」',
+  'store.projectIconUpdated': '已更新项目图标',
   'store.projectRemovedToast': '已从列表移除项目「{name}」',
   'store.projectUpdateFailed': '项目更新失败: {msg}',
   'store.groupCreated': '已创建分组「{name}」',
@@ -588,6 +597,7 @@ export const ZH_CN: I18nMessages = {
   'store.groupCreatedLocal': '已在本地创建分组「{name}」',
   'store.groupDeleteFailed': '删除分组失败: {msg}',
   'store.groupUpdateFailed': '分组调整失败: {msg}',
+  'store.groupIconUpdated': '已更新分组图标',
   'store.newSessionFailed': '新建会话失败: {msg}',
   'store.sendFailed': '发送失败',
   'store.sendFailedMsg': '发送失败: {msg}',
@@ -611,6 +621,7 @@ export const ZH_CN: I18nMessages = {
   'store.localeLocalOnly': '当前为 L0 模式，语言已在手机本地生效',
   'store.pushDisabled': '已关闭锁屏推送',
   'store.pushEnabled': '已开启锁屏推送',
+  'store.pushHostDisabled': '已在宿主机插件设置中关闭远程推送',
   'store.pushFailed': '推送设置失败',
   'store.testPushSent': '已触发测试推送',
   'store.testPushFailed': '测试推送失败: {msg}',
@@ -727,6 +738,8 @@ export const EN: I18nMessages = {
   'menu.pushEnable': 'Enable',
   'menu.pushEnabled': 'Enabled',
   'menu.pushTest': 'Test',
+  'menu.pushHostDisabledNote': 'Push notifications are disabled in host settings',
+  'menu.appBadge': 'App Icon Badge',
   'menu.sound': 'Sound',
   'menu.vibrate': 'Vibrate',
   'menu.diagnostics': 'Diagnostics (Read-Only)',
@@ -989,6 +1002,12 @@ export const EN: I18nMessages = {
   'left.unpinGroup': 'Unpin group',
   'left.renameProject': 'Rename project',
   'left.renameGroup': 'Rename group',
+  'left.setIcon': 'Set icon',
+  'left.clearIcon': 'Reset',
+  'left.iconPresetLabel': 'Preset Icons',
+  'left.iconEmojiLabel': 'Emoji',
+  'left.iconCustomPlaceholder': 'Emoji or symbol...',
+  'left.groupIconAria': 'Select group icon',
   'left.deleteGroup': 'Delete group',
   'left.moveToGroup': 'Move to group…',
   'left.removeProject': 'Remove from list',
@@ -1203,6 +1222,7 @@ export const EN: I18nMessages = {
   'store.projectCreatedToast': 'Project "{name}" created',
   'store.projectCreateFailed': 'Failed to create project: {msg}',
   'store.projectRenamedToast': 'Project renamed to "{name}"',
+  'store.projectIconUpdated': 'Project icon updated',
   'store.projectRemovedToast': 'Removed project "{name}" from list',
   'store.projectUpdateFailed': 'Failed to update project: {msg}',
   'store.groupCreated': 'Group "{name}" created',
@@ -1210,6 +1230,7 @@ export const EN: I18nMessages = {
   'store.groupCreatedLocal': 'Group "{name}" saved locally',
   'store.groupDeleteFailed': 'Failed to delete group: {msg}',
   'store.groupUpdateFailed': 'Failed to update group: {msg}',
+  'store.groupIconUpdated': 'Group icon updated',
   'store.newSessionFailed': 'Failed to create session: {msg}',
   'store.sendFailed': 'Send failed',
   'store.sendFailedMsg': 'Send failed: {msg}',
@@ -1233,6 +1254,7 @@ export const EN: I18nMessages = {
   'store.localeLocalOnly': 'L0 mode: language applied locally on mobile',
   'store.pushDisabled': 'Web push disabled',
   'store.pushEnabled': 'Web push enabled',
+  'store.pushHostDisabled': 'Push notifications are disabled in host settings',
   'store.pushFailed': 'Failed to update push subscription',
   'store.testPushSent': 'Test push sent',
   'store.testPushFailed': 'Test push failed: {msg}',
@@ -1348,6 +1370,8 @@ export const ZH_TW: I18nMessages = makeLocale(
     'menu.pushEnable': '開啟',
     'menu.pushEnabled': '已開啟',
     'menu.pushTest': '測試',
+    'menu.pushHostDisabledNote': '已在桌面宿主機設定中關閉遠端推播',
+    'menu.appBadge': 'PWA 圖示角標',
     'menu.sound': '提示音',
     'menu.vibrate': '短震',
     'menu.diagnostics': '系統診斷（唯讀）',
@@ -1599,6 +1623,12 @@ export const ZH_TW: I18nMessages = makeLocale(
     'left.unpinGroup': '取消置頂分組',
     'left.renameProject': '重新命名專案',
     'left.renameGroup': '重新命名分組',
+    'left.setIcon': '設定圖示',
+    'left.clearIcon': '恢復預設',
+    'left.iconPresetLabel': '預設圖示',
+    'left.iconEmojiLabel': '表情符號',
+    'left.iconCustomPlaceholder': '輸入 Emoji 或符號...',
+    'left.groupIconAria': '選擇分組圖示',
     'left.deleteGroup': '刪除分組',
     'left.moveToGroup': '移動到分組…',
     'left.removeProject': '從列表移除專案',
@@ -1804,6 +1834,7 @@ export const ZH_TW: I18nMessages = makeLocale(
     'store.projectCreatedToast': '專案「{name}」建立成功',
     'store.projectCreateFailed': '建立專案失敗: {msg}',
     'store.projectRenamedToast': '專案已重新命名為「{name}」',
+    'store.projectIconUpdated': '已更新專案圖示',
     'store.projectRemovedToast': '已從列表移除專案「{name}」',
     'store.projectUpdateFailed': '專案更新失敗: {msg}',
     'store.groupCreated': '已建立分組「{name}」',
@@ -1811,6 +1842,7 @@ export const ZH_TW: I18nMessages = makeLocale(
     'store.groupCreatedLocal': '已在本機建立分組「{name}」',
     'store.groupDeleteFailed': '刪除分組失敗: {msg}',
     'store.groupUpdateFailed': '分組調整失敗: {msg}',
+    'store.groupIconUpdated': '已更新分組圖示',
     'store.newSessionFailed': '新增工作階段失敗: {msg}',
     'store.sendFailed': '傳送失敗',
     'store.sendFailedMsg': '傳送失敗: {msg}',
@@ -1834,6 +1866,7 @@ export const ZH_TW: I18nMessages = makeLocale(
     'store.localeLocalOnly': '目前為 L0 模式，語言已於手機本機生效',
     'store.pushDisabled': '已關閉鎖屏推播',
     'store.pushEnabled': '已開啟鎖屏推播',
+    'store.pushHostDisabled': '已在宿主機外掛設定中關閉遠端推播',
     'store.pushFailed': '推播設定失敗',
     'store.testPushSent': '已觸發測試推播',
     'store.testPushFailed': '測試推播失敗: {msg}',
@@ -1906,7 +1939,15 @@ export const JA: I18nMessages = makeLocale({
   'model.current': '現在',
   'right.tabFiles': 'ファイル',
   'right.tabArtifacts': '成果物',
-  'right.tabPty': '端末'
+  'right.tabPty': '端末',
+  'left.setIcon': 'アイコンを設定',
+  'left.clearIcon': 'リセット',
+  'left.iconPresetLabel': 'プリセットアイコン',
+  'left.iconEmojiLabel': '絵文字',
+  'left.iconCustomPlaceholder': '絵文字や記号...',
+  'left.groupIconAria': 'グループアイコンを選択',
+  'store.groupIconUpdated': 'グループアイコンを更新しました',
+  'store.projectIconUpdated': 'プロジェクトアイコンを更新しました'
 });
 
 export const KO: I18nMessages = makeLocale({
@@ -1967,7 +2008,15 @@ export const KO: I18nMessages = makeLocale({
   'model.current': '현재',
   'right.tabFiles': '파일',
   'right.tabArtifacts': '산출물',
-  'right.tabPty': '터미널'
+  'right.tabPty': '터미널',
+  'left.setIcon': '아이콘 설정',
+  'left.clearIcon': '기본값',
+  'left.iconPresetLabel': '기본 아이콘',
+  'left.iconEmojiLabel': '이모지',
+  'left.iconCustomPlaceholder': '이모지 또는 기호...',
+  'left.groupIconAria': '그룹 아이콘 선택',
+  'store.groupIconUpdated': '그룹 아이콘이 업데이트되었습니다',
+  'store.projectIconUpdated': '프로젝트 아이콘이 업데이트되었습니다'
 });
 
 export const ES: I18nMessages = makeLocale({
@@ -2006,7 +2055,15 @@ export const ES: I18nMessages = makeLocale({
   'chat.viewInDiff': 'Ver en Diff',
   'composer.undoOptimize': 'Deshacer',
   'composer.send': 'Enviar',
-  'composer.enqueue': 'En cola'
+  'composer.enqueue': 'En cola',
+  'left.setIcon': 'Establecer icono',
+  'left.clearIcon': 'Restablecer',
+  'left.iconPresetLabel': 'Iconos',
+  'left.iconEmojiLabel': 'Emoji',
+  'left.iconCustomPlaceholder': 'Emoji o símbolo...',
+  'left.groupIconAria': 'Seleccionar icono del grupo',
+  'store.groupIconUpdated': 'Icono de grupo actualizado',
+  'store.projectIconUpdated': 'Icono de proyecto actualizado'
 });
 
 export const PT: I18nMessages = makeLocale({
@@ -2045,7 +2102,15 @@ export const PT: I18nMessages = makeLocale({
   'chat.viewInDiff': 'Ver no Diff',
   'composer.undoOptimize': 'Desfazer',
   'composer.send': 'Enviar',
-  'composer.enqueue': 'Na fila'
+  'composer.enqueue': 'Na fila',
+  'left.setIcon': 'Definir ícone',
+  'left.clearIcon': 'Redefinir',
+  'left.iconPresetLabel': 'Ícones',
+  'left.iconEmojiLabel': 'Emoji',
+  'left.iconCustomPlaceholder': 'Emoji ou símbolo...',
+  'left.groupIconAria': 'Selecionar ícone do grupo',
+  'store.groupIconUpdated': 'Ícone do grupo atualizado',
+  'store.projectIconUpdated': 'Ícone do projeto atualizado'
 });
 
 export const FR: I18nMessages = makeLocale({
@@ -2084,7 +2149,15 @@ export const FR: I18nMessages = makeLocale({
   'chat.viewInDiff': 'Voir dans Diff',
   'composer.undoOptimize': 'Annuler',
   'composer.send': 'Envoyer',
-  'composer.enqueue': 'En file'
+  'composer.enqueue': 'En file',
+  'left.setIcon': 'Définir l’icône',
+  'left.clearIcon': 'Réinitialiser',
+  'left.iconPresetLabel': 'Icônes',
+  'left.iconEmojiLabel': 'Émoji',
+  'left.iconCustomPlaceholder': 'Émoji ou symbole...',
+  'left.groupIconAria': 'Choisir l’icône du groupe',
+  'store.groupIconUpdated': 'Icône du groupe mise à jour',
+  'store.projectIconUpdated': 'Icône du projet mise à jour'
 });
 
 export const RU: I18nMessages = makeLocale({
@@ -2123,7 +2196,15 @@ export const RU: I18nMessages = makeLocale({
   'chat.viewInDiff': 'Открыть в Diff',
   'composer.undoOptimize': 'Отменить',
   'composer.send': 'Отправить',
-  'composer.enqueue': 'В очередь'
+  'composer.enqueue': 'В очередь',
+  'left.setIcon': 'Выбрать значок',
+  'left.clearIcon': 'Сбросить',
+  'left.iconPresetLabel': 'Значки',
+  'left.iconEmojiLabel': 'Эмодзи',
+  'left.iconCustomPlaceholder': 'Эмодзи или символ...',
+  'left.groupIconAria': 'Выбрать значок группы',
+  'store.groupIconUpdated': 'Значок группы обновлён',
+  'store.projectIconUpdated': 'Значок проекта обновлён'
 });
 
 export const IT: I18nMessages = makeLocale({
@@ -2162,7 +2243,15 @@ export const IT: I18nMessages = makeLocale({
   'chat.viewInDiff': 'Vedi in Diff',
   'composer.undoOptimize': 'Annulla',
   'composer.send': 'Invia',
-  'composer.enqueue': 'In coda'
+  'composer.enqueue': 'In coda',
+  'left.setIcon': 'Imposta icona',
+  'left.clearIcon': 'Ripristina',
+  'left.iconPresetLabel': 'Icone',
+  'left.iconEmojiLabel': 'Emoji',
+  'left.iconCustomPlaceholder': 'Emoji o simbolo...',
+  'left.groupIconAria': 'Seleziona icona del gruppo',
+  'store.groupIconUpdated': 'Icona del gruppo aggiornata',
+  'store.projectIconUpdated': 'Icona del progetto aggiornata'
 });
 
 export const LOCALE_DICTS: Record<SupportedLocale, I18nMessages> = {

@@ -239,6 +239,7 @@ export type SessionOrderMap = {
 export interface SessionGroup {
   id: string;
   name: string;
+  icon?: string | null;
   source?: 'host' | 'user' | string;
   pinned?: boolean;
   pinnedAt?: string | null;
@@ -253,6 +254,7 @@ export interface SessionGroup {
 export interface HostProject {
   id: string;
   name: string;
+  icon?: string | null;
   uri: string | null;
   path: string | null;
   rootPath?: string | null;
@@ -728,6 +730,12 @@ export interface BootstrapResponse {
   archivedSessions?: Record<string, ArchivedSessionMeta>;
   defaultSessionPath?: string;
   vapidPublicKey?: string | null;
+  enablePushNotifications?: boolean;
+  enableAppBadge?: boolean;
+  notifications?: {
+    enablePushNotifications?: boolean;
+    enableAppBadge?: boolean;
+  };
   voiceSupported?: boolean;
   pcWebHidden?: boolean;
   runningTasksCount?: number;

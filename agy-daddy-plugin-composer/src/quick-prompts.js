@@ -701,10 +701,11 @@ function resolveContextualQuickItems({
   enabled = true
 } = {}) {
   const list = Array.isArray(baseItems) ? baseItems.map((it) => ({ ...it })) : [];
-  const used = Number(contextSnap?.used || 0);
-  const percent = Number(contextSnap?.percent || 0);
-  const cliffRisk = String(contextSnap?.cacheCliffRisk || '');
-  const cacheDrop = Boolean(contextSnap?.cacheDropDetected);
+  const effectiveSnap = isNewChat || contextSnap?.hasSession === false ? null : contextSnap;
+  const used = Number(effectiveSnap?.used || 0);
+  const percent = Number(effectiveSnap?.percent || 0);
+  const cliffRisk = String(effectiveSnap?.cacheCliffRisk || '');
+  const cacheDrop = Boolean(effectiveSnap?.cacheDropDetected);
 
   let contextRisk = '';
   if (cacheDrop || cliffRisk === 'critical' || used >= 328000) {
@@ -904,7 +905,9 @@ function getGhostSuggestions(lastAssistantText = '', opts = {}) {
     addCandidate('继续处理下一个问题');
   }
 
-  const snap = opts?.contextSnap || null;
+  const snap = opts?.isNewChat || opts?.contextSnap?.hasSession === false
+    ? null
+    : (opts?.contextSnap || null);
   const used = Number(snap?.used || 0);
   const percent = Number(snap?.percent || 0);
   const cacheDrop = Boolean(snap?.cacheDropDetected);

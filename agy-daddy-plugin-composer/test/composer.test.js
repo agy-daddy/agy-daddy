@@ -2160,3 +2160,126 @@ test('跨插件状态广播与桌面端感知提示/Toast 互斥让位：state:c
     await harness.cleanup();
   }
 });
+
+test('回归：输入框增强在新会话未发起消息时不读取/展示历史缓存的上下文占用，首条消息后准确同步', async () => {
+  const { mount, dispose } = require('../src/renderer');
+  const { createMockDocument } = require(path.join(HOST_ROOT, 'sdk', 'mock-harness'));
+
+  const doc = createMockDocument();
+  const msgList = doc.createElement('div');
+  msgList.setAttribute('data-testid', 'turn-cards-container');
+  doc.body.appendChild(msgList);
+
+  let currentSessionId = 'sess-old-1111';
+  let stateHandler = null;
+  let currentSettings = {
+    showQuickBar: true,
+    contextAwareQuickItems: false,
+    quickItems: ['compact', 'plan']
+  };
+
+  const ctx = {
+    anchors: {
+      query(name) {
+        if (name === 'composer.root') return doc.querySelector('.surface-composer');
+        if (name === 'composer.editor') return doc.querySelector('[contenteditable="true"]');
+        if (name === 'composer.sendButton') return doc.querySelector('[data-testid="input-send-button"]');
+        if (name === 'chat.messageList') return msgList;
+        return null;
+      },
+      queryAll() { return []; },
+      observe() { return () => {}; }
+    },
+    styles: { inject() { return () => {}; } },
+    surfaces: { provide() { return () => {}; } },
+    events: { emit() {}, on() { return () => {}; } },
+    state: {
+      subscribe(key, fn) {
+        if (key === 'state:context.snapshot@1') stateHandler = fn;
+        return () => { stateHandler = null; };
+      }
+    },
+    services: {
+      provide(name, api) {
+        if (name === 'composer') ctx._composerApi = api;
+        return () => {};
+      }
+    },
+    settings: { get() { return currentSettings; }, onChange() { return () => {}; } },
+    hostDom: { getSessionId() { return currentSessionId; }, isAssistantBusy() { return false; } },
+    bridge: { async post() { return {}; } }
+  };
+
+  // 旧会话先产生 330K 上下文缓存
+  const oldUserEl = doc.createElement('div');
+  oldUserEl.setAttribute('data-testid', 'user-message');
+  oldUserEl.textContent = '旧会话消息';
+  msgList.appendChild(oldUserEl);
+
+  await mount(ctx, { document: doc });
+  stateHandler({
+    hasSession: true,
+    cascadeId: 'sess-old-1111',
+    used: 330000,
+    percent: 33,
+    cacheCliffRisk: 'critical',
+    cacheDropDetected: true
+  });
+
+  const oldCompactBtn = doc.getElementById('agy-qcap-compact');
+  assert.ok(oldCompactBtn);
+  assert.match(oldCompactBtn.getAttribute('title') || '', /当前上下文: 330K/);
+  assert.equal(oldCompactBtn.getAttribute('data-risk'), 'danger');
+
+  // 1. 切换到全新会话（未发起任何消息），即使 state 仍残留旧会话快照或重新推送旧快照，也不得展示 330K
+  currentSessionId = 'sess-new-2222';
+  msgList.textContent = '';
+  await ctx._composerApi.refreshQuickBar();
+
+  const newCompactBtn = doc.getElementById('agy-qcap-compact');
+  assert.ok(newCompactBtn);
+  assert.doesNotMatch(newCompactBtn.getAttribute('title') || '', /当前上下文:/);
+  assert.equal(newCompactBtn.getAttribute('data-risk'), null);
+
+  // 即使收到来自旧会话的滞后快照推送，也不会污染新会话
+  stateHandler({
+    hasSession: true,
+    cascadeId: 'sess-old-1111',
+    used: 330000,
+    cacheCliffRisk: 'critical'
+  });
+  assert.doesNotMatch(doc.getElementById('agy-qcap-compact').getAttribute('title') || '', /当前上下文:/);
+  assert.equal(doc.getElementById('agy-qcap-compact').getAttribute('data-risk'), null);
+
+  // 2. 开启上下文感知时，空会话（含历史残留 330K 缓存）仍正确识别为 isNewChat 并隐藏 /compact
+  await ctx._composerApi.updateSettings({ contextAwareQuickItems: true });
+  stateHandler({
+    hasSession: true,
+    cascadeId: 'sess-new-2222',
+    used: 330000,
+    cacheCliffRisk: 'critical'
+  });
+  assert.equal(doc.getElementById('agy-qcap-compact'), null);
+  assert.ok(doc.getElementById('agy-qcap-grill-me'));
+
+  // 3. 新会话发起首条消息并同步真实快照 -> 准确展示新会话真实占用 (12K)
+  const newUserEl = doc.createElement('div');
+  newUserEl.setAttribute('data-testid', 'user-message');
+  newUserEl.textContent = '新会话首条消息';
+  msgList.appendChild(newUserEl);
+  await ctx._composerApi.updateSettings({ contextAwareQuickItems: false });
+  stateHandler({
+    hasSession: true,
+    cascadeId: 'sess-new-2222',
+    used: 12000,
+    percent: 1.2,
+    cacheCliffRisk: 'none',
+    cacheDropDetected: false
+  });
+  const syncedCompactBtn = doc.getElementById('agy-qcap-compact');
+  assert.ok(syncedCompactBtn);
+  assert.match(syncedCompactBtn.getAttribute('title') || '', /当前上下文: 12K/);
+  assert.equal(syncedCompactBtn.getAttribute('data-risk'), null);
+
+  dispose();
+});

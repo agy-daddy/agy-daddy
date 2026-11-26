@@ -2,6 +2,8 @@ import type {
   AccessChannel,
   ApproveStepRequest,
   ApproveStepResponse,
+  ArchiveSessionRequest,
+  ArchiveSessionResponse,
   ArtifactPreviewersResponse,
   ArtifactReadResponse,
   ArtifactsListResponse,
@@ -9,6 +11,7 @@ import type {
   AuthorizeWorkspaceRootResponse,
   BackgroundTaskDetailResponse,
   BackgroundTasksListResponse,
+  CancelRemoteJobResponse,
   CancelSessionResponse,
   ComposerStateResponse,
   CreateProjectRequest,
@@ -18,13 +21,24 @@ import type {
   CreateTerminalSessionResponse,
   DefaultSessionPathResponse,
   DeleteEntityResponse,
+  DeleteSessionResponse,
   DoctorReport,
   ExportMarkdownResponse,
   FsReadResponse,
   FsTreeResponse,
   FsWriteRequest,
   FsWriteResponse,
+  GetRemoteJobResponse,
+  GitCommitRequest,
+  GitCommitResponse,
   GitDiffResponse,
+  GithubReposResponse,
+  GitPushRequest,
+  GitPushResponse,
+  GitStageRequest,
+  GitStageResponse,
+  GitWorktreeMutationRequest,
+  GitWorktreesResponse,
   HealthInfo,
   HostLocaleResponse,
   HostPluginAction,
@@ -34,12 +48,17 @@ import type {
   MarkSessionReadResponse,
   ModelsResponse,
   OptimizePromptResponse,
+  OrgGroupMutationRequest,
+  OrgReorderRequest,
+  OrgReorderResponse,
   PinSessionResponse,
   PluginArtifactPreviewResponse,
   PluginSettingsResponse,
   ProjectGroupMutationResponse,
   ProjectMutationResponse,
   ProjectsResponse,
+  RemotePreflightResponse,
+  RemoteProvisionJob,
   RemoteStatusResponse,
   RunCommandRequest,
   RunCommandResponse,
@@ -47,6 +66,7 @@ import type {
   SendMessageResponse,
   SessionDetailResponse,
   SessionEvent,
+  SessionOrgSnapshot,
   SessionsListResponse,
   SideChatCancelResponse,
   SideChatCompletionRequest,
@@ -60,6 +80,8 @@ import type {
   SseResyncPayload,
   SseStatePatchPayload,
   SseTaskUpdatedPayload,
+  StartRemoteJobRequest,
+  StartRemoteJobResponse,
   StopBackgroundTaskResponse,
   SwitchTicketResponse,
   TerminalCloseResponse,
@@ -68,11 +90,15 @@ import type {
   TerminalSessionsListResponse,
   TerminalSseExitEvent,
   TerminalSseOutputEvent,
+  ToggleOrgPinRequest,
+  ToggleOrgPinResponse,
   TopbarResponse,
   UpdateProjectGroupRequest,
   UpdateProjectRequest,
   WebAccessStatusResponse,
   WebAuthResponse,
+  WorkspaceBrowseResponse,
+  WorkspaceMkdirResponse,
 } from '../types';
 
 export function getAppBasePrefix(
@@ -266,6 +292,7 @@ export interface ListSessionsOptions {
   limit?: number;
   projectId?: string;
   includeInternal?: boolean;
+  includeArchived?: boolean;
 }
 
 export function listSessions(limit?: number, signal?: AbortSignal): Promise<SessionsListResponse>;
@@ -282,6 +309,7 @@ export function listSessions(
       limit,
       projectId: opts.projectId,
       includeInternal: opts.includeInternal === true ? 1 : undefined,
+      includeArchived: opts.includeArchived === true ? 1 : undefined,
     })}`,
     { signal },
   );
@@ -313,6 +341,139 @@ export function pinSession(cascadeId: string, pinned: boolean): Promise<PinSessi
     method: 'PUT',
     body: { pinned },
   });
+}
+
+export function getSessionOrg(
+  includeArchived = false,
+  signal?: AbortSignal,
+): Promise<SessionOrgSnapshot> {
+  return apiRequest<SessionOrgSnapshot>(
+    `/api/v1/sessions/org${buildQuery({ includeArchived: includeArchived ? 1 : undefined })}`,
+    { signal },
+  );
+}
+
+export function toggleOrgPin(payload: ToggleOrgPinRequest): Promise<ToggleOrgPinResponse> {
+  return apiRequest<ToggleOrgPinResponse>('/api/v1/sessions/pin', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function mutateOrgGroup(
+  payload: OrgGroupMutationRequest,
+): Promise<ProjectGroupMutationResponse> {
+  return apiRequest<ProjectGroupMutationResponse>('/api/v1/sessions/groups', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function reorderOrg(payload: OrgReorderRequest): Promise<OrgReorderResponse> {
+  return apiRequest<OrgReorderResponse>('/api/v1/sessions/org/reorder', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function archiveSession(
+  cascadeId: string,
+  payload: ArchiveSessionRequest,
+): Promise<ArchiveSessionResponse> {
+  return apiRequest<ArchiveSessionResponse>(
+    `/api/v1/sessions/${encodeURIComponent(cascadeId)}/archive`,
+    {
+      method: 'POST',
+      body: payload,
+    },
+  );
+}
+
+export function deleteSession(
+  cascadeId: string,
+  mode: 'auto' | 'local_hide' = 'auto',
+): Promise<DeleteSessionResponse> {
+  return apiRequest<DeleteSessionResponse>(
+    `/api/v1/sessions/${encodeURIComponent(cascadeId)}${buildQuery({ mode })}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export function browseWorkspace(
+  path?: string,
+  showHidden = false,
+  signal?: AbortSignal,
+): Promise<WorkspaceBrowseResponse> {
+  return apiRequest<WorkspaceBrowseResponse>(
+    `/api/v1/workspace/browse${buildQuery({
+      path: path || undefined,
+      showHidden: showHidden ? 1 : undefined,
+    })}`,
+    { signal },
+  );
+}
+
+export function mkdirWorkspace(
+  parentDir: string,
+  name: string,
+): Promise<WorkspaceMkdirResponse> {
+  return apiRequest<WorkspaceMkdirResponse>('/api/v1/workspace/mkdir', {
+    method: 'POST',
+    body: { parentDir, name },
+  });
+}
+
+export function getRemotePreflight(
+  provider: 'all' | 'github' | 'gdrive' = 'all',
+  signal?: AbortSignal,
+): Promise<RemotePreflightResponse> {
+  return apiRequest<RemotePreflightResponse>(
+    `/api/v1/workspace/remote-preflight${buildQuery({ provider })}`,
+    { signal },
+  );
+}
+
+export function listGithubRepos(
+  owner?: string,
+  limit = 30,
+  signal?: AbortSignal,
+): Promise<GithubReposResponse> {
+  return apiRequest<GithubReposResponse>(
+    `/api/v1/workspace/github-repos${buildQuery({ owner: owner || undefined, limit })}`,
+    { signal },
+  );
+}
+
+export function startRemoteProjectJob(
+  payload: StartRemoteJobRequest,
+): Promise<StartRemoteJobResponse> {
+  return apiRequest<StartRemoteJobResponse>('/api/v1/projects/remote-jobs', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function getRemoteProjectJob(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<GetRemoteJobResponse> {
+  return apiRequest<GetRemoteJobResponse>(
+    `/api/v1/projects/remote-jobs/${encodeURIComponent(jobId)}`,
+    { signal },
+  );
+}
+
+export function cancelRemoteProjectJob(jobId: string): Promise<CancelRemoteJobResponse> {
+  return apiRequest<CancelRemoteJobResponse>(
+    `/api/v1/projects/remote-jobs/${encodeURIComponent(jobId)}/cancel`,
+    {
+      method: 'POST',
+      body: {},
+      interactiveConfirm: false,
+    },
+  );
 }
 
 export function assignSessionProject(
@@ -468,6 +629,44 @@ export function getGitDiff(
     `/api/v1/git/diff${buildQuery({ root: params.root, path: params.path })}`,
     { signal },
   );
+}
+
+export function getGitWorktrees(
+  params: { root: string },
+  signal?: AbortSignal,
+): Promise<GitWorktreesResponse> {
+  return apiRequest<GitWorktreesResponse>(
+    `/api/v1/git/worktrees${buildQuery({ root: params.root })}`,
+    { signal },
+  );
+}
+
+export function gitStage(req: GitStageRequest): Promise<GitStageResponse> {
+  return apiRequest<GitStageResponse>('/api/v1/git/stage', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitCommit(req: GitCommitRequest): Promise<GitCommitResponse> {
+  return apiRequest<GitCommitResponse>('/api/v1/git/commit', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitPush(req: GitPushRequest): Promise<GitPushResponse> {
+  return apiRequest<GitPushResponse>('/api/v1/git/push', {
+    method: 'POST',
+    body: req,
+  });
+}
+
+export function gitWorktree(req: GitWorktreeMutationRequest): Promise<GitWorktreesResponse> {
+  return apiRequest<GitWorktreesResponse>('/api/v1/git/worktree', {
+    method: 'POST',
+    body: req,
+  });
 }
 
 export function listArtifacts(sessionId: string, signal?: AbortSignal): Promise<ArtifactsListResponse> {
@@ -710,6 +909,7 @@ export interface SessionStreamHandlers {
   onStatePatch?: (payload: SseStatePatchPayload, lastEventId?: string) => void;
   onHostEvent?: (payload: SseHostEventPayload, lastEventId?: string) => void;
   onTaskUpdated?: (payload: SseTaskUpdatedPayload, lastEventId?: string) => void;
+  onProjectJob?: (payload: RemoteProvisionJob, lastEventId?: string) => void;
   onResync?: (payload: SseResyncPayload) => void;
   onHeartbeat?: (payload: SseHeartbeatPayload) => void;
   onOpen?: () => void;
@@ -758,6 +958,11 @@ export function subscribeSessionStream(
   es.addEventListener('task.updated', (ev) => {
     const payload = parseSseJson<SseTaskUpdatedPayload>(ev);
     if (payload) handlers.onTaskUpdated?.(payload, (ev as MessageEvent).lastEventId);
+  });
+
+  es.addEventListener('project.job', (ev) => {
+    const payload = parseSseJson<RemoteProvisionJob>(ev);
+    if (payload) handlers.onProjectJob?.(payload, (ev as MessageEvent).lastEventId);
   });
 
   es.addEventListener('session.resync', (ev) => {
@@ -1049,6 +1254,19 @@ export const apiClient = {
   markSessionRead,
   createSession,
   pinSession,
+  getSessionOrg,
+  toggleOrgPin,
+  mutateOrgGroup,
+  reorderOrg,
+  archiveSession,
+  deleteSession,
+  browseWorkspace,
+  mkdirWorkspace,
+  getRemotePreflight,
+  listGithubRepos,
+  startRemoteProjectJob,
+  getRemoteProjectJob,
+  cancelRemoteProjectJob,
   assignSessionProject,
   listProjects,
   createProject,
@@ -1068,6 +1286,11 @@ export const apiClient = {
   readFsFile,
   writeFsFile,
   getGitDiff,
+  getGitWorktrees,
+  gitStage,
+  gitCommit,
+  gitPush,
+  gitWorktree,
   listArtifacts,
   readArtifact,
   getArtifactRawUrl,

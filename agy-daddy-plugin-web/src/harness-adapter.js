@@ -1730,6 +1730,14 @@ function createHarnessAdapter({ rpc } = {}) {
       return { ok: true, cascadeId: id };
     },
 
+    async deleteSession(cascadeId) {
+      const id = assertCascadeId(cascadeId);
+      await rpc.call('DeleteCascadeTrajectory', { cascadeId: id });
+      sessionCursors.delete(id);
+      createdCascadeIds.delete(id);
+      return { ok: true, cascadeId: id, hostCleaned: true };
+    },
+
     async approveStep(cascadeId, stepIdx, decision = 'allow', payload = {}) {
       const id = assertCascadeId(cascadeId);
       const idx = Number(stepIdx);

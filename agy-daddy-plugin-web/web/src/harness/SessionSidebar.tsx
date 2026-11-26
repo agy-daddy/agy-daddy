@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   formatRelativeTime,
   formatSessionTitle,
@@ -7,10 +7,23 @@ import {
   type TranslateFn,
 } from '../i18n';
 import type {
+  OrgReorderRequest,
   ProjectGroup,
   ProjectItem,
+  SessionOrderMap,
   SessionSummary,
+  ZoneOrder,
 } from '../types';
+import {
+  partitionAndOrderItems,
+  reorderWithinZone,
+  sortPinnedQuickSessions,
+  useSidebarDragSort,
+  type DndTargetType,
+  type DndZone,
+  type DragItemMeta,
+  type ReorderMenuAction,
+} from './useSidebarDragSort';
 import styles from './SessionSidebar.module.css';
 
 export interface SessionSidebarProps {
@@ -34,8 +47,25 @@ export interface SessionSidebarProps {
   hiddenInternalCount?: number;
   includeInternal?: boolean;
   onToggleIncludeInternal?: (next: boolean) => void;
+  permissionLevel?: 'L0' | 'L1' | 'L2' | string;
+  channel?: string;
+  groupOrder?: ZoneOrder;
+  projectOrder?: Record<string, ZoneOrder>;
+  sessionOrder?: SessionOrderMap;
+  archivedCount?: number;
+  archivedSessions?: SessionSummary[];
+  loadingArchived?: boolean;
+  viewMode?: 'active' | 'archived';
+  onViewModeChange?: (mode: 'active' | 'archived') => void;
   onPinSession?: (cascadeId: string, pinned: boolean) => Promise<void> | void;
+  onPinProject?: (project: ProjectItem, pinned: boolean) => Promise<void> | void;
+  onPinGroup?: (group: ProjectGroup, pinned: boolean) => Promise<void> | void;
   onAssignSessionProject?: (cascadeId: string, projectId: string | null) => Promise<void> | void;
+  onArchiveSession?: (session: SessionSummary, archived: boolean) => Promise<void> | void;
+  onRequestDeleteSession?: (session: SessionSummary) => void;
+  onReorderOrg?: (req: OrgReorderRequest) => Promise<void> | void;
+  onOpenNewProjectModal?: () => void;
+  onDraggingChange?: (dragging: boolean) => void;
   onCreateProject?: (payload: {
     name: string;
     rootPath: string;
@@ -107,6 +137,19 @@ function PinGlyph() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a5.927 5.927 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707-.195-.195.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a5.922 5.922 0 0 1 1.013.16l3.134-3.133a2.772 2.772 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146z" />
+    </svg>
+  );
+}
+
+function DragDotsGlyph() {
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+      <circle cx="2.5" cy="2.5" r="1.1" />
+      <circle cx="7.5" cy="2.5" r="1.1" />
+      <circle cx="2.5" cy="7" r="1.1" />
+      <circle cx="7.5" cy="7" r="1.1" />
+      <circle cx="2.5" cy="11.5" r="1.1" />
+      <circle cx="7.5" cy="11.5" r="1.1" />
     </svg>
   );
 }
@@ -259,11 +302,37 @@ interface SessionSidebarRowProps {
   t: TranslateFn;
   projects: ProjectItem[];
   isMenuOpen: boolean;
+  canMutateOrg: boolean;
+  canAdminWorkspace: boolean;
+  isL0: boolean;
+  isL1: boolean;
+  canDragReorder: boolean;
+  containerId: string;
+  zone: DndZone;
+  zoneIndex: number;
+  zoneTotal: number;
+  isDragSource: boolean;
+  isKeyboardReordering: boolean;
   onToggleMenu: (cascadeId: string) => void;
   onSelectSession: (cascadeId: string) => void;
   onPinSession?: (cascadeId: string, pinned: boolean) => Promise<void> | void;
   onAssignSessionProject?: (cascadeId: string, projectId: string | null) => Promise<void> | void;
   onMarkSessionRead?: (cascadeId: string) => Promise<void> | void;
+  onArchiveSession?: (session: SessionSummary, archived: boolean) => Promise<void> | void;
+  onRequestDeleteSession?: (session: SessionSummary) => void;
+  onReorderAction?: (
+    targetType: DndTargetType,
+    containerId: string,
+    zone: DndZone,
+    id: string,
+    action: ReorderMenuAction,
+  ) => void;
+  onPointerDragStart?: (
+    ev: React.PointerEvent,
+    item: DragItemMeta,
+    isHandle: boolean,
+  ) => void;
+  onHandleKeyDown?: (ev: React.KeyboardEvent, item: DragItemMeta) => void;
 }
 
 const SessionSidebarRow = React.memo(function SessionSidebarRow({
@@ -275,11 +344,27 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
   t,
   projects,
   isMenuOpen,
+  canMutateOrg,
+  canAdminWorkspace,
+  isL0,
+  isL1,
+  canDragReorder,
+  containerId,
+  zone,
+  zoneIndex,
+  zoneTotal,
+  isDragSource,
+  isKeyboardReordering,
   onToggleMenu,
   onSelectSession,
   onPinSession,
   onAssignSessionProject,
   onMarkSessionRead,
+  onArchiveSession,
+  onRequestDeleteSession,
+  onReorderAction,
+  onPointerDragStart,
+  onHandleKeyDown,
 }: SessionSidebarRowProps) {
   const [copiedId, setCopiedId] = useState(false);
   const running = isSessionRunning(session);
@@ -293,7 +378,29 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
   const hasKnownProject = Boolean(
     session.projectId && projects.some((proj) => proj.id === session.projectId),
   );
-  const hasActions = Boolean(onPinSession || onAssignSessionProject || onMarkSessionRead);
+  const hasActions = Boolean(
+    onPinSession ||
+      onAssignSessionProject ||
+      onMarkSessionRead ||
+      onArchiveSession ||
+      onRequestDeleteSession ||
+      onReorderAction,
+  );
+  const hasMoreMenu = Boolean(
+    onAssignSessionProject ||
+      onMarkSessionRead ||
+      onArchiveSession ||
+      onRequestDeleteSession ||
+      onReorderAction,
+  );
+
+  const dragMeta: DragItemMeta = {
+    targetType: 'session',
+    id: session.cascadeId,
+    label: displayTitle,
+    zone,
+    containerId,
+  };
 
   const handleCopySessionId = async () => {
     try {
@@ -307,16 +414,49 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
     }
   };
 
+  const isFirstInZone = zoneIndex <= 0;
+  const isLastInZone = zoneTotal <= 1 || zoneIndex >= zoneTotal - 1;
+
   return (
     <div
       role="listitem"
-      className={`${styles.item} ${isActive ? styles.itemActive : ''} ${isMenuOpen ? styles.itemMenuOpen : ''}`}
+      className={`${styles.item} ${isActive ? styles.itemActive : ''} ${isMenuOpen ? styles.itemMenuOpen : ''} ${isDragSource ? styles.dragSourcePlaceholder : ''} ${isKeyboardReordering ? styles.keyboardReordering : ''}`}
       onClick={() => onSelectSession(session.cascadeId)}
+      onContextMenu={(e) => {
+        if (!hasMoreMenu) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onToggleMenu(session.cascadeId);
+      }}
+      onPointerDown={(e) => {
+        if (canDragReorder) onPointerDragStart?.(e, dragMeta, false);
+      }}
       data-active={isActive ? 'true' : 'false'}
       data-session-id={session.cascadeId}
       data-pinned={isPinned ? 'true' : 'false'}
+      data-dnd-item="1"
+      data-dnd-type="session"
+      data-dnd-id={session.cascadeId}
+      data-dnd-container={containerId}
+      data-dnd-zone={zone}
     >
       <div className={styles.itemLine1}>
+        {canDragReorder && (
+          <button
+            type="button"
+            className={styles.dragHandleBtn}
+            data-drag-handle="1"
+            data-testid={`drag-handle-session-${session.cascadeId}`}
+            aria-label={t('sidebarOrg.dragHandleAria')}
+            title={t('sidebarOrg.dragHandleAria')}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => onPointerDragStart?.(e, dragMeta, true)}
+            onKeyDown={(e) => onHandleKeyDown?.(e, dragMeta)}
+          >
+            <DragDotsGlyph />
+          </button>
+        )}
+
         <button
           type="button"
           className={styles.itemTitleBtn}
@@ -332,6 +472,15 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
 
         <div className={styles.itemRight}>
           <div className={styles.itemStatusMeta}>
+            {isPinned && (
+              <span
+                className={styles.pinnedBadgeIcon}
+                data-testid={`session-pinned-badge-${session.cascadeId}`}
+                aria-hidden="true"
+              >
+                <PinGlyph />
+              </span>
+            )}
             {running ? (
               <RunningFourDot cascadeId={session.cascadeId} label={t('sidebar.runningAria')} />
             ) : (
@@ -353,6 +502,7 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
             <div
               className={`${styles.rowActions} ${isMenuOpen ? styles.rowActionsVisible : ''}`}
               onClick={(e) => e.stopPropagation()}
+              data-no-drag="1"
             >
               {onPinSession && (
                 <button
@@ -360,17 +510,25 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
                   className={`${styles.rowActionBtn} ${isPinned ? styles.pinBtnActive : ''}`}
                   data-testid={`pin-session-${session.cascadeId}`}
                   aria-pressed={isPinned}
-                  title={isPinned ? t('sidebar.unpinSession') : t('sidebar.pinSession')}
+                  disabled={!canMutateOrg}
+                  title={
+                    isL0
+                      ? t('sidebarOrg.l0ReadOnlyHint')
+                      : isPinned
+                        ? t('sidebar.unpinSession')
+                        : t('sidebar.pinSession')
+                  }
                   aria-label={isPinned ? t('sidebar.unpinSession') : t('sidebar.pinSession')}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!canMutateOrg) return;
                     void onPinSession(session.cascadeId, !isPinned);
                   }}
                 >
                   <PinGlyph />
                 </button>
               )}
-              {onAssignSessionProject && (
+              {hasMoreMenu && (
                 <button
                   type="button"
                   className={`${styles.rowActionBtn} ${isMenuOpen ? styles.rowActionBtnActive : ''}`}
@@ -401,7 +559,11 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
       )}
 
       {isMenuOpen && (
-        <div className={styles.rowActionsPopover} onClick={(e) => e.stopPropagation()}>
+        <div
+          className={styles.rowActionsPopover}
+          onClick={(e) => e.stopPropagation()}
+          data-no-drag="1"
+        >
           {onAssignSessionProject && (
             <label className={styles.assignField}>
               <span className={styles.assignFieldLabel}>{t('sidebar.assignProject')}</span>
@@ -410,10 +572,12 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
                 data-testid={`assign-project-${session.cascadeId}`}
                 aria-label={t('sidebar.assignProject')}
                 title={t('sidebar.assignProject')}
+                disabled={!canMutateOrg}
                 value={session.projectId ?? ''}
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => {
                   e.stopPropagation();
+                  if (!canMutateOrg) return;
                   const nextVal = e.target.value;
                   void onAssignSessionProject(session.cascadeId, nextVal ? nextVal : null);
                   onToggleMenu(session.cascadeId);
@@ -433,6 +597,63 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
               </select>
             </label>
           )}
+
+          {onReorderAction && canDragReorder && zoneTotal > 1 && (
+            <>
+              <div className={styles.popoverDivider} />
+              <div className={styles.popoverReorderRow}>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isFirstInZone}
+                  data-testid={`reorder-session-first-${session.cascadeId}`}
+                  onClick={() => {
+                    onReorderAction('session', containerId, zone, session.cascadeId, 'first');
+                    onToggleMenu(session.cascadeId);
+                  }}
+                >
+                  {t('sidebarOrg.moveFirst')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isFirstInZone}
+                  data-testid={`reorder-session-up-${session.cascadeId}`}
+                  onClick={() => {
+                    onReorderAction('session', containerId, zone, session.cascadeId, 'up');
+                    onToggleMenu(session.cascadeId);
+                  }}
+                >
+                  {t('sidebarOrg.moveUp')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isLastInZone}
+                  data-testid={`reorder-session-down-${session.cascadeId}`}
+                  onClick={() => {
+                    onReorderAction('session', containerId, zone, session.cascadeId, 'down');
+                    onToggleMenu(session.cascadeId);
+                  }}
+                >
+                  {t('sidebarOrg.moveDown')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isLastInZone}
+                  data-testid={`reorder-session-last-${session.cascadeId}`}
+                  onClick={() => {
+                    onReorderAction('session', containerId, zone, session.cascadeId, 'last');
+                    onToggleMenu(session.cascadeId);
+                  }}
+                >
+                  {t('sidebarOrg.moveLast')}
+                </button>
+              </div>
+            </>
+          )}
+
           <div className={styles.popoverActionRow}>
             {unread && onMarkSessionRead && (
               <button
@@ -457,6 +678,46 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
             >
               {copiedId ? t('sidebar.copiedId') : t('sidebar.copySessionId')}
             </button>
+            {onArchiveSession && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                data-testid={`archive-session-${session.cascadeId}`}
+                disabled={!canMutateOrg}
+                title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : undefined}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!canMutateOrg) return;
+                  onToggleMenu(session.cascadeId);
+                  void onArchiveSession(session, true);
+                }}
+              >
+                {t('sidebarOrg.archiveSession')}
+              </button>
+            )}
+            {onRequestDeleteSession && (
+              <button
+                type="button"
+                className={`${styles.popoverMiniBtn} ${styles.popoverDangerBtn}`}
+                data-testid={`delete-session-${session.cascadeId}`}
+                disabled={!canAdminWorkspace}
+                title={
+                  isL0
+                    ? t('sidebarOrg.l0ReadOnlyHint')
+                    : isL1
+                      ? t('sidebarOrg.l1DeleteDisabledHint')
+                      : undefined
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!canAdminWorkspace) return;
+                  onToggleMenu(session.cascadeId);
+                  onRequestDeleteSession(session);
+                }}
+              >
+                {t('sidebarOrg.deleteSession')}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -475,18 +736,50 @@ interface ProjectTreeItemProps {
   creating: boolean;
   groups: ProjectGroup[];
   t: TranslateFn;
+  canMutateOrg: boolean;
+  canAdminWorkspace: boolean;
+  isL0: boolean;
+  canDragReorder: boolean;
+  containerId: string;
+  zone: DndZone;
+  zoneIndex: number;
+  zoneTotal: number;
+  isMenuOpen: boolean;
+  isDragSource: boolean;
+  isKeyboardReordering: boolean;
+  onToggleMenu: (projectId: string) => void;
   onHeaderClick: (projectId: string) => void;
   onCreateSession: (opts?: {
     projectId?: string | null;
     workspaceUri?: string;
     standalone?: boolean;
   }) => void;
+  onPinProject?: (project: ProjectItem, pinned: boolean) => Promise<void> | void;
   onUpdateProject?: (
     id: string,
     patch: { name?: string; groupId?: string | null },
   ) => Promise<void> | void;
   onDeleteProject?: (id: string) => Promise<void> | void;
-  renderSessionRow: (session: SessionSummary) => React.ReactNode;
+  onReorderAction?: (
+    targetType: DndTargetType,
+    containerId: string,
+    zone: DndZone,
+    id: string,
+    action: ReorderMenuAction,
+  ) => void;
+  onPointerDragStart?: (
+    ev: React.PointerEvent,
+    item: DragItemMeta,
+    isHandle: boolean,
+  ) => void;
+  onHandleKeyDown?: (ev: React.KeyboardEvent, item: DragItemMeta) => void;
+  renderSessionRow: (
+    session: SessionSummary,
+    containerId: string,
+    zone: DndZone,
+    idx: number,
+    total: number,
+  ) => React.ReactNode;
 }
 
 const ProjectTreeItem = React.memo(function ProjectTreeItem({
@@ -500,18 +793,49 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
   creating,
   groups,
   t,
+  canMutateOrg,
+  canAdminWorkspace,
+  isL0,
+  canDragReorder,
+  containerId,
+  zone,
+  zoneIndex,
+  zoneTotal,
+  isMenuOpen,
+  isDragSource,
+  isKeyboardReordering,
+  onToggleMenu,
   onHeaderClick,
   onCreateSession,
+  onPinProject,
   onUpdateProject,
   onDeleteProject,
+  onReorderAction,
+  onPointerDragStart,
+  onHandleKeyDown,
   renderSessionRow,
 }: ProjectTreeItemProps) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(project.name);
   const syncedFromApp = isSyncedAppProject(project);
-  const canMoveToGroup = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject) && groups.length > 0;
+  const isPinned = project.pinned === true;
+  const canMoveToGroup =
+    (!project.implicit || syncedFromApp) && Boolean(onUpdateProject) && groups.length > 0;
   const canRename = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject);
   const workspaceUri = toWorkspaceUri(project.rootPath);
+
+  const dragMeta: DragItemMeta = {
+    targetType: 'project',
+    id: project.id,
+    label: project.name,
+    zone,
+    containerId,
+    fromGroupId: project.groupId ?? null,
+    workspaceUri,
+  };
+
+  const isFirstInZone = zoneIndex <= 0;
+  const isLastInZone = zoneTotal <= 1 || zoneIndex >= zoneTotal - 1;
 
   const handleRenameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -562,13 +886,42 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
         </form>
       ) : (
         <div
-          className={`${styles.projectItem} ${isFilterSelected ? styles.projectItemActive : ''}`}
+          className={`${styles.projectItem} ${isFilterSelected ? styles.projectItemActive : ''} ${isDragSource ? styles.dragSourcePlaceholder : ''} ${isKeyboardReordering ? styles.keyboardReordering : ''}`}
           data-testid={`project-item-${project.id}`}
           data-active={isFilterSelected ? 'true' : 'false'}
           data-expanded={isExpanded ? 'true' : 'false'}
+          data-pinned={isPinned ? 'true' : 'false'}
           data-source={syncedFromApp ? 'app' : project.implicit ? 'implicit' : 'custom'}
+          data-dnd-item="1"
+          data-dnd-type="project"
+          data-dnd-id={project.id}
+          data-dnd-container={containerId}
+          data-dnd-zone={zone}
           onClick={() => onHeaderClick(project.id)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleMenu(project.id);
+          }}
+          onPointerDown={(e) => {
+            if (canDragReorder) onPointerDragStart?.(e, dragMeta, false);
+          }}
         >
+          {canDragReorder && (
+            <button
+              type="button"
+              className={styles.dragHandleBtn}
+              data-drag-handle="1"
+              data-testid={`drag-handle-project-${project.id}`}
+              aria-label={t('sidebarOrg.dragHandleAria')}
+              title={t('sidebarOrg.dragHandleAria')}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => onPointerDragStart?.(e, dragMeta, true)}
+              onKeyDown={(e) => onHandleKeyDown?.(e, dragMeta)}
+            >
+              <DragDotsGlyph />
+            </button>
+          )}
           <button
             type="button"
             className={styles.projectMainBtn}
@@ -584,6 +937,15 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
             </span>
             <span className={styles.projectName}>{project.name}</span>
             <span className={styles.projectMeta}>
+              {isPinned && (
+                <span
+                  className={styles.pinnedBadgeIcon}
+                  data-testid={`project-pinned-badge-${project.id}`}
+                  aria-hidden="true"
+                >
+                  <PinGlyph />
+                </span>
+              )}
               {runningCount > 0 && (
                 <span
                   className={styles.projectRunningDot}
@@ -616,7 +978,37 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
               </span>
             </span>
           </button>
-          <div className={styles.projectActions} onClick={(e) => e.stopPropagation()}>
+          <div
+            className={styles.projectActions}
+            onClick={(e) => e.stopPropagation()}
+            data-no-drag="1"
+          >
+            {onPinProject && (
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${isPinned ? styles.pinBtnActive : ''}`}
+                data-testid={`pin-project-${project.id}`}
+                aria-pressed={isPinned}
+                disabled={!canMutateOrg}
+                title={
+                  isL0
+                    ? t('sidebarOrg.l0ReadOnlyHint')
+                    : isPinned
+                      ? t('sidebarOrg.unpinProject')
+                      : t('sidebarOrg.pinProject')
+                }
+                aria-label={
+                  isPinned ? t('sidebarOrg.unpinProject') : t('sidebarOrg.pinProject')
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!canMutateOrg) return;
+                  void onPinProject(project, !isPinned);
+                }}
+              >
+                <PinGlyph />
+              </button>
+            )}
             <button
               type="button"
               className={styles.iconBtn}
@@ -639,10 +1031,12 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                 type="button"
                 className={styles.iconBtn}
                 data-testid={`rename-project-${project.id}`}
-                title={t('sidebar.renameProject')}
+                disabled={!canMutateOrg}
+                title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : t('sidebar.renameProject')}
                 aria-label={`${t('sidebar.renameProject')} ${project.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (!canMutateOrg) return;
                   setNameDraft(project.name);
                   setEditingName(true);
                 }}
@@ -655,11 +1049,13 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                 className={styles.projectMoveSelect}
                 data-testid={`move-project-group-${project.id}`}
                 aria-label={t('sidebar.moveToGroup')}
-                title={t('sidebar.moveToGroup')}
+                title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : t('sidebar.moveToGroup')}
+                disabled={!canMutateOrg}
                 value={project.groupId ?? ''}
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => {
                   e.stopPropagation();
+                  if (!canMutateOrg) return;
                   const nextGroupId = e.target.value || null;
                   void onUpdateProject(project.id, { groupId: nextGroupId });
                 }}
@@ -672,19 +1068,170 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                 ))}
               </select>
             )}
+            <button
+              type="button"
+              className={styles.iconBtn}
+              data-testid={`project-actions-${project.id}`}
+              aria-expanded={isMenuOpen}
+              title={t('sidebar.moreActions')}
+              aria-label={t('sidebar.moreActions')}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleMenu(project.id);
+              }}
+            >
+              <MoreDotsGlyph />
+            </button>
             {!project.implicit && onDeleteProject && (
               <button
                 type="button"
                 className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                 data-testid={`delete-project-${project.id}`}
-                title={t('sidebar.deleteProject')}
+                disabled={!canAdminWorkspace}
+                title={
+                  isL0
+                    ? t('sidebarOrg.l0ReadOnlyHint')
+                    : !canAdminWorkspace
+                      ? t('sidebarOrg.l1NewProjectDisabledHint')
+                      : t('sidebar.deleteProject')
+                }
                 aria-label={t('sidebar.deleteProject')}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (!canAdminWorkspace) return;
                   void onDeleteProject(project.id);
                 }}
               >
                 ×
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isMenuOpen && !editingName && (
+        <div
+          className={styles.projectMenuPopover}
+          onClick={(e) => e.stopPropagation()}
+          data-no-drag="1"
+        >
+          {onUpdateProject && groups.length > 0 && (
+            <label className={styles.assignField}>
+              <span className={styles.assignFieldLabel}>{t('sidebar.moveToGroup')}</span>
+              <select
+                className={styles.assignSelect}
+                disabled={!canMutateOrg}
+                value={project.groupId ?? ''}
+                onChange={(e) => {
+                  if (!canMutateOrg) return;
+                  const nextGroupId = e.target.value || null;
+                  void onUpdateProject(project.id, { groupId: nextGroupId });
+                  onToggleMenu(project.id);
+                }}
+              >
+                <option value="">{t('sidebar.ungroupedProjects')}</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {onReorderAction && canDragReorder && zoneTotal > 1 && (
+            <div className={styles.popoverReorderRow}>
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={isFirstInZone}
+                data-testid={`reorder-project-first-${project.id}`}
+                onClick={() => {
+                  onReorderAction('project', containerId, zone, project.id, 'first');
+                  onToggleMenu(project.id);
+                }}
+              >
+                {t('sidebarOrg.moveFirst')}
+              </button>
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={isFirstInZone}
+                data-testid={`reorder-project-up-${project.id}`}
+                onClick={() => {
+                  onReorderAction('project', containerId, zone, project.id, 'up');
+                  onToggleMenu(project.id);
+                }}
+              >
+                {t('sidebarOrg.moveUp')}
+              </button>
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={isLastInZone}
+                data-testid={`reorder-project-down-${project.id}`}
+                onClick={() => {
+                  onReorderAction('project', containerId, zone, project.id, 'down');
+                  onToggleMenu(project.id);
+                }}
+              >
+                {t('sidebarOrg.moveDown')}
+              </button>
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={isLastInZone}
+                data-testid={`reorder-project-last-${project.id}`}
+                onClick={() => {
+                  onReorderAction('project', containerId, zone, project.id, 'last');
+                  onToggleMenu(project.id);
+                }}
+              >
+                {t('sidebarOrg.moveLast')}
+              </button>
+            </div>
+          )}
+          <div className={styles.popoverActionRow}>
+            {onPinProject && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={!canMutateOrg}
+                onClick={() => {
+                  if (!canMutateOrg) return;
+                  void onPinProject(project, !isPinned);
+                  onToggleMenu(project.id);
+                }}
+              >
+                {isPinned ? t('sidebarOrg.unpinProject') : t('sidebarOrg.pinProject')}
+              </button>
+            )}
+            {canRename && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                disabled={!canMutateOrg}
+                onClick={() => {
+                  if (!canMutateOrg) return;
+                  setNameDraft(project.name);
+                  setEditingName(true);
+                  onToggleMenu(project.id);
+                }}
+              >
+                {t('sidebar.renameProject')}
+              </button>
+            )}
+            {!project.implicit && onDeleteProject && (
+              <button
+                type="button"
+                className={`${styles.popoverMiniBtn} ${styles.popoverDangerBtn}`}
+                disabled={!canAdminWorkspace}
+                onClick={() => {
+                  if (!canAdminWorkspace) return;
+                  onToggleMenu(project.id);
+                  void onDeleteProject(project.id);
+                }}
+              >
+                {t('sidebar.deleteProject')}
               </button>
             )}
           </div>
@@ -697,7 +1244,7 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
           data-testid={`project-sessions-${project.id}`}
         >
           {sessions.length > 0 ? (
-            sessions.map(renderSessionRow)
+            sessions.map((s, idx) => renderSessionRow(s, project.id, 'normal', idx, sessions.length))
           ) : (
             <div className={styles.emptyProjectRow}>
               <span className={styles.emptyProjectHint}>{t('sidebar.noSessionsInProject')}</span>
@@ -739,8 +1286,25 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   hiddenInternalCount = 0,
   includeInternal = false,
   onToggleIncludeInternal,
+  permissionLevel = 'L2',
+  channel = 'loopback',
+  groupOrder,
+  projectOrder,
+  sessionOrder,
+  archivedCount = 0,
+  archivedSessions = [],
+  loadingArchived = false,
+  viewMode: controlledViewMode,
+  onViewModeChange,
   onPinSession,
+  onPinProject,
+  onPinGroup,
   onAssignSessionProject,
+  onArchiveSession,
+  onRequestDeleteSession,
+  onReorderOrg,
+  onOpenNewProjectModal,
+  onDraggingChange,
   onCreateProject,
   onUpdateProject,
   onDeleteProject,
@@ -754,12 +1318,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const [internalQuery, setInternalQuery] = useState('');
   const [internalFilter, setInternalFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'unread'>('all');
+  const [internalViewMode, setInternalViewMode] = useState<'active' | 'archived'>('active');
   const [localGroupCollapsed, setLocalGroupCollapsed] = useState<Record<string, boolean>>({});
+  const [tempExpandedGroups, setTempExpandedGroups] = useState<Record<string, boolean>>({});
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [quietProjectsExpanded, setQuietProjectsExpanded] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [openActionSessionId, setOpenActionSessionId] = useState<string | null>(null);
+  const [openActionProjectId, setOpenActionProjectId] = useState<string | null>(null);
+  const [openActionGroupId, setOpenActionGroupId] = useState<string | null>(null);
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
@@ -773,11 +1341,32 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const [groupName, setGroupName] = useState('');
   const [submittingGroup, setSubmittingGroup] = useState(false);
 
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const isLoopback = !channel || channel === 'loopback';
+  const isL0 = !isLoopback && permissionLevel === 'L0';
+  const isL1 = !isLoopback && permissionLevel === 'L1';
+  const canMutateOrg = !isL0;
+  const canAdminWorkspace = isLoopback || (!isL0 && !isL1);
+
+  const viewMode = controlledViewMode ?? internalViewMode;
+  const setViewMode = useCallback(
+    (next: 'active' | 'archived') => {
+      if (controlledViewMode === undefined) setInternalViewMode(next);
+      onViewModeChange?.(next);
+    },
+    [controlledViewMode, onViewModeChange],
+  );
+
   const effectiveQuery = searchQuery !== undefined ? searchQuery : internalQuery;
   const deferredQuery = useDeferredValue(effectiveQuery);
   const effectiveFilter = selectedProjectFilter !== undefined ? selectedProjectFilter : internalFilter;
   const hasActiveFilterState = Boolean(
-    effectiveQuery.trim() || effectiveFilter !== 'all' || includeInternal || statusFilter !== 'all',
+    effectiveQuery.trim() ||
+      effectiveFilter !== 'all' ||
+      includeInternal ||
+      statusFilter !== 'all' ||
+      viewMode === 'archived',
   );
 
   const handleSearchChange = (ev: React.ChangeEvent<HTMLInputElement>) => {
@@ -796,6 +1385,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   };
 
   const handleToggleProjectForm = () => {
+    if (!canAdminWorkspace) return;
+    if (onOpenNewProjectModal) {
+      setShowNewGroupForm(false);
+      onOpenNewProjectModal();
+      return;
+    }
     setShowNewProjectForm((prev) => {
       const next = !prev;
       if (next) {
@@ -809,6 +1404,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   };
 
   const handleToggleGroupForm = () => {
+    if (!canMutateOrg) return;
     setShowNewGroupForm((prev) => {
       const next = !prev;
       if (next) {
@@ -820,7 +1416,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
   const handleCreateProjectSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault();
-    if (!onCreateProject || submittingProject) return;
+    if (!onCreateProject || submittingProject || !canAdminWorkspace) return;
     const trimmedName = projectName.trim();
     const trimmedPath = (projectPath || defaultSessionPath || '').trim();
     if (!trimmedName || !trimmedPath) return;
@@ -845,7 +1441,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
   const handleCreateGroupSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault();
-    if (!onCreateGroup || submittingGroup) return;
+    if (!onCreateGroup || submittingGroup || !canMutateOrg) return;
     const trimmedName = groupName.trim();
     if (!trimmedName) return;
 
@@ -867,13 +1463,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     return map;
   }, [projects]);
 
-  const sortedGroups = useMemo(
-    () =>
-      [...projectGroups].sort(
-        (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
-      ),
-    [projectGroups],
+  const { pinnedGroups, normalGroups, sortedGroups } = useMemo(() => {
+    const { pinned, normal } = partitionAndOrderItems({
+      items: projectGroups,
+      isPinned: (g) => g.pinned === true,
+      getId: (g) => g.id,
+      order: groupOrder,
+      defaultPinnedCompare: (a, b) =>
+        parseTimestamp(b.pinnedAt) - parseTimestamp(a.pinnedAt) ||
+        a.sortOrder - b.sortOrder ||
+        a.name.localeCompare(b.name),
+      defaultNormalCompare: (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+    });
+    return {
+      pinnedGroups: pinned,
+      normalGroups: normal,
+      sortedGroups: [...pinned, ...normal],
+    };
+  }, [projectGroups, groupOrder]);
+
+  const activeSessions = useMemo(
+    () => sessions.filter((s) => s.archived !== true),
+    [sessions],
   );
+
+  const effectiveArchivedList = useMemo(() => {
+    if (archivedSessions.length > 0) return archivedSessions;
+    return sessions.filter((s) => s.archived === true);
+  }, [archivedSessions, sessions]);
+
+  const effectiveArchivedCount = Math.max(archivedCount, effectiveArchivedList.length);
 
   const projectActivityById = useMemo(() => {
     const map = new Map<
@@ -886,7 +1505,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         latestActivityMs: number;
       }
     >();
-    for (const s of sessions) {
+    for (const s of activeSessions) {
       if (!s.projectId) continue;
       const cur = map.get(s.projectId) ?? {
         hasActive: false,
@@ -909,119 +1528,127 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       map.set(s.projectId, cur);
     }
     return map;
-  }, [sessions, activeSessionId]);
+  }, [activeSessions, activeSessionId]);
 
-  const sortProjectsSmart = useMemo(() => {
-    return (list: ProjectItem[]): ProjectItem[] => {
-      return [...list].sort((a, b) => {
-        const ma = projectActivityById.get(a.id);
-        const mb = projectActivityById.get(b.id);
-        const aHasActive = ma?.hasActive ? 1 : 0;
-        const bHasActive = mb?.hasActive ? 1 : 0;
-        if (bHasActive !== aHasActive) return bHasActive - aHasActive;
+  const compareProjectsSmart = useMemo(() => {
+    return (a: ProjectItem, b: ProjectItem): number => {
+      const ma = projectActivityById.get(a.id);
+      const mb = projectActivityById.get(b.id);
+      const aHasActive = ma?.hasActive ? 1 : 0;
+      const bHasActive = mb?.hasActive ? 1 : 0;
+      if (bHasActive !== aHasActive) return bHasActive - aHasActive;
 
-        const aRunning = (ma?.runningCount ?? 0) > 0 ? 1 : 0;
-        const bRunning = (mb?.runningCount ?? 0) > 0 ? 1 : 0;
-        if (bRunning !== aRunning) return bRunning - aRunning;
+      const aRunning = (ma?.runningCount ?? 0) > 0 ? 1 : 0;
+      const bRunning = (mb?.runningCount ?? 0) > 0 ? 1 : 0;
+      if (bRunning !== aRunning) return bRunning - aRunning;
 
-        const aUnread = (ma?.unreadCount ?? 0) > 0 ? 1 : 0;
-        const bUnread = (mb?.unreadCount ?? 0) > 0 ? 1 : 0;
-        if (bUnread !== aUnread) return bUnread - aUnread;
+      const aUnread = (ma?.unreadCount ?? 0) > 0 ? 1 : 0;
+      const bUnread = (mb?.unreadCount ?? 0) > 0 ? 1 : 0;
+      if (bUnread !== aUnread) return bUnread - aUnread;
 
-        const aLoaded = (ma?.loadedCount ?? 0) > 0 ? 1 : 0;
-        const bLoaded = (mb?.loadedCount ?? 0) > 0 ? 1 : 0;
-        if (bLoaded !== aLoaded) return bLoaded - aLoaded;
+      const aLoaded = (ma?.loadedCount ?? 0) > 0 ? 1 : 0;
+      const bLoaded = (mb?.loadedCount ?? 0) > 0 ? 1 : 0;
+      if (bLoaded !== aLoaded) return bLoaded - aLoaded;
 
-        const aLatest = Math.max(
-          ma?.latestActivityMs ?? 0,
-          parseTimestamp(a.lastModifiedTime),
-          parseTimestamp(a.updatedAt),
-        );
-        const bLatest = Math.max(
-          mb?.latestActivityMs ?? 0,
-          parseTimestamp(b.lastModifiedTime),
-          parseTimestamp(b.updatedAt),
-        );
-        if (bLatest !== aLatest) return bLatest - aLatest;
+      const aLatest = Math.max(
+        ma?.latestActivityMs ?? 0,
+        parseTimestamp(a.lastModifiedTime),
+        parseTimestamp(a.updatedAt),
+      );
+      const bLatest = Math.max(
+        mb?.latestActivityMs ?? 0,
+        parseTimestamp(b.lastModifiedTime),
+        parseTimestamp(b.updatedAt),
+      );
+      if (bLatest !== aLatest) return bLatest - aLatest;
 
-        const aCount = Math.max(ma?.loadedCount ?? 0, a.sessionCount ?? 0);
-        const bCount = Math.max(mb?.loadedCount ?? 0, b.sessionCount ?? 0);
-        if ((bCount > 0 ? 1 : 0) !== (aCount > 0 ? 1 : 0)) {
-          return bCount > 0 ? 1 : -1;
-        }
-        return 0;
-      });
+      const aCount = Math.max(ma?.loadedCount ?? 0, a.sessionCount ?? 0);
+      const bCount = Math.max(mb?.loadedCount ?? 0, b.sessionCount ?? 0);
+      if ((bCount > 0 ? 1 : 0) !== (aCount > 0 ? 1 : 0)) {
+        return bCount > 0 ? 1 : -1;
+      }
+      return 0;
     };
   }, [projectActivityById]);
 
-  const { projectsByGroup, ungroupedProjects } = useMemo(() => {
+  const { projectsByGroup, ungroupedPartitioned } = useMemo(() => {
     const groupIds = new Set(sortedGroups.map((g) => g.id));
-    const grouped = new Map<string, ProjectItem[]>();
-    const ungrouped: ProjectItem[] = [];
+    const groupedRaw = new Map<string, ProjectItem[]>();
+    const ungroupedRaw: ProjectItem[] = [];
     for (const proj of projects) {
       if (proj.groupId && groupIds.has(proj.groupId)) {
-        const list = grouped.get(proj.groupId) ?? [];
+        const list = groupedRaw.get(proj.groupId) ?? [];
         list.push(proj);
-        grouped.set(proj.groupId, list);
+        groupedRaw.set(proj.groupId, list);
       } else {
-        ungrouped.push(proj);
+        ungroupedRaw.push(proj);
       }
     }
-    for (const [gid, list] of grouped.entries()) {
-      grouped.set(gid, sortProjectsSmart(list));
-    }
-    return { projectsByGroup: grouped, ungroupedProjects: sortProjectsSmart(ungrouped) };
-  }, [projects, sortedGroups, sortProjectsSmart]);
 
-  const sortedSessions = useMemo(
-    () =>
-      [...sessions].sort((a, b) => {
-        const aPinned = a.pinned === true;
-        const bPinned = b.pinned === true;
-        if (aPinned !== bPinned) {
-          return aPinned ? -1 : 1;
-        }
-        if (aPinned && bPinned) {
-          const pa =
-            parseTimestamp(a.pinnedAt) ||
-            parseTimestamp(a.lastModifiedTime) ||
-            parseTimestamp(a.createdTime);
-          const pb =
-            parseTimestamp(b.pinnedAt) ||
-            parseTimestamp(b.lastModifiedTime) ||
-            parseTimestamp(b.createdTime);
-          if (pb !== pa) return pb - pa;
-        }
-        const tb = parseTimestamp(b.lastModifiedTime) || parseTimestamp(b.createdTime);
-        const ta = parseTimestamp(a.lastModifiedTime) || parseTimestamp(a.createdTime);
-        return tb - ta;
-      }),
-    [sessions],
+    const grouped = new Map<string, { pinned: ProjectItem[]; normal: ProjectItem[] }>();
+    for (const gid of groupIds) {
+      const list = groupedRaw.get(gid) ?? [];
+      grouped.set(
+        gid,
+        partitionAndOrderItems({
+          items: list,
+          isPinned: (p) => p.pinned === true,
+          getId: (p) => p.id,
+          order: projectOrder?.[gid],
+          defaultPinnedCompare: (a, b) =>
+            parseTimestamp(b.pinnedAt) - parseTimestamp(a.pinnedAt) || compareProjectsSmart(a, b),
+          defaultNormalCompare: compareProjectsSmart,
+        }),
+      );
+    }
+
+    const ungrouped = partitionAndOrderItems({
+      items: ungroupedRaw,
+      isPinned: (p) => p.pinned === true,
+      getId: (p) => p.id,
+      order: projectOrder?.__ungrouped__,
+      defaultPinnedCompare: (a, b) =>
+        parseTimestamp(b.pinnedAt) - parseTimestamp(a.pinnedAt) || compareProjectsSmart(a, b),
+      defaultNormalCompare: compareProjectsSmart,
+    });
+
+    return { projectsByGroup: grouped, ungroupedPartitioned: ungrouped };
+  }, [projects, sortedGroups, projectOrder, compareProjectsSmart]);
+
+  const compareSessionsTimeDesc = useCallback((a: SessionSummary, b: SessionSummary) => {
+    const tb = parseTimestamp(b.lastModifiedTime) || parseTimestamp(b.createdTime);
+    const ta = parseTimestamp(a.lastModifiedTime) || parseTimestamp(a.createdTime);
+    return tb - ta;
+  }, []);
+
+  const compareSessionsPinnedDefault = useCallback(
+    (a: SessionSummary, b: SessionSummary) => {
+      const pa =
+        parseTimestamp(a.pinnedAt) ||
+        parseTimestamp(a.lastModifiedTime) ||
+        parseTimestamp(a.createdTime);
+      const pb =
+        parseTimestamp(b.pinnedAt) ||
+        parseTimestamp(b.lastModifiedTime) ||
+        parseTimestamp(b.createdTime);
+      if (pb !== pa) return pb - pa;
+      return compareSessionsTimeDesc(a, b);
+    },
+    [compareSessionsTimeDesc],
   );
 
   const totalRunningCount = useMemo(
-    () => sessions.filter((s) => isSessionRunning(s)).length,
-    [sessions],
+    () => activeSessions.filter((s) => isSessionRunning(s)).length,
+    [activeSessions],
   );
   const totalUnreadCount = useMemo(
-    () => sessions.filter((s) => !isSessionRunning(s) && s.unread === true).length,
-    [sessions],
+    () => activeSessions.filter((s) => !isSessionRunning(s) && s.unread === true).length,
+    [activeSessions],
   );
 
-  const sortedAndFiltered = useMemo(() => {
-    const q = deferredQuery.trim().toLowerCase();
-    return sortedSessions.filter((s) => {
-      if (statusFilter === 'running' && !isSessionRunning(s)) return false;
-      if (statusFilter === 'unread' && (isSessionRunning(s) || s.unread !== true)) return false;
-
-      if (effectiveFilter === '__none__') {
-        if (s.projectId) return false;
-      } else if (effectiveFilter && effectiveFilter !== 'all') {
-        if (s.projectId !== effectiveFilter) return false;
-      }
-
+  const matchesSessionSearch = useCallback(
+    (s: SessionSummary, q: string) => {
       if (!q) return true;
-
       const wsName = extractWorkspaceName(s.workspaceUri) || '';
       const displayTitle = formatSessionTitle(s, t);
       const projName = s.projectId ? projectById.get(s.projectId)?.name || s.projectName || '' : '';
@@ -1038,51 +1665,228 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         .join(' ')
         .toLowerCase();
       return haystack.includes(q);
+    },
+    [projectById, t],
+  );
+
+  const filteredActiveSessions = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    return activeSessions.filter((s) => {
+      if (statusFilter === 'running' && !isSessionRunning(s)) return false;
+      if (statusFilter === 'unread' && (isSessionRunning(s) || s.unread !== true)) return false;
+
+      if (effectiveFilter === '__none__') {
+        if (s.projectId) return false;
+      } else if (effectiveFilter && effectiveFilter !== 'all') {
+        if (s.projectId !== effectiveFilter) return false;
+      }
+
+      return matchesSessionSearch(s, q);
     });
-  }, [sortedSessions, statusFilter, effectiveFilter, deferredQuery, projectById, t]);
+  }, [activeSessions, statusFilter, effectiveFilter, deferredQuery, matchesSessionSearch]);
+
+  const filteredArchivedSessions = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    return [...effectiveArchivedList]
+      .filter((s) => matchesSessionSearch(s, q))
+      .sort(
+        (a, b) =>
+          parseTimestamp(b.archivedAt || b.lastModifiedTime) -
+          parseTimestamp(a.archivedAt || a.lastModifiedTime),
+      );
+  }, [effectiveArchivedList, deferredQuery, matchesSessionSearch]);
+
+  const archivedSearchMatchesCount = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    if (!q) return 0;
+    return effectiveArchivedList.filter((s) => matchesSessionSearch(s, q)).length;
+  }, [effectiveArchivedList, deferredQuery, matchesSessionSearch]);
 
   const allSessionCountByProject = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const s of sessions) {
+    for (const s of activeSessions) {
       if (s.projectId) {
         counts.set(s.projectId, (counts.get(s.projectId) ?? 0) + 1);
       }
     }
     return counts;
-  }, [sessions]);
+  }, [activeSessions]);
 
   const { pinnedSessions, regularByProject, standaloneRegularSessions } = useMemo(() => {
-    const pinned: SessionSummary[] = [];
-    const byProject = new Map<string, SessionSummary[]>();
-    const standalone: SessionSummary[] = [];
+    const rawPinned: SessionSummary[] = [];
+    const byProjectRaw = new Map<string, SessionSummary[]>();
+    const standaloneRaw: SessionSummary[] = [];
 
-    for (const s of sortedAndFiltered) {
+    for (const s of filteredActiveSessions) {
       if (s.pinned === true) {
-        pinned.push(s);
+        rawPinned.push(s);
         continue;
       }
       if (s.projectId && projectById.has(s.projectId)) {
-        const list = byProject.get(s.projectId) ?? [];
+        const list = byProjectRaw.get(s.projectId) ?? [];
         list.push(s);
-        byProject.set(s.projectId, list);
+        byProjectRaw.set(s.projectId, list);
       } else {
-        standalone.push(s);
+        standaloneRaw.push(s);
       }
     }
+
+    const pinned = sortPinnedQuickSessions(
+      rawPinned,
+      sessionOrder?.__pinned__,
+      compareSessionsPinnedDefault,
+    );
+
+    const byProject = new Map<string, SessionSummary[]>();
+    for (const [pid, list] of byProjectRaw.entries()) {
+      const containerOrder = sessionOrder?.[pid] as ZoneOrder | undefined;
+      byProject.set(
+        pid,
+        partitionAndOrderItems({
+          items: list,
+          isPinned: () => false,
+          getId: (s) => s.cascadeId,
+          order: containerOrder,
+          defaultPinnedCompare: compareSessionsPinnedDefault,
+          defaultNormalCompare: compareSessionsTimeDesc,
+        }).normal,
+      );
+    }
+
+    const standalone = partitionAndOrderItems({
+      items: standaloneRaw,
+      isPinned: () => false,
+      getId: (s) => s.cascadeId,
+      order: sessionOrder?.__standalone__,
+      defaultPinnedCompare: compareSessionsPinnedDefault,
+      defaultNormalCompare: compareSessionsTimeDesc,
+    }).normal;
 
     return {
       pinnedSessions: pinned,
       regularByProject: byProject,
       standaloneRegularSessions: standalone,
     };
-  }, [sortedAndFiltered, projectById]);
+  }, [
+    filteredActiveSessions,
+    projectById,
+    sessionOrder,
+    compareSessionsPinnedDefault,
+    compareSessionsTimeDesc,
+  ]);
 
   const hasProjectsOrGroups = projects.length > 0 || projectGroups.length > 0;
   const isSearching = deferredQuery.trim().length > 0;
-  const isSpecificProjectFilter =
-    effectiveFilter !== 'all' && effectiveFilter !== '__none__';
+  const isSpecificProjectFilter = effectiveFilter !== 'all' && effectiveFilter !== '__none__';
+  const canDragReorder =
+    canMutateOrg &&
+    Boolean(onReorderOrg) &&
+    viewMode === 'active' &&
+    !isSearching &&
+    statusFilter === 'all' &&
+    !isSpecificProjectFilter;
+
+  const getZoneIds = useCallback(
+    (targetType: DndTargetType, containerId: string, zone: DndZone): string[] => {
+      if (targetType === 'group') {
+        return (zone === 'pinned' ? pinnedGroups : normalGroups).map((g) => g.id);
+      }
+      if (targetType === 'project') {
+        const part =
+          containerId === '__ungrouped__'
+            ? ungroupedPartitioned
+            : projectsByGroup.get(containerId);
+        if (!part) return [];
+        return (zone === 'pinned' ? part.pinned : part.normal).map((p) => p.id);
+      }
+      if (containerId === '__pinned__') {
+        return pinnedSessions.map((s) => s.cascadeId);
+      }
+      if (containerId === '__standalone__') {
+        return standaloneRegularSessions.map((s) => s.cascadeId);
+      }
+      return (regularByProject.get(containerId) ?? []).map((s) => s.cascadeId);
+    },
+    [
+      normalGroups,
+      pinnedGroups,
+      pinnedSessions,
+      projectsByGroup,
+      regularByProject,
+      standaloneRegularSessions,
+      ungroupedPartitioned,
+    ],
+  );
+
+  const handleCommitReorder = useCallback(
+    async (req: OrgReorderRequest) => {
+      if (!onReorderOrg) return;
+      await onReorderOrg(req);
+    },
+    [onReorderOrg],
+  );
+
+  const handleReorderAction = useCallback(
+    (
+      targetType: DndTargetType,
+      containerId: string,
+      zone: DndZone,
+      id: string,
+      action: ReorderMenuAction,
+    ) => {
+      if (!onReorderOrg || !canMutateOrg) return;
+      const zoneIds = getZoneIds(targetType, containerId, zone);
+      const next = reorderWithinZone(zoneIds, id, action);
+      if (!next) return;
+      void onReorderOrg({
+        targetType,
+        containerId,
+        zone,
+        orderedIds: next,
+      });
+    },
+    [canMutateOrg, getZoneIds, onReorderOrg],
+  );
+
+  const drag = useSidebarDragSort({
+    disabled: !canDragReorder,
+    scrollContainerRef: listContainerRef,
+    getZoneIds,
+    onCommitReorder: handleCommitReorder,
+    onTempExpandGroup: (gid) => {
+      setTempExpandedGroups((prev) => ({ ...prev, [gid]: true }));
+    },
+    onDraggingChange: (dragging) => {
+      if (!dragging) {
+        setTempExpandedGroups({});
+      }
+      onDraggingChange?.(dragging);
+    },
+    formatAnnouncement: (kind, info) => {
+      if (kind === 'active') return t('sidebarOrg.keyboardReorderActive', info);
+      if (kind === 'moved') return t('sidebarOrg.keyboardReorderMoved', info);
+      if (kind === 'saved') return t('sidebarOrg.keyboardReorderSaved', info);
+      return t('sidebarOrg.keyboardReorderCancelled', info);
+    },
+  });
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const active = activeSessions.find((s) => s.cascadeId === activeSessionId);
+    if (active?.projectId) {
+      setCollapsedProjects((prev) =>
+        prev[active.projectId!] ? { ...prev, [active.projectId!]: false } : prev,
+      );
+    }
+  }, [activeSessionId, activeSessions]);
 
   const handleToggleGroup = (group: ProjectGroup) => {
+    setTempExpandedGroups((prev) => {
+      if (!prev[group.id]) return prev;
+      const copy = { ...prev };
+      delete copy[group.id];
+      return copy;
+    });
     if (onToggleGroupCollapsed) {
       void onToggleGroupCollapsed(group.id, !group.collapsed);
     } else {
@@ -1104,18 +1908,68 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     }));
   };
 
-  const handleToggleRowMenu = (cascadeId: string) => {
+  const handleToggleSessionMenu = useCallback((cascadeId: string) => {
+    setOpenActionProjectId(null);
+    setOpenActionGroupId(null);
     setOpenActionSessionId((prev) => (prev === cascadeId ? null : cascadeId));
-  };
+  }, []);
 
-  const renderSessionRow = (session: SessionSummary, isPinnedContext = false) => {
+  const handleToggleProjectMenu = useCallback((projectId: string) => {
+    setOpenActionSessionId(null);
+    setOpenActionGroupId(null);
+    setOpenActionProjectId((prev) => (prev === projectId ? null : projectId));
+  }, []);
+
+  const handleToggleGroupMenu = useCallback((groupId: string) => {
+    setOpenActionSessionId(null);
+    setOpenActionProjectId(null);
+    setOpenActionGroupId((prev) => (prev === groupId ? null : groupId));
+  }, []);
+
+  const handleSelectSessionWithExpand = useCallback(
+    (cascadeId: string) => {
+      const target = activeSessions.find((s) => s.cascadeId === cascadeId);
+      if (target?.projectId) {
+        setCollapsedProjects((prev) =>
+          prev[target.projectId!] ? { ...prev, [target.projectId!]: false } : prev,
+        );
+        const proj = projectById.get(target.projectId);
+        if (proj?.groupId) {
+          const grp = projectGroups.find((g) => g.id === proj.groupId);
+          if (grp?.collapsed) {
+            setTempExpandedGroups((prev) => ({ ...prev, [grp.id]: true }));
+          }
+        }
+      }
+      onSelectSession(cascadeId);
+    },
+    [activeSessions, onSelectSession, projectById, projectGroups],
+  );
+
+  const renderSessionRow = (
+    session: SessionSummary,
+    containerId: string,
+    zone: DndZone,
+    idx: number,
+    total: number,
+    isPinnedContext = false,
+  ) => {
     const resolvedProjectLabel = session.projectId
       ? projectById.get(session.projectId)?.name || session.projectName || t('sidebar.noProject')
       : t('sidebar.noProject');
 
+    const isDragSource =
+      drag.draggingItem?.targetType === 'session' &&
+      drag.draggingItem.id === session.cascadeId &&
+      drag.draggingItem.containerId === containerId;
+    const isKeyboardReordering =
+      drag.keyboardState?.targetType === 'session' &&
+      drag.keyboardState.id === session.cascadeId &&
+      drag.keyboardState.containerId === containerId;
+
     return (
       <SessionSidebarRow
-        key={session.cascadeId}
+        key={`${containerId}:${session.cascadeId}`}
         session={session}
         isActive={session.cascadeId === activeSessionId}
         showProjectSubtitle={isPinnedContext}
@@ -1124,32 +1978,57 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         t={t}
         projects={projects}
         isMenuOpen={openActionSessionId === session.cascadeId}
-        onToggleMenu={handleToggleRowMenu}
-        onSelectSession={onSelectSession}
+        canMutateOrg={canMutateOrg}
+        canAdminWorkspace={canAdminWorkspace}
+        isL0={isL0}
+        isL1={isL1}
+        canDragReorder={canDragReorder}
+        containerId={containerId}
+        zone={zone}
+        zoneIndex={idx}
+        zoneTotal={total}
+        isDragSource={isDragSource}
+        isKeyboardReordering={isKeyboardReordering}
+        onToggleMenu={handleToggleSessionMenu}
+        onSelectSession={handleSelectSessionWithExpand}
         onPinSession={onPinSession}
         onAssignSessionProject={onAssignSessionProject}
         onMarkSessionRead={onMarkSessionRead}
+        onArchiveSession={onArchiveSession}
+        onRequestDeleteSession={onRequestDeleteSession}
+        onReorderAction={onReorderOrg ? handleReorderAction : undefined}
+        onPointerDragStart={drag.startPointerCandidate}
+        onHandleKeyDown={drag.handleHandleKeyDown}
       />
     );
   };
 
-  const shouldRenderProject = (proj: ProjectItem): boolean => {
-    if (effectiveFilter === '__none__') return false;
-    if (isSpecificProjectFilter) return proj.id === effectiveFilter;
-    if (statusFilter !== 'all') {
-      return (regularByProject.get(proj.id)?.length ?? 0) > 0;
-    }
-    if (isSearching) {
-      const q = deferredQuery.trim().toLowerCase();
-      const matchesProjectMeta =
-        proj.name.toLowerCase().includes(q) ||
-        (proj.rootPath || '').toLowerCase().includes(q);
-      return matchesProjectMeta || (regularByProject.get(proj.id)?.length ?? 0) > 0;
-    }
-    return true;
-  };
+  const shouldRenderProject = useCallback(
+    (proj: ProjectItem): boolean => {
+      if (effectiveFilter === '__none__') return false;
+      if (isSpecificProjectFilter) return proj.id === effectiveFilter;
+      if (statusFilter !== 'all') {
+        return (regularByProject.get(proj.id)?.length ?? 0) > 0;
+      }
+      if (isSearching) {
+        const q = deferredQuery.trim().toLowerCase();
+        const matchesProjectMeta =
+          proj.name.toLowerCase().includes(q) ||
+          (proj.rootPath || '').toLowerCase().includes(q);
+        return matchesProjectMeta || (regularByProject.get(proj.id)?.length ?? 0) > 0;
+      }
+      return true;
+    },
+    [deferredQuery, effectiveFilter, isSearching, isSpecificProjectFilter, regularByProject, statusFilter],
+  );
 
-  const renderProjectNode = (proj: ProjectItem) => {
+  const renderProjectNode = (
+    proj: ProjectItem,
+    containerId: string,
+    zone: DndZone,
+    idx: number,
+    total: number,
+  ) => {
     if (!shouldRenderProject(proj)) return null;
     const projSessions = regularByProject.get(proj.id) ?? [];
     const activity = projectActivityById.get(proj.id);
@@ -1157,9 +2036,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       allSessionCountByProject.get(proj.id) ?? 0,
       typeof proj.sessionCount === 'number' ? proj.sessionCount : 0,
     );
-    const isExpanded = isSearching || isSpecificProjectFilter || statusFilter !== 'all'
-      ? true
-      : !collapsedProjects[proj.id];
+    const isExpanded =
+      isSearching || isSpecificProjectFilter || statusFilter !== 'all'
+        ? true
+        : !collapsedProjects[proj.id];
+
+    const isDragSource =
+      drag.draggingItem?.targetType === 'project' && drag.draggingItem.id === proj.id;
+    const isKeyboardReordering =
+      drag.keyboardState?.targetType === 'project' && drag.keyboardState.id === proj.id;
 
     return (
       <ProjectTreeItem
@@ -1174,23 +2059,41 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         creating={creating}
         groups={sortedGroups}
         t={t}
+        canMutateOrg={canMutateOrg}
+        canAdminWorkspace={canAdminWorkspace}
+        isL0={isL0}
+        canDragReorder={canDragReorder}
+        containerId={containerId}
+        zone={zone}
+        zoneIndex={idx}
+        zoneTotal={total}
+        isMenuOpen={openActionProjectId === proj.id}
+        isDragSource={isDragSource}
+        isKeyboardReordering={isKeyboardReordering}
+        onToggleMenu={handleToggleProjectMenu}
         onHeaderClick={handleProjectHeaderClick}
         onCreateSession={onCreateSession}
+        onPinProject={onPinProject}
         onUpdateProject={onUpdateProject}
         onDeleteProject={onDeleteProject}
-        renderSessionRow={(s) => renderSessionRow(s, false)}
+        onReorderAction={onReorderOrg ? handleReorderAction : undefined}
+        onPointerDragStart={drag.startPointerCandidate}
+        onHandleKeyDown={drag.handleHandleKeyDown}
+        renderSessionRow={(s, cid, z, sIdx, sTotal) =>
+          renderSessionRow(s, cid, z, sIdx, sTotal, false)
+        }
       />
     );
   };
 
-  const { activeUngroupedProjects, quietUngroupedProjects } = useMemo(() => {
-    const visible = ungroupedProjects.filter(shouldRenderProject);
+  const { activeUngroupedNormal, quietUngroupedNormal } = useMemo(() => {
+    const visibleNormal = ungroupedPartitioned.normal.filter(shouldRenderProject);
     if (isSearching || isSpecificProjectFilter || statusFilter !== 'all') {
-      return { activeUngroupedProjects: visible, quietUngroupedProjects: [] as ProjectItem[] };
+      return { activeUngroupedNormal: visibleNormal, quietUngroupedNormal: [] as ProjectItem[] };
     }
     const activeList: ProjectItem[] = [];
     const quietList: ProjectItem[] = [];
-    for (const p of visible) {
+    for (const p of visibleNormal) {
       const act = projectActivityById.get(p.id);
       const isActiveOrExplicit =
         Boolean(act?.hasActive) ||
@@ -1203,19 +2106,419 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       }
     }
     if (quietList.length < 4) {
-      return { activeUngroupedProjects: visible, quietUngroupedProjects: [] as ProjectItem[] };
+      return { activeUngroupedNormal: visibleNormal, quietUngroupedNormal: [] as ProjectItem[] };
     }
-    return { activeUngroupedProjects: activeList, quietUngroupedProjects: quietList };
-  }, [ungroupedProjects, projectActivityById, isSearching, isSpecificProjectFilter, statusFilter, regularByProject, deferredQuery, effectiveFilter]);
+    return { activeUngroupedNormal: activeList, quietUngroupedNormal: quietList };
+  }, [
+    ungroupedPartitioned.normal,
+    shouldRenderProject,
+    isSearching,
+    isSpecificProjectFilter,
+    statusFilter,
+    projectActivityById,
+  ]);
+
+  const visiblePinnedUngrouped = useMemo(
+    () => ungroupedPartitioned.pinned.filter(shouldRenderProject),
+    [ungroupedPartitioned.pinned, shouldRenderProject],
+  );
 
   const showInternalToggle = Boolean(onToggleIncludeInternal || hiddenInternalCount > 0);
   const hasVisibleProjects =
     effectiveFilter !== '__none__' && projects.some(shouldRenderProject);
   const showEmptyFilteredState =
-    sortedAndFiltered.length === 0 &&
+    filteredActiveSessions.length === 0 &&
     ((isSearching && !hasVisibleProjects) ||
       effectiveFilter === '__none__' ||
       !hasProjectsOrGroups);
+
+  const renderGroupNode = (
+    group: ProjectGroup,
+    zone: DndZone,
+    zoneIdx: number,
+    zoneTotal: number,
+  ) => {
+    const baseCollapsed = onToggleGroupCollapsed
+      ? group.collapsed
+      : (localGroupCollapsed[group.id] ?? group.collapsed);
+    const isTempExpanded = Boolean(tempExpandedGroups[group.id]);
+    const isCollapsed = isTempExpanded ? false : baseCollapsed;
+
+    const part = projectsByGroup.get(group.id) ?? { pinned: [], normal: [] };
+    const visiblePinned = part.pinned.filter(shouldRenderProject);
+    const visibleNormal = part.normal.filter(shouldRenderProject);
+    const allGroupProjects = [...part.pinned, ...part.normal];
+    const visibleCount = visiblePinned.length + visibleNormal.length;
+
+    if (isSpecificProjectFilter && visibleCount === 0) {
+      return null;
+    }
+    if (isSearching && visibleCount === 0) {
+      return null;
+    }
+
+    const effectiveCollapsed =
+      isSearching || isSpecificProjectFilter ? false : isCollapsed;
+
+    const isPinned = group.pinned === true;
+    const isGroupMenuOpen = openActionGroupId === group.id;
+    const isDragSource =
+      drag.draggingItem?.targetType === 'group' && drag.draggingItem.id === group.id;
+    const isKeyboardReordering =
+      drag.keyboardState?.targetType === 'group' && drag.keyboardState.id === group.id;
+    const isGroupDropHighlight =
+      drag.dropTarget?.kind === 'group-header' && drag.dropTarget.groupId === group.id;
+
+    let groupRunning = 0;
+    let groupUnread = 0;
+    for (const p of allGroupProjects) {
+      const act = projectActivityById.get(p.id);
+      if (act) {
+        groupRunning += act.runningCount;
+        groupUnread += act.unreadCount;
+      }
+    }
+
+    const dragMeta: DragItemMeta = {
+      targetType: 'group',
+      id: group.id,
+      label: group.name,
+      zone,
+      containerId: '__groups__',
+    };
+    const isFirstInZone = zoneIdx <= 0;
+    const isLastInZone = zoneTotal <= 1 || zoneIdx >= zoneTotal - 1;
+
+    return (
+      <div
+        key={group.id}
+        className={`${styles.projectGroup} ${isDragSource ? styles.dragSourcePlaceholder : ''} ${isKeyboardReordering ? styles.keyboardReordering : ''}`}
+        data-testid={`project-group-${group.id}`}
+        data-collapsed={effectiveCollapsed ? 'true' : 'false'}
+        data-pinned={isPinned ? 'true' : 'false'}
+        data-dnd-item="1"
+        data-dnd-type="group"
+        data-dnd-id={group.id}
+        data-dnd-container="__groups__"
+        data-dnd-zone={zone}
+      >
+        <div
+          className={`${styles.groupHeader} ${isGroupDropHighlight ? styles.groupHeaderDropTarget : ''}`}
+          data-dnd-collapsed-group={effectiveCollapsed ? group.id : undefined}
+          data-dnd-group-name={group.name}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleToggleGroupMenu(group.id);
+          }}
+          onPointerDown={(e) => {
+            if (canDragReorder && editingGroupId !== group.id) {
+              drag.startPointerCandidate(e, dragMeta, false);
+            }
+          }}
+        >
+          {editingGroupId === group.id ? (
+            <form
+              className={styles.inlineRenameRow}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = groupNameDraft.trim();
+                if (trimmed && trimmed !== group.name) {
+                  void onRenameGroup?.(group.id, trimmed);
+                }
+                setEditingGroupId(null);
+              }}
+            >
+              <input
+                type="text"
+                className={styles.inlineRenameInput}
+                value={groupNameDraft}
+                autoFocus
+                aria-label={t('sidebar.renameGroup')}
+                onChange={(e) => setGroupNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setEditingGroupId(null);
+                  }
+                }}
+              />
+              <button type="submit" className={styles.inlineRenameSaveBtn}>
+                {t('common.save')}
+              </button>
+              <button
+                type="button"
+                className={styles.inlineRenameCancelBtn}
+                onClick={() => setEditingGroupId(null)}
+              >
+                ×
+              </button>
+            </form>
+          ) : (
+            <>
+              {canDragReorder && (
+                <button
+                  type="button"
+                  className={styles.dragHandleBtn}
+                  data-drag-handle="1"
+                  data-testid={`drag-handle-group-${group.id}`}
+                  aria-label={t('sidebarOrg.dragHandleAria')}
+                  title={t('sidebarOrg.dragHandleAria')}
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => drag.startPointerCandidate(e, dragMeta, true)}
+                  onKeyDown={(e) => drag.handleHandleKeyDown(e, dragMeta)}
+                >
+                  <DragDotsGlyph />
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.groupToggleBtn}
+                data-testid={`toggle-group-${group.id}`}
+                aria-expanded={!effectiveCollapsed}
+                aria-label={
+                  effectiveCollapsed ? t('sidebar.expandGroup') : t('sidebar.collapseGroup')
+                }
+                onClick={() => handleToggleGroup(group)}
+              >
+                <ChevronGlyph expanded={!effectiveCollapsed} />
+                <span className={styles.groupName}>{group.name}</span>
+                {isPinned && (
+                  <span
+                    className={styles.pinnedBadgeIcon}
+                    data-testid={`group-pinned-badge-${group.id}`}
+                    aria-hidden="true"
+                  >
+                    <PinGlyph />
+                  </span>
+                )}
+                {effectiveCollapsed && groupRunning > 0 && (
+                  <span className={styles.projectRunningDot} aria-hidden="true" />
+                )}
+                {effectiveCollapsed && groupRunning === 0 && groupUnread > 0 && (
+                  <span className={styles.projectUnreadDot} aria-hidden="true" />
+                )}
+                <span className={styles.groupCount}>{allGroupProjects.length}</span>
+              </button>
+              {isGroupDropHighlight && (
+                <span className={styles.groupDropBadge}>
+                  {t('sidebarOrg.dropInGroupHint', { name: group.name })}
+                </span>
+              )}
+              <div className={styles.groupActions} data-no-drag="1">
+                {onPinGroup && (
+                  <button
+                    type="button"
+                    className={`${styles.iconBtn} ${styles.groupDeleteBtn} ${isPinned ? styles.pinBtnActive : ''}`}
+                    data-testid={`pin-group-${group.id}`}
+                    aria-pressed={isPinned}
+                    disabled={!canMutateOrg}
+                    title={
+                      isL0
+                        ? t('sidebarOrg.l0ReadOnlyHint')
+                        : isPinned
+                          ? t('sidebarOrg.unpinGroup')
+                          : t('sidebarOrg.pinGroup')
+                    }
+                    aria-label={
+                      isPinned ? t('sidebarOrg.unpinGroup') : t('sidebarOrg.pinGroup')
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!canMutateOrg) return;
+                      void onPinGroup(group, !isPinned);
+                    }}
+                  >
+                    <PinGlyph />
+                  </button>
+                )}
+                {onRenameGroup && (
+                  <button
+                    type="button"
+                    className={`${styles.iconBtn} ${styles.groupDeleteBtn}`}
+                    data-testid={`rename-group-${group.id}`}
+                    disabled={!canMutateOrg}
+                    title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : t('sidebar.renameGroup')}
+                    aria-label={`${t('sidebar.renameGroup')} ${group.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!canMutateOrg) return;
+                      setGroupNameDraft(group.name);
+                      setEditingGroupId(group.id);
+                    }}
+                  >
+                    <EditGlyph />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`${styles.iconBtn} ${styles.groupDeleteBtn}`}
+                  data-testid={`group-actions-${group.id}`}
+                  aria-expanded={isGroupMenuOpen}
+                  title={t('sidebar.moreActions')}
+                  aria-label={t('sidebar.moreActions')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  <MoreDotsGlyph />
+                </button>
+                {onDeleteGroup && (
+                  <button
+                    type="button"
+                    className={`${styles.iconBtn} ${styles.iconBtnDanger} ${styles.groupDeleteBtn}`}
+                    data-testid={`delete-group-${group.id}`}
+                    disabled={!canMutateOrg}
+                    title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : t('sidebar.deleteGroup')}
+                    aria-label={t('sidebar.deleteGroup')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!canMutateOrg) return;
+                      void onDeleteGroup(group.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {isGroupMenuOpen && editingGroupId !== group.id && (
+          <div
+            className={styles.groupMenuPopover}
+            onClick={(e) => e.stopPropagation()}
+            data-no-drag="1"
+          >
+            {onReorderOrg && canDragReorder && zoneTotal > 1 && (
+              <div className={styles.popoverReorderRow}>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isFirstInZone}
+                  data-testid={`reorder-group-first-${group.id}`}
+                  onClick={() => {
+                    handleReorderAction('group', '__groups__', zone, group.id, 'first');
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {t('sidebarOrg.moveFirst')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isFirstInZone}
+                  data-testid={`reorder-group-up-${group.id}`}
+                  onClick={() => {
+                    handleReorderAction('group', '__groups__', zone, group.id, 'up');
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {t('sidebarOrg.moveUp')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isLastInZone}
+                  data-testid={`reorder-group-down-${group.id}`}
+                  onClick={() => {
+                    handleReorderAction('group', '__groups__', zone, group.id, 'down');
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {t('sidebarOrg.moveDown')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={isLastInZone}
+                  data-testid={`reorder-group-last-${group.id}`}
+                  onClick={() => {
+                    handleReorderAction('group', '__groups__', zone, group.id, 'last');
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {t('sidebarOrg.moveLast')}
+                </button>
+              </div>
+            )}
+            <div className={styles.popoverActionRow}>
+              {onPinGroup && (
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={!canMutateOrg}
+                  onClick={() => {
+                    if (!canMutateOrg) return;
+                    void onPinGroup(group, !isPinned);
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {isPinned ? t('sidebarOrg.unpinGroup') : t('sidebarOrg.pinGroup')}
+                </button>
+              )}
+              {onRenameGroup && (
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  disabled={!canMutateOrg}
+                  onClick={() => {
+                    if (!canMutateOrg) return;
+                    setGroupNameDraft(group.name);
+                    setEditingGroupId(group.id);
+                    handleToggleGroupMenu(group.id);
+                  }}
+                >
+                  {t('sidebar.renameGroup')}
+                </button>
+              )}
+              {onDeleteGroup && (
+                <button
+                  type="button"
+                  className={`${styles.popoverMiniBtn} ${styles.popoverDangerBtn}`}
+                  disabled={!canMutateOrg}
+                  onClick={() => {
+                    if (!canMutateOrg) return;
+                    handleToggleGroupMenu(group.id);
+                    void onDeleteGroup(group.id);
+                  }}
+                >
+                  {t('sidebar.deleteGroup')}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!effectiveCollapsed && (
+          <div className={styles.groupItems} data-dnd-project-container={group.id}>
+            {visiblePinned.map((p, idx) =>
+              renderProjectNode(p, group.id, 'pinned', idx, visiblePinned.length),
+            )}
+            {visiblePinned.length > 0 && visibleNormal.length > 0 && (
+              <div
+                className={styles.zoneDivider}
+                data-testid={`project-zone-divider-${group.id}`}
+              />
+            )}
+            {visibleNormal.map((p, idx) =>
+              renderProjectNode(p, group.id, 'normal', idx, visibleNormal.length),
+            )}
+            {visibleCount === 0 && drag.draggingItem?.targetType === 'project' && (
+              <div
+                className={styles.emptyGroupDropSlot}
+                data-dnd-drop-container={group.id}
+                data-testid={`empty-group-drop-${group.id}`}
+              >
+                {t('sidebarOrg.emptyGroupDropHint')}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className={styles.sidebar} data-testid="session-sidebar">
@@ -1236,7 +2539,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             title={t('sidebar.sessionCount')}
             aria-label={t('sidebar.sessionCount')}
           >
-            {sessions.length}
+            {activeSessions.length}
           </span>
         </div>
         <div className={styles.headerActions} data-testid="sidebar-header-actions">
@@ -1257,21 +2560,29 @@ export const SessionSidebar = React.memo(function SessionSidebar({
               type="button"
               className={`${styles.toolbarIconBtn} ${showNewGroupForm ? styles.toolbarIconBtnActive : ''}`}
               onClick={handleToggleGroupForm}
+              disabled={!canMutateOrg}
               aria-expanded={showNewGroupForm}
-              title={t('sidebar.newGroupTooltip')}
+              title={isL0 ? t('sidebarOrg.l0ReadOnlyHint') : t('sidebar.newGroupTooltip')}
               aria-label={t('sidebar.newGroupTooltip')}
               data-testid="open-new-group-btn"
             >
               <GroupPlusGlyph />
             </button>
           )}
-          {onCreateProject && (
+          {(onCreateProject || onOpenNewProjectModal) && (
             <button
               type="button"
               className={`${styles.toolbarIconBtn} ${showNewProjectForm ? styles.toolbarIconBtnActive : ''}`}
               onClick={handleToggleProjectForm}
+              disabled={!canAdminWorkspace}
               aria-expanded={showNewProjectForm}
-              title={t('sidebar.newProject')}
+              title={
+                isL0
+                  ? t('sidebarOrg.l0ReadOnlyHint')
+                  : isL1
+                    ? t('sidebarOrg.l1NewProjectDisabledHint')
+                    : t('sidebar.newProject')
+              }
               aria-label={t('sidebar.newProject')}
               data-testid="open-new-project-btn"
             >
@@ -1282,8 +2593,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             type="button"
             className={`${styles.toolbarIconBtn} ${styles.toolbarIconBtnPrimary}`}
             onClick={() => onCreateSession({ standalone: true })}
-            disabled={creating}
-            title={creating ? t('sidebar.creating') : t('sidebar.newStandaloneSession')}
+            disabled={creating || isL0}
+            title={
+              isL0
+                ? t('sidebarOrg.l0ReadOnlyHint')
+                : creating
+                  ? t('sidebar.creating')
+                  : t('sidebar.newStandaloneSession')
+            }
             aria-label={creating ? t('sidebar.creating') : t('sidebar.newStandaloneSession')}
             data-testid="new-session-btn"
           >
@@ -1292,20 +2609,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         </div>
       </div>
 
-      {(totalRunningCount > 0 || totalUnreadCount > 0 || statusFilter !== 'all') && (
+      {isL0 && (
+        <div className={styles.l0NoticeBar} data-testid="sidebar-l0-notice">
+          {t('sidebarOrg.l0ReadOnlyHint')}
+        </div>
+      )}
+
+      {(totalRunningCount > 0 ||
+        totalUnreadCount > 0 ||
+        statusFilter !== 'all' ||
+        effectiveArchivedCount > 0 ||
+        viewMode === 'archived') && (
         <div className={styles.quickAttentionBar} data-testid="sidebar-attention-filters">
           <button
             type="button"
-            className={`${styles.attentionChip} ${statusFilter === 'all' ? styles.attentionChipActive : ''}`}
-            onClick={() => setStatusFilter('all')}
+            className={`${styles.attentionChip} ${viewMode === 'active' && statusFilter === 'all' ? styles.attentionChipActive : ''}`}
+            onClick={() => {
+              setViewMode('active');
+              setStatusFilter('all');
+            }}
           >
             {t('sidebar.allProjects')}
           </button>
           {totalRunningCount > 0 && (
             <button
               type="button"
-              className={`${styles.attentionChip} ${statusFilter === 'running' ? styles.attentionChipActive : ''}`}
-              onClick={() => setStatusFilter((prev) => (prev === 'running' ? 'all' : 'running'))}
+              className={`${styles.attentionChip} ${viewMode === 'active' && statusFilter === 'running' ? styles.attentionChipActive : ''}`}
+              onClick={() => {
+                setViewMode('active');
+                setStatusFilter((prev) => (prev === 'running' ? 'all' : 'running'));
+              }}
               data-testid="sidebar-filter-running"
             >
               <span className={styles.attentionDotRunning} aria-hidden="true" />
@@ -1316,8 +2649,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
           {totalUnreadCount > 0 && (
             <button
               type="button"
-              className={`${styles.attentionChip} ${statusFilter === 'unread' ? styles.attentionChipActive : ''}`}
-              onClick={() => setStatusFilter((prev) => (prev === 'unread' ? 'all' : 'unread'))}
+              className={`${styles.attentionChip} ${viewMode === 'active' && statusFilter === 'unread' ? styles.attentionChipActive : ''}`}
+              onClick={() => {
+                setViewMode('active');
+                setStatusFilter((prev) => (prev === 'unread' ? 'all' : 'unread'));
+              }}
               data-testid="sidebar-filter-unread"
             >
               <span className={styles.attentionDotUnread} aria-hidden="true" />
@@ -1325,11 +2661,26 @@ export const SessionSidebar = React.memo(function SessionSidebar({
               <span className={styles.attentionCount}>{totalUnreadCount}</span>
             </button>
           )}
+          {(effectiveArchivedCount > 0 || viewMode === 'archived') && (
+            <button
+              type="button"
+              className={`${styles.attentionChip} ${viewMode === 'archived' ? styles.attentionChipActive : ''}`}
+              onClick={() => setViewMode(viewMode === 'archived' ? 'active' : 'archived')}
+              data-testid="sidebar-filter-archived"
+            >
+              <span>
+                {effectiveArchivedCount > 0
+                  ? t('sidebarOrg.archivedCountFilter', { count: effectiveArchivedCount })
+                  : t('sidebarOrg.archivedFilter')}
+              </span>
+            </button>
+          )}
           {hasActiveFilterState && (
             <button
               type="button"
               className={styles.attentionResetBtn}
               onClick={() => {
+                setViewMode('active');
                 setStatusFilter('all');
                 if (searchQuery === undefined) setInternalQuery('');
                 onSearchQueryChange?.('');
@@ -1357,21 +2708,38 @@ export const SessionSidebar = React.memo(function SessionSidebar({
           <div className={styles.filterPills}>
             <button
               type="button"
-              className={`${styles.filterPill} ${effectiveFilter === 'all' ? styles.filterPillActive : ''}`}
-              aria-pressed={effectiveFilter === 'all'}
-              onClick={() => handleFilterChange('all')}
+              className={`${styles.filterPill} ${viewMode === 'active' && effectiveFilter === 'all' ? styles.filterPillActive : ''}`}
+              aria-pressed={viewMode === 'active' && effectiveFilter === 'all'}
+              onClick={() => {
+                setViewMode('active');
+                handleFilterChange('all');
+              }}
               data-testid="project-filter-all"
             >
               {t('sidebar.allProjects')}
             </button>
             <button
               type="button"
-              className={`${styles.filterPill} ${effectiveFilter === '__none__' ? styles.filterPillActive : ''}`}
-              aria-pressed={effectiveFilter === '__none__'}
-              onClick={() => handleFilterChange('__none__')}
+              className={`${styles.filterPill} ${viewMode === 'active' && effectiveFilter === '__none__' ? styles.filterPillActive : ''}`}
+              aria-pressed={viewMode === 'active' && effectiveFilter === '__none__'}
+              onClick={() => {
+                setViewMode('active');
+                handleFilterChange('__none__');
+              }}
               data-testid="project-filter-none"
             >
               {t('sidebar.standaloneSessions')}
+            </button>
+            <button
+              type="button"
+              className={`${styles.filterPill} ${viewMode === 'archived' ? styles.filterPillActive : ''}`}
+              aria-pressed={viewMode === 'archived'}
+              onClick={() => setViewMode(viewMode === 'archived' ? 'active' : 'archived')}
+              data-testid="sidebar-drawer-archived"
+            >
+              {effectiveArchivedCount > 0
+                ? t('sidebarOrg.archivedCountFilter', { count: effectiveArchivedCount })
+                : t('sidebarOrg.archivedFilter')}
             </button>
           </div>
 
@@ -1394,7 +2762,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         </div>
       )}
 
-      {showNewProjectForm && onCreateProject && (
+      {showNewProjectForm && onCreateProject && !onOpenNewProjectModal && (
         <form
           className={styles.inlineForm}
           onSubmit={(ev) => void handleCreateProjectSubmit(ev)}
@@ -1508,156 +2876,180 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         </form>
       )}
 
-      <div className={styles.list} role="list" aria-label={t('sidebar.sessions')}>
-        {loading && sessions.length === 0 && !hasProjectsOrGroups ? (
+      {drag.dropTarget?.kind === 'slot' && drag.dropTarget.crossZoneBlocked && (
+        <div className={styles.zoneClampNotice} data-testid="dnd-zone-clamp-notice">
+          {drag.dropTarget.zone === 'pinned'
+            ? t('sidebarOrg.zoneClampHint')
+            : t('sidebarOrg.zoneClampNormalHint')}
+        </div>
+      )}
+
+      <div
+        ref={listContainerRef}
+        className={styles.list}
+        role="list"
+        aria-label={t('sidebar.sessions')}
+      >
+        {viewMode === 'archived' ? (
+          <div className={styles.archivedList} data-testid="archived-sessions-view">
+            {loadingArchived ? (
+              <div className={styles.stateBox}>{t('sidebar.loading')}</div>
+            ) : filteredArchivedSessions.length === 0 ? (
+              <div className={styles.stateBox} data-testid="archived-empty">
+                {t('sidebarOrg.archivedEmpty')}
+              </div>
+            ) : (
+              filteredArchivedSessions.map((s) => {
+                const title = formatSessionTitle(s, t);
+                const projLabel = s.projectId
+                  ? projectById.get(s.projectId)?.name || s.projectName || t('sidebar.noProject')
+                  : s.projectName || t('sidebar.noProject');
+                const archTime = formatRelativeTime(s.archivedAt || s.lastModifiedTime, locale);
+                return (
+                  <div
+                    key={s.cascadeId}
+                    className={styles.archivedRow}
+                    data-testid={`archived-session-row-${s.cascadeId}`}
+                  >
+                    <div className={styles.archivedRowTitle} title={title}>
+                      {title}
+                    </div>
+                    <div className={styles.archivedRowMeta}>
+                      <span className={styles.archivedProjectBadge}>{projLabel}</span>
+                      {archTime && <span>{t('sidebarOrg.archivedAtLabel', { time: archTime })}</span>}
+                    </div>
+                    <div className={styles.archivedRowActions}>
+                      {onArchiveSession && (
+                        <button
+                          type="button"
+                          className={styles.popoverMiniBtn}
+                          data-testid={`restore-session-${s.cascadeId}`}
+                          disabled={!canMutateOrg}
+                          onClick={() => {
+                            if (!canMutateOrg) return;
+                            void onArchiveSession(s, false);
+                          }}
+                        >
+                          {t('sidebarOrg.restoreSession')}
+                        </button>
+                      )}
+                      {onRequestDeleteSession && (
+                        <button
+                          type="button"
+                          className={`${styles.popoverMiniBtn} ${styles.popoverDangerBtn}`}
+                          data-testid={`delete-archived-session-${s.cascadeId}`}
+                          disabled={!canAdminWorkspace}
+                          title={
+                            isL0
+                              ? t('sidebarOrg.l0ReadOnlyHint')
+                              : isL1
+                                ? t('sidebarOrg.l1DeleteDisabledHint')
+                                : undefined
+                          }
+                          onClick={() => {
+                            if (!canAdminWorkspace) return;
+                            onRequestDeleteSession(s);
+                          }}
+                        >
+                          {t('sidebarOrg.deleteSession')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        ) : loading && activeSessions.length === 0 && !hasProjectsOrGroups ? (
           <div className={styles.stateBox} data-testid="sidebar-loading">
             {t('sidebar.loading')}
           </div>
         ) : showEmptyFilteredState ? (
-          <div className={styles.stateBox} data-testid="sidebar-empty">
-            {isSearching || effectiveFilter !== 'all'
-              ? t('sidebar.emptyFiltered')
-              : t('sidebar.empty')}
-          </div>
+          <>
+            <div className={styles.stateBox} data-testid="sidebar-empty">
+              {isSearching || effectiveFilter !== 'all'
+                ? t('sidebar.emptyFiltered')
+                : t('sidebar.empty')}
+            </div>
+            {isSearching && archivedSearchMatchesCount > 0 && (
+              <button
+                type="button"
+                className={styles.archivedSearchJump}
+                data-testid="archived-search-jump"
+                onClick={() => setViewMode('archived')}
+              >
+                {t('sidebarOrg.archivedSearchHint', { count: archivedSearchMatchesCount })}
+              </button>
+            )}
+          </>
         ) : (
           <>
             {pinnedSessions.length > 0 && (
               <div className={styles.pinnedSection} data-testid="pinned-sessions-section">
                 <div className={styles.sectionHeader}>{t('sidebar.pinnedSection')}</div>
-                {pinnedSessions.map((s) => renderSessionRow(s, true))}
+                {pinnedSessions.map((s, idx) =>
+                  renderSessionRow(s, '__pinned__', 'pinned', idx, pinnedSessions.length, true),
+                )}
               </div>
+            )}
+
+            {effectiveFilter !== '__none__' && (
+              <>
+                {pinnedGroups.map((g, idx) => renderGroupNode(g, 'pinned', idx, pinnedGroups.length))}
+                {pinnedGroups.length > 0 && normalGroups.length > 0 && (
+                  <div className={styles.zoneDivider} data-testid="group-zone-divider" />
+                )}
+                {normalGroups.map((g, idx) => renderGroupNode(g, 'normal', idx, normalGroups.length))}
+              </>
             )}
 
             {effectiveFilter !== '__none__' &&
-              sortedGroups.map((group) => {
-                const isCollapsed = onToggleGroupCollapsed
-                  ? group.collapsed
-                  : (localGroupCollapsed[group.id] ?? group.collapsed);
-                const groupProjects = projectsByGroup.get(group.id) ?? [];
-                const visibleProjects = groupProjects.filter(shouldRenderProject);
+              (visiblePinnedUngrouped.length > 0 || activeUngroupedNormal.length > 0) && (
+                <div
+                  className={styles.ungroupedSection}
+                  data-dnd-project-container="__ungrouped__"
+                >
+                  {visiblePinnedUngrouped.map((p, idx) =>
+                    renderProjectNode(
+                      p,
+                      '__ungrouped__',
+                      'pinned',
+                      idx,
+                      visiblePinnedUngrouped.length,
+                    ),
+                  )}
+                  {visiblePinnedUngrouped.length > 0 && activeUngroupedNormal.length > 0 && (
+                    <div
+                      className={styles.zoneDivider}
+                      data-testid="project-zone-divider-__ungrouped__"
+                    />
+                  )}
+                  {activeUngroupedNormal.map((p, idx) =>
+                    renderProjectNode(
+                      p,
+                      '__ungrouped__',
+                      'normal',
+                      idx,
+                      activeUngroupedNormal.length,
+                    ),
+                  )}
+                </div>
+              )}
 
-                if (isSpecificProjectFilter && visibleProjects.length === 0) {
-                  return null;
-                }
-                if (isSearching && visibleProjects.length === 0) {
-                  return null;
-                }
+            {effectiveFilter !== '__none__' &&
+              sortedGroups.length > 0 &&
+              drag.draggingItem?.targetType === 'project' &&
+              Boolean(drag.draggingItem.fromGroupId) && (
+                <div
+                  className={`${styles.ungroupedDropSlot} ${drag.dropTarget?.kind === 'drop-zone' && drag.dropTarget.containerId === '__ungrouped__' ? styles.ungroupedDropSlotActive : ''}`}
+                  data-dnd-drop-container="__ungrouped__"
+                  data-testid="ungrouped-drop-slot"
+                >
+                  {t('sidebarOrg.ungroupedDropHint')}
+                </div>
+              )}
 
-                const effectiveCollapsed =
-                  isSearching || isSpecificProjectFilter ? false : isCollapsed;
-
-                return (
-                  <div
-                    key={group.id}
-                    className={styles.projectGroup}
-                    data-testid={`project-group-${group.id}`}
-                    data-collapsed={effectiveCollapsed ? 'true' : 'false'}
-                  >
-                    <div className={styles.groupHeader}>
-                      {editingGroupId === group.id ? (
-                        <form
-                          className={styles.inlineRenameRow}
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            const trimmed = groupNameDraft.trim();
-                            if (trimmed && trimmed !== group.name) {
-                              void onRenameGroup?.(group.id, trimmed);
-                            }
-                            setEditingGroupId(null);
-                          }}
-                        >
-                          <input
-                            type="text"
-                            className={styles.inlineRenameInput}
-                            value={groupNameDraft}
-                            autoFocus
-                            aria-label={t('sidebar.renameGroup')}
-                            onChange={(e) => setGroupNameDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Escape') {
-                                setEditingGroupId(null);
-                              }
-                            }}
-                          />
-                          <button type="submit" className={styles.inlineRenameSaveBtn}>
-                            {t('common.save')}
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.inlineRenameCancelBtn}
-                            onClick={() => setEditingGroupId(null)}
-                          >
-                            ×
-                          </button>
-                        </form>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className={styles.groupToggleBtn}
-                            data-testid={`toggle-group-${group.id}`}
-                            aria-expanded={!effectiveCollapsed}
-                            aria-label={
-                              effectiveCollapsed
-                                ? t('sidebar.expandGroup')
-                                : t('sidebar.collapseGroup')
-                            }
-                            onClick={() => handleToggleGroup(group)}
-                          >
-                            <ChevronGlyph expanded={!effectiveCollapsed} />
-                            <span className={styles.groupName}>{group.name}</span>
-                            <span className={styles.groupCount}>{groupProjects.length}</span>
-                          </button>
-                        {onRenameGroup && (
-                          <button
-                            type="button"
-                            className={`${styles.iconBtn} ${styles.groupDeleteBtn}`}
-                            data-testid={`rename-group-${group.id}`}
-                            title={t('sidebar.renameGroup')}
-                            aria-label={`${t('sidebar.renameGroup')} ${group.name}`}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setGroupNameDraft(group.name);
-                                setEditingGroupId(group.id);
-                              }}
-                            >
-                              <EditGlyph />
-                            </button>
-                          )}
-                          {onDeleteGroup && (
-                            <button
-                              type="button"
-                              className={`${styles.iconBtn} ${styles.iconBtnDanger} ${styles.groupDeleteBtn}`}
-                              data-testid={`delete-group-${group.id}`}
-                              title={t('sidebar.deleteGroup')}
-                              aria-label={t('sidebar.deleteGroup')}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void onDeleteGroup(group.id);
-                              }}
-                            >
-                              ×
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                    {!effectiveCollapsed && visibleProjects.length > 0 && (
-                      <div className={styles.groupItems}>
-                        {visibleProjects.map(renderProjectNode)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-            {effectiveFilter !== '__none__' && activeUngroupedProjects.length > 0 && (
-              <div className={styles.ungroupedSection}>
-                {activeUngroupedProjects.map(renderProjectNode)}
-              </div>
-            )}
-
-            {effectiveFilter !== '__none__' && quietUngroupedProjects.length > 0 && (
+            {effectiveFilter !== '__none__' && quietUngroupedNormal.length > 0 && (
               <div className={styles.quietProjectsSection} data-testid="quiet-projects-section">
                 <button
                   type="button"
@@ -1667,11 +3059,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                   data-testid="quiet-projects-toggle"
                 >
                   <ChevronGlyph expanded={quietProjectsExpanded} />
-                  <span>{t('sidebar.otherProjects', { count: quietUngroupedProjects.length })}</span>
+                  <span>{t('sidebar.otherProjects', { count: quietUngroupedNormal.length })}</span>
                 </button>
                 {quietProjectsExpanded && (
-                  <div className={styles.ungroupedSection}>
-                    {quietUngroupedProjects.map(renderProjectNode)}
+                  <div
+                    className={styles.ungroupedSection}
+                    data-dnd-project-container="__ungrouped__"
+                  >
+                    {quietUngroupedNormal.map((p, idx) =>
+                      renderProjectNode(
+                        p,
+                        '__ungrouped__',
+                        'normal',
+                        idx,
+                        quietUngroupedNormal.length,
+                      ),
+                    )}
                   </div>
                 )}
               </div>
@@ -1685,16 +3088,71 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 >
                   <div className={styles.sectionHeader}>{t('sidebar.standaloneSessions')}</div>
                   {standaloneRegularSessions.length > 0 ? (
-                    standaloneRegularSessions.map((s) => renderSessionRow(s, false))
+                    standaloneRegularSessions.map((s, idx) =>
+                      renderSessionRow(
+                        s,
+                        '__standalone__',
+                        'normal',
+                        idx,
+                        standaloneRegularSessions.length,
+                        false,
+                      ),
+                    )
                   ) : (
                     <div className={styles.emptyProjectHint}>{t('sidebar.emptyFiltered')}</div>
                   )}
                 </div>
               ) : (
-                standaloneRegularSessions.map((s) => renderSessionRow(s, false))
+                standaloneRegularSessions.map((s, idx) =>
+                  renderSessionRow(
+                    s,
+                    '__standalone__',
+                    'normal',
+                    idx,
+                    standaloneRegularSessions.length,
+                    false,
+                  ),
+                )
               ))}
+
+            {isSearching && archivedSearchMatchesCount > 0 && (
+              <button
+                type="button"
+                className={styles.archivedSearchJump}
+                data-testid="archived-search-jump"
+                onClick={() => setViewMode('archived')}
+              >
+                {t('sidebarOrg.archivedSearchHint', { count: archivedSearchMatchesCount })}
+              </button>
+            )}
           </>
         )}
+      </div>
+
+      {drag.draggingItem && drag.ghostPos && (
+        <div
+          className={styles.dragGhost}
+          style={{ left: drag.ghostPos.x, top: drag.ghostPos.y }}
+          data-testid="dnd-drag-ghost"
+        >
+          <span>{drag.draggingItem.label}</span>
+        </div>
+      )}
+
+      {drag.dropTarget?.kind === 'slot' && (
+        <div
+          className={styles.dropLine}
+          style={{
+            top: drag.dropTarget.lineTop,
+            left: drag.dropTarget.lineLeft,
+            width: drag.dropTarget.lineWidth,
+          }}
+          data-testid="dnd-drop-line"
+        />
+      )}
+
+      <div className={styles.srOnly} role="status" aria-live="polite" data-testid="dnd-aria-live">
+        {drag.liveAnnouncement}
       </div>
     </div>
   );

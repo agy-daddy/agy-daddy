@@ -27,12 +27,19 @@ const { createWebPushManager } = require('./web-push');
 const { createPtyManager } = require('./pty-bridge');
 const { createTaskManager } = require('./task-manager');
 const { createMobileWorkspaceService } = require('./mobile-workspace');
+const {
+  createWorkspaceBrowser,
+  normalizeLocalPath,
+  isForbiddenSystemRoot
+} = require('./workspace-browser');
+const { createRemoteProjectProvisioner } = require('./remote-project-provisioner');
 const { createSseBroker } = require('./sse-broker');
 const {
   DEFAULT_SESSION_LIMIT,
   isTempBridgeWorkspace,
   sanitizeModelCatalogResult,
-  createSessionOrgStore
+  createSessionOrgStore,
+  canonicalKey
 } = require('./session-org-store');
 
 const CHANNEL_KEYS = ['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare'];
@@ -951,6 +958,12 @@ function createStandaloneRpcAdapter(rpc) {
       await rpc.call('CancelCascadeInvocation', { cascadeId });
       return { ok: true, cascadeId };
     },
+    async deleteSession(cascadeId) {
+      ensureRpc();
+      await rpc.call('DeleteCascadeTrajectory', { cascadeId });
+      cursors.delete(cascadeId);
+      return { ok: true, cascadeId, hostCleaned: true };
+    },
     async approveStep(cascadeId, stepIdx, decision = 'allow', payload = {}) {
       ensureRpc();
       const allow = typeof decision === 'boolean'
@@ -1372,10 +1385,14 @@ async function activate(host) {
   }
 
   function getEffectiveAllowedRoots() {
-    if (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0) {
-      return [...config.allowedRoots];
-    }
-    return Array.from(discoveredSessionRoots);
+    const org = sessionOrgStore ? sessionOrgStore.loadPersistedOrg() : null;
+    const persistedRoots = Array.isArray(org?.projects)
+      ? org.projects.map((p) => p.rootPath).filter(Boolean)
+      : [];
+    const baseRoots = (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0)
+      ? config.allowedRoots
+      : Array.from(discoveredSessionRoots);
+    return Array.from(new Set([...baseRoots, ...persistedRoots]));
   }
 
   const brainDir = process.env.AGY_DADDY_BRAIN_DIR
@@ -1410,8 +1427,175 @@ async function activate(host) {
     }
   });
 
-  const sessionOrgStore = createSessionOrgStore({
-    getAllowedRoots: getEffectiveAllowedRoots
+  var sessionOrgStore = null;
+  let sseBrokerRef = null;
+  sessionOrgStore = createSessionOrgStore({
+    pluginId: 'agy-daddy.remote',
+    getAllowedRoots: getEffectiveAllowedRoots,
+    onOrgChanged: (_org, summary) => {
+      if (typeof host?.state?.set === 'function') {
+        host.state.set('state:session.org@1', summary);
+      }
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('state.patch', { key: 'state:session.org@1', value: summary });
+        sseBrokerRef.emit('org.updated', summary);
+      }
+    },
+    onExternalOrgChanged: (_org, summary) => {
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('state.patch', { key: 'state:session.org@1', value: summary });
+        sseBrokerRef.emit('org.updated', summary);
+      }
+    }
+  });
+
+  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
+    const normalizedRoot = normalizeLocalPath(rootPath);
+    if (!normalizedRoot) {
+      return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
+    }
+    if (isForbiddenSystemRoot(normalizedRoot)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+
+    if (createDir) {
+      let cur = normalizedRoot;
+      let ancestor = null;
+      while (cur) {
+        if (fs.existsSync(cur)) {
+          ancestor = cur;
+          break;
+        }
+        const parent = path.dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+      }
+      let realAncestor = null;
+      try {
+        realAncestor = ancestor ? fs.realpathSync(ancestor) : null;
+      } catch {}
+      if (!realAncestor || isForbiddenSystemRoot(realAncestor)) {
+        return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+      }
+      try {
+        fs.mkdirSync(normalizedRoot, { recursive: true });
+      } catch (err) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: 'CREATE_DIR_FAILED',
+          message: err?.message || 'CREATE_DIR_FAILED'
+        };
+      }
+    }
+
+    let realRoot;
+    try {
+      realRoot = fs.realpathSync(normalizedRoot);
+    } catch {
+      return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
+    }
+    if (isForbiddenSystemRoot(realRoot)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+    try {
+      if (!fs.statSync(realRoot).isDirectory()) {
+        return { ok: false, statusCode: 400, error: 'ROOT_NOT_DIRECTORY' };
+      }
+    } catch {
+      return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
+    }
+
+    const cleanName = typeof name === 'string' && name.trim()
+      ? name.trim()
+      : (path.basename(normalizedRoot) || normalizedRoot);
+    const cleanSource = typeof source === 'string' && source.trim() ? source.trim() : 'local';
+    const normKey = canonicalKey(normalizedRoot);
+    const realKey = canonicalKey(realRoot);
+
+    return sessionOrgStore.mutateOrgAtomically((org) => {
+      let resolvedGroupId = null;
+      if (groupId !== undefined && groupId !== null && groupId !== '') {
+        const cleanGid = String(groupId).trim();
+        if (!org.groups.some((g) => g.id === cleanGid)) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+        }
+        resolvedGroupId = cleanGid;
+      }
+
+      const duplicate = (org.projects || []).find((p) => {
+        const pk = canonicalKey(p?.rootPath);
+        return pk && (pk === normKey || pk === realKey);
+      }) || null;
+      if (duplicate) {
+        return {
+          abort: true,
+          result: {
+            ok: false,
+            statusCode: 409,
+            error: 'PROJECT_ALREADY_EXISTS',
+            projectId: duplicate.id,
+            project: { ...duplicate }
+          }
+        };
+      }
+
+      const project = sessionOrgStore.materializeProjectInOrg(org, {
+        id: `proj_${crypto.randomUUID()}`,
+        name: cleanName,
+        rootPath: normalizedRoot,
+        groupId: resolvedGroupId,
+        source: cleanSource,
+        remote,
+        syncedFromApp: false
+      });
+
+      const containerKey = resolvedGroupId || '__ungrouped__';
+      if (org.projectOrder[containerKey] && Array.isArray(org.projectOrder[containerKey].normal)) {
+        org.projectOrder[containerKey].normal = [
+          project.id,
+          ...org.projectOrder[containerKey].normal.filter((x) => x !== project.id)
+        ];
+      }
+
+      return {
+        buildResult: (saved) => ({
+          ok: true,
+          project: { ...project, archived: false },
+          revision: saved.revision,
+          projects: saved.projects,
+          groups: saved.groups,
+          pins: saved.pins,
+          defaultSessionPath: saved.defaultSessionPath || ''
+        })
+      };
+    });
+  }
+
+  const workspaceBrowser = createWorkspaceBrowser({
+    getDefaultSessionPath: () => sessionOrgStore.loadPersistedOrg().defaultSessionPath || '',
+    getProjectRootPaths: () => (sessionOrgStore.loadPersistedOrg().projects || []).map((p) => p.rootPath)
+  });
+
+  const remoteProvisioner = createRemoteProjectProvisioner({
+    getProjectRootPaths: () => (sessionOrgStore.loadPersistedOrg().projects || []).map((p) => p.rootPath),
+    checkDuplicateProjectFn: (target) => {
+      const rawRoot = typeof target === 'string' ? target : target?.rootPath;
+      const k = canonicalKey(normalizeLocalPath(rawRoot));
+      if (!k) return null;
+      const org = sessionOrgStore.loadPersistedOrg();
+      return (org.projects || []).find((p) => canonicalKey(p?.rootPath) === k) || null;
+    },
+    createProjectFn: (payload) => createProjectInOrg(payload),
+    authorizeRootFn: (rootPath) => {
+      if (rootPath) discoveredSessionRoots.add(rootPath);
+      return { ok: true, rootPath };
+    },
+    onJobUpdated: (job) => {
+      if (sseBrokerRef) {
+        sseBrokerRef.emit('project.job', job);
+      }
+    }
   });
 
   async function callHarness(method, args = []) {
@@ -1460,6 +1644,7 @@ async function activate(host) {
       ? Number(opts.limit)
       : DEFAULT_SESSION_LIMIT;
     const includeSubagents = Boolean(opts.includeSubagents);
+    const includeArchived = Boolean(opts.includeArchived);
     try {
       const res = await callHarness('listSessions', [{ limit: Math.max(requestedLimit, DEFAULT_SESSION_LIMIT), includeSubagents }]);
       const sessions = Array.isArray(res?.sessions) ? res.sessions : [];
@@ -1468,32 +1653,50 @@ async function activate(host) {
         rpcSessions: sessions,
         allowedRoots: getEffectiveAllowedRoots(),
         includeSubagents,
+        includeArchived,
         limit: requestedLimit
       });
       return {
         ok: true,
+        version: 2,
+        revision: enriched.revision,
         rpcConnected: true,
         offline: false,
         sessions: enriched.sessions,
         groups: enriched.groups,
         projects: enriched.projects,
-        pins: enriched.pins
+        pins: enriched.pins,
+        groupOrder: enriched.groupOrder,
+        projectOrder: enriched.projectOrder,
+        sessionOrder: enriched.sessionOrder,
+        archivedCount: enriched.archivedCount,
+        ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
+        defaultSessionPath: enriched.defaultSessionPath
       };
     } catch {
       const enriched = sessionOrgStore.enrichSessionsAndOrg({
         rpcSessions: [],
         allowedRoots: getEffectiveAllowedRoots(),
         includeSubagents,
+        includeArchived,
         limit: requestedLimit
       });
       return {
         ok: true,
+        version: 2,
+        revision: enriched.revision,
         rpcConnected: false,
         offline: true,
         sessions: [],
         groups: enriched.groups,
         projects: enriched.projects,
-        pins: enriched.pins
+        pins: enriched.pins,
+        groupOrder: enriched.groupOrder,
+        projectOrder: enriched.projectOrder,
+        sessionOrder: enriched.sessionOrder,
+        archivedCount: enriched.archivedCount,
+        ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
+        defaultSessionPath: enriched.defaultSessionPath
       };
     }
   }
@@ -1821,6 +2024,7 @@ async function activate(host) {
       }
     }
   });
+  sseBrokerRef = sseBroker;
 
   function buildChannelUrls() {
     const localUrl = server?.getLocalUrl() || '';
@@ -2239,9 +2443,16 @@ async function activate(host) {
           usageCounts: { ...config.modelUsageCounts }
         },
         workspaces: rootItems,
+        version: 2,
+        revision: sessionsRes.revision ?? 0,
         groups: sessionsRes.groups || [],
         projects: sessionsRes.projects || [],
         pins: sessionsRes.pins || { sessions: [], projects: [], groups: [] },
+        groupOrder: sessionsRes.groupOrder || { pinned: [], normal: [] },
+        projectOrder: sessionsRes.projectOrder || {},
+        sessionOrder: sessionsRes.sessionOrder || {},
+        archivedCount: sessionsRes.archivedCount ?? 0,
+        defaultSessionPath: sessionsRes.defaultSessionPath,
         vapidPublicKey: webPush.getPublicKey(),
         voiceSupported: false,
         runningTasksCount: snap.runningTasksCount ?? 0,
@@ -2251,13 +2462,22 @@ async function activate(host) {
     async listSessions(opts) {
       return await safeListSessions(opts);
     },
-    async getSessionOrg() {
-      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT });
+    async getSessionOrg(opts = {}) {
+      const includeArchived = Boolean(opts?.includeArchived);
+      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived });
       return {
         ok: true,
+        version: 2,
+        revision: res.revision ?? 0,
         groups: res.groups || [],
         projects: res.projects || [],
-        pins: res.pins || { sessions: [], projects: [], groups: [] }
+        pins: res.pins || { sessions: [], projects: [], groups: [] },
+        groupOrder: res.groupOrder || { pinned: [], normal: [] },
+        projectOrder: res.projectOrder || {},
+        sessionOrder: res.sessionOrder || {},
+        archivedCount: res.archivedCount ?? 0,
+        ...(includeArchived ? { archivedSessions: res.archivedSessions || {} } : {}),
+        defaultSessionPath: res.defaultSessionPath
       };
     },
     async togglePin(body) {
@@ -2265,6 +2485,185 @@ async function activate(host) {
     },
     async mutateGroup(body) {
       return sessionOrgStore.mutateGroup(body);
+    },
+    async reorderOrg(body) {
+      return sessionOrgStore.reorderOrg(body);
+    },
+    async archiveSession(id, body = {}) {
+      if (typeof body.archived !== 'boolean') {
+        return { ok: false, statusCode: 400, error: 'INVALID_ARCHIVE_FLAG' };
+      }
+      let stepCount = Number.isFinite(Number(body.stepCount)) ? Number(body.stepCount) : 0;
+      let isRunning = Boolean(body.isRunning);
+      let projectId = body.projectId || null;
+      let projectName = body.projectName || null;
+      let titleSnapshot = typeof body.titleSnapshot === 'string' ? body.titleSnapshot : '';
+      if (body.archived && !body.skipLookup) {
+        try {
+          const listRes = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived: true });
+          const found = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+          if (found) {
+            stepCount = Number.isFinite(Number(found.stepCount)) ? Number(found.stepCount) : stepCount;
+            isRunning = /RUNNING|GENERATING/i.test(String(found.status || '')) || Boolean(found.notFullyIdle);
+            projectId = projectId || found.projectId || null;
+            projectName = projectName || found.projectName || null;
+            titleSnapshot = titleSnapshot || found.title || '';
+          }
+        } catch {}
+      }
+      return sessionOrgStore.archiveSession(id, {
+        archived: body.archived,
+        stepCount,
+        isRunning,
+        projectId,
+        projectName,
+        titleSnapshot
+      });
+    },
+    async deleteSession(id, { mode = 'auto' } = {}) {
+      const cleanMode = String(mode || 'auto').trim().toLowerCase();
+      if (cleanMode !== 'auto' && cleanMode !== 'local_hide') {
+        return { ok: false, statusCode: 400, error: 'INVALID_DELETE_MODE' };
+      }
+      if (cleanMode === 'local_hide') {
+        return sessionOrgStore.deleteSessionOrgRecord(id, { mode: 'local_tombstone' });
+      }
+      try {
+        try {
+          const listRes = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived: true });
+          const cur = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+          if (cur && (/RUNNING|GENERATING/i.test(String(cur.status || '')) || cur.notFullyIdle)) {
+            await callHarness('cancelSession', [id]).catch(() => {});
+          }
+        } catch {}
+        await callHarness('deleteSession', [id]);
+        return sessionOrgStore.deleteSessionOrgRecord(id, { mode: 'host_deleted' });
+      } catch (err) {
+        const raw = `${err?.code || ''} ${err?.message || ''}`.trim();
+        let reasonCode = 'RPC_ERROR';
+        if (/RPC_UNAVAILABLE|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|not connected|no hub/i.test(raw)) {
+          reasonCode = 'RPC_OFFLINE';
+        } else if (/RPC_METHOD_BLOCKED|RPC_PERMISSION_DENIED|UNIMPLEMENTED|404|501|HARNESS_METHOD_UNSUPPORTED|not supported/i.test(raw)) {
+          reasonCode = 'RPC_UNSUPPORTED';
+        }
+        return {
+          ok: false,
+          statusCode: 503,
+          error: 'HOST_DELETE_UNAVAILABLE',
+          reasonCode,
+          canFallbackLocalHide: true,
+          message: err?.message || 'Host session delete unavailable'
+        };
+      }
+    },
+    async listProjects() {
+      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT });
+      return {
+        ok: true,
+        version: 2,
+        revision: res.revision ?? 0,
+        projects: res.projects || [],
+        groups: res.groups || [],
+        pins: res.pins || { sessions: [], projects: [], groups: [] },
+        defaultSessionPath: res.defaultSessionPath
+      };
+    },
+    async createProject(body = {}) {
+      return createProjectInOrg(body);
+    },
+    async updateProject(id, patch = {}) {
+      const cleanId = String(id || '').trim();
+      if (!cleanId || !isPlainObject(patch)) {
+        return { ok: false, statusCode: 400, error: 'INVALID_PATCH' };
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'name') && (!String(patch.name || '').trim())) {
+        return { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' };
+      }
+      return sessionOrgStore.mutateOrgAtomically((org) => {
+        let proj = org.projects.find((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId))) || null;
+        if (!proj) {
+          const wsUri = patch.workspaceUri || patch.rootPath;
+          if (!wsUri) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+          }
+          proj = sessionOrgStore.materializeProjectInOrg(org, {
+            id: cleanId,
+            rootPath: patch.rootPath,
+            workspaceUri: patch.workspaceUri,
+            syncedFromApp: cleanId.startsWith('app:'),
+            source: cleanId.startsWith('app:') ? 'app' : 'local'
+          });
+        }
+        if (!proj) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
+          proj.name = String(patch.name).trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
+          const nextGid = patch.groupId ? String(patch.groupId).trim() : null;
+          if (nextGid && !org.groups.some((g) => g.id === nextGid)) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+          }
+          proj.groupId = nextGid;
+          if (nextGid) org.projectGroupMap[proj.id] = nextGid;
+          else delete org.projectGroupMap[proj.id];
+          for (const g of org.groups) {
+            g.projectIds = g.projectIds.filter((pid) => pid !== proj.id);
+            if (nextGid && g.id === nextGid) g.projectIds.push(proj.id);
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'pinned')) {
+          const shouldPin = Boolean(patch.pinned);
+          if (shouldPin && !org.pins.projects.includes(proj.id)) {
+            org.pins.projects.push(proj.id);
+            org.pinTimestamps.projects[proj.id] = new Date().toISOString();
+          } else if (!shouldPin) {
+            org.pins.projects = org.pins.projects.filter((pid) => pid !== proj.id);
+            delete org.pinTimestamps.projects[proj.id];
+          }
+        }
+        proj.updatedAt = new Date().toISOString();
+        return {
+          buildResult: (saved) => ({
+            ok: true,
+            project: { ...proj, pinned: saved.pins.projects.includes(proj.id) },
+            revision: saved.revision
+          })
+        };
+      });
+    },
+    async deleteProject(id) {
+      const cleanId = String(id || '').trim();
+      return sessionOrgStore.mutateOrgAtomically((org) => {
+        const idx = org.projects.findIndex((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId)));
+        if (idx < 0) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        const targetId = org.projects[idx].id;
+        const removeIds = new Set([cleanId, targetId, ...(org.projects[idx].aliases || [])]);
+        org.projects.splice(idx, 1);
+        org.pins.projects = org.pins.projects.filter((pid) => !removeIds.has(pid));
+        for (const rid of removeIds) {
+          delete org.pinTimestamps.projects[rid];
+          delete org.projectGroupMap[rid];
+          delete org.sessionOrder[rid];
+        }
+        for (const g of org.groups) {
+          g.projectIds = g.projectIds.filter((pid) => !removeIds.has(pid));
+        }
+        for (const ord of Object.values(org.projectOrder)) {
+          if (!ord) continue;
+          ord.pinned = (ord.pinned || []).filter((pid) => !removeIds.has(pid));
+          ord.normal = (ord.normal || []).filter((pid) => !removeIds.has(pid));
+        }
+        for (const [cid, pid] of Object.entries(org.sessionProjectOverrides)) {
+          if (removeIds.has(pid)) delete org.sessionProjectOverrides[cid];
+        }
+        return {
+          buildResult: (saved) => ({ ok: true, id: targetId, deleted: true, revision: saved.revision })
+        };
+      });
     },
     async createSession(body) {
       return await callHarness('createSession', [body]);
@@ -2340,6 +2739,9 @@ async function activate(host) {
         }
       }
       const res = await callHarness('sendMessage', [id, body]);
+      if (!res || res.ok !== false) {
+        sessionOrgStore.reconcileSessionsLifecycle([], { forceUnarchiveIds: [id] });
+      }
       sseBroker.triggerPoll(id);
       return { ...(isPlainObject(res) ? res : { ok: true }), queued: false };
     },
@@ -2640,7 +3042,9 @@ async function activate(host) {
     ptyManager,
     taskManager,
     webPush,
-    mobileWorkspace
+    mobileWorkspace,
+    workspaceBrowser,
+    remoteProvisioner
   });
 
   if (
@@ -3069,6 +3473,10 @@ async function activate(host) {
     });
     scheduleTelemetryBroadcast();
   });
+  const stopOrgStateSub = host.state?.subscribe?.('state:session.org@1', (val, meta) => {
+    if (meta?.publisher === 'agy-daddy.remote') return;
+    sessionOrgStore.syncFromExternalSignal(val);
+  });
   const stopStatusRoute = await host.bridge.registerRoute('/status', async () => {
     await refreshPcWebStatus();
     return serviceMethods.getStatus();
@@ -3173,6 +3581,9 @@ async function activate(host) {
         telemetryDebounceTimer = null;
       }
     },
+    stopOrgStateSub,
+    () => { sessionOrgStore.dispose(); },
+    () => { remoteProvisioner.dispose(); },
     () => { sseBroker.dispose(); },
     () => { ptyManager.disposeAll(); },
     async () => { await cloudflared.stop(); },

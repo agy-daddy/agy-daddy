@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const url = require('node:url');
+const { createSessionOrgBridge } = require('./session-org-bridge');
 
 const META_FILE_NAME = 'workspace-meta.json';
 const IS_CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
@@ -496,6 +497,7 @@ function pickNonEmptyString(...values) {
  */
 function createWorkspaceMetaStore({
   storage = null,
+  sessionOrgBridge = null,
   defaultBaseDir,
   conversationDbPath,
   stateVscdbPath,
@@ -506,6 +508,8 @@ function createWorkspaceMetaStore({
 } = {}) {
   const fallbackDefaultPath = normalizeLocalPath(defaultBaseDir)
     || path.join(os.homedir(), 'antigravity-workspace');
+  const usesExternalOrgBridge = Boolean(sessionOrgBridge);
+  const orgBridge = sessionOrgBridge || createSessionOrgBridge({ orgPath: null });
   const resolvedConversationDbPath = resolveOptionalPath(
     conversationDbPath,
     () => path.join(os.homedir(), '.gemini', 'antigravity', 'conversation_summaries.db')
@@ -675,8 +679,78 @@ function createWorkspaceMetaStore({
   const rawLoadedState = readMetaFromStorage(storage);
   const state = normalizeInitialState(rawLoadedState);
 
+  if (rawLoadedState) {
+    orgBridge.migrateWorkspaceMetaV1(rawLoadedState);
+  }
+  if (!usesExternalOrgBridge) {
+    const curOrg = orgBridge.loadPersistedOrg();
+    if (!curOrg.defaultSessionPath && state.defaultSessionPath) {
+      orgBridge.mutateOrgAtomically((org) => {
+        org.defaultSessionPath = state.defaultSessionPath;
+      }, { emitChange: false });
+    }
+  }
+
+  function buildTelemetrySnapshot() {
+    return {
+      version: 1,
+      readStateInitializedAt: state.readStateInitializedAt,
+      sessionReadState: cloneReadStateMap(state.sessionReadState),
+      sessionCompletionTimes: cloneCompletionMap(state.sessionCompletionTimes),
+      userCreatedSessions: cloneUserCreatedMap(state.userCreatedSessions)
+    };
+  }
+
+  function buildCombinedLegacyState(org) {
+    const pinnedSessions = {};
+    for (const cid of (org.pins?.sessions || [])) {
+      pinnedSessions[cid] = {
+        pinnedAt: org.pinTimestamps?.sessions?.[cid] || org.updatedAt || new Date().toISOString()
+      };
+    }
+    const pinnedGroupsSet = new Set(org.pins?.groups || []);
+    const pinnedProjectsSet = new Set(org.pins?.projects || []);
+    return {
+      version: 1,
+      defaultSessionPath: org.defaultSessionPath || fallbackDefaultPath,
+      readStateInitializedAt: state.readStateInitializedAt,
+      pinnedSessions,
+      sessionProjectOverrides: { ...(org.sessionProjectOverrides || {}) },
+      sessionReadState: cloneReadStateMap(state.sessionReadState),
+      sessionCompletionTimes: cloneCompletionMap(state.sessionCompletionTimes),
+      userCreatedSessions: cloneUserCreatedMap(state.userCreatedSessions),
+      projects: (org.projects || []).map((p) => ({
+        ...p,
+        groupId: org.projectGroupMap?.[p.id] ?? p.groupId ?? null,
+        pinned: pinnedProjectsSet.has(p.id)
+      })),
+      groups: (org.groups || []).map((g) => ({
+        id: g.id,
+        name: g.name,
+        source: g.source || 'user',
+        sortOrder: Number.isFinite(Number(g.order)) ? Number(g.order) : 0,
+        order: Number.isFinite(Number(g.order)) ? Number(g.order) : 0,
+        collapsed: Boolean(g.collapsed),
+        pinned: pinnedGroupsSet.has(g.id),
+        createdAt: g.createdAt,
+        updatedAt: g.updatedAt
+      })),
+      pins: org.pins,
+      groupOrder: org.groupOrder,
+      projectOrder: org.projectOrder,
+      sessionOrder: org.sessionOrder,
+      archivedSessions: org.archivedSessions,
+      deletedSessions: org.deletedSessions
+    };
+  }
+
   function persist() {
-    writeMetaToStorage(storage, cloneState(state));
+    if (usesExternalOrgBridge) {
+      writeMetaToStorage(storage, buildTelemetrySnapshot());
+    } else {
+      const org = orgBridge.loadPersistedOrg();
+      writeMetaToStorage(storage, buildCombinedLegacyState(org));
+    }
   }
 
   function applyMonotonicReadMap(externalRaw) {
@@ -755,6 +829,11 @@ function createWorkspaceMetaStore({
     return byId;
   }
 
+  function getDefaultSessionPath(org = null) {
+    const activeOrg = org || orgBridge.loadPersistedOrg();
+    return activeOrg.defaultSessionPath || state.defaultSessionPath || fallbackDefaultPath;
+  }
+
   function loadAppSyncedProjects() {
     if (!resolvedStateVscdbPath && !resolvedConversationDbPath) {
       return [];
@@ -764,7 +843,7 @@ function createWorkspaceMetaStore({
       return appSyncCache.projects.map((p) => ({ ...p }));
     }
 
-    const defaultKeys = getPathLookupKeys(state.defaultSessionPath);
+    const defaultKeys = getPathLookupKeys(getDefaultSessionPath());
     const byKey = new Map();
     const collected = [];
 
@@ -845,18 +924,30 @@ function createWorkspaceMetaStore({
     persist();
   }
 
-  function buildRegisteredLookup() {
+  function buildRegisteredLookup(org = null) {
+    const activeOrg = org || orgBridge.loadPersistedOrg();
     const byId = new Map();
     const byPathKey = new Map();
-    for (const proj of state.projects) {
+    const pinnedSet = new Set(activeOrg.pins?.projects || []);
+    for (const rawProj of (activeOrg.projects || [])) {
+      const proj = {
+        ...rawProj,
+        groupId: activeOrg.projectGroupMap?.[rawProj.id] ?? rawProj.groupId ?? null,
+        pinned: pinnedSet.has(rawProj.id)
+      };
       byId.set(proj.id, proj);
+      if (Array.isArray(proj.aliases)) {
+        for (const alias of proj.aliases) {
+          if (!byId.has(alias)) byId.set(alias, proj);
+        }
+      }
       for (const key of getPathLookupKeys(proj.rootPath)) {
         if (!byPathKey.has(key)) {
           byPathKey.set(key, proj);
         }
       }
     }
-    return { byId, byPathKey };
+    return { byId, byPathKey, org: activeOrg };
   }
 
   function findRegisteredByRoot(normPath, lookup) {
@@ -890,9 +981,11 @@ function createWorkspaceMetaStore({
   }
 
   function resolveSessionAssignment(session, lookup, implicitByKey = null, appSyncedLookup = null) {
+    const activeOrg = lookup.org || orgBridge.loadPersistedOrg();
+    const overrides = activeOrg.sessionProjectOverrides || {};
     const cascadeId = session?.cascadeId;
-    if (cascadeId && Object.prototype.hasOwnProperty.call(state.sessionProjectOverrides, cascadeId)) {
-      const overrideId = state.sessionProjectOverrides[cascadeId];
+    if (cascadeId && Object.prototype.hasOwnProperty.call(overrides, cascadeId)) {
+      const overrideId = overrides[cascadeId];
       if (overrideId === null) {
         return { projectId: null, projectName: null, implicitProject: null };
       }
@@ -925,7 +1018,7 @@ function createWorkspaceMetaStore({
     }
 
     const keys = getPathLookupKeys(normWs);
-    const defaultKeys = getPathLookupKeys(state.defaultSessionPath);
+    const defaultKeys = getPathLookupKeys(getDefaultSessionPath(activeOrg));
     if (keys.some((k) => defaultKeys.includes(k))) {
       return { projectId: null, projectName: null, implicitProject: null };
     }
@@ -964,22 +1057,50 @@ function createWorkspaceMetaStore({
     return { projectId: implicitId, projectName: displayName, implicitProject: implicitObj };
   }
 
-  function sortedGroups() {
-    return state.groups
-      .map((g) => ({ ...g }))
-      .sort((a, b) => (a.sortOrder - b.sortOrder) || (toTimestampMs(a.createdAt) - toTimestampMs(b.createdAt)));
+  function sortedGroups(org = null) {
+    const activeOrg = org || orgBridge.loadPersistedOrg();
+    const pinnedSet = new Set(activeOrg.pins?.groups || []);
+    const pinnedOrder = Array.isArray(activeOrg.groupOrder?.pinned) ? activeOrg.groupOrder.pinned : [];
+    const normalOrder = Array.isArray(activeOrg.groupOrder?.normal) ? activeOrg.groupOrder.normal : [];
+    const pinnedIdx = new Map(pinnedOrder.map((id, idx) => [id, idx]));
+    const normalIdx = new Map(normalOrder.map((id, idx) => [id, idx]));
+
+    return (activeOrg.groups || [])
+      .map((g) => ({
+        ...g,
+        sortOrder: Number.isFinite(Number(g.order)) ? Number(g.order) : 0,
+        pinned: pinnedSet.has(g.id)
+      }))
+      .sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned) {
+          const ia = pinnedIdx.has(a.id) ? pinnedIdx.get(a.id) : Number.MAX_SAFE_INTEGER;
+          const ib = pinnedIdx.has(b.id) ? pinnedIdx.get(b.id) : Number.MAX_SAFE_INTEGER;
+          if (ia !== ib) return ia - ib;
+        } else {
+          const ia = normalIdx.has(a.id) ? normalIdx.get(a.id) : Number.MAX_SAFE_INTEGER;
+          const ib = normalIdx.has(b.id) ? normalIdx.get(b.id) : Number.MAX_SAFE_INTEGER;
+          if (ia !== ib) return ia - ib;
+        }
+        const orderDiff = (a.sortOrder - b.sortOrder);
+        if (orderDiff !== 0) return orderDiff;
+        return toTimestampMs(a.createdAt) - toTimestampMs(b.createdAt);
+      });
   }
 
   function getState() {
-    return cloneState(state);
+    const org = orgBridge.loadPersistedOrg();
+    return buildCombinedLegacyState(org);
   }
 
   function listProjectsAndGroups(discoveredSessions = []) {
-    const lookup = buildRegisteredLookup();
+    const org = orgBridge.loadPersistedOrg();
+    const lookup = buildRegisteredLookup(org);
     const appSyncedLookup = buildAppSyncedLookup(lookup);
     const countsByProjectId = new Map();
     const implicitByKey = new Map();
     const implicitList = [];
+    const pinnedProjectsSet = new Set(org.pins?.projects || []);
 
     const rawSessions = Array.isArray(discoveredSessions) ? discoveredSessions : [];
     const sessions = rawSessions.length > 0
@@ -1002,8 +1123,10 @@ function createWorkspaceMetaStore({
       }
     }
 
-    const registered = state.projects.map((p) => ({
+    const registered = (org.projects || []).map((p) => ({
       ...p,
+      groupId: org.projectGroupMap?.[p.id] ?? p.groupId ?? null,
+      pinned: pinnedProjectsSet.has(p.id),
       implicit: false,
       sessionCount: countsByProjectId.get(p.id) || 0
     }));
@@ -1012,7 +1135,8 @@ function createWorkspaceMetaStore({
       id: p.id,
       name: p.name,
       rootPath: p.rootPath,
-      groupId: null,
+      groupId: org.projectGroupMap?.[p.id] ?? null,
+      pinned: pinnedProjectsSet.has(p.id),
       implicit: false,
       syncedFromApp: true,
       source: 'app',
@@ -1022,18 +1146,27 @@ function createWorkspaceMetaStore({
 
     const implicit = implicitList.map((p) => ({
       ...p,
+      groupId: org.projectGroupMap?.[p.id] ?? p.groupId ?? null,
+      pinned: pinnedProjectsSet.has(p.id),
       sessionCount: countsByProjectId.get(p.id) || 0
     }));
 
     return {
       ok: true,
+      version: 2,
+      revision: org.revision,
       projects: [...registered, ...appSynced, ...implicit],
-      groups: sortedGroups(),
-      defaultSessionPath: state.defaultSessionPath
+      groups: sortedGroups(org),
+      pins: org.pins,
+      groupOrder: org.groupOrder,
+      projectOrder: org.projectOrder,
+      sessionOrder: org.sessionOrder,
+      archivedCount: Object.keys(org.archivedSessions || {}).length,
+      defaultSessionPath: getDefaultSessionPath(org)
     };
   }
 
-  function createProject({ name, rootPath, groupId = null, createDir = false } = {}) {
+  function createProject({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
     const normalizedRoot = normalizeLocalPath(rootPath);
     if (!normalizedRoot) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
@@ -1081,55 +1214,81 @@ function createWorkspaceMetaStore({
       return { ok: false, statusCode: 400, error: 'ROOT_NOT_DIRECTORY' };
     }
 
-    let resolvedGroupId = null;
-    if (groupId !== undefined && groupId !== null && groupId !== '') {
-      const cleanGid = String(groupId).trim();
-      if (!state.groups.some((g) => g.id === cleanGid)) {
-        return { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' };
-      }
-      resolvedGroupId = cleanGid;
-    }
-
-    const lookup = buildRegisteredLookup();
-    const duplicate = findRegisteredByRoot(normalizedRoot, lookup) || findRegisteredByRoot(realRoot, lookup);
-    if (duplicate) {
-      return {
-        ok: false,
-        statusCode: 409,
-        error: 'PROJECT_ALREADY_EXISTS',
-        project: { ...duplicate }
-      };
-    }
-
     const cleanName = typeof name === 'string' && name.trim()
       ? name.trim()
       : (path.basename(normalizedRoot) || normalizedRoot);
-    const now = new Date().toISOString();
-    const project = {
-      id: `proj_${crypto.randomUUID()}`,
-      name: cleanName,
-      rootPath: normalizedRoot,
-      groupId: resolvedGroupId,
-      createdAt: now,
-      updatedAt: now,
-      archived: false
-    };
-    state.projects.push(project);
-    persist();
+    const cleanSource = typeof source === 'string' && source.trim() ? source.trim() : 'local';
 
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      let resolvedGroupId = null;
+      if (groupId !== undefined && groupId !== null && groupId !== '') {
+        const cleanGid = String(groupId).trim();
+        if (!org.groups.some((g) => g.id === cleanGid)) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+        }
+        resolvedGroupId = cleanGid;
+      }
+
+      const lookup = buildRegisteredLookup(org);
+      const duplicate = findRegisteredByRoot(normalizedRoot, lookup) || findRegisteredByRoot(realRoot, lookup);
+      if (duplicate) {
+        return {
+          abort: true,
+          result: {
+            ok: false,
+            statusCode: 409,
+            error: 'PROJECT_ALREADY_EXISTS',
+            project: { ...duplicate }
+          }
+        };
+      }
+
+      const projectId = `proj_${crypto.randomUUID()}`;
+      const project = orgBridge.materializeProjectInOrg(org, {
+        id: projectId,
+        name: cleanName,
+        rootPath: normalizedRoot,
+        groupId: resolvedGroupId,
+        source: cleanSource,
+        remote,
+        syncedFromApp: false
+      });
+
+      const containerKey = resolvedGroupId || '__ungrouped__';
+      if (org.projectOrder[containerKey] && Array.isArray(org.projectOrder[containerKey].normal)) {
+        org.projectOrder[containerKey].normal = [
+          project.id,
+          ...org.projectOrder[containerKey].normal.filter((x) => x !== project.id)
+        ];
+      }
+
+      return {
+        buildResult: () => ({ ok: true, project: { ...project, archived: false } })
+      };
+    });
+
+    if (!outcome || outcome.ok === false) {
+      return outcome;
+    }
+
+    persist();
     const listed = listProjectsAndGroups();
     return {
       ok: true,
-      project: { ...project },
+      project: outcome.project,
       projects: listed.projects,
       groups: listed.groups,
-      defaultSessionPath: state.defaultSessionPath
+      pins: listed.pins,
+      revision: listed.revision,
+      defaultSessionPath: listed.defaultSessionPath
     };
   }
 
-  function resolveProjectCandidate(cleanId, opts = {}) {
+  function resolveProjectCandidate(cleanId, opts = {}, org = null) {
     if (!cleanId) return null;
-    const registered = state.projects.find((p) => p.id === cleanId);
+    const activeOrg = org || orgBridge.loadPersistedOrg();
+    const lookup = buildRegisteredLookup(activeOrg);
+    const registered = lookup.byId.get(cleanId);
     if (registered) return registered;
 
     const appSynced = loadAppSyncedProjects().find((p) => p.id === cleanId);
@@ -1142,13 +1301,15 @@ function createWorkspaceMetaStore({
     if (typeof rawPath === 'string' && rawPath.trim()) {
       const normPath = normalizeLocalPath(rawPath);
       if (normPath && !isForbiddenSystemRoot(normPath)) {
-        const lookup = buildRegisteredLookup();
         const regByRoot = findRegisteredByRoot(normPath, lookup);
-        if (regByRoot && regByRoot.id === cleanId) return regByRoot;
+        if (regByRoot && (regByRoot.id === cleanId || (regByRoot.aliases || []).includes(cleanId))) {
+          return regByRoot;
+        }
 
         if (
           cleanId.startsWith('app:')
           || cleanId.startsWith('implicit:')
+          || cleanId.startsWith('ws:')
           || makeAppSyncedProjectId(normPath) === cleanId
           || makeImplicitProjectId(normPath) === cleanId
         ) {
@@ -1167,125 +1328,157 @@ function createWorkspaceMetaStore({
     return null;
   }
 
-  function promoteCandidateProject(candidate, initialPatch = {}) {
-    if (!candidate) return null;
-    const existingIdx = state.projects.findIndex((p) => p.id === candidate.id);
-    if (existingIdx >= 0) return { index: existingIdx, project: state.projects[existingIdx] };
-
-    const lookup = buildRegisteredLookup();
-    const existingByRoot = findRegisteredByRoot(candidate.rootPath, lookup);
-    if (existingByRoot) {
-      const idx = state.projects.findIndex((p) => p.id === existingByRoot.id);
-      return { index: idx, project: existingByRoot };
-    }
-
-    const now = new Date().toISOString();
-    const promoted = {
-      id: candidate.id,
-      name: initialPatch.name || candidate.name || path.basename(candidate.rootPath) || candidate.rootPath,
-      rootPath: candidate.rootPath,
-      groupId: Object.prototype.hasOwnProperty.call(initialPatch, 'groupId')
-        ? initialPatch.groupId
-        : (candidate.groupId || null),
-      createdAt: candidate.createdAt || now,
-      updatedAt: now,
-      archived: Object.prototype.hasOwnProperty.call(initialPatch, 'archived')
-        ? Boolean(initialPatch.archived)
-        : Boolean(candidate.archived),
-      ...(candidate.syncedFromApp ? { syncedFromApp: true, source: candidate.source || 'app' } : {})
-    };
-    state.projects.push(promoted);
-    knownImplicitProjectsById.delete(candidate.id);
-    return { index: state.projects.length - 1, project: promoted };
-  }
-
   function updateProject(id, patch = {}) {
     const cleanId = typeof id === 'string' ? id.trim() : '';
     if (!isPlainObject(patch)) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATCH' };
     }
 
-    let idx = state.projects.findIndex((p) => p.id === cleanId);
-    let target = idx >= 0 ? state.projects[idx] : null;
-    let candidate = null;
-    if (!target) {
-      candidate = resolveProjectCandidate(cleanId, patch);
-      if (!candidate) {
-        return { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' };
-      }
-      target = candidate;
-    }
-
-    const next = { ...target };
-
-    if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
-      const cleanName = typeof patch.name === 'string' ? patch.name.trim() : '';
-      if (!cleanName) {
-        return { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' };
-      }
-      next.name = cleanName;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
-      if (patch.groupId === null || patch.groupId === '') {
-        next.groupId = null;
-      } else {
-        const cleanGid = String(patch.groupId).trim();
-        if (!state.groups.some((g) => g.id === cleanGid)) {
-          return { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' };
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      const lookup = buildRegisteredLookup(org);
+      let existing = lookup.byId.get(cleanId) || null;
+      let candidate = null;
+      if (!existing) {
+        candidate = resolveProjectCandidate(cleanId, patch, org);
+        if (!candidate) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
         }
-        next.groupId = cleanGid;
       }
-    }
 
-    if (Object.prototype.hasOwnProperty.call(patch, 'archived')) {
-      next.archived = Boolean(patch.archived);
-    }
-
-    if (idx < 0) {
-      const promoted = promoteCandidateProject(candidate, next);
-      idx = promoted.index;
-      next.id = promoted.project.id;
-      next.createdAt = promoted.project.createdAt;
-      if (promoted.project.syncedFromApp) {
-        next.syncedFromApp = true;
-        next.source = promoted.project.source || 'app';
+      if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
+        const cleanName = typeof patch.name === 'string' ? patch.name.trim() : '';
+        if (!cleanName) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' } };
+        }
       }
+
+      let nextGroupId;
+      let hasGroupChange = false;
+      if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
+        hasGroupChange = true;
+        if (patch.groupId === null || patch.groupId === '') {
+          nextGroupId = null;
+        } else {
+          const cleanGid = String(patch.groupId).trim();
+          if (!org.groups.some((g) => g.id === cleanGid)) {
+            return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
+          }
+          nextGroupId = cleanGid;
+        }
+      }
+
+      const targetProj = existing
+        ? org.projects.find((p) => p.id === existing.id)
+        : orgBridge.materializeProjectInOrg(org, candidate);
+
+      if (!targetProj) {
+        return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
+        targetProj.name = patch.name.trim();
+      }
+      if (hasGroupChange) {
+        const prevGid = org.projectGroupMap[targetProj.id] || '__ungrouped__';
+        targetProj.groupId = nextGroupId;
+        if (nextGroupId) org.projectGroupMap[targetProj.id] = nextGroupId;
+        else delete org.projectGroupMap[targetProj.id];
+        for (const g of org.groups) {
+          g.projectIds = g.projectIds.filter((pid) => pid !== targetProj.id);
+          if (nextGroupId && g.id === nextGroupId) g.projectIds.push(targetProj.id);
+        }
+        const nextGidKey = nextGroupId || '__ungrouped__';
+        if (prevGid !== nextGidKey) {
+          const isPinned = org.pins.projects.includes(targetProj.id);
+          if (org.projectOrder[prevGid]) {
+            org.projectOrder[prevGid].pinned = org.projectOrder[prevGid].pinned.filter((x) => x !== targetProj.id);
+            org.projectOrder[prevGid].normal = org.projectOrder[prevGid].normal.filter((x) => x !== targetProj.id);
+          }
+          if (org.projectOrder[nextGidKey]) {
+            if (isPinned) org.projectOrder[nextGidKey].pinned.push(targetProj.id);
+            else org.projectOrder[nextGidKey].normal.unshift(targetProj.id);
+          }
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'pinned')) {
+        const shouldPin = Boolean(patch.pinned);
+        if (shouldPin && !org.pins.projects.includes(targetProj.id)) {
+          org.pins.projects.push(targetProj.id);
+          org.pinTimestamps.projects[targetProj.id] = new Date().toISOString();
+        } else if (!shouldPin) {
+          org.pins.projects = org.pins.projects.filter((pid) => pid !== targetProj.id);
+          delete org.pinTimestamps.projects[targetProj.id];
+        }
+      }
+      targetProj.updatedAt = new Date().toISOString();
+      knownImplicitProjectsById.delete(cleanId);
+
+      const snapshot = {
+        ...targetProj,
+        implicit: false,
+        pinned: org.pins.projects.includes(targetProj.id),
+        archived: Object.prototype.hasOwnProperty.call(patch, 'archived') ? Boolean(patch.archived) : false
+      };
+
+      return {
+        buildResult: () => ({ ok: true, project: snapshot })
+      };
+    });
+
+    if (!outcome || outcome.ok === false) {
+      return outcome;
     }
 
-    next.implicit = false;
-    next.updatedAt = new Date().toISOString();
-    delete next.dbSessionCount;
-    delete next.lastModifiedTime;
-    state.projects[idx] = next;
     persist();
-
     const listed = listProjectsAndGroups();
     return {
       ok: true,
-      project: { ...next },
+      project: outcome.project,
       projects: listed.projects,
       groups: listed.groups,
-      defaultSessionPath: state.defaultSessionPath
+      pins: listed.pins,
+      revision: listed.revision,
+      defaultSessionPath: listed.defaultSessionPath
     };
   }
 
   function deleteProject(id) {
     const cleanId = typeof id === 'string' ? id.trim() : '';
-    const idx = state.projects.findIndex((p) => p.id === cleanId);
-    if (idx < 0) {
-      return { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' };
-    }
-
-    state.projects.splice(idx, 1);
-    for (const [cid, pid] of Object.entries(state.sessionProjectOverrides)) {
-      if (pid === cleanId) {
-        delete state.sessionProjectOverrides[cid];
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      const idx = org.projects.findIndex((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId)));
+      if (idx < 0) {
+        return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
       }
-    }
-    persist();
+      const targetId = org.projects[idx].id;
+      const aliases = org.projects[idx].aliases || [];
+      const removeIds = new Set([cleanId, targetId, ...aliases]);
+      org.projects.splice(idx, 1);
+      org.pins.projects = org.pins.projects.filter((pid) => !removeIds.has(pid));
+      for (const rid of removeIds) {
+        delete org.pinTimestamps.projects[rid];
+        delete org.projectGroupMap[rid];
+        delete org.sessionOrder[rid];
+      }
+      for (const g of org.groups) {
+        g.projectIds = g.projectIds.filter((pid) => !removeIds.has(pid));
+      }
+      for (const ord of Object.values(org.projectOrder)) {
+        if (!ord) continue;
+        ord.pinned = (ord.pinned || []).filter((pid) => !removeIds.has(pid));
+        ord.normal = (ord.normal || []).filter((pid) => !removeIds.has(pid));
+      }
+      for (const [cid, pid] of Object.entries(org.sessionProjectOverrides)) {
+        if (removeIds.has(pid)) {
+          delete org.sessionProjectOverrides[cid];
+        }
+      }
+      return {
+        buildResult: () => ({ ok: true, id: targetId, deleted: true })
+      };
+    });
 
-    return { ok: true, id: cleanId, deleted: true };
+    if (outcome?.ok) persist();
+    return outcome;
   }
 
   function createGroup({ name } = {}) {
@@ -1294,94 +1487,122 @@ function createWorkspaceMetaStore({
       return { ok: false, statusCode: 400, error: 'INVALID_GROUP_NAME' };
     }
 
-    const maxOrder = state.groups.reduce(
-      (max, g) => (Number.isFinite(g.sortOrder) && g.sortOrder > max ? g.sortOrder : max),
-      -1
-    );
-    const now = new Date().toISOString();
-    const group = {
-      id: `grp_${crypto.randomUUID()}`,
-      name: cleanName,
-      sortOrder: maxOrder + 1,
-      collapsed: false,
-      createdAt: now,
-      updatedAt: now
-    };
-    state.groups.push(group);
-    persist();
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      const maxOrder = org.groups.reduce(
+        (max, g) => (Number.isFinite(g.order) && g.order > max ? g.order : max),
+        -1
+      );
+      const nowIso = new Date().toISOString();
+      const group = {
+        id: `grp_${crypto.randomUUID()}`,
+        name: cleanName,
+        source: 'user',
+        order: maxOrder + 1,
+        collapsed: false,
+        projectIds: [],
+        workspaceUris: [],
+        sessionIds: [],
+        createdAt: nowIso,
+        updatedAt: nowIso
+      };
+      org.groups.push(group);
+      if (org.groupOrder.normal.length > 0) {
+        org.groupOrder.normal.push(group.id);
+      }
+      return {
+        buildResult: () => ({ ok: true, group: { ...group, sortOrder: group.order, pinned: false } })
+      };
+    });
 
+    if (!outcome || outcome.ok === false) return outcome;
+    persist();
     const listed = listProjectsAndGroups();
     return {
       ok: true,
-      group: { ...group },
+      group: outcome.group,
       projects: listed.projects,
-      groups: listed.groups
+      groups: listed.groups,
+      pins: listed.pins,
+      revision: listed.revision
     };
   }
 
   function updateGroup(id, patch = {}) {
     const cleanId = typeof id === 'string' ? id.trim() : '';
-    const idx = state.groups.findIndex((g) => g.id === cleanId);
-    if (idx < 0) {
-      return { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' };
-    }
     if (!isPlainObject(patch)) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATCH' };
     }
 
-    const next = { ...state.groups[idx] };
-    if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
-      const cleanName = typeof patch.name === 'string' ? patch.name.trim() : '';
-      if (!cleanName) {
-        return { ok: false, statusCode: 400, error: 'INVALID_GROUP_NAME' };
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      const idx = org.groups.findIndex((g) => g.id === cleanId);
+      if (idx < 0) {
+        return { abort: true, result: { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' } };
       }
-      next.name = cleanName;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'collapsed')) {
-      next.collapsed = Boolean(patch.collapsed);
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'sortOrder')) {
-      const n = Number(patch.sortOrder);
-      if (!Number.isFinite(n)) {
-        return { ok: false, statusCode: 400, error: 'INVALID_SORT_ORDER' };
+      const next = { ...org.groups[idx] };
+      if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
+        const cleanName = typeof patch.name === 'string' ? patch.name.trim() : '';
+        if (!cleanName) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: 'INVALID_GROUP_NAME' } };
+        }
+        next.name = cleanName;
       }
-      next.sortOrder = n;
-    }
+      if (Object.prototype.hasOwnProperty.call(patch, 'collapsed')) {
+        next.collapsed = Boolean(patch.collapsed);
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'sortOrder') || Object.prototype.hasOwnProperty.call(patch, 'order')) {
+        const rawOrd = Object.prototype.hasOwnProperty.call(patch, 'sortOrder') ? patch.sortOrder : patch.order;
+        const n = Number(rawOrd);
+        if (!Number.isFinite(n)) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: 'INVALID_SORT_ORDER' } };
+        }
+        next.order = n;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'pinned')) {
+        const shouldPin = Boolean(patch.pinned);
+        if (shouldPin && !org.pins.groups.includes(cleanId)) {
+          org.pins.groups.push(cleanId);
+          org.pinTimestamps.groups[cleanId] = new Date().toISOString();
+        } else if (!shouldPin) {
+          org.pins.groups = org.pins.groups.filter((gid) => gid !== cleanId);
+          delete org.pinTimestamps.groups[cleanId];
+        }
+      }
+      next.updatedAt = new Date().toISOString();
+      org.groups[idx] = next;
+      return {
+        buildResult: () => ({
+          ok: true,
+          group: {
+            ...next,
+            sortOrder: next.order,
+            pinned: org.pins.groups.includes(next.id)
+          }
+        })
+      };
+    });
 
-    next.updatedAt = new Date().toISOString();
-    state.groups[idx] = next;
+    if (!outcome || outcome.ok === false) return outcome;
     persist();
-
     const listed = listProjectsAndGroups();
     return {
       ok: true,
-      group: { ...next },
+      group: outcome.group,
       projects: listed.projects,
-      groups: listed.groups
+      groups: listed.groups,
+      pins: listed.pins,
+      revision: listed.revision
     };
   }
 
   function deleteGroup(id) {
     const cleanId = typeof id === 'string' ? id.trim() : '';
-    const idx = state.groups.findIndex((g) => g.id === cleanId);
-    if (idx < 0) {
+    const cur = orgBridge.loadPersistedOrg();
+    if (!cur.groups.some((g) => g.id === cleanId)) {
       return { ok: false, statusCode: 404, error: 'GROUP_NOT_FOUND' };
     }
-
-    state.groups.splice(idx, 1);
-    const now = new Date().toISOString();
-    for (let i = 0; i < state.projects.length; i++) {
-      if (state.projects[i].groupId === cleanId) {
-        state.projects[i] = {
-          ...state.projects[i],
-          groupId: null,
-          updatedAt: now
-        };
-      }
-    }
-    persist();
-
-    return { ok: true, id: cleanId, deleted: true };
+    const res = orgBridge.mutateGroup({ action: 'delete', id: cleanId });
+    if (res?.ok) persist();
+    return { ok: true, id: cleanId, deleted: true, revision: res?.revision };
   }
 
   function setSessionPin(cascadeId, pinned) {
@@ -1389,17 +1610,17 @@ function createWorkspaceMetaStore({
     if (!cleanId) {
       return { ok: false, statusCode: 400, error: 'INVALID_CASCADE_ID' };
     }
-
-    if (pinned) {
-      const pinnedAt = new Date().toISOString();
-      state.pinnedSessions[cleanId] = { pinnedAt };
-      persist();
-      return { ok: true, cascadeId: cleanId, pinned: true, pinnedAt };
-    }
-
-    delete state.pinnedSessions[cleanId];
+    const res = orgBridge.togglePin({ type: 'session', id: cleanId, pinned: Boolean(pinned) });
+    if (!res?.ok) return res;
     persist();
-    return { ok: true, cascadeId: cleanId, pinned: false, pinnedAt: null };
+    return {
+      ok: true,
+      cascadeId: cleanId,
+      pinned: res.pinned,
+      pinnedAt: res.pinnedAt,
+      pins: res.pins,
+      revision: res.revision
+    };
   }
 
   function assignSessionProject(cascadeId, projectId, opts = {}) {
@@ -1409,25 +1630,37 @@ function createWorkspaceMetaStore({
     }
 
     if (projectId === null || projectId === undefined || projectId === '') {
-      state.sessionProjectOverrides[cleanCid] = null;
-      persist();
-      return { ok: true, cascadeId: cleanCid, projectId: null };
+      const outcome = orgBridge.mutateOrgAtomically((org) => {
+        org.sessionProjectOverrides[cleanCid] = null;
+        return { buildResult: (saved) => ({ ok: true, cascadeId: cleanCid, projectId: null, revision: saved.revision }) };
+      });
+      if (outcome?.ok) persist();
+      return outcome;
     }
 
     const cleanPid = String(projectId).trim();
-    let resolvedPid = cleanPid;
-    if (!state.projects.some((p) => p.id === cleanPid)) {
-      const candidate = resolveProjectCandidate(cleanPid, opts);
-      if (!candidate) {
-        return { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' };
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      const lookup = buildRegisteredLookup(org);
+      let resolvedPid = cleanPid;
+      const existing = lookup.byId.get(cleanPid);
+      if (existing) {
+        resolvedPid = existing.id;
+      } else {
+        const candidate = resolveProjectCandidate(cleanPid, opts, org);
+        if (!candidate) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        const materialized = orgBridge.materializeProjectInOrg(org, candidate);
+        resolvedPid = materialized ? materialized.id : cleanPid;
       }
-      const promoted = promoteCandidateProject(candidate);
-      resolvedPid = promoted?.project?.id || cleanPid;
-    }
+      org.sessionProjectOverrides[cleanCid] = resolvedPid;
+      return {
+        buildResult: (saved) => ({ ok: true, cascadeId: cleanCid, projectId: resolvedPid, revision: saved.revision })
+      };
+    });
 
-    state.sessionProjectOverrides[cleanCid] = resolvedPid;
-    persist();
-    return { ok: true, cascadeId: cleanCid, projectId: resolvedPid };
+    if (outcome?.ok) persist();
+    return outcome;
   }
 
   function setDefaultSessionPath(dirPath) {
@@ -1459,9 +1692,15 @@ function createWorkspaceMetaStore({
       }
     }
 
-    state.defaultSessionPath = normalized;
-    persist();
-    return { ok: true, defaultSessionPath: normalized };
+    const outcome = orgBridge.mutateOrgAtomically((org) => {
+      org.defaultSessionPath = normalized;
+      return { buildResult: (saved) => ({ ok: true, defaultSessionPath: saved.defaultSessionPath, revision: saved.revision }) };
+    });
+    if (outcome?.ok) {
+      state.defaultSessionPath = normalized;
+      persist();
+    }
+    return outcome;
   }
 
   function getProjectById(id, opts = {}) {
@@ -1471,9 +1710,10 @@ function createWorkspaceMetaStore({
   }
 
   function getProjectRootPaths() {
+    const org = orgBridge.loadPersistedOrg();
     const out = [];
     const seen = new Set();
-    for (const proj of state.projects) {
+    for (const proj of (org.projects || [])) {
       const key = canonicalKey(proj.rootPath);
       if (!seen.has(key)) {
         seen.add(key);
@@ -1592,17 +1832,22 @@ function createWorkspaceMetaStore({
     };
   }
 
-  function enrichSessionsWithMeta(sessions = [], { includeInternal = false } = {}) {
+  function enrichSessionsWithMeta(sessions = [], { includeInternal = false, includeArchived = false } = {}) {
     if (!Array.isArray(sessions)) {
       return { sessions: [], hiddenInternalCount: 0 };
     }
 
     const diskReadChanges = syncSharedReadStateFromDisk();
     const dbById = loadConversationSummaryMap();
-    const lookup = buildRegisteredLookup();
+    const reconciled = orgBridge.reconcileSessionsLifecycle(sessions);
+    const activeOrg = reconciled.org || orgBridge.loadPersistedOrg();
+    const lookup = buildRegisteredLookup(activeOrg);
     const appSyncedLookup = buildAppSyncedLookup(lookup);
     const implicitByKey = new Map();
     const initMs = toTimestampMs(state.readStateInitializedAt);
+    const pinnedSet = new Set(activeOrg.pins?.sessions || []);
+    const archivedMap = activeOrg.archivedSessions || {};
+    const deletedMap = activeOrg.deletedSessions || {};
     let completionChanged = false;
     let hiddenInternalCount = 0;
 
@@ -1614,6 +1859,9 @@ function createWorkspaceMetaStore({
       }
 
       const cid = typeof session.cascadeId === 'string' ? session.cascadeId.trim() : '';
+      if (cid && deletedMap[cid]) {
+        continue;
+      }
       const dbRow = cid ? dbById.get(cid) : null;
 
       const parentConversationId = pickNonEmptyString(
@@ -1754,9 +2002,12 @@ function createWorkspaceMetaStore({
         }
       }
 
-      const pinEntry = cid ? state.pinnedSessions[cid] : null;
-      const pinned = Boolean(pinEntry);
-      const pinnedAt = pinEntry?.pinnedAt || null;
+      const pinned = Boolean(cid && pinnedSet.has(cid));
+      const pinnedAt = pinned
+        ? (activeOrg.pinTimestamps?.sessions?.[cid] || activeOrg.updatedAt || null)
+        : null;
+      const archiveEntry = cid ? archivedMap[cid] : null;
+      const archived = Boolean(archiveEntry);
       const sessionForAssignment = workspaceUri && !session.workspaceUri
         ? { ...session, workspaceUri }
         : session;
@@ -1784,8 +2035,12 @@ function createWorkspaceMetaStore({
         lastCompletedAt: compEntry?.lastCompletedAt || session.lastCompletedTime || null,
         pinned,
         pinnedAt,
+        archived,
+        ...(archived ? { archivedAt: archiveEntry.archivedAt } : {}),
         projectId: resolved.projectId,
-        projectName: resolved.projectName
+        projectName: resolved.projectName,
+        groupId: (cid && activeOrg.sessionGroupMap?.[cid])
+          || (resolved.projectId ? (activeOrg.projectGroupMap?.[resolved.projectId] ?? null) : null)
       });
     }
 
@@ -1793,15 +2048,24 @@ function createWorkspaceMetaStore({
       persist();
     }
 
-    const visible = includeInternal
-      ? enrichedAll
-      : enrichedAll.filter((item) => !item || !item.isInternalSession);
+    const visible = enrichedAll.filter((item) => {
+      if (!item) return false;
+      if (!includeInternal && item.isInternalSession) return false;
+      if (!includeArchived && item.archived) return false;
+      return true;
+    });
+
+    const pinnedGlobalOrder = Array.isArray(activeOrg.sessionOrder?.__pinned__) ? activeOrg.sessionOrder.__pinned__ : [];
+    const pinnedGlobalIdx = new Map(pinnedGlobalOrder.map((id, idx) => [id, idx]));
 
     visible.sort((a, b) => {
       const aPinned = Boolean(a?.pinned);
       const bPinned = Boolean(b?.pinned);
       if (aPinned !== bPinned) return aPinned ? -1 : 1;
       if (aPinned && bPinned) {
+        if (pinnedGlobalIdx.has(a.cascadeId) && pinnedGlobalIdx.has(b.cascadeId)) {
+          return pinnedGlobalIdx.get(a.cascadeId) - pinnedGlobalIdx.get(b.cascadeId);
+        }
         const pinDiff = toTimestampMs(b.pinnedAt) - toTimestampMs(a.pinnedAt);
         if (pinDiff !== 0) return pinDiff;
       }
@@ -1810,12 +2074,22 @@ function createWorkspaceMetaStore({
 
     return {
       sessions: visible,
-      hiddenInternalCount
+      hiddenInternalCount,
+      archivedCount: Object.keys(archivedMap).length
     };
   }
 
   function enrichSessions(sessions = [], opts = {}) {
     return enrichSessionsWithMeta(sessions, opts).sessions;
+  }
+
+  function cleanupSessionTelemetry(cascadeId) {
+    const cleanCid = typeof cascadeId === 'string' ? cascadeId.trim() : '';
+    if (!cleanCid) return;
+    delete state.sessionReadState[cleanCid];
+    delete state.sessionCompletionTimes[cleanCid];
+    delete state.userCreatedSessions[cleanCid];
+    persist();
   }
 
   return {
@@ -1839,7 +2113,35 @@ function createWorkspaceMetaStore({
     mergeExternalReadState,
     getReadStateSnapshot,
     recordSessionCompletion,
-    recordUserCreatedSession
+    recordUserCreatedSession,
+    cleanupSessionTelemetry,
+    getOrg: (opts) => orgBridge.getOrg(opts),
+    togglePin: (body) => {
+      const res = orgBridge.togglePin(body);
+      if (res?.ok) persist();
+      return res;
+    },
+    mutateGroup: (body) => {
+      const res = orgBridge.mutateGroup(body);
+      if (res?.ok) persist();
+      return res;
+    },
+    reorderOrg: (body) => {
+      const res = orgBridge.reorderOrg(body);
+      if (res?.ok) persist();
+      return res;
+    },
+    archiveSession: (cascadeId, opts) => {
+      const res = orgBridge.archiveSession(cascadeId, opts);
+      if (res?.ok) persist();
+      return res;
+    },
+    deleteSessionOrgRecord: (cascadeId, opts) => {
+      const res = orgBridge.deleteSessionOrgRecord(cascadeId, opts);
+      if (res?.ok) cleanupSessionTelemetry(cascadeId);
+      return res;
+    },
+    unarchiveOnSendMessage: (cascadeId) => orgBridge.reconcileSessionsLifecycle([], { forceUnarchiveIds: [cascadeId] })
   };
 }
 

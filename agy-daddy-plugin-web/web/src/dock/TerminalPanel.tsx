@@ -7,20 +7,47 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { ApiError, apiClient } from '../api/client';
+import {
+  isSameOrInsideClientPath,
+  matchWorktreeByLongestPrefix,
+  toClientCompareKey,
+} from '../harness/worktreeUtils';
 import { useI18n } from '../i18n';
-import type { TerminalSessionDto } from '../types';
+import type { TerminalSessionDto, WorktreeDto } from '../types';
 import { AnsiTerminalBuffer, type TerminalSnapshot } from './ansiTerminalBuffer';
 import styles from './TerminalPanel.module.css';
 
 const WRITE_LEASE_TTL_MS = 5 * 60 * 1000;
 const INPUT_BATCH_MS = 16;
 const RESIZE_DEBOUNCE_MS = 120;
+const EMPTY_WORKTREES: WorktreeDto[] = [];
 
 export interface TerminalPanelProps {
   activeRoot?: string;
+  activeBranchLabel?: string | null;
+  worktrees?: WorktreeDto[];
   channel?: string;
   permissionLevel?: string;
   refreshKey?: number | string;
+}
+
+function doesTerminalBelongToRoot(
+  session: TerminalSessionDto,
+  activeRoot: string | undefined,
+  worktrees: WorktreeDto[],
+): boolean {
+  if (!activeRoot) return true;
+  if (!session.cwd) return false;
+  if (worktrees.length > 0) {
+    const targetWt = matchWorktreeByLongestPrefix(activeRoot, worktrees);
+    const sessionWt = matchWorktreeByLongestPrefix(session.cwd, worktrees);
+    if (targetWt) {
+      return Boolean(
+        sessionWt && toClientCompareKey(sessionWt.path) === toClientCompareKey(targetWt.path),
+      );
+    }
+  }
+  return isSameOrInsideClientPath(session.cwd, activeRoot);
 }
 
 function keyEventToTerminalSequence(ev: KeyboardEvent<HTMLDivElement>): string | null {
@@ -66,6 +93,8 @@ function keyEventToTerminalSequence(ev: KeyboardEvent<HTMLDivElement>): string |
 
 export function TerminalPanel({
   activeRoot,
+  activeBranchLabel,
+  worktrees = EMPTY_WORKTREES,
   channel = 'loopback',
   permissionLevel = 'L2',
   refreshKey,
@@ -90,7 +119,6 @@ export function TerminalPanel({
   const inputFlushTimerRef = useRef<number | null>(null);
   const writeLeaseRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const activeTermIdRef = useRef<string | null>(activeTermId);
-  activeTermIdRef.current = activeTermId;
 
   const getOrCreateBuffer = useCallback((sessionId: string, cols = 80, rows = 24) => {
     let buf = buffersRef.current.get(sessionId);
@@ -114,16 +142,34 @@ export function TerminalPanel({
     writeLeaseRef.current = null;
   }, [channel]);
 
+  const scopedSessions = useMemo(
+    () => sessions.filter((s) => doesTerminalBelongToRoot(s, activeRoot, worktrees)),
+    [sessions, activeRoot, worktrees],
+  );
+
+  const effectiveActiveTermId = useMemo(
+    () =>
+      activeTermId && scopedSessions.some((s) => s.sessionId === activeTermId)
+        ? activeTermId
+        : null,
+    [activeTermId, scopedSessions],
+  );
+  activeTermIdRef.current = effectiveActiveTermId;
+
   const loadSessions = useCallback(async () => {
     if (!isPermitted) return;
     try {
-      const res = await apiClient.listTerminalSessions();
+      const res = await apiClient.listTerminalSessions(
+        activeRoot ? { cwd: activeRoot } : undefined,
+      );
       if (res.runtimeAvailable === false) {
         setUnavailableReason(res.unavailableReason || 'PTY_RUNTIME_UNAVAILABLE');
       } else {
         setUnavailableReason(null);
       }
-      const list = res.sessions || [];
+      const list = (res.sessions || []).filter((s) =>
+        doesTerminalBelongToRoot(s, activeRoot, worktrees),
+      );
       setSessions(list);
       setActiveTermId((prev) => {
         if (prev && list.some((s) => s.sessionId === prev)) return prev;
@@ -136,34 +182,34 @@ export function TerminalPanel({
       }
       setErrorMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [isPermitted]);
+  }, [isPermitted, activeRoot, worktrees]);
 
   useEffect(() => {
     void loadSessions();
   }, [loadSessions, refreshKey]);
 
   const activeSession = useMemo(
-    () => sessions.find((s) => s.sessionId === activeTermId) || null,
-    [sessions, activeTermId],
+    () => scopedSessions.find((s) => s.sessionId === effectiveActiveTermId) || null,
+    [scopedSessions, effectiveActiveTermId],
   );
 
   // Subscribe to SSE output for active terminal
   useEffect(() => {
-    if (!isPermitted || !activeTermId) {
+    if (!isPermitted || !effectiveActiveTermId) {
       setStreamStatus('idle');
       return;
     }
 
     const buf = getOrCreateBuffer(
-      activeTermId,
+      effectiveActiveTermId,
       activeSession?.cols || 80,
       activeSession?.rows || 24,
     );
     setSnapshot(buf.getSnapshot());
     setStreamStatus('connecting');
 
-    const afterSeq = seqMapRef.current.get(activeTermId) ?? 0;
-    const unsubscribe = apiClient.subscribeTerminalStream(activeTermId, {
+    const afterSeq = seqMapRef.current.get(effectiveActiveTermId) ?? 0;
+    const unsubscribe = apiClient.subscribeTerminalStream(effectiveActiveTermId, {
       afterSeq,
       onOpen: () => {
         setStreamStatus('connected');
@@ -174,17 +220,17 @@ export function TerminalPanel({
       onOutput: (evt) => {
         setStreamStatus('connected');
         if (typeof evt.seq === 'number') {
-          seqMapRef.current.set(activeTermId, evt.seq + 1);
+          seqMapRef.current.set(effectiveActiveTermId, evt.seq + 1);
         }
         buf.write(evt.chunk || '');
-        if (activeTermIdRef.current === activeTermId) {
+        if (activeTermIdRef.current === effectiveActiveTermId) {
           setSnapshot(buf.getSnapshot());
         }
       },
       onExit: (evt) => {
         setSessions((prev) =>
           prev.map((s) =>
-            s.sessionId === activeTermId
+            s.sessionId === effectiveActiveTermId
               ? { ...s, alive: false, exitCode: evt.exitCode, signal: evt.signal }
               : s,
           ),
@@ -195,7 +241,7 @@ export function TerminalPanel({
     return () => {
       unsubscribe();
     };
-  }, [activeTermId, isPermitted, getOrCreateBuffer, activeSession?.cols, activeSession?.rows, reconnectNonce]);
+  }, [effectiveActiveTermId, isPermitted, getOrCreateBuffer, activeSession?.cols, activeSession?.rows, reconnectNonce]);
 
   // Auto-scroll screen on output updates
   useEffect(() => {
@@ -223,12 +269,13 @@ export function TerminalPanel({
         if (activeTermIdRef.current === activeTermId && buf) {
           setSnapshot(buf.getSnapshot());
         }
+        if (!effectiveActiveTermId) return;
         const validLease =
           writeLeaseRef.current && writeLeaseRef.current.expiresAt > Date.now()
             ? writeLeaseRef.current.token
             : undefined;
         void apiClient
-          .resizeTerminalSession(activeTermId, cols, rows, {
+          .resizeTerminalSession(effectiveActiveTermId, cols, rows, {
             confirmToken: validLease,
             onConfirmTokenRenewed: (newToken) => {
               writeLeaseRef.current = {
@@ -246,7 +293,7 @@ export function TerminalPanel({
       if (timer !== null) window.clearTimeout(timer);
       ro.disconnect();
     };
-  }, [activeTermId, isPermitted]);
+  }, [effectiveActiveTermId, isPermitted]);
 
   const flushInputQueue = useCallback(async () => {
     inputFlushTimerRef.current = null;
@@ -271,9 +318,14 @@ export function TerminalPanel({
         },
       });
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 409 || err.code === 'PTY_CWD_MISMATCH')) {
+        setActiveTermId(null);
+        void loadSessions();
+        return;
+      }
       setErrorMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [isPermitted]);
+  }, [isPermitted, loadSessions]);
 
   const enqueueInput = useCallback(
     (data: string) => {
@@ -296,6 +348,20 @@ export function TerminalPanel({
     [],
   );
 
+  const applyCreatedSession = (res: Awaited<ReturnType<typeof apiClient.createTerminalSession>>) => {
+    const created = res.session;
+    if (res.writeConfirmToken) {
+      writeLeaseRef.current = {
+        token: res.writeConfirmToken,
+        expiresAt: res.writeConfirmExpiresAt || Date.now() + WRITE_LEASE_TTL_MS,
+      };
+    }
+    setUnavailableReason(null);
+    setSessions((prev) => [created, ...prev.filter((s) => s.sessionId !== created.sessionId)]);
+    seqMapRef.current.set(created.sessionId, 0);
+    setActiveTermId(created.sessionId);
+  };
+
   const handleCreateSession = async () => {
     if (!isPermitted || creating) return;
     setCreating(true);
@@ -306,18 +372,24 @@ export function TerminalPanel({
         cols: 80,
         rows: 24,
       });
-      const created = res.session;
-      if (res.writeConfirmToken) {
-        writeLeaseRef.current = {
-          token: res.writeConfirmToken,
-          expiresAt: res.writeConfirmExpiresAt || Date.now() + WRITE_LEASE_TTL_MS,
-        };
-      }
-      setUnavailableReason(null);
-      setSessions((prev) => [created, ...prev.filter((s) => s.sessionId !== created.sessionId)]);
-      seqMapRef.current.set(created.sessionId, 0);
-      setActiveTermId(created.sessionId);
+      applyCreatedSession(res);
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 409 || err.code === 'PTY_CWD_MISMATCH')) {
+        // Detach stale session ID and isolate into a fresh PTY for the active worktree
+        setActiveTermId(null);
+        try {
+          const retryRes = await apiClient.createTerminalSession({
+            cwd: activeRoot || undefined,
+            cols: 80,
+            rows: 24,
+          });
+          applyCreatedSession(retryRes);
+          return;
+        } catch (retryErr) {
+          setErrorMsg(retryErr instanceof Error ? retryErr.message : String(retryErr));
+          return;
+        }
+      }
       if (err instanceof ApiError && err.status === 503) {
         setUnavailableReason(err.message || 'PTY_RUNTIME_UNAVAILABLE');
       } else {
@@ -329,15 +401,16 @@ export function TerminalPanel({
   };
 
   const handleCloseSession = async () => {
-    if (!activeTermId || !isPermitted) return;
-    const closingId = activeTermId;
+    if (!effectiveActiveTermId || !isPermitted) return;
+    const closingId = effectiveActiveTermId;
     try {
       await apiClient.closeTerminalSession(closingId);
       buffersRef.current.delete(closingId);
       seqMapRef.current.delete(closingId);
       setSessions((prev) => {
         const next = prev.filter((s) => s.sessionId !== closingId);
-        setActiveTermId(next[0]?.sessionId ?? null);
+        const nextScoped = next.filter((s) => doesTerminalBelongToRoot(s, activeRoot, worktrees));
+        setActiveTermId(nextScoped[0]?.sessionId ?? null);
         return next;
       });
     } catch (err) {
@@ -346,7 +419,7 @@ export function TerminalPanel({
   };
 
   const handleScreenKeyDown = (ev: KeyboardEvent<HTMLDivElement>) => {
-    if (!activeTermId || !isPermitted) return;
+    if (!effectiveActiveTermId || !isPermitted) return;
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'c') {
       const sel = window.getSelection?.()?.toString();
       if (sel) return;
@@ -394,22 +467,26 @@ export function TerminalPanel({
           ? t('terminal.statusConnecting')
           : t('terminal.statusDisconnected');
 
+  const branchDisplay =
+    activeBranchLabel ||
+    (activeRoot ? activeRoot.split('/').filter(Boolean).pop() || activeRoot : '');
+
   return (
     <div className={styles.root} data-testid="terminal-panel">
       <div className={styles.toolbar}>
         <div className={styles.toolbarLeft}>
           <select
             className={styles.sessionSelect}
-            value={activeTermId ?? ''}
+            value={effectiveActiveTermId ?? ''}
             onChange={(e) => setActiveTermId(e.target.value || null)}
-            disabled={sessions.length === 0}
+            disabled={scopedSessions.length === 0}
             aria-label={t('terminal.sessionSelect')}
             data-testid="terminal-session-select"
           >
-            {sessions.length === 0 ? (
+            {scopedSessions.length === 0 ? (
               <option value="">{t('terminal.emptyTitle')}</option>
             ) : (
-              sessions.map((s) => (
+              scopedSessions.map((s) => (
                 <option key={s.sessionId} value={s.sessionId}>
                   {(s.shell || 'sh').split('/').pop() || 'sh'} · {s.sessionId.slice(0, 6)}
                 </option>
@@ -417,7 +494,17 @@ export function TerminalPanel({
             )}
           </select>
 
-          {activeTermId && (
+          {activeRoot && (
+            <span
+              className={styles.sandboxCapsule}
+              title={activeRoot}
+              data-testid="terminal-sandbox-capsule"
+            >
+              {t('terminal.sandboxLabel')}: {branchDisplay}
+            </span>
+          )}
+
+          {effectiveActiveTermId && (
             <span className={styles.statusBadge} data-testid="terminal-status-badge">
               <span
                 className={`${styles.statusDot} ${
@@ -432,7 +519,7 @@ export function TerminalPanel({
             </span>
           )}
 
-          {activeTermId && streamStatus === 'disconnected' && (
+          {effectiveActiveTermId && streamStatus === 'disconnected' && (
             <button
               type="button"
               className={styles.btn}
@@ -457,14 +544,14 @@ export function TerminalPanel({
           >
             + {t('terminal.newSession')}
           </button>
-          {activeTermId && (
+          {effectiveActiveTermId && (
             <>
               <button
                 type="button"
                 className={styles.btn}
                 onClick={() => {
-                  buffersRef.current.get(activeTermId)?.clear();
-                  syncSnapshot(activeTermId);
+                  buffersRef.current.get(effectiveActiveTermId)?.clear();
+                  syncSnapshot(effectiveActiveTermId);
                 }}
                 data-testid="terminal-clear-btn"
               >
@@ -489,10 +576,18 @@ export function TerminalPanel({
         </div>
       )}
 
-      {!activeTermId ? (
+      {!effectiveActiveTermId ? (
         <div className={styles.emptyCard} data-testid="terminal-empty-card">
-          <h4 className={styles.cardTitle}>{t('terminal.emptyTitle')}</h4>
-          <p className={styles.cardDesc}>{t('terminal.emptyDesc')}</p>
+          <h4 className={styles.cardTitle}>
+            {activeRoot
+              ? t('terminal.emptyWorktreeTitle', { branch: branchDisplay })
+              : t('terminal.emptyTitle')}
+          </h4>
+          <p className={styles.cardDesc}>
+            {activeRoot
+              ? t('terminal.emptyWorktreeDesc', { path: activeRoot })
+              : t('terminal.emptyDesc')}
+          </p>
           <button
             type="button"
             className={`${styles.btn} ${styles.btnPrimary}`}
@@ -500,7 +595,9 @@ export function TerminalPanel({
             onClick={() => void handleCreateSession()}
             data-testid="terminal-empty-launch-btn"
           >
-            {t('terminal.newSession')}
+            {activeRoot
+              ? t('terminal.emptyWorktreeTitle', { branch: branchDisplay })
+              : t('terminal.newSession')}
           </button>
         </div>
       ) : (

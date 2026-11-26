@@ -27,6 +27,18 @@ export default defineConfig({
           if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
             return 'react-vendor';
           }
+          if (id.includes('/src/i18n/locales/')) {
+            return 'locales';
+          }
+          if (id.includes('/src/host-admin/')) {
+            return 'host-admin';
+          }
+          if (id.includes('/src/dock/')) {
+            return 'dock';
+          }
+          if (id.includes('/src/pet/')) {
+            return 'pet';
+          }
           return undefined;
         }
       }

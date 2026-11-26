@@ -26,6 +26,45 @@ export interface SessionWorkspaceInfo {
   branchName?: string;
 }
 
+export type WorktreeStatus = 'ready' | 'detached' | 'locked' | 'bare' | 'missing';
+
+export interface WorktreeDto {
+  worktreeId: string;
+  path: string;
+  canonicalKey?: string;
+  uri: string;
+  displaySubpath: string;
+  head: string;
+  headShort: string;
+  branch: string;
+  displayLabel: string;
+  isMain: boolean;
+  bare: boolean;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  exists: boolean;
+  status: WorktreeStatus;
+  collapsed: boolean;
+  allowed: boolean;
+  isCurrent?: boolean;
+  sessionCount?: number;
+  runningCount?: number;
+  needsAttentionCount?: number;
+}
+
+export interface CollapsedNodesState {
+  projects: Record<string, boolean>;
+  worktrees: Record<string, boolean>;
+}
+
+export interface WorktreeTombstoneDto {
+  repoRootPath: string;
+  path: string;
+  branch?: string;
+  lastSeenAt?: string;
+}
+
 export interface SessionSummary {
   cascadeId: string;
   shortId?: string;
@@ -58,6 +97,11 @@ export interface SessionSummary {
   archived?: boolean;
   archivedAt?: string | null;
   groupId?: string | null;
+  worktreeId?: string | null;
+  worktreePath?: string | null;
+  worktreeBranch?: string | null;
+  worktreeStatus?: WorktreeStatus | string | null;
+  workspacePath?: string | null;
 }
 
 export interface SessionsListResponse {
@@ -79,6 +123,7 @@ export interface MarkSessionReadResponse {
 export interface CreateSessionRequest {
   title?: string;
   workspaceUri?: string;
+  worktreePath?: string;
   projectId?: string | null;
   standalone?: boolean;
 }
@@ -88,6 +133,8 @@ export interface CreateSessionResponse {
   cascadeId: string;
   title?: string;
   workspaceUri?: string;
+  worktreeId?: string;
+  worktreePath?: string;
   projectId?: string | null;
 }
 
@@ -110,6 +157,7 @@ export interface ProjectItem {
   groupId: string | null;
   pinned?: boolean;
   pinnedAt?: string | null;
+  collapsed?: boolean;
   implicit?: boolean;
   syncedFromApp?: boolean;
   source?: string;
@@ -119,6 +167,10 @@ export interface ProjectItem {
   updatedAt?: string;
   lastModifiedTime?: string | null;
   archived?: boolean;
+  repoRootPath?: string | null;
+  isMultiWorktree?: boolean;
+  worktrees?: WorktreeDto[];
+  mergedProjectIds?: string[];
 }
 
 export interface ProjectGroup {
@@ -157,10 +209,12 @@ export interface ProjectsResponse {
   revision?: number;
   projects: ProjectItem[];
   groups: ProjectGroup[];
+  collapsedNodes?: CollapsedNodesState;
   pins?: SessionOrgPins;
   groupOrder?: ZoneOrder;
   projectOrder?: Record<string, ZoneOrder>;
   sessionOrder?: SessionOrderMap;
+  worktreeTombstones?: Record<string, WorktreeTombstoneDto>;
   archivedCount?: number;
   defaultSessionPath: string;
 }
@@ -207,6 +261,25 @@ export interface ProjectGroupMutationResponse {
   projects?: ProjectItem[];
   groups?: ProjectGroup[];
   pins?: SessionOrgPins;
+  projectOrder?: Record<string, ZoneOrder>;
+  movedProjectCount?: number;
+  movedProjectIds?: string[];
+  revision?: number;
+}
+
+export interface CollapseNodeRequest {
+  nodeType: 'group' | 'project' | 'worktree';
+  id: string;
+  collapsed: boolean;
+}
+
+export interface CollapseNodeResponse {
+  ok: boolean;
+  nodeType: 'group' | 'project' | 'worktree';
+  id: string;
+  collapsed: boolean;
+  collapsedNodes?: CollapsedNodesState;
+  groups?: ProjectGroup[];
   revision?: number;
 }
 
@@ -231,6 +304,8 @@ export interface SessionOrgSnapshot {
   revision?: number;
   groups: ProjectGroup[];
   projects: ProjectItem[];
+  collapsedNodes?: CollapsedNodesState;
+  worktreeTombstones?: Record<string, WorktreeTombstoneDto>;
   pins: SessionOrgPins;
   pinTimestamps?: {
     sessions?: Record<string, string>;
@@ -1367,6 +1442,9 @@ export interface TerminalSessionDto {
   sessionId: string;
   title: string;
   cwd: string;
+  realCwd?: string;
+  worktreeId?: string;
+  branchName?: string;
   shell: string;
   cols: number;
   rows: number;
@@ -1377,6 +1455,27 @@ export interface TerminalSessionDto {
   lastActivityAt: number;
   endedAt: number | null;
   latestSeq: number;
+}
+
+export interface SseOrgUpdatedPayload {
+  revision?: number;
+  updatedAt?: string;
+  updatedBy?: string;
+  groups?: ProjectGroup[];
+  collapsedNodes?: CollapsedNodesState;
+  pins?: SessionOrgPins;
+  groupOrder?: ZoneOrder;
+  projectOrder?: Record<string, ZoneOrder>;
+  sessionOrder?: SessionOrderMap;
+}
+
+export interface SseWorktreeUpdatedPayload {
+  repoRootPath?: string;
+  repoRoot?: string;
+  action?: string;
+  isMultiWorktree?: boolean;
+  worktrees?: WorktreeDto[];
+  updatedAt?: string;
 }
 
 export interface TerminalSessionsListResponse {

@@ -183,4 +183,117 @@ describe('TerminalPanel', () => {
     );
     expect(screen.queryByTestId('terminal-reconnect-btn')).toBeNull();
   });
+
+  it('isolates terminals strictly by activeRoot worktree without global first-alive fallback and retries 409 PTY_CWD_MISMATCH', async () => {
+    const wtMain = {
+      worktreeId: 'wt-main',
+      path: '/repo',
+      uri: 'file:///repo',
+      displaySubpath: 'repo',
+      head: '111',
+      headShort: '111',
+      branch: 'main',
+      displayLabel: 'main',
+      isMain: true,
+      bare: false,
+      detached: false,
+      locked: false,
+      prunable: false,
+      exists: true,
+      status: 'ready' as const,
+      collapsed: false,
+      allowed: true,
+    };
+    const wtFeat = {
+      ...wtMain,
+      worktreeId: 'wt-feat',
+      path: '/repo/.worktrees/feat-a',
+      uri: 'file:///repo/.worktrees/feat-a',
+      displaySubpath: '.worktrees/feat-a',
+      branch: 'feat/a',
+      displayLabel: 'feat/a',
+      isMain: false,
+    };
+
+    const listSpy = vi.spyOn(apiClient, 'listTerminalSessions').mockResolvedValue({
+      ok: true,
+      runtimeAvailable: true,
+      writable: true,
+      requiredPermission: 'L2',
+      maxSessions: 8,
+      sessions: [
+        {
+          sessionId: 'term-main',
+          title: 'zsh',
+          cwd: '/repo',
+          shell: '/bin/zsh',
+          cols: 80,
+          rows: 24,
+          alive: true,
+          exitCode: null,
+          signal: null,
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+          endedAt: null,
+          latestSeq: 0,
+        },
+      ],
+    });
+
+    vi.spyOn(apiClient, 'subscribeTerminalStream').mockImplementation((_id, handlers) => {
+      handlers.onOpen?.();
+      return () => {};
+    });
+
+    render(
+      <I18nProvider defaultLocale="en">
+        <TerminalPanel
+          activeRoot="/repo/.worktrees/feat-a"
+          activeBranchLabel="feat/a"
+          worktrees={[wtMain, wtFeat]}
+          channel="loopback"
+          permissionLevel="L2"
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => {
+      expect(listSpy).toHaveBeenCalledWith({ cwd: '/repo/.worktrees/feat-a' });
+    });
+
+    // Even if server returned a /repo PTY, TerminalPanel must NOT attach to /repo when activeRoot is feat-a
+    expect(screen.getByTestId('terminal-empty-card')).toHaveTextContent('feat/a');
+    expect(screen.getByTestId('terminal-sandbox-capsule')).toHaveTextContent('feat/a');
+    expect(screen.queryByTestId('terminal-screen')).not.toBeInTheDocument();
+
+    // Auto-isolate on 409 PTY_CWD_MISMATCH
+    const createSpy = vi
+      .spyOn(apiClient, 'createTerminalSession')
+      .mockRejectedValueOnce(new ApiError('cwd mismatch', 409, 'PTY_CWD_MISMATCH'))
+      .mockResolvedValueOnce({
+        ok: true,
+        created: true,
+        session: {
+          sessionId: 'term-feat',
+          title: 'zsh',
+          cwd: '/repo/.worktrees/feat-a',
+          shell: '/bin/zsh',
+          cols: 80,
+          rows: 24,
+          alive: true,
+          exitCode: null,
+          signal: null,
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+          endedAt: null,
+          latestSeq: 0,
+        },
+      });
+
+    fireEvent.click(screen.getByTestId('terminal-empty-launch-btn'));
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('terminal-screen')).toBeInTheDocument();
+    });
+  });
 });

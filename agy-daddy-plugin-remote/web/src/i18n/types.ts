@@ -121,6 +121,8 @@ export interface I18nMessages {
   'menu.pushEnable': string;
   'menu.pushEnabled': string;
   'menu.pushTest': string;
+  'menu.pushHostDisabledNote': string;
+  'menu.appBadge': string;
   'menu.sound': string;
   'menu.vibrate': string;
   'menu.diagnostics': string;
@@ -627,6 +629,7 @@ export interface I18nMessages {
   'store.localeLocalOnly': string;
   'store.pushDisabled': string;
   'store.pushEnabled': string;
+  'store.pushHostDisabled': string;
   'store.pushFailed': string;
   'store.testPushSent': string;
   'store.testPushFailed': string;

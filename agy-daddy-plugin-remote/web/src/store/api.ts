@@ -689,7 +689,22 @@ export const api = {
     }),
 
   getVapidKey: () =>
-    requestJson<{ ok: boolean; publicKey?: string; vapidPublicKey?: string }>('/api/v1/push/vapid-key'),
+    requestJson<{
+      ok: boolean;
+      publicKey?: string;
+      vapidPublicKey?: string;
+      enablePushNotifications?: boolean;
+      enableAppBadge?: boolean;
+    }>('/api/v1/push/vapid-key'),
+
+  getPushStatus: () =>
+    requestJson<{
+      ok: boolean;
+      available?: boolean;
+      enablePushNotifications: boolean;
+      enableAppBadge: boolean;
+      subscriptionsCount?: number;
+    }>('/api/v1/push/status'),
 
   subscribePush: (subscription: PushSubscriptionJSON) =>
     requestJson<{ ok: boolean }>('/api/v1/push/subscribe', {
@@ -704,7 +719,13 @@ export const api = {
     }),
 
   testPush: () =>
-    requestJson<{ ok: boolean }>('/api/v1/push/test', {
+    requestJson<{
+      ok: boolean;
+      sent?: number;
+      disabled?: boolean;
+      skipped?: boolean;
+      reason?: string;
+    }>('/api/v1/push/test', {
       method: 'POST',
       body: '{}'
     }),

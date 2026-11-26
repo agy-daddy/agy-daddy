@@ -728,6 +728,12 @@ export interface BootstrapResponse {
   archivedSessions?: Record<string, ArchivedSessionMeta>;
   defaultSessionPath?: string;
   vapidPublicKey?: string | null;
+  enablePushNotifications?: boolean;
+  enableAppBadge?: boolean;
+  notifications?: {
+    enablePushNotifications?: boolean;
+    enableAppBadge?: boolean;
+  };
   voiceSupported?: boolean;
   pcWebHidden?: boolean;
   runningTasksCount?: number;

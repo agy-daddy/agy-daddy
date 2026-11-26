@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { type TranslateFn, useI18n } from '../i18n';
 import {
   DEFAULT_ORCHESTRATOR_THINKING,
   groupModelsForPicker
@@ -60,28 +61,29 @@ function providerDotClass(provider: ModelPickerGroup['provider']): string {
   }
 }
 
-function getTierDescription(tierKey: string): string {
+function getTierDescription(tierKey: string, t: TranslateFn): string {
   switch (tierKey) {
     case 'minimal':
-      return '极速响应 · 最低思考开销';
+      return t('model.tierDesc.minimal');
     case 'low':
-      return '快速响应 · 适合日常轻量任务';
+      return t('model.tierDesc.low');
     case 'medium':
-      return '均衡推理 · 速度与质量平衡';
+      return t('model.tierDesc.medium');
     case 'high':
-      return '深度推理 · 推荐用于复杂编码';
+      return t('model.tierDesc.high');
     case 'xhigh':
-      return '超强推理 · 适合高难度架构设计';
+      return t('model.tierDesc.xhigh');
     case 'max':
-      return '极限推理 · 最大思考预算';
+      return t('model.tierDesc.max');
     case 'thinking':
-      return '扩展思考 · 展示完整推理过程';
+      return t('model.tierDesc.thinking');
     default:
-      return '默认思考配置';
+      return t('model.tierDesc.default');
   }
 }
 
 export function ModelPickerSheet(props: ModelPickerSheetProps) {
+  const { t } = useI18n();
   const {
     open,
     models,
@@ -117,8 +119,17 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [selectedMasterId, setSelectedMasterId] = useState<string>('');
   const [query, setQuery] = useState('');
+  const [sheetDragY, setSheetDragY] = useState(0);
+  const [sheetDragging, setSheetDragging] = useState(false);
+  const [pickerDragX, setPickerDragX] = useState(0);
+  const [pickerDragging, setPickerDragging] = useState(false);
 
-  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeRef = useRef<{
+    x: number;
+    y: number;
+    mode: 'pending' | 'vertical' | 'horizontal' | 'locked-out';
+    fromHeader: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -126,6 +137,10 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
       setSelectedGroupId('');
       setSelectedMasterId('');
       setQuery('');
+      setSheetDragY(0);
+      setSheetDragging(false);
+      setPickerDragX(0);
+      setPickerDragging(false);
     }
   }, [open]);
 
@@ -264,44 +279,105 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
   };
 
   const onTouchStartSheet = (e: TouchEvent) => {
-    if (depth === 0 || e.touches.length !== 1) return;
+    if (e.touches.length !== 1) return;
     const target = e.target;
-    if (target instanceof Element && target.closest('input, textarea, select')) return;
+    if (target instanceof Element && target.closest('input, textarea, select, button')) return;
     const t = e.touches[0];
-    swipeRef.current = { x: t.clientX, y: t.clientY };
+    const fromHeader = Boolean(
+      target instanceof Element &&
+        target.closest(`.${styles.handleWrap}, .${styles.header}`)
+    );
+    swipeRef.current = { x: t.clientX, y: t.clientY, mode: 'pending', fromHeader };
+  };
+
+  const onTouchMoveSheet = (e: TouchEvent) => {
+    const start = swipeRef.current;
+    if (!start || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+
+    if (start.mode === 'pending') {
+      if (Math.hypot(dx, dy) < 8) return;
+      if (start.fromHeader && dy > 0 && Math.abs(dy) >= Math.abs(dx)) {
+        start.mode = 'vertical';
+        setSheetDragging(true);
+      } else if (depth > 0 && dx > 0 && Math.abs(dx) > Math.abs(dy) * 1.1) {
+        start.mode = 'horizontal';
+        setPickerDragging(true);
+      } else {
+        start.mode = 'locked-out';
+        return;
+      }
+    }
+
+    if (start.mode === 'vertical') {
+      setSheetDragY(Math.max(0, dy));
+    } else if (start.mode === 'horizontal') {
+      setPickerDragX(Math.max(0, dx));
+    }
   };
 
   const onTouchEndSheet = (e: TouchEvent) => {
     const start = swipeRef.current;
     swipeRef.current = null;
-    if (!start || depth === 0 || e.changedTouches.length !== 1) return;
+    if (!start) return;
+
     const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (dx > 56 && Math.abs(dy) < Math.abs(dx) * 0.75) {
-      handleBack();
+    const dx = t ? t.clientX - start.x : pickerDragX;
+    const dy = t ? t.clientY - start.y : sheetDragY;
+
+    if (start.mode === 'vertical') {
+      setSheetDragging(false);
+      if (dy > 80) {
+        setSheetDragY(0);
+        onClose();
+        return;
+      }
+      setSheetDragY(0);
+      return;
     }
+
+    if (start.mode === 'horizontal' || (start.mode === 'pending' && depth > 0)) {
+      setPickerDragging(false);
+      setPickerDragX(0);
+      if (dx > 56 && Math.abs(dy) < Math.abs(dx) * 0.75) {
+        handleBack();
+      }
+      return;
+    }
+
+    setSheetDragging(false);
+    setPickerDragging(false);
+    setSheetDragY(0);
+    setPickerDragX(0);
   };
+
+  const activeGroupTitle = activeGroup
+    ? activeGroup.isOrchestrator
+      ? t('model.orchestratorGroup')
+      : activeGroup.name
+    : '';
 
   const headerTitle =
     depth === 0
-      ? '选择模型'
+      ? t('model.selectTitle')
       : depth === 1
         ? activeGroup?.isOrchestrator
-          ? '选择主控模型'
-          : activeGroup?.name || '选择思考等级'
-        : activeMaster?.name || '选择思考等级';
+          ? t('model.selectMaster')
+          : activeGroupTitle || t('model.selectThinking')
+        : activeMaster?.name || t('model.selectThinking');
 
   const headerBadge =
     depth === 0
-      ? `${totalModels} 个可用`
+      ? t('model.availableCount', { count: totalModels })
       : depth === 1
         ? activeGroup?.isOrchestrator
-          ? '1/2 · 编排主控'
-          : '思考等级'
-        : '2/2 · 思考等级';
+          ? t('model.step1Master')
+          : t('model.thinkingLevel')
+        : t('model.step2Thinking');
 
-  const backLabel = depth === 2 ? '主控模型' : '模型列表';
+  const backLabel = depth === 2 ? t('model.masterModel') : t('model.modelList');
 
   const renderTierOptions = (
     variants: ModelPickerVariant[],
@@ -319,8 +395,11 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
           const isVarActive = isOrchMasterMode
             ? variant.resolvedThinkingLevel === configuredTier
             : variant.id === selectedModelId;
-          const labelText = variant.tierLabel || variant.model.label || '标准';
-          const descText = getTierDescription(variant.tierKey);
+          const labelText =
+            variant.tierLabel === '标准'
+              ? t('model.standard')
+              : variant.tierLabel || variant.model.label || t('model.standard');
+          const descText = getTierDescription(variant.tierKey, t);
 
           let testId = `model-variant-${variant.id}`;
           if (isOrchMasterMode && masterKey) {
@@ -359,7 +438,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
               <div className={styles.tierRight}>
                 {isVarActive ? (
                   <>
-                    <span className={styles.activeBadge}>当前</span>
+                    <span className={styles.activeBadge}>{t('model.current')}</span>
                     <span className={styles.checkIcon} aria-hidden="true">
                       ✓
                     </span>
@@ -381,7 +460,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
       data-hscroll="1"
       role="dialog"
       aria-modal="true"
-      aria-label="选择模型"
+      aria-label={t('model.selectTitle')}
       data-testid="model-picker-sheet"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -389,8 +468,12 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
     >
       <div
         className={styles.sheet}
+        data-dragging={sheetDragging ? '1' : '0'}
+        style={{ '--sheet-drag-y': `${sheetDragY}px` } as Record<string, string>}
         onTouchStart={onTouchStartSheet}
+        onTouchMove={onTouchMoveSheet}
         onTouchEnd={onTouchEndSheet}
+        onTouchCancel={onTouchEndSheet}
       >
         <div className={styles.handleWrap}>
           <span className={styles.handle} />
@@ -403,7 +486,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                 type="button"
                 className={styles.backBtn}
                 data-testid="model-picker-back"
-                aria-label={`返回${backLabel}`}
+                aria-label={t('model.backTo', { target: backLabel })}
                 onClick={handleBack}
               >
                 <span className={styles.backArrow} aria-hidden="true">
@@ -420,7 +503,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
           <button
             type="button"
             className={styles.closeBtn}
-            aria-label="关闭模型选择"
+            aria-label={t('common.close')}
             onClick={onClose}
           >
             ✕
@@ -432,6 +515,8 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
             className={styles.slideTrack}
             data-testid="model-picker-track"
             data-depth={String(depth)}
+            data-dragging={pickerDragging ? '1' : '0'}
+            style={{ '--picker-drag-x': `${pickerDragX}px` } as Record<string, string>}
           >
             {/* Stage 0: Model List */}
             <section className={styles.slidePane} aria-hidden={depth !== 0}>
@@ -440,7 +525,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                   <input
                     type="search"
                     className={styles.searchInput}
-                    placeholder="搜索模型、思考等级或编排主控..."
+                    placeholder={t('model.searchPlaceholder')}
                     value={query}
                     onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
                   />
@@ -449,7 +534,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
 
               <div className={styles.list}>
                 {filteredGroups.length === 0 ? (
-                  <div className={styles.empty}>未找到匹配的模型</div>
+                  <div className={styles.empty}>{t('model.emptySearch')}</div>
                 ) : (
                   filteredGroups.map((group) => {
                     const selectedVariant =
@@ -465,12 +550,21 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                         ? `${activeOrchestratorMaster} · ${TIER_SHORT_LABELS[effectiveOrchThinking[activeOrchestratorMaster]] || effectiveOrchThinking[activeOrchestratorMaster]}`
                         : null;
 
+                    const groupDisplayName = group.isOrchestrator
+                      ? t('model.orchestratorGroup')
+                      : group.name;
+
                     const subtitleText = group.isOrchestrator
-                      ? `${orchestratorCountLabel(group)} · Carbon / Argon / Neon / Opus 5.5`
+                      ? t('model.orchestratorSub', { count: group.masterGroups?.length || 4 })
                       : group.subtitle
                         ? group.subtitle
                         : group.hasSubLevels
-                          ? `${group.variants.length} 档思考等级 · ${group.variants.map((v) => v.shortTag).join(' / ')}`
+                          ? t('model.tiersSub', {
+                              count: group.variants.length,
+                              tags: group.variants
+                                .map((v) => (v.shortTag === '标准' ? t('model.standard') : v.shortTag))
+                                .join(' / ')
+                            })
                           : '';
 
                     return (
@@ -491,7 +585,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
 
                           <div className={styles.groupMeta}>
                             <div className={styles.groupNameRow}>
-                              <span className={styles.groupName}>{group.name}</span>
+                              <span className={styles.groupName}>{groupDisplayName}</span>
                               {singleVariant?.tagTitle && (
                                 <span className={styles.tagPill}>{singleVariant.tagTitle}</span>
                               )}
@@ -512,7 +606,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                                 {activeOrchLabel ||
                                   (hasNextStage && selectedVariant?.tierLabel
                                     ? selectedVariant.tierLabel
-                                    : '当前')}
+                                    : t('model.current'))}
                               </span>
                             )}
                             {hasNextStage ? (
@@ -538,9 +632,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
               {activeGroup ? (
                 activeGroup.isOrchestrator ? (
                   <div className={styles.list}>
-                    <div className={styles.stageHint}>
-                      第 1 步 / 共 2 步：选择主控模型（各主控独立保存思考等级）
-                    </div>
+                    <div className={styles.stageHint}>{t('model.step1Hint')}</div>
                     {orchestratorMasters.map((master) => {
                       const mKey = master.masterKey;
                       const configuredTier = mKey ? effectiveOrchThinking[mKey] : 'high';
@@ -549,7 +641,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                         mKey && activeOrchestratorMaster === mKey
                       );
                       const masterDisabled = master.variants.every((v) => v.disabled);
-                      const subSummary = `${master.variants.length} 档可调思考等级 · 点击配置`;
+                      const subSummary = t('model.masterSub', { count: master.variants.length });
 
                       return (
                         <div
@@ -577,7 +669,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                             </div>
                             <div className={styles.groupRight}>
                               {isMasterActive && (
-                                <span className={styles.activeBadge}>当前主控</span>
+                                <span className={styles.activeBadge}>{t('model.currentMaster')}</span>
                               )}
                               <span className={styles.arrowRight} aria-hidden="true">
                                 ›
@@ -589,7 +681,10 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                     })}
                   </div>
                 ) : (
-                  renderTierOptions(activeGroup.variants, `${activeGroup.name} 思考等级`)
+                  renderTierOptions(
+                    activeGroup.variants,
+                    `${activeGroup.name} ${t('model.thinkingLevel')}`
+                  )
                 )
               ) : (
                 <div className={styles.empty} />
@@ -602,12 +697,12 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                 <>
                   <div className={styles.stageSubHeader}>
                     <span className={styles.stageHintInline}>
-                      第 2 步 / 共 2 步：为主控模型「{activeMaster.name}」配置思考等级
+                      {t('model.step2Hint', { name: activeMaster.name })}
                     </span>
                   </div>
                   {renderTierOptions(
                     activeMaster.variants,
-                    `${activeMaster.name} 思考等级`,
+                    `${activeMaster.name} ${t('model.thinkingLevel')}`,
                     activeMaster
                   )}
                 </>
@@ -620,9 +715,4 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
       </div>
     </div>
   );
-}
-
-function orchestratorCountLabel(group: ModelPickerGroup): string {
-  const count = group.masterGroups?.length || 4;
-  return `${count} 个主控模型`;
 }

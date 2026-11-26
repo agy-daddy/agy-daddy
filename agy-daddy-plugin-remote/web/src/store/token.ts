@@ -6,6 +6,7 @@ export interface InitialUrlState {
   token: string;
   sessionId: string;
   enteredFromLanding: boolean;
+  switchTicket: string;
 }
 
 export function getClientId(): string {
@@ -62,15 +63,29 @@ export function clearSavedToken(): void {
   } catch {}
 }
 
+export function scrubSwitchTicketFromUrl(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('switch_ticket') && !url.searchParams.has('enter')) return;
+    url.searchParams.delete('switch_ticket');
+    url.searchParams.delete('enter');
+    const nextSearch = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+    window.history?.replaceState?.(null, '', nextUrl);
+  } catch {}
+}
+
 export function extractTokenAndScrubUrl(): InitialUrlState {
   let token = '';
   let sessionId = '';
   let enteredFromLanding = false;
+  let switchTicket = '';
 
   try {
     const url = new URL(window.location.href);
     const urlToken = (url.searchParams.get('t') || url.searchParams.get('token') || '').trim();
     sessionId = (url.searchParams.get('session') || '').trim();
+    switchTicket = (url.searchParams.get('switch_ticket') || '').trim();
     enteredFromLanding =
       url.searchParams.get('enter') === '1' || url.searchParams.get('direct') === '1';
 
@@ -89,5 +104,5 @@ export function extractTokenAndScrubUrl(): InitialUrlState {
     token = loadSavedToken();
   }
 
-  return { token, sessionId, enteredFromLanding };
+  return { token, sessionId, enteredFromLanding, switchTicket };
 }

@@ -13,6 +13,15 @@
   min-height: 0;
 }
 
+.streamStage {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .banner {
   padding: 6px 12px;
   font-size: 11.5px;
@@ -73,7 +82,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: agPop 180ms var(--ag-ease-spring);
+  animation: agPop 180ms var(--ag-ease-drawer);
 }
 
 @keyframes agPop {

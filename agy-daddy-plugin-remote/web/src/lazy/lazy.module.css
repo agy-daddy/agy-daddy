@@ -31,6 +31,7 @@
 
 .itemBtn {
   width: 100%;
+  min-height: 44px;
   text-align: left;
   padding: 9px 12px;
   border-radius: var(--ag-r-md);
@@ -68,13 +69,13 @@
 .diffSelect {
   min-width: 0;
   flex: 1 1 auto;
-  min-height: 32px;
-  padding: 4px 10px;
+  min-height: 44px;
+  padding: 6px 10px;
   border-radius: var(--ag-r-sm);
   border: 1px solid var(--ag-border);
   background: var(--ag-subcard);
   color: var(--ag-fg);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -91,6 +92,7 @@
 
 .diffFileHead {
   width: 100%;
+  min-height: 44px;
   text-align: left;
   display: flex;
   align-items: center;
@@ -119,6 +121,10 @@
 
 .diffLineClickable {
   cursor: pointer;
+  min-height: 44px;
+  align-items: center;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .diffLineClickable:hover {
@@ -127,7 +133,8 @@
 
 .loadMoreBtn {
   width: 100%;
-  padding: 9px 12px;
+  min-height: 44px;
+  padding: 10px 12px;
   border-top: 1px solid var(--ag-border-sub);
   background: var(--ag-control);
   color: var(--ag-fg);
@@ -217,7 +224,7 @@
   flex: 1 1 auto;
   min-height: 220px;
   padding: 6px;
-  background: #0a0a0c;
+  background: var(--ag-terminal-bg);
   overflow: hidden;
 }
 
@@ -233,9 +240,10 @@
 }
 
 .vkey {
-  min-width: 38px;
-  height: 30px;
-  padding: 0 10px;
+  position: relative;
+  min-width: 44px;
+  height: 36px;
+  padding: 0 11px;
   border-radius: var(--ag-r-xs);
   border: 1px solid var(--ag-border);
   background: var(--ag-control);
@@ -245,6 +253,12 @@
   font-weight: 600;
   flex-shrink: 0;
   transition: transform 110ms var(--ag-ease-out), background-color 140ms var(--ag-ease-out);
+}
+
+.vkey::after {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
 }
 
 .vkey:active {

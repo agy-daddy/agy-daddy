@@ -6,6 +6,8 @@ export interface SseClientCallbacks {
   onAttentionUpdate: (payload: Record<string, unknown>) => void;
   onTelemetryPatch: (payload: Record<string, unknown>) => void;
   onQueueUpdate: (payload: Record<string, unknown>) => void;
+  onStatePatch?: (payload: Record<string, unknown>) => void;
+  onTaskUpdated?: (payload: Record<string, unknown>) => void;
 }
 
 export const SSE_BACKGROUND_SUSPEND_MS = 15_000;
@@ -13,6 +15,7 @@ export const SSE_BACKGROUND_SUSPEND_MS = 15_000;
 export class RemoteSseClient {
   private token = '';
   private sessionId = '';
+  private baseOrigin = '';
   private lastEventId = '';
   private es: EventSource | null = null;
   private suspendTimer: ReturnType<typeof setTimeout> | null = null;
@@ -29,13 +32,28 @@ export class RemoteSseClient {
     }
   }
 
-  public connect(token: string, sessionId: string): void {
+  public setBaseOrigin(origin: string): void {
+    this.baseOrigin = String(origin || '').trim().replace(/\/+$/, '');
+  }
+
+  public connect(token: string, sessionId: string, baseOrigin?: string): void {
+    if (typeof baseOrigin === 'string') {
+      this.setBaseOrigin(baseOrigin);
+    }
     const changed = this.token !== token || this.sessionId !== sessionId;
     this.token = token;
     this.sessionId = sessionId;
     if (changed) {
       this.lastEventId = '';
     }
+    this.suspendedByVisibility = false;
+    this.clearSuspendTimer();
+    this.openStream();
+  }
+
+  public reconnect(): void {
+    if (this.destroyed || !this.token) return;
+    this.retryCount = 0;
     this.suspendedByVisibility = false;
     this.clearSuspendTimer();
     this.openStream();
@@ -91,6 +109,17 @@ export class RemoteSseClient {
     }
   }
 
+  private buildStreamUrl(qs: string): string {
+    const path = `/api/v1/stream?${qs}`;
+    if (!this.baseOrigin) return path;
+    try {
+      if (typeof window !== 'undefined' && window.location?.origin === this.baseOrigin) {
+        return path;
+      }
+    } catch {}
+    return `${this.baseOrigin}${path}`;
+  }
+
   private openStream(): void {
     if (this.destroyed || !this.token || typeof EventSource === 'undefined') {
       return;
@@ -103,7 +132,7 @@ export class RemoteSseClient {
     if (this.sessionId) params.set('sessionId', this.sessionId);
     if (this.lastEventId) params.set('lastEventId', this.lastEventId);
 
-    const es = new EventSource(`/api/v1/stream?${params.toString()}`);
+    const es = new EventSource(this.buildStreamUrl(params.toString()));
     this.es = es;
 
     es.onopen = () => {
@@ -125,6 +154,8 @@ export class RemoteSseClient {
     bind('attention.update', (d) => this.callbacks.onAttentionUpdate(d));
     bind('telemetry.patch', (d) => this.callbacks.onTelemetryPatch(d));
     bind('queue.update', (d) => this.callbacks.onQueueUpdate(d));
+    bind('state.patch', (d) => this.callbacks.onStatePatch?.(d));
+    bind('task.updated', (d) => this.callbacks.onTaskUpdated?.(d));
 
     es.onerror = () => {
       if (this.destroyed || this.suspendedByVisibility) return;

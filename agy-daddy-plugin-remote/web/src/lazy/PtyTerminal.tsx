@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import { api, getLastL2ConfirmToken } from '../store/api';
 import type { PermissionLevel, PtySessionInfo } from '../types';
 import styles from './lazy.module.css';
@@ -38,8 +39,9 @@ export default function PtyTerminal({
   token,
   onShowToast
 }: PtyTerminalProps) {
+  const { t } = useI18n();
   const [tabs, setTabs] = useState<PtyTab[]>([
-    { id: 'pty-1', title: '终端 1', hibernated: false, lastActiveAt: Date.now() }
+    { id: 'pty-1', title: t('pty.tabTitle', { n: 1 }), hibernated: false, lastActiveAt: Date.now() }
   ]);
   const [activeTabId, setActiveTabId] = useState('pty-1');
   const [connState, setConnState] = useState<'connecting' | 'open' | 'closed'>('closed');
@@ -61,7 +63,7 @@ export default function PtyTerminal({
           setTabs(
             list.map((s: PtySessionInfo, idx: number) => ({
               id: s.id,
-              title: `终端 ${idx + 1}`,
+              title: t('pty.tabTitle', { n: idx + 1 }),
               hibernated: false,
               lastActiveAt: Date.now()
             }))
@@ -102,12 +104,15 @@ export default function PtyTerminal({
       if (disposed || !hostRef.current) return;
 
       hostRef.current.innerHTML = '';
+      const computedStyle = getComputedStyle(document.documentElement);
+      const termBg = computedStyle.getPropertyValue('--ag-terminal-bg').trim() || undefined;
+      const termFg = computedStyle.getPropertyValue('--ag-terminal-fg').trim() || undefined;
       const term = new Terminal({
         fontSize: 12,
         cursorBlink: true,
         theme: {
-          background: '#0a0a0a',
-          foreground: '#e4e4e7'
+          background: termBg,
+          foreground: termFg
         }
       });
       const fit = new FitAddon();
@@ -149,7 +154,7 @@ export default function PtyTerminal({
         if (!disposed) setConnState('closed');
       };
       ws.onerror = () => {
-        if (!disposed) onShowToast?.('PTY WebSocket 连接异常');
+        if (!disposed) onShowToast?.(t('pty.wsError'));
       };
 
       term.onData((data) => {
@@ -187,7 +192,7 @@ export default function PtyTerminal({
   if (!isL2) {
     return (
       <div className="ag-empty" data-testid="pty-l2-locked">
-        交互式 PTY 终端仅在 L2 权限下可用（请在宿主机桌面端设置中心开启 L2）。
+        {t('pty.l2Locked')}
       </div>
     );
   }
@@ -204,7 +209,7 @@ export default function PtyTerminal({
     const id = `pty-${Date.now().toString(36)}`;
     setTabs((prev) => [
       ...prev,
-      { id, title: `终端 ${nextIdx}`, hibernated: false, lastActiveAt: Date.now() }
+      { id, title: t('pty.tabTitle', { n: nextIdx }), hibernated: false, lastActiveAt: Date.now() }
     ]);
     setActiveTabId(id);
   };
@@ -219,22 +224,26 @@ export default function PtyTerminal({
   return (
     <div className={styles.pane} data-testid="pty-terminal">
       <div className={styles.termTabs} data-hscroll="1">
-        {tabs.map((t) => (
+        {tabs.map((tab) => (
           <button
-            key={t.id}
+            key={tab.id}
             type="button"
-            className={`ag-pill-btn ${t.id === activeTabId ? 'ag-pill-btn-primary' : ''}`}
-            onClick={() => selectTab(t.id)}
+            className={`ag-pill-btn ${tab.id === activeTabId ? 'ag-pill-btn-primary' : ''}`}
+            onClick={() => selectTab(tab.id)}
           >
-            {t.title}
-            {t.hibernated ? ' (休眠)' : ''}
+            {tab.title}
+            {tab.hibernated ? ` (${t('pty.hibernated')})` : ''}
           </button>
         ))}
         <button type="button" className="ag-pill-btn" onClick={addTab}>
           +
         </button>
         <span className="ag-chip" style={{ marginLeft: 'auto' }}>
-          {connState === 'open' ? '已连接' : connState === 'connecting' ? '连接中' : '已断开'}
+          {connState === 'open'
+            ? t('pty.connected')
+            : connState === 'connecting'
+              ? t('pty.connecting')
+              : t('pty.disconnected')}
         </span>
       </div>
 

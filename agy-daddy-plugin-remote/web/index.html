@@ -1,14 +1,61 @@
 <!doctype html>
-<html lang="zh-CN" data-appearance="auto">
+<html lang="zh-CN" data-appearance="auto" data-theme="dark" data-color-theme="monochrome" data-drawer-speed="normal">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#101010" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#0c0c0e" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <title>Agy-Daddy Remote</title>
+    <script>
+      (function () {
+        try {
+          var root = document.documentElement;
+          var ls = window.localStorage;
+          var app = ls && ls.getItem('agy_remote_appearance');
+          if (app !== 'auto' && app !== 'dark' && app !== 'light') app = 'auto';
+          var sysDark =
+            typeof window.matchMedia === 'function'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+              : true;
+          var resolved = app === 'auto' ? (sysDark ? 'dark' : 'light') : app;
+          root.dataset.appearance = app;
+          root.dataset.theme = resolved;
+
+          var color = ls && ls.getItem('agy_remote_color_theme');
+          if (
+            color !== 'monochrome' &&
+            color !== 'purple' &&
+            color !== 'blue' &&
+            color !== 'green' &&
+            color !== 'amber' &&
+            color !== 'red'
+          ) {
+            color = 'monochrome';
+          }
+          root.dataset.colorTheme = color;
+
+          var speed = ls && ls.getItem('agy_remote_drawer_speed');
+          var speedMs = '200ms';
+          if (speed === 'fast') speedMs = '120ms';
+          else if (speed === 'slow' || speed === 'smooth') {
+            speed = 'slow';
+            speedMs = '320ms';
+          } else if (speed === 'off') speedMs = '0ms';
+          else speed = 'normal';
+          root.dataset.drawerSpeed = speed;
+          root.style.setProperty('--ag-drawer-duration', speedMs);
+
+          var loc = ls && ls.getItem('agy_remote_locale');
+          if (loc) root.lang = loc;
+
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', resolved === 'light' ? '#f4f4f6' : '#0c0c0e');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

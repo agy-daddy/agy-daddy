@@ -8,9 +8,11 @@ import {
   formatCompactModelBadge,
   groupModelsForPicker,
   normalizeModelCatalog,
+  reconcileOrchestratorThinkingMap,
+  resolveMasterThinkingTier,
   resolveUnifiedModelName
 } from './modelCatalog';
-import type { ModelOption } from '../types';
+import type { ModelCatalogTree, ModelOption } from '../types';
 
 const REALISTIC_MODELS: ModelOption[] = [
   { id: 'MODEL_PLACEHOLDER_M18', label: 'MODEL_PLACEHOLDER_M18' }, // should be dropped
@@ -104,7 +106,7 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
     { id: 'gpt-oss', label: 'GPT-OSS 120B' }
   ];
 
-  it('slides right once for normal thinking models and twice for orchestrator (4 canonical masters -> independent thinking)', () => {
+  it('slides right only for multi-tier models/masters and selects single-tier items directly', () => {
     const onSelectModel = vi.fn();
     const onSelectOrchestrator = vi.fn();
     const onClose = vi.fn();
@@ -124,14 +126,16 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
     const track = screen.getByTestId('model-picker-track');
     expect(track.getAttribute('data-depth')).toBe('0');
 
-    // Stage 0 -> tap Gemini 4 Neon -> slides right to Stage 1 (thinking tiers)
+    // Stage 0 -> tap Gemini 4 Neon (2 tiers: Low, High) -> slides right to Stage 1
     fireEvent.click(screen.getByTestId('model-group-family:gemini 4 neon').querySelector('button')!);
     expect(track.getAttribute('data-depth')).toBe('1');
+    const neonButtons = track.querySelectorAll('section[aria-hidden="false"] [role="radio"]');
+    expect(neonButtons).toHaveLength(2);
     fireEvent.click(screen.getByTestId('model-variant-neon-low'));
     expect(onSelectModel).toHaveBeenCalledWith('neon-low');
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    // Re-open and test Orchestrator 2-stage flow (0 -> 1 canonical 4 masters -> 2 thinking)
+    // Re-open and test Orchestrator actual masters (only carbon & argon exist in COMPOSITE_MODELS)
     rerender(
       <ModelPickerSheet
         open={false}
@@ -158,23 +162,24 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
     const track2 = screen.getByTestId('model-picker-track');
     expect(track2.getAttribute('data-depth')).toBe('0');
 
-    // 1st slide: Orchestrator -> strictly 4 canonical masters: carbon, argon, neon, opus5.5
+    // 1st slide: Orchestrator -> strictly existing masters (carbon: 2 tiers, argon: 1 tier)
     fireEvent.click(screen.getByTestId('model-group-orchestrator').querySelector('button')!);
     expect(track2.getAttribute('data-depth')).toBe('1');
     expect(screen.getByTestId('model-master-master:carbon')).toBeInTheDocument();
     expect(screen.getByTestId('model-master-master:argon')).toBeInTheDocument();
-    expect(screen.getByTestId('model-master-master:neon')).toBeInTheDocument();
-    expect(screen.getByTestId('model-master-master:opus5.5')).toBeInTheDocument();
+    expect(screen.queryByTestId('model-master-master:neon')).toBeNull();
+    expect(screen.queryByTestId('model-master-master:opus5.5')).toBeNull();
     expect(screen.getByTestId('master-tier-carbon')).toHaveTextContent('High');
-    expect(screen.getByTestId('master-tier-argon')).toHaveTextContent('Low');
-    expect(screen.getByTestId('master-tier-neon')).toHaveTextContent('Med');
-    expect(screen.getByTestId('master-tier-opus5.5')).toHaveTextContent('XHigh');
+    // Argon only supports 'medium' -> stale 'low' smoothly falls back to 'Med'
+    expect(screen.getByTestId('master-tier-argon')).toHaveTextContent('Med');
 
-    // 2nd slide: Master "Carbon" -> Thinking levels
+    // 2nd slide: Master "Carbon" -> strictly 2 thinking levels (Low, High)
     fireEvent.click(screen.getByTestId('model-master-master:carbon').querySelector('button')!);
     expect(track2.getAttribute('data-depth')).toBe('2');
     expect(screen.getByTestId('model-variant-orch-carbon-low')).toBeInTheDocument();
     expect(screen.getByTestId('model-variant-orch-carbon-high')).toBeInTheDocument();
+    const carbonTierButtons = track2.querySelectorAll('section[aria-hidden="false"] [role="radio"]');
+    expect(carbonTierButtons).toHaveLength(2);
 
     // Back button steps back 2 -> 1 -> 0
     fireEvent.click(screen.getByTestId('model-picker-back'));
@@ -189,28 +194,30 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(track2.getAttribute('data-depth')).toBe('1');
 
-    // Confirm Master "Carbon" -> XHigh independently
+    // Confirm Master "Carbon" -> Low
     fireEvent.click(screen.getByTestId('model-master-master:carbon').querySelector('button')!);
-    fireEvent.click(screen.getByTestId('model-orch-tier-carbon-xhigh'));
-    expect(onSelectOrchestrator).toHaveBeenCalledWith('orch-carbon-high', 'carbon', 'xhigh');
+    fireEvent.click(screen.getByTestId('model-variant-orch-carbon-low'));
+    expect(onSelectOrchestrator).toHaveBeenCalledWith('orch-carbon-low', 'carbon', 'low');
     expect(onClose).toHaveBeenCalledTimes(2);
-    // Rerender with updated carbon thinking level from store and verify other masters stay independent
+
+    // Reopen and tap single-tier Argon -> selects directly without sliding to Stage 2
     rerender(
       <ModelPickerSheet
         open={true}
         models={COMPOSITE_MODELS}
-        selectedModelId="orch-carbon-high"
-        orchestratorThinking={{ carbon: 'xhigh', argon: 'low', neon: 'medium', 'opus5.5': 'xhigh' }}
+        selectedModelId="orch-carbon-low"
+        orchestratorThinking={{ carbon: 'low', argon: 'low', neon: 'medium', 'opus5.5': 'xhigh' }}
         activeOrchestratorMaster="carbon"
         onSelectModel={onSelectModel}
         onSelectOrchestrator={onSelectOrchestrator}
         onClose={onClose}
       />
     );
-    expect(screen.getByTestId('master-tier-carbon')).toHaveTextContent('XHigh');
-    expect(screen.getByTestId('master-tier-argon')).toHaveTextContent('Low');
-    expect(screen.getByTestId('master-tier-neon')).toHaveTextContent('Med');
-    expect(screen.getByTestId('master-tier-opus5.5')).toHaveTextContent('XHigh');
+    expect(screen.getByTestId('master-tier-carbon')).toHaveTextContent('Low');
+    expect(screen.getByTestId('master-tier-argon')).toHaveTextContent('Med');
+    fireEvent.click(screen.getByTestId('model-master-master:argon').querySelector('button')!);
+    expect(onSelectOrchestrator).toHaveBeenCalledWith('orch-argon-med', 'argon', 'medium');
+    expect(onClose).toHaveBeenCalledTimes(3);
   });
 
   it('selects standalone models without sub-levels directly on tap', () => {
@@ -231,12 +238,15 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('enforces 4 canonical orchestrator masters and applies filter & sort preferences', () => {
+  it('derives strictly actual master variants without padding and applies filter & sort preferences', () => {
     const groups = groupModelsForPicker(COMPOSITE_MODELS);
     const orch = groups.find((g) => g.isOrchestrator);
-    expect(orch?.masterGroups?.map((m) => m.masterKey)).toEqual(['carbon', 'argon', 'neon', 'opus5.5']);
+    expect(orch?.masterGroups?.map((m) => m.masterKey)).toEqual(['carbon', 'argon']);
     const carbon = orch?.masterGroups?.find((m) => m.masterKey === 'carbon');
-    expect(carbon?.variants.map((v) => v.tierKey)).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(carbon?.variants.map((v) => v.tierKey)).toEqual(['low', 'high']);
+    const argon = orch?.masterGroups?.find((m) => m.masterKey === 'argon');
+    expect(argon?.variants.map((v) => v.tierKey)).toEqual(['medium']);
+    expect(argon?.hasSubLevels).toBe(false);
 
     const badge = formatCompactModelBadge('orch-carbon-high', COMPOSITE_MODELS, undefined, {
       master: 'opus5.5',
@@ -265,6 +275,266 @@ describe('ModelPickerSheet right-slide multi-stage interaction', () => {
       filterOrder: ['orchestrator', 'family:gpt-oss 120b']
     });
     expect(sortedCustom.map((g) => g.id).slice(0, 2)).toEqual(['orchestrator', 'family:gpt-oss 120b']);
+  });
+
+  it('renders 1/2/3/4 thinking tiers accurately from modelTree & supportedThinkingLevels and reconciles stale orchestratorThinking', () => {
+    const mixedModels: ModelOption[] = [
+      {
+        id: 'gpt-oss-120b',
+        label: 'GPT-OSS 120B',
+        supportedThinkingLevels: []
+      },
+      {
+        id: 'sonnet-high',
+        label: 'Claude Sonnet 4.6 (High)',
+        supportedThinkingLevels: ['high']
+      },
+      {
+        id: 'neon-med',
+        label: 'Gemini 4 Neon (Medium)',
+        supportedThinkingLevels: ['medium', 'high']
+      },
+      {
+        id: 'neon-high',
+        label: 'Gemini 4 Neon (High)',
+        supportedThinkingLevels: ['medium', 'high']
+      },
+      {
+        id: 'opus-low',
+        label: 'Claude Opus 5.5 (Low)',
+        supportedThinkingLevels: ['low', 'medium', 'high']
+      },
+      {
+        id: 'opus-med',
+        label: 'Claude Opus 5.5 (Medium)',
+        supportedThinkingLevels: ['low', 'medium', 'high']
+      },
+      {
+        id: 'opus-high',
+        label: 'Claude Opus 5.5 (High)',
+        supportedThinkingLevels: ['low', 'medium', 'high']
+      },
+      {
+        id: 'pro-low',
+        label: 'Gemini 4 Pro (Low)',
+        supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+      },
+      {
+        id: 'pro-med',
+        label: 'Gemini 4 Pro (Medium)',
+        supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+      },
+      {
+        id: 'pro-high',
+        label: 'Gemini 4 Pro (High)',
+        supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+      },
+      {
+        id: 'pro-xhigh',
+        label: 'Gemini 4 Pro (XHigh)',
+        supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+      },
+      {
+        id: 'orch-carbon',
+        label: 'Orchestrator (Carbon)',
+        isOrchestrator: true,
+        orchestratorMaster: 'Carbon',
+        supportedThinkingLevels: ['medium', 'high']
+      },
+      {
+        id: 'orch-argon',
+        label: 'Orchestrator (Argon)',
+        isOrchestrator: true,
+        orchestratorMaster: 'Argon',
+        supportedThinkingLevels: ['high']
+      },
+      {
+        id: 'orch-neon',
+        label: 'Orchestrator (Neon)',
+        isOrchestrator: true,
+        orchestratorMaster: 'Neon',
+        supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+      }
+    ];
+
+    const mixedTree: ModelCatalogTree = {
+      supportsCustomOrchestrator: true,
+      nodes: [
+        {
+          kind: 'branch',
+          key: 'orch',
+          role: 'orchestrator_root',
+          label: 'Orchestrator',
+          children: [
+            {
+              kind: 'leaf',
+              key: 'orch/gemini-4-carbon',
+              role: 'planner_model',
+              label: 'Carbon',
+              supportedThinkingLevels: ['medium', 'high'],
+              defaultThinkingSuffix: 'high',
+              selection: {
+                mode: 'orchestrator_preset',
+                requestedModel: 'orch-carbon',
+                plannerFamilyId: 'gemini-4-carbon'
+              }
+            },
+            {
+              kind: 'leaf',
+              key: 'orch/gemini-4-argon',
+              role: 'planner_model',
+              label: 'Argon',
+              supportedThinkingLevels: ['high'],
+              defaultThinkingSuffix: 'high',
+              selection: {
+                mode: 'orchestrator_preset',
+                requestedModel: 'orch-argon',
+                plannerFamilyId: 'gemini-4-argon'
+              }
+            },
+            {
+              kind: 'leaf',
+              key: 'orch/gemini-4-neon',
+              role: 'planner_model',
+              label: 'Neon',
+              supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh'],
+              defaultThinkingSuffix: 'high',
+              selection: {
+                mode: 'orchestrator_preset',
+                requestedModel: 'orch-neon',
+                plannerFamilyId: 'gemini-4-neon'
+              }
+            },
+            {
+              kind: 'leaf',
+              key: 'orch/claude-opus-5-5',
+              role: 'planner_model',
+              label: 'Claude Opus 5.5',
+              supportedThinkingLevels: ['low', 'medium', 'high'],
+              defaultThinkingSuffix: 'high',
+              selection: {
+                mode: 'orchestrator_preset',
+                requestedModel: 'orchestrator:claude-opus-5-5',
+                plannerFamilyId: 'claude-opus-5-5'
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const groups = groupModelsForPicker(mixedModels, undefined, undefined, mixedTree);
+
+    // Normal models: 1-tier/0-tier (no sublevels), 2-tier, 3-tier, 4-tier
+    expect(groups.find((g) => g.name === 'GPT-OSS 120B')?.hasSubLevels).toBe(false);
+    expect(groups.find((g) => g.name === 'Claude Sonnet 4.6')?.hasSubLevels).toBe(false);
+    expect(groups.find((g) => g.name === 'Gemini 4 Neon')?.variants.map((v) => v.tierKey)).toEqual([
+      'medium',
+      'high'
+    ]);
+    expect(groups.find((g) => g.name === 'Claude Opus 5.5')?.variants.map((v) => v.tierKey)).toEqual([
+      'low',
+      'medium',
+      'high'
+    ]);
+    expect(groups.find((g) => g.name === 'Gemini 4 Pro')?.variants.map((v) => v.tierKey)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+
+    // Orchestrator masters: strictly 2, 1, 4, 3 tiers
+    const orchGroup = groups.find((g) => g.isOrchestrator);
+    expect(orchGroup?.masterGroups?.map((m) => [m.masterKey, m.variants.map((v) => v.tierKey)])).toEqual([
+      ['carbon', ['medium', 'high']],
+      ['argon', ['high']],
+      ['neon', ['low', 'medium', 'high', 'xhigh']],
+      ['opus5.5', ['low', 'medium', 'high']]
+    ]);
+
+    // Reconcile stale/unsupported saved orchestratorThinking values
+    const reconciled = reconcileOrchestratorThinkingMap(
+      { carbon: 'xhigh', argon: 'low', neon: 'xhigh', 'opus5.5': 'xhigh' },
+      groups
+    );
+    expect(reconciled).toEqual({
+      carbon: 'high',
+      argon: 'high',
+      neon: 'xhigh',
+      'opus5.5': 'high'
+    });
+
+    const carbonMaster = orchGroup?.masterGroups?.find((m) => m.masterKey === 'carbon');
+    expect(resolveMasterThinkingTier(carbonMaster, 'low')).toBe('high');
+
+    // Compact badge falls back smoothly when stale tier is passed
+    const carbonBadge = formatCompactModelBadge(
+      'orch-carbon',
+      mixedModels,
+      undefined,
+      {
+        master: 'carbon',
+        thinkingMap: { carbon: 'xhigh', argon: 'low', neon: 'xhigh', 'opus5.5': 'xhigh' }
+      },
+      mixedTree
+    );
+    expect(carbonBadge.tag).toBe('Carbon · High');
+
+    // Render ModelPickerSheet and inspect actual rendered tier counts
+    const onSelectModel = vi.fn();
+    const onSelectOrchestrator = vi.fn();
+    render(
+      <ModelPickerSheet
+        open={true}
+        models={mixedModels}
+        modelTree={mixedTree}
+        selectedModelId="neon-high"
+        orchestratorThinking={{ carbon: 'xhigh', argon: 'low', neon: 'xhigh', 'opus5.5': 'xhigh' }}
+        activeOrchestratorMaster="carbon"
+        onSelectModel={onSelectModel}
+        onSelectOrchestrator={onSelectOrchestrator}
+        onClose={vi.fn()}
+      />
+    );
+
+    // Stage 0 -> single-tier Claude Sonnet selects directly without sliding
+    fireEvent.click(screen.getByTestId('model-group-family:claude sonnet 4.6').querySelector('button')!);
+    expect(onSelectModel).toHaveBeenCalledWith('sonnet-high');
+
+    // Stage 0 -> Gemini 4 Neon shows 2 tiers
+    fireEvent.click(screen.getByTestId('model-group-family:gemini 4 neon').querySelector('button')!);
+    const track = screen.getByTestId('model-picker-track');
+    expect(track.querySelectorAll('section[aria-hidden="false"] [role="radio"]')).toHaveLength(2);
+    fireEvent.click(screen.getByTestId('model-picker-back'));
+
+    // Stage 0 -> Orchestrator -> Carbon (2 tiers, reconciled High checked)
+    fireEvent.click(screen.getByTestId('model-group-orchestrator').querySelector('button')!);
+    expect(screen.getByTestId('master-tier-carbon')).toHaveTextContent('High');
+    expect(screen.getByTestId('master-tier-opus5.5')).toHaveTextContent('High');
+    fireEvent.click(screen.getByTestId('model-master-master:carbon').querySelector('button')!);
+    const carbonRadios = track.querySelectorAll('section[aria-hidden="false"] [role="radio"]');
+    expect(carbonRadios).toHaveLength(2);
+    expect(track.querySelector('section[aria-hidden="false"] [data-tier="high"]')).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    expect(track.querySelector('section[aria-hidden="false"] [data-tier="medium"]')).toHaveAttribute(
+      'aria-checked',
+      'false'
+    );
+    fireEvent.click(screen.getByTestId('model-picker-back'));
+
+    // Opus 5.5 (3 tiers from modelTree synthetic leaf)
+    fireEvent.click(screen.getByTestId('model-master-master:opus5.5').querySelector('button')!);
+    const opusRadios = track.querySelectorAll('section[aria-hidden="false"] [role="radio"]');
+    expect(opusRadios).toHaveLength(3);
+    fireEvent.click(screen.getByTestId('model-orch-tier-opus5.5-medium'));
+    expect(onSelectOrchestrator).toHaveBeenCalledWith(
+      'orchestrator:claude-opus-5-5',
+      'opus5.5',
+      'medium'
+    );
   });
 
   it('highlights at most one group in Stage 0 even when activeOrchestratorMaster coincides with a family model id', () => {

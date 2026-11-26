@@ -70,6 +70,7 @@ import {
   matchOrchestratorMasterKey,
   normalizeModelCatalog,
   normalizeModels,
+  reconcileOrchestratorThinkingMap,
   resolveUnifiedModelName,
   sanitizeOrchestratorThinkingMap
 } from './modelCatalog';
@@ -826,15 +827,19 @@ export class RemoteStoreController {
         filterOrder: Array.isArray(boot.modelPreferences?.filterOrder) ? boot.modelPreferences.filterOrder : [],
         usageCounts: boot.modelPreferences?.usageCounts || {}
       };
-      const orchestratorThinking = boot.orchestratorThinking
+      const catalog = normalizeModelCatalog(boot.models, boot.modelGroups, boot.modelTree);
+      const modelGroups = groupModelsForPicker(
+        boot.models,
+        boot.modelGroups,
+        modelPreferences,
+        boot.modelTree
+      );
+
+      const rawOrchThinking = boot.orchestratorThinking
         ? sanitizeOrchestratorThinkingMap({ ...this.state.orchestratorThinking, ...boot.orchestratorThinking })
         : this.state.orchestratorThinking;
+      const orchestratorThinking = reconcileOrchestratorThinkingMap(rawOrchThinking, modelGroups);
       writeJsonPref(ORCH_THINKING_KEY, orchestratorThinking);
-
-      // Preserve ALL real Antigravity models (including MODEL_PLACEHOLDER_* with valid labels)
-      // and build multi-level thinking + 4-master orchestrator groups with filter/sort preferences
-      const catalog = normalizeModelCatalog(boot.models, boot.modelGroups);
-      const modelGroups = groupModelsForPicker(boot.models, boot.modelGroups, modelPreferences);
 
       const currentValid = catalog.some((m) => m.id === this.state.selectedModelId)
         ? this.state.selectedModelId
@@ -1676,7 +1681,10 @@ export class RemoteStoreController {
       try {
         const res = await api.updateOrchestratorThinking({ master: masterKey, thinkingLevel });
         if (res?.orchestratorThinking) {
-          const synced = sanitizeOrchestratorThinkingMap(res.orchestratorThinking);
+          const synced = reconcileOrchestratorThinkingMap(
+            res.orchestratorThinking,
+            this.state.modelGroups
+          );
           writeJsonPref(ORCH_THINKING_KEY, synced);
           this.setState({ orchestratorThinking: synced });
         }

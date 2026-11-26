@@ -1363,4 +1363,126 @@ describe('T6 performance: selector isolation, batched delta setState, and O(K) t
     expect(shallowEqual([1, 2], [1, 2])).toBe(true);
     expect(shallowEqual([1, 2], [1, 3])).toBe(false);
   });
+
+  it('reconciles stale saved orchestratorThinking against actual modelTree/supportedThinkingLevels on bootstrap sync', async () => {
+    __resetIdbForTests();
+    window.localStorage.setItem(
+      'agy_remote_orch_thinking_v1',
+      JSON.stringify({ carbon: 'xhigh', argon: 'low', neon: 'xhigh', 'opus5.5': 'xhigh' })
+    );
+    window.history.replaceState(null, '', '/?t=tok-orch-reconcile');
+    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/v1/bootstrap')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ok: true,
+                channel: 'loopback',
+                permissionLevel: 'L1',
+                writeEnabled: true,
+                models: [
+                  {
+                    id: 'orch-carbon',
+                    label: 'Orchestrator (Carbon)',
+                    isOrchestrator: true,
+                    orchestratorMaster: 'Carbon',
+                    supportedThinkingLevels: ['medium', 'high']
+                  },
+                  {
+                    id: 'orch-argon',
+                    label: 'Orchestrator (Argon)',
+                    isOrchestrator: true,
+                    orchestratorMaster: 'Argon',
+                    supportedThinkingLevels: ['high']
+                  },
+                  {
+                    id: 'orch-neon',
+                    label: 'Orchestrator (Neon)',
+                    isOrchestrator: true,
+                    orchestratorMaster: 'Neon',
+                    supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh']
+                  }
+                ],
+                modelTree: {
+                  nodes: [
+                    {
+                      kind: 'branch',
+                      key: 'orch',
+                      role: 'orchestrator_root',
+                      label: 'Orchestrator',
+                      children: [
+                        {
+                          kind: 'leaf',
+                          key: 'orch/gemini-4-carbon',
+                          label: 'Carbon',
+                          supportedThinkingLevels: ['medium', 'high'],
+                          defaultThinkingSuffix: 'high',
+                          selection: { requestedModel: 'orch-carbon', plannerFamilyId: 'gemini-4-carbon' }
+                        },
+                        {
+                          kind: 'leaf',
+                          key: 'orch/gemini-4-argon',
+                          label: 'Argon',
+                          supportedThinkingLevels: ['high'],
+                          defaultThinkingSuffix: 'high',
+                          selection: { requestedModel: 'orch-argon', plannerFamilyId: 'gemini-4-argon' }
+                        },
+                        {
+                          kind: 'leaf',
+                          key: 'orch/gemini-4-neon',
+                          label: 'Neon',
+                          supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh'],
+                          defaultThinkingSuffix: 'high',
+                          selection: { requestedModel: 'orch-neon', plannerFamilyId: 'gemini-4-neon' }
+                        },
+                        {
+                          kind: 'leaf',
+                          key: 'orch/claude-opus-5-5',
+                          label: 'Claude Opus 5.5',
+                          supportedThinkingLevels: ['low', 'medium', 'high'],
+                          defaultThinkingSuffix: 'medium',
+                          selection: {
+                            requestedModel: 'orchestrator:claude-opus-5-5',
+                            plannerFamilyId: 'claude-opus-5-5'
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                orchestratorThinking: { carbon: 'xhigh', argon: 'low', neon: 'xhigh', 'opus5.5': 'xhigh' },
+                workspaces: []
+              })
+          };
+        }
+        if (url.includes('/api/v1/sessions')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, sessions: [] }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      })
+    );
+
+    const store = new RemoteStoreController();
+    await store.init();
+
+    expect(store.getState().orchestratorThinking).toEqual({
+      carbon: 'high',
+      argon: 'high',
+      neon: 'xhigh',
+      'opus5.5': 'medium'
+    });
+    expect(JSON.parse(window.localStorage.getItem('agy_remote_orch_thinking_v1') || '{}')).toEqual({
+      carbon: 'high',
+      argon: 'high',
+      neon: 'xhigh',
+      'opus5.5': 'medium'
+    });
+    store.destroy();
+  });
 });

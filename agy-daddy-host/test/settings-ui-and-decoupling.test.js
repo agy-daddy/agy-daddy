@@ -1867,6 +1867,20 @@ test('外观设置：右上角 Agy-Daddy 入口显隐与注入原生设置面板
     const settingsBtn = shadow.querySelector('#agy-btn-settings');
     assert.ok(settingsBtn);
     assert.equal(settingsBtn.hidden, false);
+    assert.equal(settingsBtn.getAttribute('title'), 'Agy-Daddy 设置');
+    assert.equal(settingsBtn.getAttribute('aria-label'), 'Agy-Daddy 设置');
+    const settingsIcon = settingsBtn.querySelector('.ag-svg-icon');
+    assert.ok(settingsIcon, 'Expected SVG icon inside #agy-btn-settings');
+    assert.match(settingsIcon.innerHTML, /<svg\b/);
+    assert.equal(settingsBtn.querySelector('.ag-unit-label')?.textContent, 'Agy-Daddy 设置');
+
+    // 更新提示状态同步更新悬浮文案且保留小红点
+    host.setUpdateInfo({ hasUpdate: true, currentVersion: '1.0.0', latestVersion: '1.1.0' });
+    assert.equal(shadow.querySelector('#agy-update-dot').hidden, false);
+    assert.equal(settingsBtn.getAttribute('title'), 'Agy-Daddy 设置（有新版本可用）');
+    host.setUpdateInfo({ hasUpdate: false, currentVersion: '1.0.0', latestVersion: '1.0.0' });
+    assert.equal(shadow.querySelector('#agy-update-dot').hidden, true);
+    assert.equal(settingsBtn.getAttribute('title'), 'Agy-Daddy 设置');
 
     const mountEl = doc.querySelector('#agy-native-settings-mount');
     assert.ok(mountEl);

@@ -6,6 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { resolveWorkspaceOrg } = require('./session-org-store');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const execFileAsync = promisify(execFile);
 
@@ -387,12 +390,23 @@ function parseWorktreePorcelain(stdout, realRoot) {
       }
     }
     if (item.path) {
+      let realWt = item.path;
       try {
-        item.isCurrent = fs.realpathSync(item.path) === realRoot;
+        realWt = fs.realpathSync(item.path);
       } catch {
-        item.isCurrent = item.path === realRoot;
+        realWt = path.resolve(item.path);
       }
-      worktrees.push(item);
+      item.path = realWt;
+      item.isCurrent = realWt === realRoot;
+      const isMainWt = worktrees.length === 0;
+      const enriched = workspaceOrg.buildWorktreeDto(item, {
+        repoMainPath: worktrees[0]?.path || realWt || realRoot,
+        currentRealRoot: realRoot,
+        isMain: isMainWt,
+        allowedRealRoots: null
+      });
+      enriched.isCurrent = item.isCurrent;
+      worktrees.push(enriched);
     }
   }
   return worktrees;
@@ -427,7 +441,9 @@ function createMobileWorkspaceService({
   brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain'),
   maxReadBytes = DEFAULT_MAX_READ_BYTES,
   maxWriteBytes = DEFAULT_MAX_WRITE_BYTES,
-  maxDiffBytes = DEFAULT_MAX_DIFF_BYTES
+  maxDiffBytes = DEFAULT_MAX_DIFF_BYTES,
+  worktreeDiscovery = null,
+  hasRunningSessionInPath = null
 } = {}) {
   const defaultReadLimit = Number.isFinite(Number(maxReadBytes)) && Number(maxReadBytes) >= 0
     ? Math.floor(Number(maxReadBytes))
@@ -715,9 +731,28 @@ function createMobileWorkspaceService({
     };
   }
 
-  async function listWorktrees({ root } = {}) {
+  async function listWorktrees({ root, refresh = false } = {}) {
     const rootRes = resolveRootOnly(root);
     if (!rootRes.ok) return rootRes;
+
+    if (worktreeDiscovery) {
+      const snap = await worktreeDiscovery.listWorktrees({
+        root: rootRes.realRoot,
+        refresh: Boolean(refresh),
+        allowedRealRoots: rootRes.allowedRealRoots
+      });
+      if (!snap.isGitRepo) {
+        return { ok: true, isGitRepo: false, worktrees: [] };
+      }
+      const worktrees = (snap.worktrees || []).map((wt) => ({
+        ...wt,
+        isCurrent: wt.path === rootRes.realRoot,
+        allowed: rootRes.allowedRealRoots.length > 0
+          ? rootRes.allowedRealRoots.some((allowed) => isInsideDir(wt.path, allowed))
+          : true
+      }));
+      return { ok: true, isGitRepo: true, worktrees };
+    }
 
     const checkRepo = await runGit(rootRes.realRoot, ['rev-parse', '--is-inside-work-tree']);
     if (!checkRepo.ok || checkRepo.stdout.trim() !== 'true') {
@@ -867,11 +902,29 @@ function createMobileWorkspaceService({
     };
   }
 
-  function resolveWorktreePath(rootRes, rawPath) {
+  function resolveWorktreePath(rootRes, rawPath, { action = 'add', branch = '' } = {}) {
     const argCheck = validateSafeGitArg(rawPath, 'INVALID_WORKTREE_PATH');
     if (!argCheck.ok) return argCheck;
 
     const candidate = path.resolve(rootRes.realRoot, argCheck.value);
+    try {
+      const lstat = fs.lstatSync(candidate);
+      if (lstat) {
+        const realExisting = fs.realpathSync(candidate);
+        if (rootRes.allowedRealRoots.some((allowed) => isInsideDir(realExisting, allowed))) {
+          return { ok: true, targetPath: realExisting };
+        }
+        if (action === 'add' && workspaceOrg.isSafeSiblingWorktreeTarget(rootRes.realRoot, realExisting, { branch })) {
+          return { ok: true, targetPath: realExisting, isSibling: true };
+        }
+        return outsideError();
+      }
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        return outsideError();
+      }
+    }
+
     const ancestor = findDeepestExistingAncestor(candidate);
     let realAncestor;
     try {
@@ -879,11 +932,13 @@ function createMobileWorkspaceService({
     } catch {
       return outsideError();
     }
-    if (!rootRes.allowedRealRoots.some((allowed) => isInsideDir(realAncestor, allowed))) {
-      return outsideError();
-    }
     const target = path.join(realAncestor, path.relative(ancestor, candidate));
-    if (!rootRes.allowedRealRoots.some((allowed) => isInsideDir(target, allowed))) {
+    const isAllowedAncestor = rootRes.allowedRealRoots.some((allowed) => isInsideDir(realAncestor, allowed));
+    const isAllowedTarget = rootRes.allowedRealRoots.some((allowed) => isInsideDir(target, allowed));
+    if (!isAllowedAncestor || !isAllowedTarget) {
+      if (action === 'add' && workspaceOrg.isSafeSiblingWorktreeTarget(rootRes.realRoot, target, { branch })) {
+        return { ok: true, targetPath: target, isSibling: true };
+      }
       return outsideError();
     }
     return { ok: true, targetPath: target };
@@ -893,7 +948,8 @@ function createMobileWorkspaceService({
     const rootRes = resolveRootOnly(root);
     if (!rootRes.ok) return rootRes;
 
-    const act = typeof action === 'string' ? action.trim().toLowerCase() : '';
+    const rawAct = typeof action === 'string' ? action.trim().toLowerCase() : '';
+    const act = rawAct === 'create' ? 'add' : rawAct;
     if (act === 'list') {
       return listWorktrees({ root: rootRes.realRoot });
     }
@@ -902,7 +958,10 @@ function createMobileWorkspaceService({
       if (!pruneRes.ok) {
         return { ok: false, statusCode: 400, error: (pruneRes.stderr || 'GIT_WORKTREE_PRUNE_FAILED').trim() };
       }
-      const listed = await listWorktrees({ root: rootRes.realRoot });
+      const listed = await listWorktrees({ root: rootRes.realRoot, refresh: true });
+      if (worktreeDiscovery && listed.ok) {
+        worktreeDiscovery.invalidate(rootRes.realRoot, { action: 'prune', worktrees: listed.worktrees || [] });
+      }
       return listed.ok ? { ...listed, action: 'prune' } : listed;
     }
 
@@ -910,15 +969,15 @@ function createMobileWorkspaceService({
       return { ok: false, statusCode: 400, error: 'INVALID_WORKTREE_ACTION' };
     }
 
-    const targetCheck = resolveWorktreePath(rootRes, wtPath);
-    if (!targetCheck.ok) return targetCheck;
-
     let cleanBranch = '';
     if (branch !== undefined && branch !== null && branch !== '') {
       const brCheck = validateSafeRefToken(branch, 'INVALID_GIT_BRANCH');
       if (!brCheck.ok) return brCheck;
       cleanBranch = brCheck.value;
     }
+
+    const targetCheck = resolveWorktreePath(rootRes, wtPath, { action: act, branch: cleanBranch });
+    if (!targetCheck.ok) return targetCheck;
 
     let gitArgs;
     if (act === 'add') {
@@ -937,6 +996,16 @@ function createMobileWorkspaceService({
       if (targetCheck.targetPath === rootRes.realRoot) {
         return { ok: false, statusCode: 400, error: 'CANNOT_REMOVE_MAIN_WORKTREE' };
       }
+      const beforeList = await listWorktrees({ root: rootRes.realRoot, refresh: true });
+      const matchingWt = beforeList.ok && Array.isArray(beforeList.worktrees)
+        ? beforeList.worktrees.find((w) => w.path === targetCheck.targetPath)
+        : null;
+      if (matchingWt?.locked) {
+        return { ok: false, statusCode: 409, error: 'WORKTREE_LOCKED' };
+      }
+      if (typeof hasRunningSessionInPath === 'function' && await hasRunningSessionInPath(targetCheck.targetPath)) {
+        return { ok: false, statusCode: 409, error: 'WORKTREE_HAS_RUNNING_SESSION' };
+      }
       gitArgs = ['worktree', 'remove', targetCheck.targetPath];
     }
 
@@ -949,8 +1018,18 @@ function createMobileWorkspaceService({
       };
     }
 
-    const listed = await listWorktrees({ root: rootRes.realRoot });
-    return listed.ok ? { ...listed, action: act } : listed;
+    const listed = await listWorktrees({ root: rootRes.realRoot, refresh: true });
+    if (worktreeDiscovery && listed.ok) {
+      worktreeDiscovery.invalidate(rootRes.realRoot, { action: act, worktrees: listed.worktrees || [] });
+    }
+    if (listed.ok && act === 'add' && Array.isArray(listed.worktrees)) {
+      for (const wt of listed.worktrees) {
+        if (wt.path === targetCheck.targetPath) {
+          wt.allowed = true;
+        }
+      }
+    }
+    return listed.ok ? { ...listed, action: act, targetPath: targetCheck.targetPath } : listed;
   }
 
   function validateSessionDir(sessionId) {

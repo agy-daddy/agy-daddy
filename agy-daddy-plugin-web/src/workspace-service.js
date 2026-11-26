@@ -8,6 +8,9 @@ const url = require('node:url');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { isForbiddenSystemRoot } = require('./workspace-meta-store');
+const { resolveWorkspaceOrg } = require('./session-org-bridge');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const execFileAsync = promisify(execFile);
 
@@ -444,7 +447,16 @@ function parseWorktreePorcelain(stdout, realRoot, allowedRealRoots = null) {
       if (Array.isArray(allowedRealRoots) && allowedRealRoots.length > 0) {
         item.allowed = allowedRealRoots.some((allowed) => isInsideDir(realWt, allowed));
       }
-      worktrees.push(item);
+      const isMainWt = worktrees.length === 0;
+      const enriched = workspaceOrg.buildWorktreeDto(item, {
+        repoMainPath: worktrees[0]?.path || realWt || realRoot,
+        currentRealRoot: realRoot,
+        isMain: isMainWt,
+        allowedRealRoots
+      });
+      enriched.isCurrent = item.isCurrent;
+      enriched.allowed = item.allowed;
+      worktrees.push(enriched);
     }
   }
   return worktrees;
@@ -521,7 +533,9 @@ function createWorkspaceService({
   getAllowedRoots = null,
   brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain'),
   maxReadBytes = DEFAULT_MAX_BYTES,
-  maxWriteBytes = DEFAULT_MAX_BYTES
+  maxWriteBytes = DEFAULT_MAX_BYTES,
+  worktreeDiscovery = null,
+  hasRunningSessionInPath = null
 } = {}) {
   const defaultReadLimit = Number.isFinite(Number(maxReadBytes)) && Number(maxReadBytes) >= 0
     ? Math.floor(Number(maxReadBytes))
@@ -835,9 +849,28 @@ function createWorkspaceService({
     };
   }
 
-  async function listWorktrees({ root } = {}) {
+  async function listWorktrees({ root, refresh = false } = {}) {
     const resolved = resolveRootAndTarget({ root, relPath: '', mustExist: true });
     if (!resolved.ok) return resolved;
+
+    if (worktreeDiscovery) {
+      const snap = await worktreeDiscovery.listWorktrees({
+        root: resolved.realRoot,
+        refresh: Boolean(refresh),
+        allowedRealRoots: resolved.allowedRealRoots
+      });
+      if (!snap.isGitRepo) {
+        return { ok: true, isGitRepo: false, worktrees: [] };
+      }
+      const worktrees = (snap.worktrees || []).map((wt) => ({
+        ...wt,
+        isCurrent: isSameDir(wt.path, resolved.realRoot),
+        allowed: resolved.allowedRealRoots.length > 0
+          ? resolved.allowedRealRoots.some((allowed) => isInsideDir(wt.path, allowed))
+          : true
+      }));
+      return { ok: true, isGitRepo: true, worktrees };
+    }
 
     const checkRepo = await runGit(resolved.realRoot, ['rev-parse', '--is-inside-work-tree']);
     if (!checkRepo.ok || checkRepo.stdout.trim() !== 'true') {
@@ -1022,7 +1055,7 @@ function createWorkspaceService({
     };
   }
 
-  function resolveWorktreePath(repoCheck, rawPath) {
+  function resolveWorktreePath(repoCheck, rawPath, { action = 'add', branch = '' } = {}) {
     const argCheck = validateSafeGitArg(rawPath, 'INVALID_WORKTREE_PATH');
     if (!argCheck.ok) return argCheck;
 
@@ -1036,6 +1069,27 @@ function createWorkspaceService({
       return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
     }
 
+    try {
+      const lstat = fs.lstatSync(candidate);
+      if (lstat) {
+        const realExisting = resolveRealPath(candidate);
+        if (isForbiddenSystemRoot(realExisting)) {
+          return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+        }
+        if (repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realExisting, allowed))) {
+          return { ok: true, targetPath: realExisting };
+        }
+        if (action === 'add' && workspaceOrg.isSafeSiblingWorktreeTarget(repoCheck.realRoot, realExisting, { branch })) {
+          return { ok: true, targetPath: realExisting, isSibling: true };
+        }
+        return outsideError();
+      }
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        return outsideError();
+      }
+    }
+
     const ancestor = findDeepestExistingAncestor(candidate);
     let realAncestor;
     try {
@@ -1043,26 +1097,17 @@ function createWorkspaceService({
     } catch {
       return outsideError();
     }
-    if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realAncestor, allowed))) {
-      return outsideError();
-    }
-
     const target = path.join(realAncestor, path.relative(ancestor, candidate));
     if (isForbiddenSystemRoot(target)) {
       return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
     }
-    if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(target, allowed))) {
-      return outsideError();
-    }
-    try {
-      if (fs.existsSync(target)) {
-        const realExisting = resolveRealPath(target);
-        if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realExisting, allowed))) {
-          return outsideError();
-        }
-        return { ok: true, targetPath: realExisting };
+
+    const isAllowedAncestor = repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realAncestor, allowed));
+    const isAllowedTarget = repoCheck.allowedRealRoots.some((allowed) => isInsideDir(target, allowed));
+    if (!isAllowedAncestor || !isAllowedTarget) {
+      if (action === 'add' && workspaceOrg.isSafeSiblingWorktreeTarget(repoCheck.realRoot, target, { branch })) {
+        return { ok: true, targetPath: target, isSibling: true };
       }
-    } catch {
       return outsideError();
     }
     return { ok: true, targetPath: target };
@@ -1088,7 +1133,10 @@ function createWorkspaceService({
           error: (pruneRes.stderr || pruneRes.stdout || 'GIT_WORKTREE_PRUNE_FAILED').trim()
         };
       }
-      const listed = await listWorktrees({ root: repoCheck.realRoot });
+      const listed = await listWorktrees({ root: repoCheck.realRoot, refresh: true });
+      if (worktreeDiscovery && listed.ok) {
+        worktreeDiscovery.invalidate(repoCheck.realRoot, { action: 'prune', worktrees: listed.worktrees || [] });
+      }
       return listed.ok ? { ...listed, action: 'prune' } : listed;
     }
 
@@ -1096,15 +1144,15 @@ function createWorkspaceService({
       return { ok: false, statusCode: 400, error: 'INVALID_WORKTREE_ACTION' };
     }
 
-    const targetCheck = resolveWorktreePath(repoCheck, wtPath);
-    if (!targetCheck.ok) return targetCheck;
-
     let cleanBranch = '';
     if (branch !== undefined && branch !== null && branch !== '') {
       const brCheck = validateSafeRefToken(branch, 'INVALID_GIT_BRANCH');
       if (!brCheck.ok) return brCheck;
       cleanBranch = brCheck.value;
     }
+
+    const targetCheck = resolveWorktreePath(repoCheck, wtPath, { action: act, branch: cleanBranch });
+    if (!targetCheck.ok) return targetCheck;
 
     let gitArgs;
     if (act === 'add') {
@@ -1122,6 +1170,16 @@ function createWorkspaceService({
     } else {
       if (isSameDir(targetCheck.targetPath, repoCheck.realRoot)) {
         return { ok: false, statusCode: 400, error: 'CANNOT_REMOVE_MAIN_WORKTREE' };
+      }
+      const beforeList = await listWorktrees({ root: repoCheck.realRoot, refresh: true });
+      const matchingWt = beforeList.ok && Array.isArray(beforeList.worktrees)
+        ? beforeList.worktrees.find((w) => isSameDir(w.path, targetCheck.targetPath))
+        : null;
+      if (matchingWt?.locked) {
+        return { ok: false, statusCode: 409, error: 'WORKTREE_LOCKED' };
+      }
+      if (typeof hasRunningSessionInPath === 'function' && await hasRunningSessionInPath(targetCheck.targetPath)) {
+        return { ok: false, statusCode: 409, error: 'WORKTREE_HAS_RUNNING_SESSION' };
       }
       gitArgs = ['worktree', 'remove', targetCheck.targetPath];
     }
@@ -1144,7 +1202,17 @@ function createWorkspaceService({
       // Keep lexical target path if removed
     }
 
-    const listed = await listWorktrees({ root: repoCheck.realRoot });
+    const listed = await listWorktrees({ root: repoCheck.realRoot, refresh: true });
+    if (worktreeDiscovery && listed.ok) {
+      worktreeDiscovery.invalidate(repoCheck.realRoot, { action: act, worktrees: listed.worktrees || [] });
+    }
+    if (listed.ok && act === 'add' && Array.isArray(listed.worktrees)) {
+      for (const wt of listed.worktrees) {
+        if (isSameDir(wt.path, resolvedTargetPath)) {
+          wt.allowed = true;
+        }
+      }
+    }
     return listed.ok
       ? { ...listed, action: act, targetPath: resolvedTargetPath }
       : listed;

@@ -584,7 +584,7 @@ test('常驻 Daemon GET /diagnostics 脱离 Antigravity 可访问并完整消费
   assert.equal(healthJson.antigravity.upgradeEvents.length, 1);
   assert.equal(healthJson.cdp.targets.matched.length, 1);
   assert.equal(healthJson.cdp.targets.filtered.length, 1);
-  assert.equal(healthJson.injection.anchors.total, 14);
+  assert.equal(healthJson.injection.anchors.total, 15);
   assert.equal(healthJson.plugins[0].id, 'demo.plugin');
 
   // 3. Execute inline JS inside a sandboxed DOM to verify all 5 sections render & refresh/relaunch work

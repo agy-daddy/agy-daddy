@@ -12,6 +12,7 @@
     { "tag": "button", "attrs": { "data-testid": "thinking-collapsible-trigger" } },
     { "tag": "button", "attrs": { "data-testid": "turn-cards-container" } },
     { "tag": "div", "attrs": { "data-testid": "conversation-row-sidebar" } },
+    { "tag": "aside", "attrs": { "data-testid": "sidebar-panel", "class": "bg-sidebar" } },
     { "tag": "div", "attrs": { "aria-label": "文件查看器标题栏" } },
     { "tag": "div", "attrs": { "role": "dialog", "aria-label": "设置" } },
     { "tag": "nav", "attrs": { "role": "tablist", "data-settings-child": "true" } },

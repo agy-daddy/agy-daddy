@@ -515,7 +515,7 @@ test('AgyDaddyDaemon 全托管配置、host-settings、命令引擎、内置系�
     assert.equal(diagExp.ok, true);
     assert.equal(diagExp.path, path.join(stateDir, 'agy-daddy-diagnostic-bundle.json'));
     assert.equal(fs.existsSync(diagExp.path), true);
-    assert.equal(diagExp.report.anchors.count, 14);
+    assert.equal(diagExp.report.anchors.count, 15);
     assert.equal(diagExp.report.antigravity.cdpPort, 51580);
     assert.equal(diagExp.report.antigravity.cdpTargetsCount, 1);
     assert.equal(fs.readFileSync(diagExp.path, 'utf8').includes(os.homedir()), false);

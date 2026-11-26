@@ -35,7 +35,7 @@ test('Plugin API v1 SDK 导出快照与 index.d.ts 契约锁定', () => {
     assert.ok(sdk[key] !== undefined, `Missing SDK export: ${key}`);
   }
   assert.equal(sdk.HOST_API_VERSION, '1.0.0');
-  assert.equal(sdk.KNOWN_ANCHORS.length, 14);
+  assert.equal(sdk.KNOWN_ANCHORS.length, 15);
   for (const a of ['settings.dialog', 'settings.nav', 'settings.content', 'settings.openTrigger']) {
     assert.ok(sdk.KNOWN_ANCHORS.includes(a), `Missing KNOWN_ANCHORS entry: ${a}`);
   }

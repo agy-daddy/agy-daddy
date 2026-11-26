@@ -111,7 +111,7 @@ function buildSampleHostHealth(anchorsRegistry, overrides = {}) {
       probeSource: 'runtime',
       antigravityVersion: '2.35.1',
       anchors: {
-        total: 14,
+        total: 15,
         healthyCount: items.filter((i) => i.status === 'ok').length,
         missingCount: items.filter((i) => i.status === 'missing').length,
         items
@@ -427,7 +427,7 @@ test('Clicking Safe Mode pill opens independent 760x560 Shadow DOM modal and ren
 
     const anchorsTable = shadow.querySelector('#agy-safe-mode-anchors-table');
     const anchorRows = anchorsTable.querySelectorAll('tr[data-anchor-name]');
-    assert.equal(anchorRows.length, 14);
+    assert.equal(anchorRows.length, 15);
     const composerRow = anchorsTable.querySelector('tr[data-anchor-name="composer.editor"]');
     assert.ok(composerRow);
     assert.equal(composerRow.getAttribute('data-anchor-status'), 'missing');
@@ -455,7 +455,7 @@ test('Clicking Safe Mode pill opens independent 760x560 Shadow DOM modal and ren
   }
 });
 
-test('Live 14-anchor probe reports via POST /host/health/runtime-report to daemon on startup and state changes', async () => {
+test('Live 15-anchor probe reports via POST /host/health/runtime-report to daemon on startup and state changes', async () => {
   buildHostRenderer();
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-safe-mode-health-'));
   const doc = createMockDocument();
@@ -520,7 +520,7 @@ test('Live 14-anchor probe reports via POST /host/health/runtime-report to daemo
 
     let snapshot = daemon.getHostHealth();
     assert.equal(snapshot.injection.probeSource, 'runtime');
-    assert.equal(snapshot.injection.anchors.total, 14);
+    assert.equal(snapshot.injection.anchors.total, 15);
     assert.equal(snapshot.injection.anchors.items.find((i) => i.name === 'topbar.rightCluster').status, 'ok');
     assert.equal(snapshot.injection.anchors.items.find((i) => i.name === 'composer.editor').status, 'ok');
     assert.equal(snapshot.plugins[0].rendererMounted, true);

@@ -6,7 +6,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const url = require('node:url');
-const { createSessionOrgBridge } = require('./session-org-bridge');
+const {
+  createSessionOrgBridge,
+  aggregateWorktreeProjects,
+  matchWorktreeByLongestPrefix
+} = require('./session-org-bridge');
 
 const META_FILE_NAME = 'workspace-meta.json';
 const IS_CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
@@ -498,6 +502,7 @@ function pickNonEmptyString(...values) {
 function createWorkspaceMetaStore({
   storage = null,
   sessionOrgBridge = null,
+  worktreeDiscovery = null,
   defaultBaseDir,
   conversationDbPath,
   stateVscdbPath,
@@ -510,6 +515,7 @@ function createWorkspaceMetaStore({
     || path.join(os.homedir(), 'antigravity-workspace');
   const usesExternalOrgBridge = Boolean(sessionOrgBridge);
   const orgBridge = sessionOrgBridge || createSessionOrgBridge({ orgPath: null });
+  const activeWorktreeDiscovery = worktreeDiscovery || sessionOrgBridge?.worktreeDiscovery || null;
   const resolvedConversationDbPath = resolveOptionalPath(
     conversationDbPath,
     () => path.join(os.homedir(), '.gemini', 'antigravity', 'conversation_summaries.db')
@@ -1151,16 +1157,37 @@ function createWorkspaceMetaStore({
       sessionCount: countsByProjectId.get(p.id) || 0
     }));
 
+    const combinedProjects = [...registered, ...appSynced, ...implicit];
+    const collapsedProjectsMap = org.collapsedNodes?.projects || {};
+    const aggregated = activeWorktreeDiscovery
+      ? aggregateWorktreeProjects({
+          projects: combinedProjects,
+          sessions,
+          persistedOrg: org,
+          worktreeDiscovery: activeWorktreeDiscovery
+        })
+      : {
+          projects: combinedProjects.map((p) => ({
+            ...p,
+            collapsed: Boolean(collapsedProjectsMap[p.id]),
+            repoRootPath: p.rootPath || p.path || null,
+            isMultiWorktree: false,
+            worktrees: []
+          }))
+        };
+
     return {
       ok: true,
       version: 2,
       revision: org.revision,
-      projects: [...registered, ...appSynced, ...implicit],
+      projects: aggregated.projects,
       groups: sortedGroups(org),
+      collapsedNodes: org.collapsedNodes || { projects: {}, worktrees: {} },
       pins: org.pins,
       groupOrder: org.groupOrder,
       projectOrder: org.projectOrder,
       sessionOrder: org.sessionOrder,
+      worktreeTombstones: org.worktreeTombstones || {},
       archivedCount: Object.keys(org.archivedSessions || {}).length,
       defaultSessionPath: getDefaultSessionPath(org)
     };
@@ -1629,7 +1656,23 @@ function createWorkspaceMetaStore({
       return { ok: false, statusCode: 400, error: 'INVALID_CASCADE_ID' };
     }
 
+    const curOrg = orgBridge.loadPersistedOrg();
+    const curBinding = curOrg.sessionWorktreeBindings?.[cleanCid] || null;
+    const sourceWtId = (typeof opts.sourceWorktreeId === 'string' && opts.sourceWorktreeId.trim())
+      ? opts.sourceWorktreeId.trim()
+      : (curBinding?.worktreeId || null);
+    const targetWtId = (typeof opts.targetWorktreeId === 'string' && opts.targetWorktreeId.trim())
+      ? opts.targetWorktreeId.trim()
+      : ((typeof opts.worktreeId === 'string' && opts.worktreeId.trim()) ? opts.worktreeId.trim() : null);
+
+    if (targetWtId && sourceWtId && targetWtId !== sourceWtId) {
+      return { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' };
+    }
+
     if (projectId === null || projectId === undefined || projectId === '') {
+      if (sourceWtId) {
+        return { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' };
+      }
       const outcome = orgBridge.mutateOrgAtomically((org) => {
         org.sessionProjectOverrides[cleanCid] = null;
         return { buildResult: (saved) => ({ ok: true, cascadeId: cleanCid, projectId: null, revision: saved.revision }) };
@@ -1642,9 +1685,11 @@ function createWorkspaceMetaStore({
     const outcome = orgBridge.mutateOrgAtomically((org) => {
       const lookup = buildRegisteredLookup(org);
       let resolvedPid = cleanPid;
+      let targetRootPath = '';
       const existing = lookup.byId.get(cleanPid);
       if (existing) {
         resolvedPid = existing.id;
+        targetRootPath = existing.rootPath || '';
       } else {
         const candidate = resolveProjectCandidate(cleanPid, opts, org);
         if (!candidate) {
@@ -1652,6 +1697,26 @@ function createWorkspaceMetaStore({
         }
         const materialized = orgBridge.materializeProjectInOrg(org, candidate);
         resolvedPid = materialized ? materialized.id : cleanPid;
+        targetRootPath = materialized?.rootPath || candidate.rootPath || '';
+      }
+      const binding = org.sessionWorktreeBindings?.[cleanCid] || null;
+      const effectiveSourceWtId = (typeof opts.sourceWorktreeId === 'string' && opts.sourceWorktreeId.trim())
+        ? opts.sourceWorktreeId.trim()
+        : (binding?.worktreeId || null);
+      if (effectiveSourceWtId && targetRootPath) {
+        const boundWsPath = normalizeLocalPath(binding?.workspacePath || opts.sourceWorkspacePath || opts.sessionWorkspaceUri || '');
+        const normTarget = normalizeLocalPath(targetRootPath);
+        let sameRepo = Boolean(boundWsPath && normTarget && canonicalKey(boundWsPath) === canonicalKey(normTarget));
+        if (!sameRepo && activeWorktreeDiscovery && boundWsPath && normTarget) {
+          const snapA = activeWorktreeDiscovery.getCachedSnapshot(boundWsPath);
+          const snapB = activeWorktreeDiscovery.getCachedSnapshot(normTarget);
+          if (snapA?.isGitRepo && snapB?.isGitRepo && canonicalKey(snapA.repoRoot) === canonicalKey(snapB.repoRoot)) {
+            sameRepo = true;
+          }
+        }
+        if (!sameRepo) {
+          return { abort: true, result: { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' } };
+        }
       }
       org.sessionProjectOverrides[cleanCid] = resolvedPid;
       return {
@@ -2044,6 +2109,27 @@ function createWorkspaceMetaStore({
       });
     }
 
+    const knownWorktrees = activeWorktreeDiscovery ? activeWorktreeDiscovery.getAllKnownWorktrees() : [];
+    const bindingsMap = activeOrg.sessionWorktreeBindings || {};
+    if (knownWorktrees.length > 0 || Object.keys(bindingsMap).length > 0) {
+      for (const es of enrichedAll) {
+        const binding = bindingsMap[es.cascadeId] || null;
+        const rawWs = es.workspacePath || es.workspaceUri || binding?.workspacePath || binding?.workspaceUri || '';
+        const matchedWt = (rawWs && knownWorktrees.length > 0)
+          ? matchWorktreeByLongestPrefix(rawWs, knownWorktrees)
+          : null;
+        if (matchedWt) {
+          es.worktreeId = matchedWt.worktreeId;
+          es.worktreePath = matchedWt.path;
+          es.worktreeBranch = matchedWt.branch || matchedWt.displayLabel;
+          es.worktreeStatus = matchedWt.status;
+        } else if (binding?.worktreeId) {
+          es.worktreeId = binding.worktreeId;
+          es.worktreePath = binding.workspacePath || null;
+        }
+      }
+    }
+
     if (diskReadChanges > 0 || completionChanged) {
       persist();
     }
@@ -2141,6 +2227,17 @@ function createWorkspaceMetaStore({
       if (res?.ok) cleanupSessionTelemetry(cascadeId);
       return res;
     },
+    setNodeCollapsed: (body) => {
+      const res = orgBridge.setNodeCollapsed(body);
+      if (res?.ok) persist();
+      return res;
+    },
+    bindSessionWorkspace: (cascadeId, info) => {
+      const res = orgBridge.bindSessionWorkspace(cascadeId, info);
+      if (res?.ok) persist();
+      return res;
+    },
+    syncWorktreeTopology: (updates) => orgBridge.syncWorktreeTopology(updates),
     unarchiveOnSendMessage: (cascadeId) => orgBridge.reconcileSessionsLifecycle([], { forceUnarchiveIds: [cascadeId] })
   };
 }

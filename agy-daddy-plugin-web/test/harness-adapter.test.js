@@ -830,29 +830,37 @@ test('静态门禁：harness-adapter.js 零外部依赖且不含禁用主题色'
   }
 });
 
-test('B7: createSession passes workspaceUris and retries once without workspaceUris on StartCascade error', async () => {
+test('B7: createSession passes workspaceUris and fails fast without silent fallback when StartCascade rejects', async () => {
   const calls = [];
   const rpc = {
     async call(method, params) {
       calls.push({ method, params });
       if (method === 'StartCascade' && Array.isArray(params.workspaceUris)) {
-        throw new Error('StartCascade unknown field workspaceUris');
+        if (params.workspaceUris[0] === 'file:///tmp/project-bad') {
+          throw new Error('StartCascade unknown field workspaceUris');
+        }
+        return { cascadeId: 'scoped-cid-456' };
       }
       if (method === 'StartCascade') {
-        return { cascadeId: 'fallback-cid-456' };
+        return { cascadeId: 'plain-cid-123' };
       }
       throw new Error(`Unexpected: ${method}`);
     }
   };
   const adapter = createHarnessAdapter({ rpc });
-  const res = await adapter.createSession({ title: 'Fallback', workspaceUri: 'file:///tmp/project-a' });
+  const res = await adapter.createSession({ title: 'Scoped', workspaceUri: 'file:///tmp/project-a' });
   assert.equal(res.ok, true);
-  assert.equal(res.cascadeId, 'fallback-cid-456');
-  assert.equal(res.title, 'Fallback');
+  assert.equal(res.cascadeId, 'scoped-cid-456');
+  assert.equal(res.title, 'Scoped');
   assert.equal(res.workspaceUri, 'file:///tmp/project-a');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].params.workspaceUris, ['file:///tmp/project-a']);
-  assert.equal('workspaceUris' in calls[1].params, false);
+
+  await assert.rejects(
+    () => adapter.createSession({ title: 'Bad', workspaceUri: 'file:///tmp/project-bad' }),
+    /StartCascade unknown field workspaceUris/
+  );
+  assert.equal(calls.length, 2);
 
   const plainRes = await adapter.createSession({ title: 'Plain' });
   assert.equal(plainRes.ok, true);

@@ -1896,19 +1896,9 @@ function createHarnessAdapter({
         metadata: { ...DEFAULT_METADATA }
       };
       const cleanUri = typeof workspaceUri === 'string' && workspaceUri.trim() ? workspaceUri.trim() : '';
-      let resp;
-      if (cleanUri) {
-        try {
-          resp = await rpc.call('StartCascade', {
-            ...baseParams,
-            workspaceUris: [cleanUri]
-          });
-        } catch {
-          resp = await rpc.call('StartCascade', baseParams);
-        }
-      } else {
-        resp = await rpc.call('StartCascade', baseParams);
-      }
+      const resp = await rpc.call('StartCascade', cleanUri
+        ? { ...baseParams, workspaceUris: [cleanUri] }
+        : baseParams);
       if (!resp?.cascadeId) {
         throw createAdapterError('StartCascade did not return cascadeId', 502, 'RPC_INVALID_RESPONSE');
       }

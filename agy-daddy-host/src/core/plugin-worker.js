@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { PluginDataStore } = require('./storage');
+const { createWorkspaceOrgRuntime } = require('./workspace-org');
 
 function matchOutboundDomain(hostname, permissions) {
   const host = String(hostname || '').toLowerCase();
@@ -186,13 +187,18 @@ if (require.main === module) {
       currentSettings = msg.settingsValues && typeof msg.settingsValues === 'object'
         ? { ...msg.settingsValues }
         : {};
+      if (!process.env.AGY_DADDY_HOST_DIR) {
+        process.env.AGY_DADDY_HOST_DIR = path.resolve(__dirname, '..', '..');
+      }
       const store = new PluginDataStore(pluginId, { stateDir: msg.stateDir });
+      const workspaceOrg = createWorkspaceOrgRuntime();
       const perms = msg.grantedPermissions || [];
       const hostProxy = {
         pluginId,
         manifest: msg.manifest || null,
         permissions: [...perms],
         storage: store,
+        workspaceOrg,
         bridge: {
           async registerRoute(subPath, handler, opts = {}) {
             const clean = subPath.startsWith('/') ? subPath : `/${subPath}`;

@@ -2,6 +2,9 @@
 
 const path = require('node:path');
 const { normalizeLocalPath } = require('./workspace-meta-store');
+const { resolveWorkspaceOrg } = require('./session-org-bridge');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const LOG_TAIL_MAX_BYTES = 65536;
 const RECENT_TASKS_LIMIT = 20;
@@ -211,6 +214,7 @@ function createTaskManager({
   harnessAdapter = null,
   ptyManager = null,
   workspaceMetaStore = null,
+  worktreeDiscovery = null,
   cacheTtlMs = STEP_SCAN_CACHE_TTL_MS,
   stepScanSessionLimit = STEP_SCAN_SESSION_LIMIT,
   stepScanConcurrency = STEP_SCAN_CONCURRENCY,
@@ -346,17 +350,51 @@ function createTaskManager({
         for (const p of listed?.projects || []) {
           const normRoot = normalizeLocalPath(p?.rootPath);
           const key = canonicalProjectKey(normRoot);
-          if (!normRoot || !key) continue;
-          const entry = {
-            id: p.id || null,
-            path: normRoot,
-            key,
-            name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim() : (path.basename(normRoot) || normRoot)
-          };
-          if (!byKey.has(key)) byKey.set(key, entry);
-          if (entry.id) byId.set(entry.id, entry);
+          if (normRoot && key) {
+            const entry = {
+              id: p.id || null,
+              path: normRoot,
+              key,
+              name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim() : (path.basename(normRoot) || normRoot)
+            };
+            if (!byKey.has(key)) byKey.set(key, entry);
+            if (entry.id) byId.set(entry.id, entry);
+          }
+          if (Array.isArray(p?.worktrees)) {
+            for (const wt of p.worktrees) {
+              const wtNorm = normalizeLocalPath(wt?.path);
+              const wtKey = canonicalProjectKey(wtNorm);
+              if (!wtNorm || !wtKey) continue;
+              if (!byKey.has(wtKey)) {
+                byKey.set(wtKey, {
+                  id: p.id || null,
+                  path: wtNorm,
+                  key: wtKey,
+                  worktreeId: wt.worktreeId || null,
+                  worktreeBranch: wt.branch || wt.displayLabel || null,
+                  name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim() : (path.basename(wtNorm) || wtNorm)
+                });
+              }
+            }
+          }
         }
       } catch {}
+    }
+
+    if (worktreeDiscovery) {
+      for (const wt of worktreeDiscovery.getAllKnownWorktrees()) {
+        const wtNorm = normalizeLocalPath(wt?.path);
+        const wtKey = canonicalProjectKey(wtNorm);
+        if (!wtNorm || !wtKey || byKey.has(wtKey)) continue;
+        byKey.set(wtKey, {
+          id: null,
+          path: wtNorm,
+          key: wtKey,
+          worktreeId: wt.worktreeId || null,
+          worktreeBranch: wt.branch || wt.displayLabel || null,
+          name: wt.displayLabel || path.basename(wtNorm) || wtNorm
+        });
+      }
     }
 
     for (const s of sessions) {
@@ -385,9 +423,15 @@ function createTaskManager({
     function matchKnownProject(rawPath) {
       const norm = normalizeLocalPath(rawPath);
       if (!norm) return null;
+      const canon = workspaceOrg.canonicalizePath(norm) || norm;
       for (const proj of sortedProjects) {
-        if (isSameOrInsidePath(norm, proj.path)) {
-          return { projectPath: proj.path, projectName: proj.name };
+        const projCanon = workspaceOrg.canonicalizePath(proj.path) || proj.path;
+        if (isSameOrInsidePath(canon, projCanon) || isSameOrInsidePath(norm, proj.path)) {
+          return {
+            projectPath: proj.path,
+            projectName: proj.name,
+            ...(proj.worktreeId ? { worktreeId: proj.worktreeId, worktreeBranch: proj.worktreeBranch } : {})
+          };
         }
       }
       return null;

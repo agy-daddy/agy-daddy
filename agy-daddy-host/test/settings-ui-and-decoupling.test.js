@@ -22,6 +22,7 @@ function buildFullAnchorsRegistry() {
       'chat.thinkingTrigger': { versions: [{ range: '>=2.0.0', selectors: ['[data-testid="thinking-collapsible-trigger"]'] }] },
       'chat.actionButtons': { versions: [{ range: '>=2.0.0', selectors: ['[data-testid="agent-response"] button'] }] },
       'sidebar.conversationRows': { versions: [{ range: '>=2.0.0', selectors: ['[data-testid="conversation-row-sidebar"]'] }] },
+      'sidebar.root': { versions: [{ range: '>=2.0.0', selectors: ['aside[data-testid="sidebar-panel"].bg-sidebar', 'aside[data-testid="sidebar-panel"]'] }] },
       'fileViewer.header': { versions: [{ range: '>=2.0.0', selectors: ['[aria-label="File Viewer header"]'] }] },
       'settings.dialog': {
         versions: [{
@@ -725,9 +726,9 @@ test('诊断分段：插件熔断解除、全量锚点健康矩阵与脱敏诊�
     assert.equal(host.getMetrics('crash.plugin').crashes, 0);
     await new Promise((r) => setTimeout(r, 30));
 
-    // 2. 锚点健康矩阵覆盖全部 14 个锚点并正确区分命中/未命中
+    // 2. 锚点健康矩阵覆盖全部 15 个锚点并正确区分命中/未命中
     const anchorCells = shadow.querySelectorAll('.ag-anchor-item');
-    assert.equal(anchorCells.length, 14);
+    assert.equal(anchorCells.length, 15);
     assert.equal(shadow.querySelector('[data-anchor-name="composer.editor"]').getAttribute('data-anchor-matched'), 'true');
     assert.equal(shadow.querySelector('[data-anchor-name="settings.dialog"]').getAttribute('data-anchor-matched'), 'false');
 

@@ -607,7 +607,7 @@ test('CdpInjector 全员 Isolated World 端到端（真实 dist/host-renderer.js
   }
 });
 
-test('CLI 端到端烟雾测试：doctor (14 锚点) / status / plugin 生命周期 / 无 migrate / live --once', () => {
+test('CLI 端到端烟雾测试：doctor (15 锚点) / status / plugin 生命周期 / 无 migrate / live --once', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cli-smoke-'));
   const stateDir = path.join(root, 'state');
   const pluginsDir = path.join(root, 'plugins');
@@ -633,7 +633,7 @@ test('CLI 端到端烟雾测试：doctor (14 锚点) / status / plugin 生命周
     assert.equal(docRes.status, 0, docRes.stderr);
     const docJson = JSON.parse(docRes.stdout);
     assert.equal(docJson.ok, true);
-    assert.equal(docJson.injection.anchors.total, 14);
+    assert.equal(docJson.injection.anchors.total, 15);
     assert.equal(docJson.legacySuite, undefined);
 
     // 2. status --skip-cdp

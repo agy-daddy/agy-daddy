@@ -1021,8 +1021,10 @@ class MobileRemoteServer {
     if (method === 'GET' && pathname === '/api/v1/sessions/org') {
       const includeArchivedRaw = String(urlObj.searchParams.get('includeArchived') || '').trim().toLowerCase();
       const includeArchived = includeArchivedRaw === 'true' || includeArchivedRaw === '1';
+      const refreshWtRaw = String(urlObj.searchParams.get('refreshWorktrees') || '').trim().toLowerCase();
+      const refreshWorktrees = refreshWtRaw === 'true' || refreshWtRaw === '1';
       if (typeof h.getSessionOrg === 'function') {
-        const result = await h.getSessionOrg({ includeArchived });
+        const result = await h.getSessionOrg({ includeArchived, refreshWorktrees });
         sendResult(res, result);
         return;
       }
@@ -1069,7 +1071,33 @@ class MobileRemoteServer {
       return;
     }
 
+    if (method === 'POST' && pathname === '/api/v1/sessions/org/collapse') {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.setNodeCollapsed !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const result = await h.setNodeCollapsed(body);
+      sendResult(res, result);
+      return;
+    }
+
     let match;
+    if ((method === 'PUT' || method === 'PATCH') && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/project$/))) {
+      if (!this._requirePermission(res, 'L1')) return;
+      if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
+      if (typeof h.assignSessionProject !== 'function') {
+        sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+        return;
+      }
+      const id = decodeURIComponent(match[1]);
+      const body = await readJsonBody(req);
+      const result = await h.assignSessionProject(id, body);
+      sendResult(res, result);
+      return;
+    }
     if (method === 'POST' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/archive$/))) {
       if (!this._requirePermission(res, 'L1')) return;
       if (!this._requireCloudflareConfirm(req, res, channel, `${method} ${pathname}`)) return;
@@ -1451,7 +1479,9 @@ class MobileRemoteServer {
         return;
       }
       const root = urlObj.searchParams.get('root') || '';
-      const result = await this.mobileWorkspace.listWorktrees({ root });
+      const refreshRaw = String(urlObj.searchParams.get('refresh') || '').trim().toLowerCase();
+      const refresh = refreshRaw === 'true' || refreshRaw === '1';
+      const result = await this.mobileWorkspace.listWorktrees({ root, refresh });
       if (result && result.ok) {
         const cur = Array.isArray(result.worktrees) ? result.worktrees.find((w) => w.isCurrent) : null;
         sendResult(res, { ...result, current: cur ? cur.path : '' });
@@ -1706,7 +1736,8 @@ class MobileRemoteServer {
         sendJson(res, 503, { ok: false, error: 'PTY_UNAVAILABLE' });
         return;
       }
-      const list = this.ptyManager.listSessions().map((s) => ({
+      const cwdFilter = urlObj.searchParams.get('cwd') || '';
+      const list = this.ptyManager.listSessions(cwdFilter ? { cwd: cwdFilter } : {}).map((s) => ({
         ...s,
         id: s.sessionId || s.id
       }));

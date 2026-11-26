@@ -122,6 +122,18 @@
       "subpath": "agy-daddy-plugin-web",
       "localRepo": "agy-daddy-plugin-web",
       "manifestSha512": "sha512-TeQNGypx3EHvnwwCdLkHi5E3ytuMtrm/QHYd/pE5gkOA5Q4FwEU0FJp3sTC6YBPy8GuW0bFDz5zklkfLOTI9ag=="
+    },
+    {
+      "id": "agy-daddy.theme",
+      "shortName": "theme",
+      "layer": 3,
+      "trustLevel": "T0",
+      "version": "1.1.1",
+      "npmPackage": "@agy-daddy/plugin-theme",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-theme",
+      "localRepo": "agy-daddy-plugin-theme",
+      "manifestSha512": "sha512-bPCgh8vZ/Bnno67RPdmfCLvdwgdiQB/2OvSg8sy9AqE8HkhnUUKYI8dPoEQ3hBTTO/rh3P6dZySuvUc1ZXfMLA=="
     }
   ]
 }

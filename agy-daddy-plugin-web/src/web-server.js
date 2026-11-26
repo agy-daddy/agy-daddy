@@ -369,6 +369,10 @@ class WebServer {
     this.getCloudflareState = typeof options.getCloudflareState === 'function'
       ? options.getCloudflareState
       : null;
+    this.enableNotifications = Boolean(options.enableNotifications);
+    this.getEnableNotifications = typeof options.getEnableNotifications === 'function'
+      ? options.getEnableNotifications
+      : null;
     // Test seam: production always classifies from the socket + headers.
     this.resolveChannel = typeof options.resolveChannel === 'function' ? options.resolveChannel : null;
     this.harnessAdapter = options.harnessAdapter || null;
@@ -503,6 +507,16 @@ class WebServer {
       reasonCode: 'REMOTE_PLUGIN_OFFLINE',
       tokenSource: this.tokenSource
     };
+  }
+
+  _resolveEnableNotifications() {
+    return Boolean(this.getEnableNotifications ? this.getEnableNotifications() : this.enableNotifications);
+  }
+
+  updateNotificationConfig({ enableNotifications } = {}) {
+    if (enableNotifications !== undefined) {
+      this.enableNotifications = Boolean(enableNotifications);
+    }
   }
 
   setAuthMaterial({ pairingToken, confirmSecret, proxySecret, authEpoch, tokenSource, rotateRemoteSession } = {}) {
@@ -1029,6 +1043,7 @@ class WebServer {
         url: this.getLocalUrl(),
         pairingUrl: hidePairingToken ? '' : this.getPairingUrl(),
         channel,
+        enableNotifications: this._resolveEnableNotifications(),
         ...accessStatus
       });
       return;
@@ -2052,7 +2067,19 @@ class WebServer {
         const result = scope
           ? await proxy.getPluginSettings(pluginId, { scope })
           : await proxy.getPluginSettings(pluginId);
-        sendActionResult(res, result);
+        const normalizedResult = pluginId === 'agy-daddy.web' && result?.ok !== false
+          ? {
+              ...result,
+              values: {
+                ...(isPlainObject(result?.values) ? result.values : {}),
+                enableNotifications:
+                  isPlainObject(result?.values) && typeof result.values.enableNotifications === 'boolean'
+                    ? result.values.enableNotifications
+                    : this._resolveEnableNotifications()
+              }
+            }
+          : result;
+        sendActionResult(res, normalizedResult);
         return;
       }
 
@@ -2067,11 +2094,15 @@ class WebServer {
         }
         const result = await proxy.setPluginSettings(pluginId, patch);
         if (result?.ok !== false) {
+          const nextValues = result?.values ?? patch;
+          if (pluginId === 'agy-daddy.web' && isPlainObject(nextValues) && typeof nextValues.enableNotifications === 'boolean') {
+            this.updateNotificationConfig({ enableNotifications: nextValues.enableNotifications });
+          }
           this.broadcast('state.patch', {
             key: 'state:plugin.settings@1',
             value: {
               pluginId,
-              values: result?.values ?? patch,
+              values: nextValues,
               updatedAt: Date.now()
             }
           });

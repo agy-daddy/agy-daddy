@@ -819,7 +819,7 @@ test('settings.schema.json removes redundant locale and tunnelHostname fields wh
   assert.deepEqual(keys, [
     'port', 'bindHost', 'loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare',
     'remotePermissionLevel', 'theme', 'colorTheme', 'drawerSpeed',
-    'allowedRoots', 'autoOpenBrowser'
+    'allowedRoots', 'autoOpenBrowser', 'enableNotifications'
   ]);
   const byKey = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
   assert.equal(byKey.port.default, 18767);
@@ -827,6 +827,18 @@ test('settings.schema.json removes redundant locale and tunnelHostname fields wh
   assert.equal(byKey.loopback.default, true);
   assert.equal(byKey.lan.default, false);
   assert.equal(byKey.remotePermissionLevel.default, 'L0');
+  assert.equal(byKey.enableNotifications.type, 'boolean');
+  assert.equal(byKey.enableNotifications.default, false);
+  assert.deepEqual(byKey.enableNotifications.group, {
+    'zh-CN': '通知与提醒',
+    en: 'Notifications & Alerts'
+  });
+  assert.deepEqual(byKey.enableNotifications.label, {
+    'zh-CN': '浏览器系统通知',
+    en: 'Browser Notifications'
+  });
+  assert.equal(typeof byKey.enableNotifications.description['zh-CN'], 'string');
+  assert.equal(typeof byKey.enableNotifications.description.en, 'string');
   assert.match(byKey.cloudflare.description['zh-CN'], /agy-daddy\.remote/);
   assert.match(byKey.cloudflare.description['zh-CN'], /\/pc\//);
 });
@@ -1411,6 +1423,89 @@ test('E9: 5-scenario cloudflareState matrix, remote token sync/fallback & legacy
     emitRemoteState({ running: false, deactivated: true });
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(storageMap.get('web-config.json').token, localTok);
+  } finally {
+    await deactivate();
+  }
+});
+
+test('HUB-332: enableNotifications defaults to false, updates via host.settings.onChange, and broadcasts SSE state.patch', async () => {
+  const { activate, deactivate } = require('../src/node');
+  let liveSettings = {
+    loopback: true
+  };
+  const storageMap = new Map();
+  const stateMap = new Map();
+  const settingsListeners = new Set();
+
+  const host = {
+    storage: {
+      readJson(name, fallback) {
+        return { ok: true, data: storageMap.get(name) ?? fallback };
+      },
+      writeJson(name, data) {
+        storageMap.set(name, data);
+        return { ok: true };
+      }
+    },
+    settings: {
+      get() { return { ...liveSettings }; },
+      onChange(fn) {
+        settingsListeners.add(fn);
+        return () => settingsListeners.delete(fn);
+      }
+    },
+    state: {
+      get(key) { return stateMap.get(key) ?? null; },
+      set(key, val) { stateMap.set(key, val); }
+    },
+    services: {
+      async provide() { return () => {}; },
+      async call() { return { ok: false, unavailable: true }; }
+    },
+    events: {
+      onAny() { return () => {}; }
+    },
+    rpc: {
+      async getOrigin() { return 'http://127.0.0.1:41999'; },
+      async call() { return { ok: true }; }
+    }
+  };
+
+  try {
+    const initialStatus = await activate(host);
+    assert.equal(initialStatus.enableNotifications, false);
+    const token = storageMap.get('web-config.json').token;
+    const baseUrl = initialStatus.url;
+
+    const statusBefore = await httpJsonRequest(`${baseUrl}/api/v1/web/status`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(statusBefore.status, 200);
+    assert.equal(statusBefore.json.enableNotifications, false);
+
+    const ssePromise = waitForSseEvent(
+      `${baseUrl}/api/v1/stream`,
+      { Authorization: `Bearer ${token}` },
+      (ev) =>
+        ev.event === 'state.patch' &&
+        ev.json?.key === 'state:plugin.settings@1' &&
+        ev.json?.value?.pluginId === 'agy-daddy.web' &&
+        ev.json?.value?.values?.enableNotifications === true,
+      2000
+    );
+    await new Promise((r) => setTimeout(r, 40));
+
+    liveSettings = { loopback: true, enableNotifications: true };
+    for (const fn of settingsListeners) fn();
+
+    const patchEv = await ssePromise;
+    assert.equal(patchEv.json.value.values.enableNotifications, true);
+
+    const statusAfter = await httpJsonRequest(`${baseUrl}/api/v1/web/status`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(statusAfter.status, 200);
+    assert.equal(statusAfter.json.enableNotifications, true);
   } finally {
     await deactivate();
   }

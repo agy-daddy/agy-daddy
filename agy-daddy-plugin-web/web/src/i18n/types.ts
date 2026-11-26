@@ -908,6 +908,22 @@ export interface I18nMessages {
   'tasks.filterEmpty': string;
   'tasks.filterProjectAria': string;
   'tasks.filterSessionAria': string;
+
+  'notifications.taskDoneTitle': string;
+  'notifications.taskDoneBody': string;
+  'notifications.taskErrorTitle': string;
+  'notifications.taskErrorBody': string;
+  'notifications.sessionDoneTitle': string;
+  'notifications.sessionDoneBody': string;
+  'notifications.sessionErrorTitle': string;
+  'notifications.sessionErrorBody': string;
+  'notifications.approvalTitle': string;
+  'notifications.approvalBody': string;
+  'notifications.permissionPromptTitle': string;
+  'notifications.permissionGrantBtn': string;
+  'notifications.permissionDeniedHint': string;
+  'notifications.permissionGrantedHint': string;
+  'notifications.unsupportedHint': string;
 }
 
 export type I18nKey = keyof I18nMessages;

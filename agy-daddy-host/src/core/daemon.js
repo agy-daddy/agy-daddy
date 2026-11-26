@@ -42,6 +42,16 @@ const { isolateResidentEnv } = require('./lifecycle');
 const { HostHealth } = require('./health-snapshot');
 const { MarketplaceStatsService } = require('./marketplace-stats');
 const { TrayManager } = require('./tray-manager');
+const {
+  detectActiveWorkspaceRoot,
+  scanCustomizations,
+  setCustomizationEnabled,
+  installCustomization,
+  uninstallCustomization,
+  migrateCustomizationToWorkspace,
+  applyMcpPolicy,
+  rollbackMcpConfig
+} = require('./customizations');
 
 const WORKER_SCRIPT = path.resolve(__dirname, 'plugin-worker.js');
 
@@ -65,7 +75,14 @@ const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
   '/host/marketplace/stats',
   '/host/diagnostics/export',
   '/host/tray/menu',
-  '/host/tray/invoke'
+  '/host/tray/invoke',
+  '/host/customizations',
+  '/host/customizations/toggle',
+  '/host/customizations/install',
+  '/host/customizations/uninstall',
+  '/host/customizations/migrate',
+  '/host/customizations/mcp/policy',
+  '/host/customizations/mcp/rollback'
 ]);
 
 const PERMANENT_ACTIVATION_ERROR_CODES = new Set([
@@ -926,9 +943,9 @@ class AgyDaddyDaemon extends EventEmitter {
         return;
       }
       if (msg.type === 'ipc-call') {
-        const reply = (result, error = null) => {
+        const reply = (result, error = null, errorCode = null) => {
           if (worker.connected) {
-            worker.send({ type: 'ipc-reply', id: msg.id, result, error });
+            worker.send({ type: 'ipc-reply', id: msg.id, result, error, ...(errorCode ? { errorCode } : {}) });
           }
         };
         try {
@@ -1043,11 +1060,25 @@ class AgyDaddyDaemon extends EventEmitter {
             reply(this.trayManager.unregisterPluginMenuItem(pluginId, payload.itemId));
           } else if (action === 'listTrayMenuItems') {
             reply(this.trayManager.listPluginMenuItems(pluginId));
+          } else if (action === 'hostControl') {
+            if (!perms.includes('host:control')) {
+              throw Object.assign(new Error(`HOST_CONTROL_PERMISSION_DENIED: ${pluginId} lacks host:control`), {
+                code: 'HOST_CONTROL_PERMISSION_DENIED'
+              });
+            }
+            const rawRoute = String(payload?.routePath || '').trim();
+            const normalized = rawRoute.startsWith('/') ? rawRoute : `/${rawRoute}`;
+            if (!HOST_CONTROL_ROUTE_ALLOWLIST.includes(normalized)) {
+              throw Object.assign(new Error(`HOST_CONTROL_ROUTE_BLOCKED: ${pluginId} cannot invoke ${normalized}`), {
+                code: 'HOST_CONTROL_ROUTE_BLOCKED'
+              });
+            }
+            reply(await this.bridge.invokeHostRoute(normalized, payload?.body || {}, { pluginId, via: 'host.control' }));
           } else {
             throw new Error(`Unknown worker IPC action: ${action}`);
           }
         } catch (err) {
-          reply(null, err?.message || String(err));
+          reply(null, err?.message || String(err), err?.code || null);
         }
       }
     });
@@ -1347,6 +1378,24 @@ class AgyDaddyDaemon extends EventEmitter {
     } catch {}
 
     return items;
+  }
+
+  async resolveCustomizationOptions(body = {}) {
+    const explicitWs = body?.workspaceRoot || body?.workspacePath || null;
+    const baseOpts = {
+      ...this.options,
+      stateDir: this.stateDir,
+      rpcTransport: this.rpcTransport,
+      fallbackWorkspaceRoot: this.options.workspaceRoot ? this.getWorkspaceRoot() : undefined
+    };
+    if (explicitWs) {
+      return { ...baseOpts, workspaceRoot: path.resolve(String(explicitWs)) };
+    }
+    const wsInfo = await detectActiveWorkspaceRoot(baseOpts);
+    return {
+      ...baseOpts,
+      ...(wsInfo.root ? { workspaceRoot: wsInfo.root } : {})
+    };
   }
 
   getWorkspaceRoot() {
@@ -1839,6 +1888,36 @@ class AgyDaddyDaemon extends EventEmitter {
         tab: body?.tab || 'plugins',
         pluginId: body?.pluginId
       });
+    });
+
+    // Antigravity 多层级自定义项与 MCP 策略管理端点
+    this.bridge.registerHostRoute('/host/customizations', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return await scanCustomizations(custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/toggle', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return setCustomizationEnabled(body || {}, custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/install', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return installCustomization(body || {}, custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/uninstall', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return uninstallCustomization(body || {}, custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/migrate', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return migrateCustomizationToWorkspace(body || {}, custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/mcp/policy', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return await applyMcpPolicy(body || {}, custOpts);
+    });
+    this.bridge.registerHostRoute('/host/customizations/mcp/rollback', async (body) => {
+      const custOpts = await this.resolveCustomizationOptions(body);
+      return rollbackMcpConfig(body || {}, custOpts);
     });
 
     // 内置插件系统路由（按插件 Token 鉴权，无需声明 bridge:route 权限）

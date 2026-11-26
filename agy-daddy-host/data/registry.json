@@ -161,6 +161,18 @@
       "subpath": "agy-daddy-plugin-pet",
       "npmPackage": "@agy-daddy/plugin-pet",
       "description": "系统级透明置顶与 PC-Web 同步伴侣宠物：12 款 MIT 原创矢量主题、本地形象导入、Token 流速联动及多会话审阅提醒"
+    },
+    {
+      "shortName": "sidebar",
+      "id": "agy-daddy.sidebar",
+      "name": "侧边栏与多工作区增强",
+      "layer": 2,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-sidebar",
+      "npmPackage": "@agy-daddy/plugin-sidebar",
+      "description": "零侵入左侧边栏增强：项目分组、拖拽排序、Git 多 Worktree 子组聚合与会话沙盒强绑定"
     }
   ]
 }

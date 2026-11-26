@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.sidebar",
+  "publisher": "agy-daddy",
+  "version": "1.1.1",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "侧边栏与多工作区增强",
+    "en": "Sidebar & Worktree Organizer"
+  },
+  "description": {
+    "zh-CN": "零侵入左侧边栏增强：项目分组、拖拽排序、Git 多 Worktree 子组聚合与会话沙盒强绑定",
+    "en": "Zero-patch sidebar organizer with project groups, drag-and-drop sorting, Git multi-worktree subgroups, and session workspace sandboxing"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["sidebar.root"]
+  },
+  "provides": {
+    "services": {
+      "sidebar": { "version": "1.0.0", "realm": "page-isolated" },
+      "sidebar-node": { "version": "1.0.0", "realm": "node" }
+    },
+    "events": ["sidebar:view-mode-changed@1"],
+    "states": ["state:sidebar.health@1", "state:sidebar.visible-sessions@1"]
+  },
+  "consumes": {
+    "web-harness": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "rpc:read",
+    "rpc:write",
+    "bridge:route",
+    "fs:user-files",
+    "process:spawn"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "sidebar-toggle", "order": 18 }],
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "sidebar.toggle-view", "title": { "zh-CN": "切换增强/原生侧边栏视图", "en": "Toggle Enhanced / Native Sidebar View" } },
+      { "id": "sidebar.refresh-worktrees", "title": { "zh-CN": "刷新 Git Worktree 列表", "en": "Refresh Git Worktrees" } },
+      { "id": "sidebar.create-group", "title": { "zh-CN": "新建侧边栏项目分组", "en": "Create Sidebar Project Group" } }
+    ],
+    "locales": "./locales"
+  }
+}

@@ -392,6 +392,32 @@ export interface I18nMessages {
   'left.iconCustomPlaceholder': string;
   'left.groupIconAria': string;
   'left.deleteGroup': string;
+  'left.deleteGroupModalTitle': string;
+  'left.deleteGroupModalDesc': string;
+  'left.deleteGroupModalConfirm': string;
+  'left.assignSessionProject': string;
+  'left.assignSessionStandalone': string;
+  'left.assignSessionWorktreeHint': string;
+  'left.wtBadgeCount': string;
+  'left.wtMainTag': string;
+  'left.wtDetached': string;
+  'left.wtBare': string;
+  'left.wtLocked': string;
+  'left.wtMissing': string;
+  'left.wtRefresh': string;
+  'left.wtNew': string;
+  'left.wtPrune': string;
+  'left.wtNewSession': string;
+  'left.wtOpenTerminal': string;
+  'left.wtOpenFilesDiff': string;
+  'left.wtCopyPath': string;
+  'left.wtPathCopied': string;
+  'left.wtRemove': string;
+  'left.wtRemoveConfirm': string;
+  'left.wtLockedHint': string;
+  'left.wtRunningHint': string;
+  'left.wtMissingHint': string;
+  'left.wtNewSessionLockedHint': string;
   'left.moveToGroup': string;
   'left.removeProject': string;
   'left.removeProjectConfirm': string;
@@ -528,6 +554,22 @@ export interface I18nMessages {
   'right.tabPty': string;
   'right.loadFailed': string;
   'right.loadingModule': string;
+  'right.sandboxLocked': string;
+  'right.sandboxMissingTitle': string;
+  'right.sandboxMissingDesc': string;
+  'right.sandboxOverrideHint': string;
+  'right.sandboxResetBtn': string;
+
+  'wtSheet.title': string;
+  'wtSheet.repoLabel': string;
+  'wtSheet.branchLabel': string;
+  'wtSheet.branchPlaceholder': string;
+  'wtSheet.createBranch': string;
+  'wtSheet.pathLabel': string;
+  'wtSheet.pathPlaceholder': string;
+  'wtSheet.submit': string;
+  'wtSheet.creating': string;
+  'wtSheet.l2Hint': string;
 
   'lazy.noWorkspace': string;
   'lazy.noSession': string;
@@ -584,6 +626,8 @@ export interface I18nMessages {
   'pty.connected': string;
   'pty.connecting': string;
   'pty.disconnected': string;
+  'pty.sandboxLabel': string;
+  'pty.cwdMismatchRetry': string;
 
   'store.l2ConfirmTitle': string;
   'store.l2ConfirmHint': string;
@@ -644,6 +688,14 @@ export interface I18nMessages {
   'store.selectSessionAction': string;
   'store.compactSent': string;
   'store.compactFailed': string;
+  'store.wtCreatedToast': string;
+  'store.wtRemovedToast': string;
+  'store.wtPrunedToast': string;
+  'store.wtMutateFailed': string;
+  'store.wtRefreshedToast': string;
+  'store.sessionProjectUpdated': string;
+  'store.sessionProjectFailed': string;
+  'store.collapseFailed': string;
 
   'push.unsupported': string;
   'push.denied': string;

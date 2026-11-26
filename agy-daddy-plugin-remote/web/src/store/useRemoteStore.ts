@@ -22,6 +22,7 @@ import type {
   BootstrapResponse,
   ChannelEntryDto,
   ChatMode,
+  CollapsedNodes,
   ColorThemeId,
   ComposerPreset,
   ComposerQuickPrompt,
@@ -147,12 +148,14 @@ export interface RemoteState {
   archivedCount: number;
   groups: SessionGroup[];
   projects: HostProject[];
+  collapsedNodes: CollapsedNodes;
   pins: SessionPins;
   orgRevision: number;
   groupOrder: ZoneOrder;
   projectOrder: Record<string, ZoneOrder>;
   sessionOrder: SessionOrderMap;
   defaultSessionPath: string;
+  rightWorkspaceOverride: string | null;
   latestJobEvent: RemoteProvisionJob | null;
   activeSessionId: string;
   activeSession: SessionDetail | null;
@@ -269,6 +272,42 @@ function normalizeSessionOrderMap(raw: unknown): SessionOrderMap {
     }
   }
   return out;
+}
+
+function normalizeCollapsedNodes(raw: unknown): CollapsedNodes {
+  const rec = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const normalizeMap = (src: unknown): Record<string, boolean> => {
+    if (!src || typeof src !== 'object') return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(src as Record<string, unknown>)) {
+      if (v === true) out[k] = true;
+    }
+    return out;
+  };
+  return {
+    projects: normalizeMap(rec.projects),
+    worktrees: normalizeMap(rec.worktrees)
+  };
+}
+
+function syncProjectsCollapsedNodes(
+  projects: HostProject[],
+  collapsedNodes: CollapsedNodes
+): HostProject[] {
+  return projects.map((p) => {
+    const nextProjCollapsed = Boolean(collapsedNodes.projects[p.id] ?? p.collapsed);
+    const nextWts = Array.isArray(p.worktrees)
+      ? p.worktrees.map((wt) => ({
+          ...wt,
+          collapsed: Boolean(collapsedNodes.worktrees[wt.worktreeId] ?? wt.collapsed)
+        }))
+      : p.worktrees;
+    return {
+      ...p,
+      collapsed: nextProjCollapsed,
+      ...(nextWts ? { worktrees: nextWts } : {})
+    };
+  });
 }
 
 function normalizeArchivedMap(raw: unknown): Record<string, ArchivedSessionMeta> {
@@ -695,12 +734,14 @@ export class RemoteStoreController {
       archivedCount: 0,
       groups: [],
       projects: [],
+      collapsedNodes: { projects: {}, worktrees: {} },
       pins: EMPTY_PINS,
       orgRevision: 0,
       groupOrder: EMPTY_ZONE_ORDER,
       projectOrder: {},
       sessionOrder: {},
       defaultSessionPath: '',
+      rightWorkspaceOverride: null,
       latestJobEvent: null,
       activeSessionId: urlInit.sessionId,
       activeSession: null,
@@ -863,6 +904,7 @@ export class RemoteStoreController {
       onStatePatch: (payload) => this.handleStatePatch(payload),
       onTaskUpdated: (payload) => this.handleTaskUpdated(payload),
       onOrgUpdated: (payload) => this.handleOrgUpdated(payload),
+      onWorktreeUpdated: (payload) => this.handleWorktreeUpdated(payload),
       onProjectJob: (payload) => this.handleProjectJob(payload)
     });
 
@@ -1038,7 +1080,12 @@ export class RemoteStoreController {
 
       const bootPins = boot.pins ? normalizePins(boot.pins) : this.state.pins;
       const bootGroups = Array.isArray(boot.groups) ? boot.groups : this.state.groups;
-      const bootProjects = Array.isArray(boot.projects) ? boot.projects : this.state.projects;
+      const bootCollapsedNodes = boot.collapsedNodes
+        ? normalizeCollapsedNodes(boot.collapsedNodes)
+        : this.state.collapsedNodes;
+      const bootProjects = Array.isArray(boot.projects)
+        ? syncProjectsCollapsedNodes(boot.projects, bootCollapsedNodes)
+        : this.state.projects;
       const bootGroupOrder = boot.groupOrder ? normalizeZoneOrder(boot.groupOrder) : this.state.groupOrder;
       const bootProjectOrder = boot.projectOrder
         ? normalizeProjectOrderMap(boot.projectOrder)
@@ -1073,6 +1120,7 @@ export class RemoteStoreController {
         telemetry: initialTelemetry,
         groups: bootGroups,
         projects: bootProjects,
+        collapsedNodes: bootCollapsedNodes,
         pins: bootPins,
         orgRevision: typeof boot.revision === 'number' ? boot.revision : this.state.orgRevision,
         groupOrder: bootGroupOrder,
@@ -1102,8 +1150,11 @@ export class RemoteStoreController {
       const resolvedGroups = Array.isArray(sessRes.groups)
         ? sessRes.groups
         : bootGroups;
+      const resolvedCollapsedNodes = sessRes.collapsedNodes
+        ? normalizeCollapsedNodes(sessRes.collapsedNodes)
+        : bootCollapsedNodes;
       const resolvedProjects = Array.isArray(sessRes.projects)
-        ? sessRes.projects
+        ? syncProjectsCollapsedNodes(sessRes.projects, resolvedCollapsedNodes)
         : bootProjects.length > 0
           ? bootProjects
           : buildFallbackProjects(rawSessions, boot.workspaces, resolvedPins);
@@ -1200,6 +1251,7 @@ export class RemoteStoreController {
         archivedCount: resolvedArchivedCount,
         groups: pinnedOrg.groups,
         projects: pinnedOrg.projects,
+        collapsedNodes: resolvedCollapsedNodes,
         pins: resolvedPins,
         orgRevision: resolvedRevision,
         groupOrder: resolvedGroupOrder,
@@ -1273,9 +1325,12 @@ export class RemoteStoreController {
 
     const nextPins = src.pins ? normalizePins(src.pins as Partial<SessionPins>) : this.state.pins;
     const nextGroups = Array.isArray(src.groups) ? (src.groups as SessionGroup[]) : this.state.groups;
+    const nextCollapsedNodes = src.collapsedNodes
+      ? normalizeCollapsedNodes(src.collapsedNodes)
+      : this.state.collapsedNodes;
     const nextProjects = Array.isArray(src.projects)
-      ? (src.projects as HostProject[])
-      : this.state.projects;
+      ? syncProjectsCollapsedNodes(src.projects as HostProject[], nextCollapsedNodes)
+      : syncProjectsCollapsedNodes(this.state.projects, nextCollapsedNodes);
     const nextGroupOrder = src.groupOrder
       ? normalizeZoneOrder(src.groupOrder)
       : this.state.groupOrder;
@@ -1324,6 +1379,7 @@ export class RemoteStoreController {
       archivedCount: nextArchivedCount,
       groups: pinnedOrg.groups,
       projects: pinnedOrg.projects,
+      collapsedNodes: nextCollapsedNodes,
       pins: nextPins,
       orgRevision: nextRevision,
       groupOrder: nextGroupOrder,
@@ -1355,8 +1411,11 @@ export class RemoteStoreController {
       const rawSessions = Array.isArray(sessRes.sessions) ? sessRes.sessions : [];
       const resolvedPins = normalizePins(sessRes.pins || this.state.pins);
       const resolvedGroups = Array.isArray(sessRes.groups) ? sessRes.groups : this.state.groups;
+      const resolvedCollapsedNodes = sessRes.collapsedNodes
+        ? normalizeCollapsedNodes(sessRes.collapsedNodes)
+        : this.state.collapsedNodes;
       const resolvedProjects = Array.isArray(sessRes.projects)
-        ? sessRes.projects
+        ? syncProjectsCollapsedNodes(sessRes.projects, resolvedCollapsedNodes)
         : buildFallbackProjects(rawSessions, this.state.bootstrap?.workspaces, resolvedPins);
       const resolvedArchivedMap = sessRes.archivedSessions
         ? normalizeArchivedMap(sessRes.archivedSessions)
@@ -1382,6 +1441,7 @@ export class RemoteStoreController {
         archivedCount: resolvedArchivedCount,
         groups: pinnedOrg.groups,
         projects: pinnedOrg.projects,
+        collapsedNodes: resolvedCollapsedNodes,
         pins: resolvedPins,
         orgRevision:
           typeof sessRes.revision === 'number' ? sessRes.revision : this.state.orgRevision,
@@ -1593,43 +1653,136 @@ export class RemoteStoreController {
     }
   }
 
-  public async toggleGroupCollapsed(groupId: string, collapsed?: boolean): Promise<void> {
-    if (!groupId) return;
+  public async setNodeCollapsed(
+    nodeType: 'group' | 'project' | 'worktree',
+    id: string,
+    collapsed: boolean
+  ): Promise<void> {
+    if (!id) return;
     if (!this.ensureOrgWriteAllowed(false)) return;
 
+    const prevGroups = this.state.groups;
+    const prevProjects = this.state.projects;
+    const prevCollapsedNodes = this.state.collapsedNodes;
+
+    if (nodeType === 'group') {
+      this.setState({
+        groups: prevGroups.map((g) => (g.id === id ? { ...g, collapsed } : g))
+      });
+    } else {
+      const bucket = nodeType === 'project' ? 'projects' : 'worktrees';
+      const nextBucket = { ...prevCollapsedNodes[bucket] };
+      if (collapsed) nextBucket[id] = true;
+      else delete nextBucket[id];
+      const nextCollapsedNodes: CollapsedNodes = {
+        ...prevCollapsedNodes,
+        [bucket]: nextBucket
+      };
+      this.setState({
+        collapsedNodes: nextCollapsedNodes,
+        projects: syncProjectsCollapsedNodes(prevProjects, nextCollapsedNodes)
+      });
+    }
+
+    try {
+      const res = await api.setNodeCollapsed({ nodeType, id, collapsed });
+      const syncedCollapsedNodes = res.collapsedNodes
+        ? normalizeCollapsedNodes(res.collapsedNodes)
+        : this.state.collapsedNodes;
+      const syncedGroups = Array.isArray(res.groups)
+        ? applyPinsToOrg(this.state.sessions, this.state.projects, res.groups, this.state.pins).groups
+        : this.state.groups;
+      this.setState({
+        groups: syncedGroups,
+        collapsedNodes: syncedCollapsedNodes,
+        projects: syncProjectsCollapsedNodes(this.state.projects, syncedCollapsedNodes),
+        orgRevision:
+          typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+      });
+    } catch (err) {
+      this.setState({
+        groups: prevGroups,
+        projects: prevProjects,
+        collapsedNodes: prevCollapsedNodes
+      });
+      this.showToast(this.t('store.collapseFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async toggleGroupCollapsed(groupId: string, collapsed?: boolean): Promise<void> {
+    if (!groupId) return;
     const current = this.state.groups.find((g) => g.id === groupId);
     if (!current) return;
     const nextCollapsed = typeof collapsed === 'boolean' ? collapsed : !current.collapsed;
-    const prevGroups = this.state.groups;
+    await this.setNodeCollapsed('group', groupId, nextCollapsed);
+  }
+
+  public async assignSessionProject(cascadeId: string, projectId: string | null): Promise<boolean> {
+    if (!cascadeId) return false;
+    if (!this.ensureOrgWriteAllowed(false)) return false;
+
+    const prevSessions = this.state.sessions;
+    const targetProj = projectId
+      ? this.state.projects.find((p) => p.id === projectId) || null
+      : null;
     this.setState({
-      groups: prevGroups.map((g) => (g.id === groupId ? { ...g, collapsed: nextCollapsed } : g))
+      sessions: prevSessions.map((s) =>
+        s.cascadeId === cascadeId
+          ? { ...s, projectId, projectName: targetProj ? targetProj.name : null }
+          : s
+      )
     });
 
     try {
-      const res = await api.mutateSessionGroups({
-        action: 'upsert',
-        id: groupId,
-        name: current.name,
-        collapsed: nextCollapsed
-      });
-      if (Array.isArray(res.groups)) {
-        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
-        const syncedOrg = applyPinsToOrg(
-          this.state.sessions,
-          this.state.projects,
-          res.groups,
-          syncedPins
-        );
-        this.setState({
-          groups: syncedOrg.groups,
-          pins: syncedPins,
-          orgRevision:
-            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
-        });
+      const res = await api.assignSessionProject(cascadeId, { projectId });
+      if (typeof res.revision === 'number') {
+        this.setState({ orgRevision: res.revision });
       }
+      this.showToast(this.t('store.sessionProjectUpdated'));
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      return true;
     } catch (err) {
-      this.setState({ groups: prevGroups });
-      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+      this.setState({ sessions: prevSessions });
+      this.showToast(this.t('store.sessionProjectFailed', { msg: (err as Error).message }));
+      return false;
+    }
+  }
+
+  public async refreshWorktrees(rootPath?: string): Promise<void> {
+    if (!this.state.token) return;
+    try {
+      if (rootPath) {
+        await api.getGitWorktrees(rootPath, true).catch(() => null);
+      }
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      this.showToast(this.t('store.wtRefreshedToast'));
+    } catch (err) {
+      this.showToast(this.t('store.wtMutateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async mutateWorktree(payload: {
+    root: string;
+    action: 'add' | 'remove' | 'prune';
+    path?: string;
+    branch?: string;
+    createBranch?: boolean;
+  }): Promise<boolean> {
+    if (!this.ensureOrgWriteAllowed(true)) return false;
+    try {
+      await api.gitWorktree(payload);
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
+      if (payload.action === 'add') {
+        this.showToast(this.t('store.wtCreatedToast'));
+      } else if (payload.action === 'remove') {
+        this.showToast(this.t('store.wtRemovedToast'));
+      } else if (payload.action === 'prune') {
+        this.showToast(this.t('store.wtPrunedToast'));
+      }
+      return true;
+    } catch (err) {
+      this.showToast(this.t('store.wtMutateFailed', { msg: (err as Error).message }));
+      return false;
     }
   }
 
@@ -2185,7 +2338,8 @@ export class RemoteStoreController {
       activeSession: snap?.session ?? null,
       events: snap?.events ?? [],
       composerText: draft,
-      leftOpen: false
+      leftOpen: false,
+      rightWorkspaceOverride: null
     });
 
     if (this.state.token) {
@@ -2272,10 +2426,20 @@ export class RemoteStoreController {
     saveQueue(next).catch(() => {});
   }
 
-  public async createNewSession(title?: string, workspaceUri?: string): Promise<void> {
+  public async createNewSession(
+    title?: string,
+    workspaceUri?: string,
+    opts?: { worktreePath?: string; projectId?: string | null; standalone?: boolean }
+  ): Promise<void> {
     try {
-      const res = await api.createSession({ title, workspaceUri });
-      await this.refreshSessionsAndOrg();
+      const res = await api.createSession({
+        title,
+        workspaceUri,
+        ...(opts?.worktreePath ? { worktreePath: opts.worktreePath } : {}),
+        ...(opts?.projectId !== undefined ? { projectId: opts.projectId } : {}),
+        ...(opts?.standalone !== undefined ? { standalone: opts.standalone } : {})
+      });
+      await this.refreshSessionsAndOrg(this.includeArchivedSynced);
       if (res.cascadeId) {
         await this.selectSession(res.cascadeId);
       }
@@ -2284,22 +2448,143 @@ export class RemoteStoreController {
     }
   }
 
-  public getActiveWorkspaceRoot(): string {
+  public getActiveWorkspaceContext(): {
+    rootPath: string;
+    sessionRootPath: string;
+    worktreeId: string | null;
+    worktreeBranch: string | null;
+    worktreeStatus: string | null;
+    isMissing: boolean;
+    missingPath: string | null;
+    isOverride: boolean;
+  } {
     const active = this.state.sessions.find((s) => s.cascadeId === this.state.activeSessionId);
-    const fromSession = normalizeRootUri(active?.workspaceUri);
-    if (fromSession) return fromSession;
+    const sessionWtPath = normalizeRootUri(active?.worktreePath || active?.workspaceUri);
+
+    let matchedWt = null as import('../types').WorktreeDto | null;
+    for (const p of this.state.projects) {
+      if (!Array.isArray(p.worktrees)) continue;
+      for (const wt of p.worktrees) {
+        if (active?.worktreeId && wt.worktreeId === active.worktreeId) {
+          matchedWt = wt;
+          break;
+        }
+        if (sessionWtPath && normalizeRootUri(wt.path) === sessionWtPath) {
+          matchedWt = wt;
+          break;
+        }
+      }
+      if (matchedWt) break;
+    }
+
+    const sessionIsMissing = Boolean(
+      active &&
+        (active.worktreeStatus === 'missing' ||
+          matchedWt?.status === 'missing' ||
+          matchedWt?.prunable === true ||
+          matchedWt?.exists === false)
+    );
+    const missingPath = sessionIsMissing
+      ? normalizeRootUri(matchedWt?.path || active?.worktreePath || active?.workspaceUri) || null
+      : null;
+
+    if (this.state.rightWorkspaceOverride) {
+      const overridePath = normalizeRootUri(this.state.rightWorkspaceOverride);
+      let overrideWt = null as import('../types').WorktreeDto | null;
+      for (const p of this.state.projects) {
+        const hit = p.worktrees?.find((w) => normalizeRootUri(w.path) === overridePath);
+        if (hit) {
+          overrideWt = hit;
+          break;
+        }
+      }
+      const overrideMissing = Boolean(
+        overrideWt && (overrideWt.status === 'missing' || overrideWt.prunable || overrideWt.exists === false)
+      );
+      return {
+        rootPath: overrideMissing ? '' : overridePath,
+        sessionRootPath: sessionWtPath,
+        worktreeId: overrideWt?.worktreeId || null,
+        worktreeBranch: overrideWt?.branch || overrideWt?.displayLabel || null,
+        worktreeStatus: overrideWt?.status || null,
+        isMissing: overrideMissing,
+        missingPath: overrideMissing ? overridePath : null,
+        isOverride: true
+      };
+    }
+
+    if (sessionIsMissing) {
+      return {
+        rootPath: '',
+        sessionRootPath: sessionWtPath,
+        worktreeId: active?.worktreeId || matchedWt?.worktreeId || null,
+        worktreeBranch: active?.worktreeBranch || matchedWt?.branch || matchedWt?.displayLabel || null,
+        worktreeStatus: 'missing',
+        isMissing: true,
+        missingPath,
+        isOverride: false
+      };
+    }
+
+    if (sessionWtPath) {
+      return {
+        rootPath: sessionWtPath,
+        sessionRootPath: sessionWtPath,
+        worktreeId: active?.worktreeId || matchedWt?.worktreeId || null,
+        worktreeBranch:
+          active?.worktreeBranch || matchedWt?.branch || matchedWt?.displayLabel || active?.branchName || null,
+        worktreeStatus: active?.worktreeStatus || matchedWt?.status || null,
+        isMissing: false,
+        missingPath: null,
+        isOverride: false
+      };
+    }
+
     const firstProj = this.state.projects[0];
-    if (firstProj?.path || firstProj?.uri) return normalizeRootUri(firstProj.path || firstProj.uri);
-    const firstWs = this.state.bootstrap?.workspaces?.[0];
-    if (typeof firstWs === 'string') return normalizeRootUri(firstWs);
-    return normalizeRootUri(firstWs?.path || firstWs?.uri);
+    let fallbackRoot = '';
+    if (firstProj?.path || firstProj?.uri) {
+      fallbackRoot = normalizeRootUri(firstProj.path || firstProj.uri);
+    } else {
+      const firstWs = this.state.bootstrap?.workspaces?.[0];
+      fallbackRoot =
+        typeof firstWs === 'string'
+          ? normalizeRootUri(firstWs)
+          : normalizeRootUri(firstWs?.path || firstWs?.uri);
+    }
+
+    return {
+      rootPath: fallbackRoot,
+      sessionRootPath: '',
+      worktreeId: null,
+      worktreeBranch: firstProj?.branchName || null,
+      worktreeStatus: null,
+      isMissing: false,
+      missingPath: null,
+      isOverride: false
+    };
+  }
+
+  public getActiveWorkspaceRoot(): string {
+    return this.getActiveWorkspaceContext().rootPath;
+  }
+
+  public setRightWorkspaceOverride(path: string | null, tab?: RightTabId): void {
+    const clean = path ? normalizeRootUri(path) : null;
+    this.setState({
+      rightWorkspaceOverride: clean || null,
+      ...(tab ? { rightOpen: true, leftOpen: false, rightTab: tab } : {})
+    });
+    void this.refreshDiffBadge();
   }
 
   public async refreshDiffBadge(): Promise<void> {
-    const root = this.getActiveWorkspaceRoot();
-    if (!root || !this.state.token) return;
+    const ctx = this.getActiveWorkspaceContext();
+    if (!ctx.rootPath || ctx.isMissing || !this.state.token) {
+      this.setState({ changedFilesCount: 0 });
+      return;
+    }
     try {
-      const diff = await api.getGitDiff(root);
+      const diff = await api.getGitDiff(ctx.rootPath);
       this.setState({ changedFilesCount: Array.isArray(diff.files) ? diff.files.length : 0 });
     } catch {}
   }
@@ -2535,6 +2820,16 @@ export class RemoteStoreController {
       return;
     }
     this.applyOrgSnapshot(payload);
+    if (this.state.token && this.state.online) {
+      void this.refreshSessionsAndOrg(this.includeArchivedSynced);
+    }
+  }
+
+  private handleWorktreeUpdated(_payload: Record<string, unknown>): void {
+    if (this.isDraggingOrg) {
+      this.pendingOrgRefresh = true;
+      return;
+    }
     if (this.state.token && this.state.online) {
       void this.refreshSessionsAndOrg(this.includeArchivedSynced);
     }

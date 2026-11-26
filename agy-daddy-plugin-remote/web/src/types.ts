@@ -251,6 +251,36 @@ export interface SessionGroup {
   sessionIds: string[];
 }
 
+export interface WorktreeDto {
+  worktreeId: string;
+  path: string;
+  uri: string;
+  displaySubpath?: string;
+  head?: string;
+  headShort?: string;
+  branch?: string;
+  displayLabel?: string;
+  isMain?: boolean;
+  bare?: boolean;
+  detached?: boolean;
+  locked?: boolean;
+  prunable?: boolean;
+  exists?: boolean;
+  status?: 'ready' | 'detached' | 'locked' | 'bare' | 'missing';
+  collapsed?: boolean;
+  allowed?: boolean;
+  isCurrent?: boolean;
+  isTombstone?: boolean;
+  sessionCount?: number;
+  runningCount?: number;
+  needsAttentionCount?: number;
+}
+
+export interface CollapsedNodes {
+  projects: Record<string, boolean>;
+  worktrees: Record<string, boolean>;
+}
+
 export interface HostProject {
   id: string;
   name: string;
@@ -258,9 +288,14 @@ export interface HostProject {
   uri: string | null;
   path: string | null;
   rootPath?: string | null;
+  repoRootPath?: string | null;
   groupId?: string | null;
   pinned?: boolean;
   pinnedAt?: string | null;
+  collapsed?: boolean;
+  isMultiWorktree?: boolean;
+  worktrees?: WorktreeDto[];
+  mergedProjectIds?: string[];
   implicit?: boolean;
   syncedFromApp?: boolean;
   source?: string;
@@ -286,6 +321,7 @@ export interface SessionOrgSnapshot {
   revision?: number;
   groups: SessionGroup[];
   projects: HostProject[];
+  collapsedNodes?: CollapsedNodes;
   pins: SessionPins;
   pinTimestamps?: {
     sessions?: Record<string, string>;
@@ -297,6 +333,7 @@ export interface SessionOrgSnapshot {
   groupOrder?: ZoneOrder;
   projectOrder?: Record<string, ZoneOrder>;
   sessionOrder?: SessionOrderMap;
+  worktreeTombstones?: Record<string, unknown>;
   archivedCount?: number;
   archivedSessions?: Record<string, ArchivedSessionMeta>;
   defaultSessionPath?: string;
@@ -722,10 +759,12 @@ export interface BootstrapResponse {
   revision?: number;
   groups?: SessionGroup[];
   projects?: HostProject[];
+  collapsedNodes?: CollapsedNodes;
   pins?: SessionPins;
   groupOrder?: ZoneOrder;
   projectOrder?: Record<string, ZoneOrder>;
   sessionOrder?: SessionOrderMap;
+  worktreeTombstones?: Record<string, unknown>;
   archivedCount?: number;
   archivedSessions?: Record<string, ArchivedSessionMeta>;
   defaultSessionPath?: string;
@@ -757,6 +796,10 @@ export interface SessionSummary {
   groupId?: string | null;
   projectId?: string | null;
   projectName?: string | null;
+  worktreeId?: string | null;
+  worktreePath?: string | null;
+  worktreeBranch?: string | null;
+  worktreeStatus?: string | null;
   pinned?: boolean;
   pinnedAt?: string | null;
   archived?: boolean;
@@ -920,11 +963,23 @@ export interface GitDiffResponse {
 }
 
 export interface GitWorktreeInfo {
+  worktreeId?: string;
   path: string;
+  uri?: string;
+  displaySubpath?: string;
   branch?: string;
   head?: string;
+  headShort?: string;
+  displayLabel?: string;
   isMain?: boolean;
   isCurrent?: boolean;
+  bare?: boolean;
+  detached?: boolean;
+  locked?: boolean;
+  prunable?: boolean;
+  exists?: boolean;
+  status?: 'ready' | 'detached' | 'locked' | 'bare' | 'missing';
+  allowed?: boolean;
 }
 
 export interface ArtifactItem {
@@ -937,7 +992,13 @@ export interface ArtifactItem {
 
 export interface PtySessionInfo {
   id: string;
+  sessionId?: string;
   cwd?: string;
+  realCwd?: string;
+  worktreeId?: string | null;
+  branchName?: string | null;
+  alive?: boolean;
+  status?: string;
   cols?: number;
   rows?: number;
   createdAt?: number;

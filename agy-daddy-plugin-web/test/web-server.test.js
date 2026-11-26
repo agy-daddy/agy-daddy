@@ -2825,3 +2825,41 @@ test('WebServer workspace browse & remote provisioning endpoints: L2 gates, Clou
     fs.rmSync(tmpBase, { recursive: true, force: true });
   }
 });
+
+test('HUB-296: getPairingUrl() prioritizes highest-priority enabled non-loopback channel URL over loopback', async () => {
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken: 'tok-pairing-priority',
+    channels: { loopback: true, lan: false, tailscale: false, bonjour: false, cloudflare: false }
+  });
+  try {
+    const info = await srv.start();
+    const localUrl = `http://127.0.0.1:${info.port}/?token=tok-pairing-priority`;
+    assert.equal(srv.getPairingUrl(), localUrl);
+
+    // Enable bonjour -> bonjour beats loopback
+    srv.updateAccessConfig({ channels: { loopback: true, bonjour: true } });
+    const bonjourPairing = srv.getPairingUrl();
+    assert.match(bonjourPairing, /^http:\/\/.+\.local:\d+\/\?token=tok-pairing-priority$/);
+    assert.equal(bonjourPairing.includes('127.0.0.1'), false);
+
+    // Enable cloudflare with tunnelHostname -> cloudflare beats bonjour/lan/tailscale/loopback
+    srv.updateAccessConfig({
+      channels: { loopback: true, bonjour: true, cloudflare: true },
+      tunnelHostname: 'https://pcweb.example.com'
+    });
+    assert.equal(srv.getPairingUrl(), 'https://pcweb.example.com/?token=tok-pairing-priority');
+
+    // Shared /pc mount path also respected in getPairingUrl()
+    srv.cloudflareMountPath = '/pc';
+    assert.equal(srv.getPairingUrl(), 'https://pcweb.example.com/pc/?token=tok-pairing-priority');
+
+    // Back to loopback-only -> falls back to loopback pairing URL
+    srv.cloudflareMountPath = '';
+    srv.updateAccessConfig({ channels: { loopback: true, bonjour: false, cloudflare: false } });
+    assert.equal(srv.getPairingUrl(), localUrl);
+  } finally {
+    await srv.stop();
+  }
+});

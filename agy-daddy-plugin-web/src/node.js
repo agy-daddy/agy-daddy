@@ -845,6 +845,23 @@ async function activate(host) {
         answerQuestion: (cascadeId, stepIdx, answers, payload = {}) =>
           harnessAdapter.answerQuestion(cascadeId, stepIdx, answers, payload),
         listModels: () => harnessAdapter.listModels(),
+        syncChannels: async (remoteChannels = {}) => {
+          if (activeRuntime !== runtime || !runtime.webServer) {
+            return { ok: false, error: 'WEB_SERVER_UNAVAILABLE' };
+          }
+          const src = remoteChannels && typeof remoteChannels === 'object' ? remoteChannels : {};
+          const patch = {};
+          for (const key of ['lan', 'tailscale', 'bonjour', 'cloudflare']) {
+            if (src[key] === true) {
+              patch[key] = true;
+            }
+          }
+          if (Object.keys(patch).length > 0 && typeof host?.settings?.update === 'function') {
+            await host.settings.update(patch);
+          }
+          await reconcileAccess();
+          return getStatus();
+        },
         getStatus
       }, { realm: 'node', version: '1.0.0' });
     }

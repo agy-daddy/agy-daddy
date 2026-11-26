@@ -571,7 +571,12 @@ class WebServer {
 
   getPairingUrl() {
     const base = this.getLocalUrl();
-    return base ? `${base}/?token=${encodeURIComponent(this.pairingToken)}` : '';
+    const localPairingUrl = base ? `${base}/?token=${encodeURIComponent(this.pairingToken)}` : '';
+    const { primaryUrl } = resolvePrimaryChannel(
+      this.getChannelUrls({ includeToken: true }),
+      this._resolveChannels()
+    );
+    return primaryUrl || localPairingUrl;
   }
 
   getChannelUrls({ includeToken = true } = {}) {

@@ -85,15 +85,66 @@ function verifyAnchorsMatrix() {
   return { ok: true, anchorsCount: KNOWN_ANCHORS.length, matrix };
 }
 
+const SHA512_FORMAT_RE = /^sha512-[A-Za-z0-9+/=]{86,88}$/;
+
+function findExternalSiblingDir(workspaceRoot, entry, checkParentSibling = true) {
+  const candidates = [];
+  if (entry.localRepo) {
+    candidates.push(path.join(workspaceRoot, entry.localRepo));
+  }
+  if (entry.repo) {
+    const repoName = path.basename(String(entry.repo).replace(/\/+$/, '').replace(/\.git$/i, ''));
+    if (repoName && repoName !== '.' && repoName !== '..') {
+      candidates.push(path.join(workspaceRoot, repoName));
+      if (checkParentSibling) {
+        candidates.push(path.resolve(workspaceRoot, '..', repoName));
+      }
+    }
+  }
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'agy-plugin.json'))) {
+      return dir;
+    }
+  }
+  return null;
+}
+
 function verifyRegistryAndMatrix(options = {}) {
   const workspaceRoot = options.workspaceRoot || path.resolve(REG_ROOT, '..');
-  const reg = JSON.parse(fs.readFileSync(path.join(REG_ROOT, 'registry.json'), 'utf8'));
+  const regPath = options.registryPath ? path.resolve(options.registryPath) : path.join(REG_ROOT, 'registry.json');
+  const reg = options.registry || JSON.parse(fs.readFileSync(regPath, 'utf8'));
+  const checkParentSibling = options.checkParentSibling !== false;
 
   assert.equal(Array.isArray(reg.plugins), true);
   assert.ok(reg.plugins.length >= 9);
 
   const hashResults = [];
   for (const entry of reg.plugins) {
+    if (entry.external === true) {
+      assert.ok(typeof entry.id === 'string' && entry.id.trim().length > 0, 'External registry entry missing id');
+      assert.match(String(entry.repo || ''), /^https:\/\/\S+/, `External registry entry ${entry.id} must use an https:// repo URL`);
+      assert.ok(typeof entry.ref === 'string' && entry.ref.trim().length > 0, `External registry entry ${entry.id} missing ref`);
+      assert.match(
+        String(entry.manifestSha512 || ''),
+        SHA512_FORMAT_RE,
+        `External registry entry ${entry.id} has invalid manifestSha512 format`
+      );
+
+      const externalDir = findExternalSiblingDir(workspaceRoot, entry, checkParentSibling);
+      if (externalDir) {
+        const manifestRaw = fs.readFileSync(path.join(externalDir, 'agy-plugin.json'));
+        const actualSha = 'sha512-' + crypto.createHash('sha512').update(manifestRaw).digest('base64');
+        assert.equal(actualSha, entry.manifestSha512, `SHA-512 mismatch for ${entry.id}`);
+        const manifest = JSON.parse(manifestRaw.toString('utf8'));
+        const v = validateManifest(manifest);
+        assert.equal(v.ok, true, `Invalid manifest in ${entry.id}: ${v.errors.join('; ')}`);
+        hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, external: true, shaVerified: true, mode: 'physical' });
+      } else {
+        hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, external: true, shaVerified: false, formatVerified: true, mode: 'metadata' });
+      }
+      continue;
+    }
+
     const pluginDir = path.join(workspaceRoot, entry.localRepo || '');
     assert.ok(fs.existsSync(pluginDir), `Missing sibling plugin repo: ${pluginDir}`);
     const manifestRaw = fs.readFileSync(path.join(pluginDir, 'agy-plugin.json'));
@@ -102,11 +153,17 @@ function verifyRegistryAndMatrix(options = {}) {
     const manifest = JSON.parse(manifestRaw.toString('utf8'));
     const v = validateManifest(manifest);
     assert.equal(v.ok, true, `Invalid manifest in ${entry.id}: ${v.errors.join('; ')}`);
-    hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, shaVerified: true });
+    hashResults.push({ id: entry.id, trustLevel: entry.trustLevel, external: false, shaVerified: true, mode: 'physical' });
   }
 
   const anchorsRes = verifyAnchorsMatrix();
-  return { ok: true, pluginsVerified: hashResults.length, anchorsCount: anchorsRes.anchorsCount, matrix: anchorsRes.matrix };
+  return {
+    ok: true,
+    pluginsVerified: hashResults.length,
+    plugins: hashResults,
+    anchorsCount: anchorsRes.anchorsCount,
+    matrix: anchorsRes.matrix
+  };
 }
 
 if (require.main === module) {

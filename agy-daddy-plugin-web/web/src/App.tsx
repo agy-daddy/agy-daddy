@@ -2014,10 +2014,23 @@ export function App() {
   );
 
   const handleCreateGroup = useCallback(
-    async (name: string) => {
+    async (name: string, icon?: string | null) => {
       setBannerError(null);
       try {
-        await apiClient.createProjectGroup(name);
+        await apiClient.createProjectGroup(name, icon);
+        await refreshProjects();
+      } catch (err) {
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [refreshProjects, t],
+  );
+
+  const handleUpdateGroup = useCallback(
+    async (id: string, patch: { name?: string; collapsed?: boolean; icon?: string | null }) => {
+      setBannerError(null);
+      try {
+        await apiClient.updateProjectGroup(id, patch);
         await refreshProjects();
       } catch (err) {
         setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
@@ -2511,6 +2524,7 @@ export function App() {
             onCreateGroup={handleCreateGroup}
             onToggleGroupCollapsed={handleToggleGroupCollapsed}
             onRenameGroup={handleRenameGroup}
+            onUpdateGroup={handleUpdateGroup}
             onDeleteGroup={handleDeleteGroup}
             onMarkSessionRead={(cid) => markActiveSessionAsRead(cid, undefined, true)}
           />

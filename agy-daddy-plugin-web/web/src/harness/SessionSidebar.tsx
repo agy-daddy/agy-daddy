@@ -24,6 +24,7 @@ import {
   type DragItemMeta,
   type ReorderMenuAction,
 } from './useSidebarDragSort';
+import { EntityIcon, EntityIconPicker } from './EntityIcon';
 import styles from './SessionSidebar.module.css';
 
 export interface SessionSidebarProps {
@@ -74,12 +75,22 @@ export interface SessionSidebarProps {
   }) => Promise<void> | void;
   onUpdateProject?: (
     id: string,
-    patch: { name?: string; groupId?: string | null },
+    patch: {
+      name?: string;
+      groupId?: string | null;
+      icon?: string | null;
+      workspaceUri?: string;
+      rootPath?: string;
+    },
   ) => Promise<void> | void;
   onDeleteProject?: (id: string) => Promise<void> | void;
-  onCreateGroup?: (name: string) => Promise<void> | void;
+  onCreateGroup?: (name: string, icon?: string | null) => Promise<void> | void;
   onToggleGroupCollapsed?: (id: string, collapsed: boolean) => Promise<void> | void;
   onRenameGroup?: (id: string, name: string) => Promise<void> | void;
+  onUpdateGroup?: (
+    id: string,
+    patch: { name?: string; collapsed?: boolean; icon?: string | null },
+  ) => Promise<void> | void;
   onDeleteGroup?: (id: string) => Promise<void> | void;
   onMarkSessionRead?: (cascadeId: string) => Promise<void> | void;
 }
@@ -757,7 +768,13 @@ interface ProjectTreeItemProps {
   onPinProject?: (project: ProjectItem, pinned: boolean) => Promise<void> | void;
   onUpdateProject?: (
     id: string,
-    patch: { name?: string; groupId?: string | null },
+    patch: {
+      name?: string;
+      groupId?: string | null;
+      icon?: string | null;
+      workspaceUri?: string;
+      rootPath?: string;
+    },
   ) => Promise<void> | void;
   onDeleteProject?: (id: string) => Promise<void> | void;
   onReorderAction?: (
@@ -817,12 +834,32 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
 }: ProjectTreeItemProps) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(project.name);
+  const [showIconPicker, setShowIconPicker] = useState(false);
   const syncedFromApp = isSyncedAppProject(project);
   const isPinned = project.pinned === true;
   const canMoveToGroup =
     (!project.implicit || syncedFromApp) && Boolean(onUpdateProject) && groups.length > 0;
   const canRename = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject);
+  const canEditIcon = Boolean(onUpdateProject);
   const workspaceUri = toWorkspaceUri(project.rootPath);
+
+  useEffect(() => {
+    if (!isMenuOpen) {
+      setShowIconPicker(false);
+    }
+  }, [isMenuOpen]);
+
+  const handleSetProjectIcon = (nextIcon: string | null) => {
+    if (!canMutateOrg || !onUpdateProject) return;
+    void onUpdateProject(project.id, {
+      icon: nextIcon,
+      ...(project.implicit || syncedFromApp
+        ? { workspaceUri, rootPath: project.rootPath }
+        : {}),
+    });
+    setShowIconPicker(false);
+    onToggleMenu(project.id);
+  };
 
   const dragMeta: DragItemMeta = {
     targetType: 'project',
@@ -932,8 +969,8 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
               onHeaderClick(project.id);
             }}
           >
-            <span className={styles.projectFolderIcon}>
-              <FolderGlyph size={13} />
+            <span className={styles.projectFolderIcon} data-testid={`project-icon-${project.id}`}>
+              <EntityIcon icon={project.icon} kind="project" size={13} />
             </span>
             <span className={styles.projectName}>{project.name}</span>
             <span className={styles.projectMeta}>
@@ -1205,6 +1242,21 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                 {isPinned ? t('sidebarOrg.unpinProject') : t('sidebarOrg.pinProject')}
               </button>
             )}
+            {canEditIcon && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                data-testid={`set-project-icon-${project.id}`}
+                aria-expanded={showIconPicker}
+                disabled={!canMutateOrg}
+                onClick={() => {
+                  if (!canMutateOrg) return;
+                  setShowIconPicker((prev) => !prev);
+                }}
+              >
+                {t('sidebar.setIcon')}
+              </button>
+            )}
             {canRename && (
               <button
                 type="button"
@@ -1235,6 +1287,16 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
               </button>
             )}
           </div>
+          {showIconPicker && canEditIcon && (
+            <EntityIconPicker
+              value={project.icon}
+              disabled={!canMutateOrg}
+              t={t}
+              testIdPrefix={`project-icon-${project.id}`}
+              onSelect={handleSetProjectIcon}
+              onClose={() => setShowIconPicker(false)}
+            />
+          )}
         </div>
       )}
 
@@ -1311,6 +1373,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   onCreateGroup,
   onToggleGroupCollapsed,
   onRenameGroup,
+  onUpdateGroup,
   onDeleteGroup,
   onMarkSessionRead,
 }: SessionSidebarProps) {
@@ -1339,6 +1402,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
   const [showNewGroupForm, setShowNewGroupForm] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [newGroupIcon, setNewGroupIcon] = useState<string | null>(null);
+  const [showNewGroupIconPicker, setShowNewGroupIconPicker] = useState(false);
+  const [iconPickerGroupId, setIconPickerGroupId] = useState<string | null>(null);
   const [submittingGroup, setSubmittingGroup] = useState(false);
 
   const listContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1447,8 +1513,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     setSubmittingGroup(true);
     try {
-      await onCreateGroup(trimmedName);
+      if (newGroupIcon) {
+        await onCreateGroup(trimmedName, newGroupIcon);
+      } else {
+        await onCreateGroup(trimmedName);
+      }
       setGroupName('');
+      setNewGroupIcon(null);
+      setShowNewGroupIconPicker(false);
       setShowNewGroupForm(false);
     } finally {
       setSubmittingGroup(false);
@@ -1923,7 +1995,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const handleToggleGroupMenu = useCallback((groupId: string) => {
     setOpenActionSessionId(null);
     setOpenActionProjectId(null);
-    setOpenActionGroupId((prev) => (prev === groupId ? null : groupId));
+    setOpenActionGroupId((prev) => {
+      const next = prev === groupId ? null : groupId;
+      if (next !== groupId) {
+        setIconPickerGroupId((cur) => (cur === groupId ? null : cur));
+      }
+      return next;
+    });
   }, []);
 
   const handleSelectSessionWithExpand = useCallback(
@@ -2281,6 +2359,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 onClick={() => handleToggleGroup(group)}
               >
                 <ChevronGlyph expanded={!effectiveCollapsed} />
+                {group.icon && (
+                  <span
+                    className={styles.groupCustomIcon}
+                    data-testid={`group-icon-${group.id}`}
+                    aria-hidden="true"
+                  >
+                    <EntityIcon icon={group.icon} kind="group" size={13} />
+                  </span>
+                )}
                 <span className={styles.groupName}>{group.name}</span>
                 {isPinned && (
                   <span
@@ -2458,6 +2545,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                   {isPinned ? t('sidebarOrg.unpinGroup') : t('sidebarOrg.pinGroup')}
                 </button>
               )}
+              {onUpdateGroup && (
+                <button
+                  type="button"
+                  className={styles.popoverMiniBtn}
+                  data-testid={`set-group-icon-${group.id}`}
+                  aria-expanded={iconPickerGroupId === group.id}
+                  disabled={!canMutateOrg}
+                  onClick={() => {
+                    if (!canMutateOrg) return;
+                    setIconPickerGroupId((prev) => (prev === group.id ? null : group.id));
+                  }}
+                >
+                  {t('sidebar.setIcon')}
+                </button>
+              )}
               {onRenameGroup && (
                 <button
                   type="button"
@@ -2488,6 +2590,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 </button>
               )}
             </div>
+            {onUpdateGroup && iconPickerGroupId === group.id && (
+              <EntityIconPicker
+                value={group.icon}
+                disabled={!canMutateOrg}
+                t={t}
+                testIdPrefix={`group-icon-${group.id}`}
+                onSelect={(nextIcon) => {
+                  if (!canMutateOrg) return;
+                  void onUpdateGroup(group.id, { icon: nextIcon });
+                  setIconPickerGroupId(null);
+                  handleToggleGroupMenu(group.id);
+                }}
+                onClose={() => setIconPickerGroupId(null)}
+              />
+            )}
           </div>
         )}
 
@@ -2847,20 +2964,49 @@ export const SessionSidebar = React.memo(function SessionSidebar({
           onSubmit={(ev) => void handleCreateGroupSubmit(ev)}
           data-testid="new-group-form"
         >
-          <input
-            type="text"
-            className={styles.formInput}
-            placeholder={t('sidebar.groupNamePlaceholder')}
-            aria-label={t('sidebar.groupNamePlaceholder')}
-            value={groupName}
-            onChange={(ev) => setGroupName(ev.target.value)}
-            data-testid="new-group-name"
-          />
+          <div className={styles.newGroupInputRow}>
+            <button
+              type="button"
+              className={styles.newGroupIconTrigger}
+              aria-label={t('sidebar.groupIconAria')}
+              title={t('sidebar.groupIconAria')}
+              aria-expanded={showNewGroupIconPicker}
+              data-testid="new-group-icon-btn"
+              onClick={() => setShowNewGroupIconPicker((prev) => !prev)}
+            >
+              <EntityIcon icon={newGroupIcon || 'preset:layers'} kind="group" size={13} />
+            </button>
+            <input
+              type="text"
+              className={styles.formInput}
+              placeholder={t('sidebar.groupNamePlaceholder')}
+              aria-label={t('sidebar.groupNamePlaceholder')}
+              value={groupName}
+              onChange={(ev) => setGroupName(ev.target.value)}
+              data-testid="new-group-name"
+            />
+          </div>
+          {showNewGroupIconPicker && (
+            <EntityIconPicker
+              value={newGroupIcon}
+              disabled={submittingGroup}
+              t={t}
+              testIdPrefix="new-group-icon"
+              onSelect={(icon) => {
+                setNewGroupIcon(icon);
+                setShowNewGroupIconPicker(false);
+              }}
+              onClose={() => setShowNewGroupIconPicker(false)}
+            />
+          )}
           <div className={styles.formActions}>
             <button
               type="button"
               className={styles.formCancelBtn}
-              onClick={() => setShowNewGroupForm(false)}
+              onClick={() => {
+                setShowNewGroupForm(false);
+                setShowNewGroupIconPicker(false);
+              }}
             >
               {t('common.cancel')}
             </button>

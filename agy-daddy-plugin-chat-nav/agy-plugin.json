@@ -9,8 +9,8 @@
     "en": "Chat Navigation & Editor"
   },
   "description": {
-    "zh-CN": "右侧悬浮对话导航条、对话关键词/正则全文检索、思考块锁定、快捷会话切换、复制会话 ID、多格式对话导出（MD/HTML/PDF）、内联文件编辑与安全外链",
-    "en": "Floating chat navigation dock, keyword/regex conversation search, thinking expand guard, conversation switching, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external links"
+    "zh-CN": "右侧悬浮对话导航条、左侧章节导轨大纲、代码块吸顶与长代码智能折叠、Alt+↑/↓ 轮次跳转、对话关键词/正则全文检索、思考块锁定、复制会话 ID、多格式对话导出（MD/HTML/PDF）、内联文件编辑与安全外链",
+    "en": "Floating chat navigation dock, left chapter rail & hover outline, sticky/foldable code blocks, Alt+Up/Down turn shortcuts, keyword/regex search, thinking expand guard, copy session ID, multi-format export (MD/HTML/PDF), inline file editor, and safe external links"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -52,7 +52,11 @@
       { "id": "chat-nav.export-md", "title": { "zh-CN": "导出当前对话为 Markdown", "en": "Export conversation as Markdown" } },
       { "id": "chat-nav.export", "title": { "zh-CN": "导出当前对话 (MD/HTML/PDF)", "en": "Export conversation (MD/HTML/PDF)" } },
       { "id": "chat-nav.export-all", "title": { "zh-CN": "批量导出当前对话为全部所选格式", "en": "Export conversation in all selected formats" } },
-      { "id": "chat-nav.browseExportDir", "title": { "zh-CN": "选择默认导出保存文件夹", "en": "Browse default export directory" } }
+      { "id": "chat-nav.browseExportDir", "title": { "zh-CN": "选择默认导出保存文件夹", "en": "Browse default export directory" } },
+      { "id": "chat-nav.toggle-outline", "title": { "zh-CN": "切换会话快速大纲", "en": "Toggle conversation outline" } },
+      { "id": "chat-nav.collapse-long-code", "title": { "zh-CN": "折叠或展开长代码块", "en": "Toggle long code blocks" } },
+      { "id": "chat-nav.turn-prev", "title": { "zh-CN": "跳转到上一轮对话", "en": "Jump to previous turn" } },
+      { "id": "chat-nav.turn-next", "title": { "zh-CN": "跳转到下一轮对话", "en": "Jump to next turn" } }
     ],
     "locales": "./locales"
   }

@@ -231,7 +231,28 @@ test('web: worktree discovery, sibling auto-auth, locked/running guards, pty cwd
     ptyMgr = createPtyManager({
       allowedRoots: getAllowedRoots,
       defaultCwd: repo,
-      worktreeDiscovery
+      worktreeDiscovery,
+      probeFn: async () => ({ available: true, reason: null }),
+      spawnFn: () => {
+        const listeners = new Map();
+        return {
+          exitCode: null,
+          killed: false,
+          stdin: { destroyed: false, write() {}, end() {} },
+          stdout: { on() {} },
+          stderr: { on() {} },
+          stdio: [null, null, null, { destroyed: false, write() {}, end() {} }],
+          on(ev, fn) {
+            if (!listeners.has(ev)) listeners.set(ev, []);
+            listeners.get(ev).push(fn);
+          },
+          kill() {
+            this.killed = true;
+            this.exitCode = 0;
+            for (const fn of listeners.get('exit') || []) fn(0, 'SIGTERM');
+          }
+        };
+      }
     });
     t.after(() => ptyMgr.disposeAll());
 

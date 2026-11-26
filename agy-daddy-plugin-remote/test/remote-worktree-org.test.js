@@ -17,6 +17,7 @@ const HOST_ROOT = process.env.AGY_DADDY_HOST_DIR
 
 const { createMockHostHarness } = require(path.join(HOST_ROOT, 'sdk', 'mock-harness'));
 const { resolveWorkspaceOrg } = require('../src/session-org-store');
+const { createPtyManager: createRemotePtyManager } = require('../src/pty-bridge');
 
 function cleanupDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
@@ -216,37 +217,73 @@ test('remote: worktree discovery, StartCascade workspaceUris, sibling fs/git aut
   const sibTree = await httpRequest(`${base}/api/v1/fs/tree?root=${encodeURIComponent(siblingWt)}`, { headers: auth });
   assert.equal(sibTree.status, 200);
 
-  // 3. PTY WS + ?cwd= isolation + 409 PTY_CWD_MISMATCH
-  const wsOk = await rawUpgrade(
-    base,
-    `/ws/pty?sessionId=pty-sib-1&cwd=${encodeURIComponent(siblingWt)}`,
-    token
-  );
-  assert.match(wsOk, /^HTTP\/1\.1 101 /);
-
-  const ptyListSib = await httpRequest(`${base}/api/v1/pty/sessions?cwd=${encodeURIComponent(siblingWt)}`, { headers: auth });
-  assert.equal(ptyListSib.status, 200);
-  assert.deepEqual(ptyListSib.json.sessions.map((s) => s.sessionId), ['pty-sib-1']);
-
-  const ptyListMain = await httpRequest(`${base}/api/v1/pty/sessions?cwd=${encodeURIComponent(repo)}`, { headers: auth });
-  assert.equal(ptyListMain.status, 200);
-  assert.equal(ptyListMain.json.sessions.length, 0);
-
-  const wsMismatch = await rawUpgrade(
-    base,
-    `/ws/pty?sessionId=pty-sib-1&cwd=${encodeURIComponent(repo)}`,
-    token
-  );
-  assert.match(wsMismatch, /^HTTP\/1\.1 409 /);
-
-  // Removing worktree with running PTY is rejected with 409 WORKTREE_HAS_RUNNING_SESSION
-  const remBusy = await httpRequest(`${base}/api/v1/git/worktree`, {
-    method: 'POST',
-    headers: auth,
-    body: { root: repo, action: 'remove', path: siblingWt }
+  // 3. PTY ?cwd= isolation + 409 PTY_CWD_MISMATCH (cross-platform pty-bridge + live WS on POSIX)
+  const fakePtyBridge = createRemotePtyManager({
+    allowedRoots: [repo, siblingWt],
+    defaultCwd: repo,
+    spawnFn: () => {
+      const listeners = new Map();
+      return {
+        exitCode: null,
+        killed: false,
+        stdin: { destroyed: false, write() {}, end() {} },
+        stdout: { on() {} },
+        stderr: { on() {} },
+        stdio: [null, null, null, { destroyed: false, write() {}, end() {} }],
+        on(ev, fn) {
+          if (!listeners.has(ev)) listeners.set(ev, []);
+          listeners.get(ev).push(fn);
+        },
+        kill() {
+          this.killed = true;
+          this.exitCode = 0;
+          for (const fn of listeners.get('exit') || []) fn(0, 'SIGTERM');
+        }
+      };
+    }
   });
-  assert.equal(remBusy.status, 409);
-  assert.equal(remBusy.json.error, 'WORKTREE_HAS_RUNNING_SESSION');
+  t.after(() => fakePtyBridge.disposeAll());
+  const pSib = fakePtyBridge.getOrCreateSession({ sessionId: 'pty-mock-sib', cwd: siblingWt });
+  assert.equal(pSib.ok, true);
+  assert.deepEqual(fakePtyBridge.listSessions({ cwd: siblingWt }).map((s) => s.sessionId), ['pty-mock-sib']);
+  assert.equal(fakePtyBridge.listSessions({ cwd: repo }).length, 0);
+  const pMismatch = fakePtyBridge.getOrCreateSession({ sessionId: 'pty-mock-sib', cwd: repo });
+  assert.equal(pMismatch.ok, false);
+  assert.equal(pMismatch.statusCode, 409);
+  assert.equal(pMismatch.error, 'PTY_CWD_MISMATCH');
+
+  if (process.platform !== 'win32') {
+    const wsOk = await rawUpgrade(
+      base,
+      `/ws/pty?sessionId=pty-sib-1&cwd=${encodeURIComponent(siblingWt)}`,
+      token
+    );
+    assert.match(wsOk, /^HTTP\/1\.1 101 /);
+
+    const ptyListSib = await httpRequest(`${base}/api/v1/pty/sessions?cwd=${encodeURIComponent(siblingWt)}`, { headers: auth });
+    assert.equal(ptyListSib.status, 200);
+    assert.deepEqual(ptyListSib.json.sessions.map((s) => s.sessionId), ['pty-sib-1']);
+
+    const ptyListMain = await httpRequest(`${base}/api/v1/pty/sessions?cwd=${encodeURIComponent(repo)}`, { headers: auth });
+    assert.equal(ptyListMain.status, 200);
+    assert.equal(ptyListMain.json.sessions.length, 0);
+
+    const wsMismatch = await rawUpgrade(
+      base,
+      `/ws/pty?sessionId=pty-sib-1&cwd=${encodeURIComponent(repo)}`,
+      token
+    );
+    assert.match(wsMismatch, /^HTTP\/1\.1 409 /);
+
+    // Removing worktree with running PTY is rejected with 409 WORKTREE_HAS_RUNNING_SESSION
+    const remBusy = await httpRequest(`${base}/api/v1/git/worktree`, {
+      method: 'POST',
+      headers: auth,
+      body: { root: repo, action: 'remove', path: siblingWt }
+    });
+    assert.equal(remBusy.status, 409);
+    assert.equal(remBusy.json.error, 'WORKTREE_HAS_RUNNING_SESSION');
+  }
 
   // 4. Org refresh, collapse, and cross-container project lock
   const orgRes = await httpRequest(`${base}/api/v1/sessions/org?refreshWorktrees=1`, { headers: auth });

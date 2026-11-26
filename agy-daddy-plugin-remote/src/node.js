@@ -1820,7 +1820,7 @@ async function activate(host) {
       }
       let realAncestor = null;
       try {
-        realAncestor = ancestor ? fs.realpathSync(ancestor) : null;
+        realAncestor = ancestor ? workspaceOrg.resolveRealPath(ancestor) : null;
       } catch {}
       if (!realAncestor || isForbiddenSystemRoot(realAncestor)) {
         return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
@@ -1839,7 +1839,7 @@ async function activate(host) {
 
     let realRoot;
     try {
-      realRoot = fs.realpathSync(normalizedRoot);
+      realRoot = workspaceOrg.resolveRealPath(normalizedRoot);
     } catch {
       return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
     }

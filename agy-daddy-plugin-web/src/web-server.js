@@ -1919,7 +1919,7 @@ class WebServer {
         }
         let realRoot;
         try {
-          realRoot = fs.realpathSync(normalized);
+          realRoot = workspaceOrg.resolveRealPath(normalized);
         } catch {
           sendJson(res, 404, { ok: false, error: 'ROOT_NOT_FOUND' });
           return;
@@ -2611,7 +2611,7 @@ class WebServer {
       return;
     }
 
-    const realRoot = fs.realpathSync(this.staticDir);
+    const realRoot = workspaceOrg.resolveRealPath(this.staticDir);
     let cleanRel = '/';
     try {
       cleanRel = decodeURIComponent(pathname || '/');
@@ -2622,23 +2622,22 @@ class WebServer {
 
     const normalizedRel = cleanRel.replace(/^\/+/, '');
     const candidate = path.resolve(realRoot, normalizedRel || 'index.html');
-    const rootPrefix = realRoot.endsWith(path.sep) ? realRoot : `${realRoot}${path.sep}`;
-    if (candidate !== realRoot && !candidate.startsWith(rootPrefix)) {
+    if (!workspaceOrg.isSameOrInside(candidate, realRoot)) {
       sendJson(res, 403, { ok: false, error: 'FORBIDDEN' });
       return;
     }
 
     let targetFile = null;
     if (fs.existsSync(candidate)) {
-      const realTarget = fs.realpathSync(candidate);
-      if (realTarget === realRoot || realTarget.startsWith(rootPrefix)) {
+      const realTarget = workspaceOrg.resolveRealPath(candidate);
+      if (workspaceOrg.isSameOrInside(realTarget, realRoot)) {
         const st = fs.statSync(realTarget);
         if (st.isFile()) {
           targetFile = realTarget;
         } else if (st.isDirectory()) {
           const dirIndex = path.join(realTarget, 'index.html');
           if (fs.existsSync(dirIndex) && fs.statSync(dirIndex).isFile()) {
-            targetFile = fs.realpathSync(dirIndex);
+            targetFile = workspaceOrg.resolveRealPath(dirIndex);
           }
         }
       }
@@ -2647,11 +2646,11 @@ class WebServer {
     if (!targetFile && !path.extname(normalizedRel)) {
       const spaIndex = path.join(realRoot, 'index.html');
       if (fs.existsSync(spaIndex) && fs.statSync(spaIndex).isFile()) {
-        targetFile = fs.realpathSync(spaIndex);
+        targetFile = workspaceOrg.resolveRealPath(spaIndex);
       }
     }
 
-    if (!targetFile || (!targetFile.startsWith(rootPrefix) && targetFile !== realRoot)) {
+    if (!targetFile || !workspaceOrg.isSameOrInside(targetFile, realRoot)) {
       sendJson(res, 404, { ok: false, error: 'NOT_FOUND' });
       return;
     }

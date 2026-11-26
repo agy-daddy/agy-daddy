@@ -55,10 +55,7 @@ function outsideError() {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const a = IS_CASE_INSENSITIVE_FS ? String(targetPath).toLowerCase() : String(targetPath);
-  const b = IS_CASE_INSENSITIVE_FS ? String(baseDir).toLowerCase() : String(baseDir);
-  const rel = path.relative(b, a);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 function expandTilde(input) {
@@ -135,14 +132,7 @@ function findDeepestExistingAncestor(targetPath) {
  * to `fs.realpathSync` when `.native` is unavailable or fails on virtual mounts.
  */
 function resolveRealPath(targetPath) {
-  if (typeof fs.realpathSync.native === 'function') {
-    try {
-      return fs.realpathSync.native(targetPath);
-    } catch {
-      return fs.realpathSync(targetPath);
-    }
-  }
-  return fs.realpathSync(targetPath);
+  return workspaceOrg.resolveRealPath(targetPath);
 }
 
 function resolveRealRoots(roots) {

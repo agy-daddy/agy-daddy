@@ -12,6 +12,8 @@ const {
   canonicalizePath,
   canonicalKey,
   isForbiddenSystemRoot,
+  isTempBridgeWorkspace,
+  isImplicitAppTempWorkspace,
   makeWorktreeId,
   matchWorktreeByLongestPrefix,
   parseWorktreePorcelain,
@@ -72,6 +74,33 @@ test('path-canonicalizer: file:// CJK decoding, deleted ancestor realpath, forbi
     assert.equal(hitInner?.worktreeId, makeWorktreeId(innerWt));
     assert.equal(hitMain?.worktreeId, makeWorktreeId(repo));
     assert.equal(hitSibling, null);
+
+    // Temp workspace filtering: /var/folders/.../T/... must NOT be blocked as temp bridge workspace
+    const macTmpProject = '/var/folders/3n/8vkwhj6x64dfnxs_mb25ztdc0000gn/T/agy-wo-wt-123/app-repo';
+    const macTmpBridge = '/private/var/folders/3n/8vkwhj6x64dfnxs_mb25ztdc0000gn/T/magpie-agy-bridge-XVAljS';
+    assert.equal(isTempBridgeWorkspace(macTmpProject), false);
+    assert.equal(isTempBridgeWorkspace(macTmpBridge), true);
+    assert.equal(isTempBridgeWorkspace('/tmp/magpie-agy-bridge-123'), true);
+    assert.equal(isImplicitAppTempWorkspace(macTmpProject), false);
+
+    // Outside test mode, implicit state.vscdb /var/folders/.../T/... paths are filtered while explicit seedRoots stay allowed
+    const prevEnv = {
+      AGY_DADDY_TEST_MODE: process.env.AGY_DADDY_TEST_MODE,
+      NODE_ENV: process.env.NODE_ENV,
+      NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT
+    };
+    try {
+      delete process.env.AGY_DADDY_TEST_MODE;
+      delete process.env.NODE_ENV;
+      delete process.env.NODE_TEST_CONTEXT;
+      assert.equal(isTempBridgeWorkspace(macTmpProject), false);
+      assert.equal(isImplicitAppTempWorkspace(macTmpProject), true);
+    } finally {
+      for (const [k, v] of Object.entries(prevEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   } finally {
     cleanupDir(base);
   }

@@ -473,7 +473,7 @@ class RingBuffer64K {
 }
 
 class PtySession extends EventEmitter {
-  constructor({ sessionId, cwd, realCwd = null, worktreeId = null, cols = 80, rows = 24, pythonBin = 'python3' } = {}) {
+  constructor({ sessionId, cwd, realCwd = null, worktreeId = null, cols = 80, rows = 24, pythonBin = 'python3', spawnFn = spawn } = {}) {
     super();
     this.sessionId = sessionId || crypto.randomUUID();
     this.cwd = cwd;
@@ -493,7 +493,7 @@ class PtySession extends EventEmitter {
     this.endedAt = null;
     this._killTimer = null;
 
-    this.child = spawn(pythonBin, ['-u', '-c', PYTHON_PTY_SCRIPT], {
+    this.child = spawnFn(pythonBin, ['-u', '-c', PYTHON_PTY_SCRIPT], {
       cwd: this.cwd,
       env: {
         ...process.env,
@@ -676,8 +676,7 @@ function clampDim(value, fallback, min, max) {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const rel = path.relative(baseDir, targetPath);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 function resolveAllowedRoots(allowedRoots) {
@@ -687,7 +686,7 @@ function resolveAllowedRoots(allowedRoots) {
   for (const r of raw) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      realRoots.push(fs.realpathSync(r));
+      realRoots.push(workspaceOrg.resolveRealPath(r));
     } catch {
       // Ignore non-existent roots
     }
@@ -704,6 +703,7 @@ function createPtyManager({
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   maxSessions = DEFAULT_MAX_SESSIONS,
   pythonBin = 'python3',
+  spawnFn = spawn,
   onTaskEvent = null,
   worktreeDiscovery = null
 } = {}) {
@@ -738,7 +738,7 @@ function createPtyManager({
 
     let realCwd;
     try {
-      realCwd = fs.realpathSync(candidate);
+      realCwd = workspaceOrg.resolveRealPath(candidate);
     } catch {
       return { ok: false, statusCode: 403, error: 'PATH_OUTSIDE_WORKSPACE' };
     }
@@ -985,7 +985,8 @@ function createPtyManager({
       worktreeId: wtInfo.worktreeId,
       cols,
       rows,
-      pythonBin
+      pythonBin,
+      spawnFn
     });
 
     sessions.set(session.sessionId, session);

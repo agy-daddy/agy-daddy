@@ -2208,8 +2208,10 @@ function createSessionOrgCore(options = {}) {
       }
     }
 
-    function registerProject({ id, uri, fsPath, name, branchName = null, lastModifiedTime = null, groupId = null }) {
-      if (isTempBridgeWorkspace(fsPath || uri) || isTempBridgeWorkspace(name)) return null;
+    function registerProject({ id, uri, fsPath, name, branchName = null, lastModifiedTime = null, groupId = null, allowTemp = false }) {
+      if (!allowTemp && (((fsPath || uri) && isTempBridgeWorkspace(fsPath || uri)) || (name && isTempBridgeWorkspace(name)))) {
+        return null;
+      }
       const normPath = normalizeUriToPath(fsPath || uri);
       const normUri = uri && String(uri).startsWith('file://') ? String(uri).trim() : (normPath ? pathToFileUri(normPath) : null);
 

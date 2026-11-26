@@ -84,6 +84,13 @@ function expandTilde(input) {
 
 function safeRealpath(targetPath) {
   try {
+    if (typeof fs.realpathSync.native === 'function') {
+      try {
+        return fs.realpathSync.native(targetPath);
+      } catch {
+        return fs.realpathSync(targetPath);
+      }
+    }
     return fs.realpathSync(targetPath);
   } catch {
     return null;

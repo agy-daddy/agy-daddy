@@ -9,7 +9,6 @@ const {
   canonicalKey,
   isForbiddenSystemRoot,
   isSameOrInside,
-  isTempBridgeWorkspace,
   makeWorktreeId,
   normalizeLocalPath,
   pathToFileUri
@@ -414,7 +413,7 @@ function createWorktreeDiscoveryService({
   async function probeRepository(rawRoot, { refresh = false } = {}) {
     const canon = canonicalizePath(rawRoot) || normalizeLocalPath(rawRoot);
     const key = canonicalKey(canon);
-    if (!canon || !key || isForbiddenSystemRoot(canon) || isTempBridgeWorkspace(canon)) {
+    if (!canon || !key || isForbiddenSystemRoot(canon)) {
       return { ok: true, isGitRepo: false, repoRoot: canon, isMultiWorktree: false, worktrees: [] };
     }
 
@@ -528,7 +527,7 @@ function createWorktreeDiscoveryService({
     for (const raw of (Array.isArray(roots) ? roots : [])) {
       const canon = canonicalizePath(raw) || normalizeLocalPath(raw);
       const key = canonicalKey(canon);
-      if (!canon || !key || seen.has(key) || isForbiddenSystemRoot(canon) || isTempBridgeWorkspace(canon)) continue;
+      if (!canon || !key || seen.has(key) || isForbiddenSystemRoot(canon)) continue;
       seen.add(key);
       if (!refresh) {
         const cached = getCachedSnapshot(canon);
@@ -598,7 +597,7 @@ function createWorktreeDiscoveryService({
     const pushSafe = (p) => {
       const canon = canonicalizePath(p) || normalizeLocalPath(p);
       const key = canonicalKey(canon);
-      if (!canon || !key || seen.has(key) || isForbiddenSystemRoot(canon) || isTempBridgeWorkspace(canon)) return;
+      if (!canon || !key || seen.has(key) || isForbiddenSystemRoot(canon)) return;
       try {
         if (!fs.existsSync(canon)) return;
       } catch {
@@ -610,7 +609,7 @@ function createWorktreeDiscoveryService({
 
     for (const rawSeed of (Array.isArray(seedRoots) ? seedRoots : [])) {
       const canonSeed = canonicalizePath(rawSeed) || normalizeLocalPath(rawSeed);
-      if (!canonSeed || isForbiddenSystemRoot(canonSeed) || isTempBridgeWorkspace(canonSeed)) continue;
+      if (!canonSeed || isForbiddenSystemRoot(canonSeed)) continue;
       pushSafe(canonSeed);
       const cached = getCachedSnapshot(canonSeed);
       if (cached && cached.isGitRepo) {

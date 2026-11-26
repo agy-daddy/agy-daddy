@@ -9,7 +9,8 @@ const url = require('node:url');
 const IS_CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 const PERCENT_ENCODED_RE = /%[0-9A-Fa-f]{2}/;
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
-const TEMP_BRIDGE_RE = /(?:^|\/)(?:private\/)?tmp\/magpie-agy-bridge-/i;
+const INTERNAL_TEMP_PREFIX_PATTERN = '(?:magpie-agy-bridge-|agy-model-probe-|agy-probe-|antigravity-probe-|route-score-|omb-claude-background-)';
+const TEMP_BRIDGE_RE = new RegExp(`(?:^|/)(?:(?:private/)?var/folders/[^/]+/[^/]+/T/|(?:private/)?tmp/)${INTERNAL_TEMP_PREFIX_PATTERN}|(?:^|/)${INTERNAL_TEMP_PREFIX_PATTERN}`, 'i');
 const MAC_VAR_FOLDERS_TMP_RE = /(?:^|\/)(?:private\/)?var\/folders\/[^/]+\/[^/]+\/T(?:\/|$)/i;
 
 function isTestMode() {
@@ -257,10 +258,26 @@ function isForbiddenSystemRoot(realPath) {
   return false;
 }
 
+/**
+ * Detects Antigravity internal temp bridge/probe directories (e.g. `magpie-agy-bridge-*`)
+ * without blanket-blocking arbitrary `os.tmpdir()` (`/var/folders/.../T/...`) test/workspace paths.
+ */
 function isTempBridgeWorkspace(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath.trim()) return false;
+  const slashed = rawPath.trim().replace(/\\/g, '/');
+  return TEMP_BRIDGE_RE.test(slashed);
+}
+
+/**
+ * Filters implicit app-synced temporary directories (including macOS `/var/folders/.../T/...`
+ * outside test mode) when scanning `state.vscdb`, while preserving test-mode `os.tmpdir()` paths.
+ */
+function isImplicitAppTempWorkspace(rawPath) {
   if (typeof rawPath !== 'string' || !rawPath.trim()) return true;
-  const slashed = rawPath.replace(/\\/g, '/');
-  return TEMP_BRIDGE_RE.test(slashed) || MAC_VAR_FOLDERS_TMP_RE.test(slashed);
+  if (isTempBridgeWorkspace(rawPath)) return true;
+  if (isTestMode()) return false;
+  const slashed = rawPath.trim().replace(/\\/g, '/');
+  return MAC_VAR_FOLDERS_TMP_RE.test(slashed);
 }
 
 function makeWorktreeId(worktreeRawPath) {
@@ -347,6 +364,8 @@ module.exports = {
   isSameOrInside,
   isForbiddenSystemRoot,
   isTempBridgeWorkspace,
+  isImplicitAppTempWorkspace,
+  MAC_VAR_FOLDERS_TMP_RE,
   makeWorktreeId,
   deriveWorkspaceProjectId,
   makeAppSyncedProjectId,

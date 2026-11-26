@@ -34,7 +34,8 @@ const CONVERSATION_PROJECTS_SQL = [
 const VSCDB_SIDEBAR_SQL = "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.sidebarWorkspaces'";
 const INTERNAL_SOURCE_RE = /SUBAGENT|INTERNAL|SWARM/i;
 const RUNNING_STATUS_RE = /RUNNING|GENERATING/i;
-const TEMP_BRIDGE_RE = /(?:^|\/)(?:private\/)?tmp\/magpie-agy-bridge-/i;
+const INTERNAL_TEMP_PREFIX_PATTERN = '(?:magpie-agy-bridge-|agy-model-probe-|agy-probe-|antigravity-probe-|route-score-|omb-claude-background-)';
+const TEMP_BRIDGE_RE = new RegExp(`(?:^|/)(?:(?:private/)?var/folders/[^/]+/[^/]+/T/|(?:private/)?tmp/)${INTERNAL_TEMP_PREFIX_PATTERN}|(?:^|/)${INTERNAL_TEMP_PREFIX_PATTERN}`, 'i');
 const MAC_VAR_FOLDERS_TMP_RE = /(?:^|\/)(?:private\/)?var\/folders\/[^/]+\/[^/]+\/T(?:\/|$)/i;
 
 function isTestMode() {
@@ -59,6 +60,13 @@ function expandTilde(input) {
 
 function safeRealpath(targetPath) {
   try {
+    if (typeof fs.realpathSync.native === 'function') {
+      try {
+        return fs.realpathSync.native(targetPath);
+      } catch {
+        return fs.realpathSync(targetPath);
+      }
+    }
     return fs.realpathSync(targetPath);
   } catch {
     return null;
@@ -244,7 +252,8 @@ function isForbiddenSystemRoot(realPath) {
 function isTempAppWorkspacePath(normPath) {
   if (typeof normPath !== 'string' || !normPath.trim()) return true;
   const slashed = normPath.replace(/\\/g, '/');
-  return TEMP_BRIDGE_RE.test(slashed) || MAC_VAR_FOLDERS_TMP_RE.test(slashed);
+  if (TEMP_BRIDGE_RE.test(slashed)) return true;
+  return !isTestMode() && MAC_VAR_FOLDERS_TMP_RE.test(slashed);
 }
 
 function makeImplicitProjectId(normRootPath) {
@@ -1220,10 +1229,8 @@ function createWorkspaceMetaStore({
       }
     }
 
-    let realRoot;
-    try {
-      realRoot = fs.realpathSync(normalizedRoot);
-    } catch {
+    const realRoot = safeRealpath(normalizedRoot);
+    if (!realRoot) {
       return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
     }
 

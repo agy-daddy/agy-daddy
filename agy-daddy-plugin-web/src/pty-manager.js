@@ -145,11 +145,7 @@ function clampDim(value, fallback, min, max) {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const caseInsensitive = process.platform === 'darwin' || process.platform === 'win32';
-  const a = caseInsensitive ? String(targetPath).toLowerCase() : String(targetPath);
-  const b = caseInsensitive ? String(baseDir).toLowerCase() : String(baseDir);
-  const rel = path.relative(b, a);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 function isForbiddenSystemRoot(p) {
@@ -166,7 +162,7 @@ function resolveAllowedRoots(allowedRoots) {
   for (const r of raw) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      const real = fs.realpathSync(r);
+      const real = workspaceOrg.resolveRealPath(r);
       if (!isForbiddenSystemRoot(real)) {
         realRoots.push(real);
       }
@@ -514,7 +510,7 @@ function createPtyManager({
 
     let realCwd;
     try {
-      realCwd = fs.realpathSync(candidate);
+      realCwd = workspaceOrg.resolveRealPath(candidate);
     } catch {
       return { ok: false, statusCode: 403, error: 'PATH_OUTSIDE_WORKSPACE' };
     }

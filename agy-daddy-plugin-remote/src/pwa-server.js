@@ -18,6 +18,9 @@ const {
 } = require('./tunnel-security');
 const { generatePwaHtml } = require('./pwa-html');
 const { generateTunnelLandingHtml } = require('./tunnel-landing-html');
+const { resolveWorkspaceOrg } = require('./session-org-store');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const PING_GIF_BUFFER = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
@@ -200,8 +203,7 @@ function injectLegacyCompatHtml(html) {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const rel = path.relative(baseDir, targetPath);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 class MobileRemoteServer {
@@ -534,7 +536,7 @@ class MobileRemoteServer {
     if (!this.staticDir) return false;
     let realStaticDir;
     try {
-      realStaticDir = fs.realpathSync(this.staticDir);
+      realStaticDir = workspaceOrg.resolveRealPath(this.staticDir);
     } catch {
       return false;
     }
@@ -548,7 +550,7 @@ class MobileRemoteServer {
     let realFile;
     let stat;
     try {
-      realFile = fs.realpathSync(candidate);
+      realFile = workspaceOrg.resolveRealPath(candidate);
       if (!isInsideDir(realFile, realStaticDir)) return false;
       stat = fs.statSync(realFile);
     } catch {

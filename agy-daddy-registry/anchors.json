@@ -130,6 +130,18 @@
         }
       ]
     },
+    "sidebar.root": {
+      "description": "左侧边栏根节点",
+      "versions": [
+        {
+          "range": ">=2.0.0",
+          "selectors": [
+            "aside[data-testid=\"sidebar-panel\"].bg-sidebar",
+            "aside[data-testid=\"sidebar-panel\"]"
+          ]
+        }
+      ]
+    },
     "fileViewer.header": {
       "description": "右侧边栏文件查看器标题栏",
       "versions": [

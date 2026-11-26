@@ -250,7 +250,7 @@ test('安装器：Monorepo subpath 安装、升级、回滚与路径穿越拦截
   }
 });
 
-test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 14 锚点并导出完整脱敏诊断包', async () => {
+test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 15 锚点并导出完整脱敏诊断包', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-doctor-clean-'));
   try {
     assert.equal(fs.existsSync(path.join(HOST_ROOT, 'plugins', 'legacy-suite')), false);
@@ -261,7 +261,7 @@ test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 14 锚点并
     const secretVal = 'super_secret_token_9876543210abcdef';
     const docReport = await runDoctor({ stateDir: tmp, pluginsDir: path.join(tmp, 'plugins'), skipCdp: true });
     assert.equal(docReport.ok, true);
-    assert.equal(docReport.anchors.count, 14);
+    assert.equal(docReport.anchors.count, 15);
     assert.equal(docReport.legacySuite, undefined);
     assert.equal(docReport.migration, undefined);
 
@@ -273,7 +273,7 @@ test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 14 锚点并
     });
     assert.equal(exp.ok, true);
     assert.equal(exp.path, bundlePath);
-    assert.ok(exp.report && exp.report.anchors.count === 14);
+    assert.ok(exp.report && exp.report.anchors.count === 15);
     const writtenText = fs.readFileSync(bundlePath, 'utf8');
     const userHome = os.homedir();
     assert.equal(writtenText.includes(userHome), false, 'Diagnostic bundle leaked homedir');

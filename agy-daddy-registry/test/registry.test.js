@@ -10,17 +10,17 @@ const { verifyAnchorsMatrix, verifyRegistryAndMatrix } = require('../scripts/ver
 
 const MONOREPO_ROOT = path.resolve(__dirname, '..', '..');
 
-test('registry: Antigravity 2.32/2.33 x 14 锚点兼容矩阵与 anchors.json 字节一致性', () => {
+test('registry: Antigravity 2.32/2.33 x 15 锚点兼容矩阵与 anchors.json 字节一致性', () => {
   const res = verifyAnchorsMatrix();
   assert.equal(res.ok, true);
-  assert.equal(res.anchorsCount, 14);
+  assert.equal(res.anchorsCount, 15);
   assert.equal(res.matrix.length, 2);
   for (const row of res.matrix) {
-    assert.equal(row.anchorsMatched, 14);
+    assert.equal(row.anchorsMatched, 15);
   }
 });
 
-test('registry: 13 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.design 与 agy-daddy.pet）与 Antigravity 2.32/2.33 x 14 锚点兼容矩阵', () => {
+test('registry: 13 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.design 与 agy-daddy.pet）与 Antigravity 2.32/2.33 x 15 锚点兼容矩阵', () => {
   const res = verifyRegistryAndMatrix();
   assert.equal(res.ok, true);
   assert.equal(res.pluginsVerified, 13);
@@ -32,10 +32,10 @@ test('registry: 13 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.desi
   assert.equal(designEntry.trustLevel, 'T1');
   const petEntry = res.plugins.find((p) => p.id === 'agy-daddy.pet');
   assert.ok(petEntry, 'agy-daddy.pet must be present in registry');
-  assert.equal(res.anchorsCount, 14);
+  assert.equal(res.anchorsCount, 15);
   assert.equal(res.matrix.length, 2);
   for (const row of res.matrix) {
-    assert.equal(row.anchorsMatched, 14);
+    assert.equal(row.anchorsMatched, 15);
   }
 });
 

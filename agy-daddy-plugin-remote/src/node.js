@@ -38,8 +38,10 @@ const {
   DEFAULT_SESSION_LIMIT,
   isTempBridgeWorkspace,
   sanitizeModelCatalogResult,
+  resolveWorkspaceOrg,
   createSessionOrgStore,
   canonicalKey,
+  matchWorktreeByLongestPrefix,
   sanitizeEntityIcon
 } = require('./session-org-store');
 
@@ -1187,15 +1189,18 @@ function createStandaloneRpcAdapter(rpc) {
     },
     async createSession({ title, workspaceUri } = {}) {
       ensureRpc();
-      const resp = await rpc.call('StartCascade', {
+      const cleanUri = typeof workspaceUri === 'string' && workspaceUri.trim() ? workspaceUri.trim() : '';
+      const params = {
         source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT',
-        metadata: { ...DEFAULT_RPC_METADATA }
-      });
+        metadata: { ...DEFAULT_RPC_METADATA },
+        ...(cleanUri ? { workspaceUris: [cleanUri] } : {})
+      };
+      const resp = await rpc.call('StartCascade', params);
       return {
         ok: true,
         cascadeId: resp?.cascadeId || '',
         ...(title ? { title } : {}),
-        ...(workspaceUri ? { workspaceUri } : {})
+        ...(cleanUri ? { workspaceUri: cleanUri } : {})
       };
     },
     async sendMessage(cascadeId, { text, modelId, mode, images, attachments } = {}) {
@@ -1637,6 +1642,9 @@ async function activate(host) {
   const extraActions = new Map();
   const discoveredSessionRoots = new Set();
   const standaloneRpcAdapter = createStandaloneRpcAdapter(host.rpc);
+  const workspaceOrg = resolveWorkspaceOrg(host);
+  const worktreeDiscovery = host?.workspaceOrg?.worktreeDiscovery
+    || workspaceOrg.createWorktreeDiscoveryService();
 
   let server = null;
   let publishStatus = () => buildStatus();
@@ -1706,7 +1714,10 @@ async function activate(host) {
     const baseRoots = (Array.isArray(config.allowedRoots) && config.allowedRoots.length > 0)
       ? config.allowedRoots
       : Array.from(discoveredSessionRoots);
-    return Array.from(new Set([...baseRoots, ...persistedRoots]));
+    const seeds = Array.from(new Set([...baseRoots, ...persistedRoots]));
+    return worktreeDiscovery
+      ? worktreeDiscovery.getAuthorizedWorktreeRoots(seeds)
+      : seeds;
   }
 
   const brainDir = process.env.AGY_DADDY_BRAIN_DIR
@@ -1720,9 +1731,32 @@ async function activate(host) {
     isBadgeEnabled: () => config.enableAppBadge !== false
   });
 
+  let ptyManagerRef = null;
   const mobileWorkspace = createMobileWorkspaceService({
     getAllowedRoots: getEffectiveAllowedRoots,
-    brainDir
+    brainDir,
+    worktreeDiscovery,
+    hasRunningSessionInPath: async (targetPath) => {
+      if (ptyManagerRef && typeof ptyManagerRef.listSessions === 'function') {
+        const ptys = ptyManagerRef.listSessions({ cwd: targetPath });
+        if (ptys.length > 0) return true;
+      }
+      try {
+        const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT });
+        const sessions = Array.isArray(res?.sessions) ? res.sessions : [];
+        return sessions.some((s) => {
+          const st = String(s?.status || '');
+          const running = Boolean(s?.isRunning || /RUNNING|GENERATING/i.test(st) || s?.notFullyIdle);
+          if (!running) return false;
+          const rawWs = s.workspacePath || s.workspaceUri || '';
+          const normWs = normalizeLocalPath(rawWs);
+          const normTarget = normalizeLocalPath(targetPath);
+          return Boolean(normWs && normTarget && workspaceOrg.isSameOrInside(normWs, normTarget));
+        });
+      } catch {
+        return false;
+      }
+    }
   });
 
   let taskManager = null;
@@ -1730,6 +1764,7 @@ async function activate(host) {
   const ptyManager = createPtyManager({
     allowedRoots: getEffectiveAllowedRoots,
     idleTimeoutMs: isTestMode() ? 60000 : 600000,
+    worktreeDiscovery,
     onTaskEvent: ({ taskId, status }) => {
       if (!taskManager) return;
       void taskManager.listTasks(config.permissionLevel).then((listRes) => {
@@ -1742,11 +1777,14 @@ async function activate(host) {
       }).catch(() => {});
     }
   });
+  ptyManagerRef = ptyManager;
 
   var sessionOrgStore = null;
   let sseBrokerRef = null;
   sessionOrgStore = createSessionOrgStore({
+    host,
     pluginId: 'agy-daddy.remote',
+    worktreeDiscovery,
     getAllowedRoots: getEffectiveAllowedRoots,
     onOrgChanged: (_org, summary) => {
       if (typeof host?.state?.set === 'function') {
@@ -1762,6 +1800,11 @@ async function activate(host) {
         sseBrokerRef.emit('state.patch', { key: 'state:session.org@1', value: summary });
         sseBrokerRef.emit('org.updated', summary);
       }
+    }
+  });
+  const stopWorktreeSub = worktreeDiscovery.onWorktreeUpdated((payload) => {
+    if (sseBrokerRef) {
+      sseBrokerRef.emit('worktree.updated', payload);
     }
   });
 
@@ -1792,7 +1835,7 @@ async function activate(host) {
       }
       let realAncestor = null;
       try {
-        realAncestor = ancestor ? fs.realpathSync(ancestor) : null;
+        realAncestor = ancestor ? workspaceOrg.resolveRealPath(ancestor) : null;
       } catch {}
       if (!realAncestor || isForbiddenSystemRoot(realAncestor)) {
         return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
@@ -1811,7 +1854,7 @@ async function activate(host) {
 
     let realRoot;
     try {
-      realRoot = fs.realpathSync(normalizedRoot);
+      realRoot = workspaceOrg.resolveRealPath(normalizedRoot);
     } catch {
       return { ok: false, statusCode: 404, error: 'ROOT_NOT_FOUND' };
     }
@@ -1966,10 +2009,17 @@ async function activate(host) {
       : DEFAULT_SESSION_LIMIT;
     const includeSubagents = Boolean(opts.includeSubagents);
     const includeArchived = Boolean(opts.includeArchived);
+    const refreshWorktrees = Boolean(opts.refreshWorktrees);
     try {
       const res = await callHarness('listSessions', [{ limit: Math.max(requestedLimit, DEFAULT_SESSION_LIMIT), includeSubagents }]);
       const sessions = Array.isArray(res?.sessions) ? res.sessions : [];
       recordDiscoveredRootsFromSessions(sessions);
+      if (worktreeDiscovery) {
+        await worktreeDiscovery.warmRoots(getEffectiveAllowedRoots(), {
+          refresh: refreshWorktrees,
+          softTimeoutMs: refreshWorktrees ? 1200 : 120
+        }).catch(() => {});
+      }
       const enriched = sessionOrgStore.enrichSessionsAndOrg({
         rpcSessions: sessions,
         allowedRoots: getEffectiveAllowedRoots(),
@@ -1986,15 +2036,23 @@ async function activate(host) {
         sessions: enriched.sessions,
         groups: enriched.groups,
         projects: enriched.projects,
+        collapsedNodes: enriched.collapsedNodes || { projects: {}, worktrees: {} },
         pins: enriched.pins,
         groupOrder: enriched.groupOrder,
         projectOrder: enriched.projectOrder,
         sessionOrder: enriched.sessionOrder,
+        worktreeTombstones: enriched.worktreeTombstones || {},
         archivedCount: enriched.archivedCount,
         ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
         defaultSessionPath: enriched.defaultSessionPath
       };
     } catch {
+      if (worktreeDiscovery) {
+        await worktreeDiscovery.warmRoots(getEffectiveAllowedRoots(), {
+          refresh: refreshWorktrees,
+          softTimeoutMs: refreshWorktrees ? 1200 : 120
+        }).catch(() => {});
+      }
       const enriched = sessionOrgStore.enrichSessionsAndOrg({
         rpcSessions: [],
         allowedRoots: getEffectiveAllowedRoots(),
@@ -2011,10 +2069,12 @@ async function activate(host) {
         sessions: [],
         groups: enriched.groups,
         projects: enriched.projects,
+        collapsedNodes: enriched.collapsedNodes || { projects: {}, worktrees: {} },
         pins: enriched.pins,
         groupOrder: enriched.groupOrder,
         projectOrder: enriched.projectOrder,
         sessionOrder: enriched.sessionOrder,
+        worktreeTombstones: enriched.worktreeTombstones || {},
         archivedCount: enriched.archivedCount,
         ...(includeArchived ? { archivedSessions: enriched.archivedSessions } : {}),
         defaultSessionPath: enriched.defaultSessionPath
@@ -2483,6 +2543,7 @@ async function activate(host) {
     ptyManager,
     listSessions: (opts) => safeListSessions(opts),
     getAllowedRoots: getEffectiveAllowedRoots,
+    worktreeDiscovery,
     getSessionSteps: async (cascadeId) => {
       const detail = await callHarness('getSessionDetail', [cascadeId]);
       return Array.isArray(detail?.events) ? detail.events : [];
@@ -2785,10 +2846,12 @@ async function activate(host) {
         revision: sessionsRes.revision ?? 0,
         groups: sessionsRes.groups || [],
         projects: sessionsRes.projects || [],
+        collapsedNodes: sessionsRes.collapsedNodes || { projects: {}, worktrees: {} },
         pins: sessionsRes.pins || { sessions: [], projects: [], groups: [] },
         groupOrder: sessionsRes.groupOrder || { pinned: [], normal: [] },
         projectOrder: sessionsRes.projectOrder || {},
         sessionOrder: sessionsRes.sessionOrder || {},
+        worktreeTombstones: sessionsRes.worktreeTombstones || {},
         archivedCount: sessionsRes.archivedCount ?? 0,
         defaultSessionPath: sessionsRes.defaultSessionPath,
         vapidPublicKey: webPush.getPublicKey(),
@@ -2808,17 +2871,20 @@ async function activate(host) {
     },
     async getSessionOrg(opts = {}) {
       const includeArchived = Boolean(opts?.includeArchived);
-      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived });
+      const refreshWorktrees = Boolean(opts?.refreshWorktrees);
+      const res = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived, refreshWorktrees });
       return {
         ok: true,
         version: 2,
         revision: res.revision ?? 0,
         groups: res.groups || [],
         projects: res.projects || [],
+        collapsedNodes: res.collapsedNodes || { projects: {}, worktrees: {} },
         pins: res.pins || { sessions: [], projects: [], groups: [] },
         groupOrder: res.groupOrder || { pinned: [], normal: [] },
         projectOrder: res.projectOrder || {},
         sessionOrder: res.sessionOrder || {},
+        worktreeTombstones: res.worktreeTombstones || {},
         archivedCount: res.archivedCount ?? 0,
         ...(includeArchived ? { archivedSessions: res.archivedSessions || {} } : {}),
         defaultSessionPath: res.defaultSessionPath
@@ -2830,8 +2896,57 @@ async function activate(host) {
     async mutateGroup(body) {
       return sessionOrgStore.mutateGroup(body);
     },
+    async setNodeCollapsed(body) {
+      return sessionOrgStore.setNodeCollapsed(body);
+    },
     async reorderOrg(body) {
       return sessionOrgStore.reorderOrg(body);
+    },
+    async assignSessionProject(id, body = {}) {
+      const cleanId = String(id || '').trim();
+      if (!cleanId) return { ok: false, statusCode: 400, error: 'INVALID_CASCADE_ID' };
+      const targetPid = body?.projectId ? String(body.projectId).trim() : null;
+      const targetWtId = typeof body?.worktreeId === 'string' && body.worktreeId.trim() ? body.worktreeId.trim() : null;
+      let existingSession = null;
+      try {
+        const listRes = await safeListSessions({ limit: DEFAULT_SESSION_LIMIT, includeArchived: true });
+        existingSession = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === cleanId) : null;
+      } catch {}
+      return sessionOrgStore.mutateOrgAtomically((org) => {
+        const binding = org.sessionWorktreeBindings?.[cleanId] || null;
+        const sourceWtId = binding?.worktreeId || existingSession?.worktreeId || null;
+        if (targetWtId && sourceWtId && targetWtId !== sourceWtId) {
+          return { abort: true, result: { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' } };
+        }
+        if (targetPid === null) {
+          if (sourceWtId) {
+            return { abort: true, result: { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' } };
+          }
+          org.sessionProjectOverrides[cleanId] = null;
+          return { buildResult: (saved) => ({ ok: true, cascadeId: cleanId, projectId: null, revision: saved.revision }) };
+        }
+        const targetProj = (org.projects || []).find((p) => p.id === targetPid || (Array.isArray(p.aliases) && p.aliases.includes(targetPid)));
+        if (!targetProj) {
+          return { abort: true, result: { ok: false, statusCode: 404, error: 'PROJECT_NOT_FOUND' } };
+        }
+        if (sourceWtId && targetProj.rootPath) {
+          const boundPath = normalizeLocalPath(binding?.workspacePath || existingSession?.worktreePath || existingSession?.workspaceUri || '');
+          const normTarget = normalizeLocalPath(targetProj.rootPath);
+          let sameRepo = Boolean(boundPath && normTarget && canonicalKey(boundPath) === canonicalKey(normTarget));
+          if (!sameRepo && worktreeDiscovery && boundPath && normTarget) {
+            const snapA = worktreeDiscovery.getCachedSnapshot(boundPath);
+            const snapB = worktreeDiscovery.getCachedSnapshot(normTarget);
+            if (snapA?.isGitRepo && snapB?.isGitRepo && canonicalKey(snapA.repoRoot) === canonicalKey(snapB.repoRoot)) {
+              sameRepo = true;
+            }
+          }
+          if (!sameRepo) {
+            return { abort: true, result: { ok: false, statusCode: 409, error: 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN' } };
+          }
+        }
+        org.sessionProjectOverrides[cleanId] = targetProj.id;
+        return { buildResult: (saved) => ({ ok: true, cascadeId: cleanId, projectId: targetProj.id, revision: saved.revision }) };
+      });
     },
     async archiveSession(id, body = {}) {
       if (typeof body.archived !== 'boolean') {
@@ -3023,8 +3138,45 @@ async function activate(host) {
         };
       });
     },
-    async createSession(body) {
-      return await callHarness('createSession', [body]);
+    async createSession(body = {}) {
+      const target = await workspaceOrg.resolveAndValidateSessionTarget(body, {
+        getAllowedRoots: getEffectiveAllowedRoots,
+        worktreeDiscovery,
+        resolveProjectById: (cleanId) => {
+          const org = sessionOrgStore.loadPersistedOrg();
+          return (org.projects || []).find((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId))) || null;
+        },
+        defaultSessionPath: body?.standalone === false ? '' : (sessionOrgStore.loadPersistedOrg().defaultSessionPath || '')
+      });
+      if (!target.ok) {
+        return { ok: false, statusCode: target.statusCode, error: target.error };
+      }
+      const nextBody = {
+        ...(isPlainObject(body) ? body : {}),
+        ...(target.workspaceUri ? { workspaceUri: target.workspaceUri } : {})
+      };
+      const created = await callHarness('createSession', [nextBody]);
+      if (created?.ok !== false && created?.cascadeId) {
+        if (target.worktreeId || target.workspacePath) {
+          sessionOrgStore.bindSessionWorkspace(created.cascadeId, {
+            worktreeId: target.worktreeId,
+            workspacePath: target.workspacePath,
+            workspaceUri: target.workspaceUri
+          });
+        }
+        if (target.projectId) {
+          sessionOrgStore.mutateOrgAtomically((org) => {
+            org.sessionProjectOverrides[created.cascadeId] = target.projectId;
+            return { buildResult: (saved) => saved };
+          });
+        }
+      }
+      return {
+        ...created,
+        ...(target.workspaceUri ? { workspaceUri: target.workspaceUri } : {}),
+        ...(target.worktreeId ? { worktreeId: target.worktreeId } : {}),
+        ...(target.projectId ? { projectId: target.projectId, projectName: target.projectName } : {})
+      };
     },
     async getSessionDetail(id) {
       return await callHarness('getSessionDetail', [id]);
@@ -4003,6 +4155,7 @@ async function activate(host) {
       }
     },
     stopOrgStateSub,
+    stopWorktreeSub,
     () => { sessionOrgStore.dispose(); },
     () => { remoteProvisioner.dispose(); },
     () => { sseBroker.dispose(); },

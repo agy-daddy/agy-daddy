@@ -8,6 +8,9 @@ const crypto = require('node:crypto');
 const url = require('node:url');
 
 const { normalizeInputRoot, isForbiddenSystemRoot } = require('./workspace-service');
+const { resolveWorkspaceOrg } = require('./session-org-bridge');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 const {
   DEFAULT_CONFIRM_TTL_MS,
   LOOPBACK_BIND_HOST,
@@ -383,6 +386,7 @@ class WebServer {
     this.remoteProvisioner = options.remoteProvisioner || null;
     this.workspaceMetaStore = options.workspaceMetaStore || null;
     this.sessionOrgBridge = options.sessionOrgBridge || null;
+    this.worktreeDiscovery = options.worktreeDiscovery || null;
     this.refreshSessionRoots = typeof options.refreshSessionRoots === 'function'
       ? options.refreshSessionRoots
       : null;
@@ -1168,7 +1172,7 @@ class WebServer {
         const nowIso = new Date().toISOString();
         const cleanTitle = typeof body.title === 'string' ? body.title.trim() : '';
 
-        if (!this.workspaceMetaStore) {
+        if (!this.workspaceMetaStore && !body.worktreePath) {
           if (body.projectId) {
             this._requireDep(this.workspaceMetaStore, 'WORKSPACE_META_STORE');
           }
@@ -1185,43 +1189,36 @@ class WebServer {
           return;
         }
 
-        const cleanProjectId = typeof body.projectId === 'string' && body.projectId.trim()
-          ? body.projectId.trim()
-          : null;
-        let resolvedWorkspaceUri = typeof body.workspaceUri === 'string' && body.workspaceUri.trim()
-          ? body.workspaceUri.trim()
-          : undefined;
-        let resolvedProject = null;
+        const defaultPath = this.workspaceMetaStore ? this.workspaceMetaStore.getState().defaultSessionPath : '';
+        const target = await workspaceOrg.resolveAndValidateSessionTarget(body, {
+          getAllowedRoots: this.workspaceService
+            ? () => {
+                // Allow workspaceService.getAllowedRoots or metaStore roots when worktreePath/workspaceUri is checked
+                const roots = [];
+                if (this.workspaceMetaStore) roots.push(...this.workspaceMetaStore.getProjectRootPaths());
+                if (defaultPath) roots.push(defaultPath);
+                if (this.worktreeDiscovery) {
+                  return this.worktreeDiscovery.getAuthorizedWorktreeRoots(roots);
+                }
+                return roots;
+              }
+            : null,
+          worktreeDiscovery: this.worktreeDiscovery,
+          resolveProjectById: this.workspaceMetaStore
+            ? (pid, opts) => this.workspaceMetaStore.getProjectById(pid, opts)
+            : null,
+          defaultSessionPath: defaultPath
+        });
+        if (!target.ok) {
+          sendJson(res, target.statusCode || 400, { ok: false, error: target.error });
+          return;
+        }
 
-        if (cleanProjectId) {
-          resolvedProject = this.workspaceMetaStore.getProjectById(cleanProjectId, {
-            workspaceUri: resolvedWorkspaceUri
-          });
-          if (!resolvedProject && !resolvedWorkspaceUri) {
-            sendJson(res, 404, { ok: false, error: 'PROJECT_NOT_FOUND' });
-            return;
-          }
-          if (!resolvedWorkspaceUri && resolvedProject?.rootPath) {
-            resolvedWorkspaceUri = url.pathToFileURL(resolvedProject.rootPath).href;
-          }
-        } else if (!resolvedWorkspaceUri) {
-          const defaultPath = this.workspaceMetaStore.getState().defaultSessionPath;
-          if (defaultPath && !isForbiddenSystemRoot(defaultPath)) {
-            if (body.standalone !== false) {
-              try {
-                fs.mkdirSync(defaultPath, { recursive: true });
-              } catch {
-                // Keep URL derivation even if dir cannot be created in mocked envs
-              }
-            }
-            try {
-              if (body.standalone || fs.existsSync(defaultPath)) {
-                resolvedWorkspaceUri = url.pathToFileURL(defaultPath).href;
-              }
-            } catch {
-              // Ignore fs check failure
-            }
-          }
+        const cleanProjectId = target.projectId;
+        let resolvedWorkspaceUri = target.workspaceUri || undefined;
+        const resolvedProject = target.resolvedProject;
+        if (!resolvedWorkspaceUri && !cleanProjectId && body.standalone && defaultPath && !isForbiddenSystemRoot(defaultPath)) {
+          resolvedWorkspaceUri = url.pathToFileURL(defaultPath).href;
         }
 
         const result = await adapter.createSession({
@@ -1230,24 +1227,35 @@ class WebServer {
         });
         let assignedProjectId = cleanProjectId;
         if (result?.ok !== false && result?.cascadeId) {
-          this.workspaceMetaStore.recordUserCreatedSession?.(result.cascadeId);
-          this.workspaceMetaStore.markSessionRead?.(result.cascadeId, { lastReadStepCount: 0 });
-          this.onReadStateChanged?.();
-          if (cleanProjectId && resolvedProject) {
-            const assignRes = this.workspaceMetaStore.assignSessionProject(result.cascadeId, cleanProjectId, {
-              workspaceUri: resolvedWorkspaceUri
-            });
-            if (assignRes?.ok !== false && assignRes?.projectId) {
-              assignedProjectId = assignRes.projectId;
+          if (this.workspaceMetaStore) {
+            this.workspaceMetaStore.recordUserCreatedSession?.(result.cascadeId);
+            this.workspaceMetaStore.markSessionRead?.(result.cascadeId, { lastReadStepCount: 0 });
+            this.onReadStateChanged?.();
+            if (target.worktreeId || target.workspacePath) {
+              this.workspaceMetaStore.bindSessionWorkspace?.(result.cascadeId, {
+                worktreeId: target.worktreeId,
+                workspacePath: target.workspacePath,
+                workspaceUri: resolvedWorkspaceUri
+              });
             }
-          } else if (body.standalone === true) {
-            this.workspaceMetaStore.assignSessionProject(result.cascadeId, null);
+            if (cleanProjectId && resolvedProject) {
+              const assignRes = this.workspaceMetaStore.assignSessionProject(result.cascadeId, cleanProjectId, {
+                workspaceUri: resolvedWorkspaceUri,
+                sourceWorktreeId: target.worktreeId || null
+              });
+              if (assignRes?.ok !== false && assignRes?.projectId) {
+                assignedProjectId = assignRes.projectId;
+              }
+            } else if (body.standalone === true && !target.worktreeId) {
+              this.workspaceMetaStore.assignSessionProject(result.cascadeId, null);
+            }
           }
         }
         const finalWorkspaceUri = resolvedWorkspaceUri || result?.workspaceUri || null;
         sendActionResult(res, {
           ...result,
           ...(finalWorkspaceUri ? { workspaceUri: finalWorkspaceUri } : {}),
+          ...(target.worktreeId ? { worktreeId: target.worktreeId } : {}),
           projectId: assignedProjectId || result?.projectId || null,
           projectName: resolvedProject?.name || null,
           createdTime: result?.createdTime || nowIso,
@@ -1263,6 +1271,15 @@ class WebServer {
       if (method === 'GET' && (pathname === '/api/sessions/org' || pathname === '/api/v1/sessions/org')) {
         const includeArchived = urlObj.searchParams.get('includeArchived') === '1'
           || urlObj.searchParams.get('includeArchived') === 'true';
+        const refreshWorktrees = urlObj.searchParams.get('refreshWorktrees') === '1'
+          || urlObj.searchParams.get('refreshWorktrees') === 'true';
+        if (this.worktreeDiscovery) {
+          const seedRoots = this.workspaceMetaStore ? this.workspaceMetaStore.getProjectRootPaths() : [];
+          await this.worktreeDiscovery.warmRoots(seedRoots, {
+            refresh: refreshWorktrees,
+            softTimeoutMs: refreshWorktrees ? 1200 : 120
+          }).catch(() => {});
+        }
         const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
         if (orgProvider && typeof orgProvider.getOrg === 'function') {
           const baseOrg = orgProvider.getOrg({ includeArchived });
@@ -1281,6 +1298,8 @@ class WebServer {
               ...baseOrg,
               groups: listed.groups || baseOrg.groups,
               projects: listed.projects || baseOrg.projects,
+              collapsedNodes: listed.collapsedNodes || baseOrg.collapsedNodes || { projects: {}, worktrees: {} },
+              worktreeTombstones: listed.worktreeTombstones || baseOrg.worktreeTombstones || {},
               defaultSessionPath: listed.defaultSessionPath || baseOrg.defaultSessionPath
             });
             return;
@@ -1289,7 +1308,7 @@ class WebServer {
           return;
         }
         if (typeof this.harnessAdapter?.getSessionOrg === 'function') {
-          sendActionResult(res, await this.harnessAdapter.getSessionOrg({ includeArchived }));
+          sendActionResult(res, await this.harnessAdapter.getSessionOrg({ includeArchived, refreshWorktrees }));
           return;
         }
         sendJson(res, 200, { ok: true, groups: [], projects: [], pins: { sessions: [], projects: [], groups: [] } });
@@ -1355,6 +1374,17 @@ class WebServer {
         }
         const result = orgProvider.reorderOrg(body);
         sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/sessions/org/collapse') {
+        const orgProvider = this.sessionOrgBridge || this.workspaceMetaStore;
+        if (!orgProvider || typeof orgProvider.setNodeCollapsed !== 'function') {
+          sendJson(res, 503, { ok: false, error: 'SESSION_ORG_UNAVAILABLE' });
+          return;
+        }
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        sendActionResult(res, orgProvider.setNodeCollapsed(body));
         return;
       }
 
@@ -1478,11 +1508,27 @@ class WebServer {
         return;
       }
 
-      if (method === 'PUT' && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/project$/))) {
+      if ((method === 'PUT' || method === 'PATCH') && (match = pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/project$/))) {
         const store = this._requireDep(this.workspaceMetaStore, 'WORKSPACE_META_STORE');
         const id = decodeURIComponent(match[1]);
         const body = await readJsonBody(req, this.maxBodyBytes);
-        const result = store.assignSessionProject(id, body.projectId ?? null);
+        let existingSession = null;
+        if (typeof this.harnessAdapter?.listSessions === 'function') {
+          try {
+            const listRes = await this.harnessAdapter.listSessions({ limit: 500 });
+            const rawSession = Array.isArray(listRes?.sessions) ? listRes.sessions.find((s) => s?.cascadeId === id) : null;
+            if (rawSession) {
+              const enriched = store.enrichSessions([rawSession], { includeInternal: true, includeArchived: true });
+              existingSession = enriched[0] || rawSession;
+            }
+          } catch {}
+        }
+        const result = store.assignSessionProject(id, body.projectId ?? null, {
+          worktreeId: body.worktreeId,
+          targetWorktreeId: body.targetWorktreeId,
+          sourceWorktreeId: body.sourceWorktreeId ?? existingSession?.worktreeId ?? null,
+          sourceWorkspacePath: existingSession?.worktreePath || existingSession?.workspacePath || existingSession?.workspaceUri || ''
+        });
         sendActionResult(res, result);
         return;
       }
@@ -1667,7 +1713,8 @@ class WebServer {
       if (method === 'GET' && pathname === '/api/v1/git/worktrees') {
         const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
         const root = urlObj.searchParams.get('root') || '';
-        const result = await ws.listWorktrees({ root });
+        const refresh = urlObj.searchParams.get('refresh') === '1' || urlObj.searchParams.get('refresh') === 'true';
+        const result = await ws.listWorktrees({ root, refresh });
         sendActionResult(res, result);
         return;
       }
@@ -1719,6 +1766,9 @@ class WebServer {
           branch: body.branch,
           createBranch: Boolean(body.createBranch)
         });
+        if (!this.worktreeDiscovery && result?.ok && result.action && result.action !== 'list') {
+          this.broadcast('worktree.updated', result);
+        }
         sendActionResult(res, result);
         return;
       }
@@ -1886,7 +1936,7 @@ class WebServer {
         }
         let realRoot;
         try {
-          realRoot = fs.realpathSync(normalized);
+          realRoot = workspaceOrg.resolveRealPath(normalized);
         } catch {
           sendJson(res, 404, { ok: false, error: 'ROOT_NOT_FOUND' });
           return;
@@ -2183,6 +2233,7 @@ class WebServer {
         const mgr = this._requireDep(this.ptyManager, 'PTY_MANAGER');
         const runtime = await mgr.checkRuntime();
         const writable = channel === 'loopback' || isPermissionAtLeast(this._resolvePermissionLevel(), 'L2');
+        const cwdFilter = urlObj.searchParams.get('cwd') || '';
         sendJson(res, 200, {
           ok: true,
           runtimeAvailable: runtime.available,
@@ -2190,7 +2241,7 @@ class WebServer {
           writable,
           requiredPermission: 'L2',
           maxSessions: mgr.maxSessions,
-          sessions: mgr.listSessions()
+          sessions: mgr.listSessions(cwdFilter ? { cwd: cwdFilter } : {})
         });
         return;
       }
@@ -2645,7 +2696,7 @@ class WebServer {
       return;
     }
 
-    const realRoot = fs.realpathSync(this.staticDir);
+    const realRoot = workspaceOrg.resolveRealPath(this.staticDir);
     let cleanRel = '/';
     try {
       cleanRel = decodeURIComponent(pathname || '/');
@@ -2656,23 +2707,22 @@ class WebServer {
 
     const normalizedRel = cleanRel.replace(/^\/+/, '');
     const candidate = path.resolve(realRoot, normalizedRel || 'index.html');
-    const rootPrefix = realRoot.endsWith(path.sep) ? realRoot : `${realRoot}${path.sep}`;
-    if (candidate !== realRoot && !candidate.startsWith(rootPrefix)) {
+    if (!workspaceOrg.isSameOrInside(candidate, realRoot)) {
       sendJson(res, 403, { ok: false, error: 'FORBIDDEN' });
       return;
     }
 
     let targetFile = null;
     if (fs.existsSync(candidate)) {
-      const realTarget = fs.realpathSync(candidate);
-      if (realTarget === realRoot || realTarget.startsWith(rootPrefix)) {
+      const realTarget = workspaceOrg.resolveRealPath(candidate);
+      if (workspaceOrg.isSameOrInside(realTarget, realRoot)) {
         const st = fs.statSync(realTarget);
         if (st.isFile()) {
           targetFile = realTarget;
         } else if (st.isDirectory()) {
           const dirIndex = path.join(realTarget, 'index.html');
           if (fs.existsSync(dirIndex) && fs.statSync(dirIndex).isFile()) {
-            targetFile = fs.realpathSync(dirIndex);
+            targetFile = workspaceOrg.resolveRealPath(dirIndex);
           }
         }
       }
@@ -2681,11 +2731,11 @@ class WebServer {
     if (!targetFile && !path.extname(normalizedRel)) {
       const spaIndex = path.join(realRoot, 'index.html');
       if (fs.existsSync(spaIndex) && fs.statSync(spaIndex).isFile()) {
-        targetFile = fs.realpathSync(spaIndex);
+        targetFile = workspaceOrg.resolveRealPath(spaIndex);
       }
     }
 
-    if (!targetFile || (!targetFile.startsWith(rootPrefix) && targetFile !== realRoot)) {
+    if (!targetFile || !workspaceOrg.isSameOrInside(targetFile, realRoot)) {
       sendJson(res, 404, { ok: false, error: 'NOT_FOUND' });
       return;
     }

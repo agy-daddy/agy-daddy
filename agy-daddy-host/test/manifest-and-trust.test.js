@@ -70,8 +70,8 @@ test('manifest 校验：合法、非法 ID、主世界缺权限、未知贡献�
   const legacyMig = validateManifest(makeBaseManifest({ contributes: { migrations: [{ from: 'legacy', files: [] }] } }));
   assert.equal(legacyMig.ok, false);
 
-  // 14 个具名锚点含 4 个原生设置弹窗锚点
-  assert.equal(KNOWN_ANCHORS.length, 14);
+  // 15 个具名锚点含 4 个原生设置弹窗锚点
+  assert.equal(KNOWN_ANCHORS.length, 15);
   for (const a of ['settings.dialog', 'settings.nav', 'settings.content', 'settings.openTrigger']) {
     assert.ok(KNOWN_ANCHORS.includes(a), `Missing anchor: ${a}`);
   }

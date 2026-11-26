@@ -63,7 +63,9 @@ const {
   applyMcpPolicy,
   rollbackMcpConfig
 } = require('./customizations');
+const { createWorkspaceOrgRuntime } = require('./workspace-org');
 
+const HOST_ROOT = path.resolve(__dirname, '..', '..');
 const WORKER_SCRIPT = path.resolve(__dirname, 'plugin-worker.js');
 
 const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
@@ -443,6 +445,7 @@ class AgyDaddyDaemon extends EventEmitter {
     });
     this.running = false;
     this.lockAcquired = false;
+    this.workspaceOrg = options.workspaceOrg || createWorkspaceOrgRuntime();
   }
 
   getHostHealthPlugins() {
@@ -784,6 +787,9 @@ class AgyDaddyDaemon extends EventEmitter {
   }
 
   buildInProcessHostApi(pluginId, manifest, trustPolicy, record = null) {
+    if (!process.env.AGY_DADDY_HOST_DIR) {
+      process.env.AGY_DADDY_HOST_DIR = HOST_ROOT;
+    }
     const store = new PluginDataStore(pluginId, this.options);
     const perms = trustPolicy.granted || [];
     const daemon = this;
@@ -795,6 +801,7 @@ class AgyDaddyDaemon extends EventEmitter {
       manifest,
       permissions: [...perms],
       storage: store,
+      workspaceOrg: daemon.workspaceOrg,
       bridge: {
         registerRoute(subPath, handler) {
           if (!perms.includes('bridge:route')) {
@@ -890,7 +897,7 @@ class AgyDaddyDaemon extends EventEmitter {
     const bridgeToken = bridgeTokenOverride || this.bridge.issuePluginToken(pluginId);
     const worker = fork(WORKER_SCRIPT, [], {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env: { ...process.env, AGY_DADDY_WORKER: '1', AGY_DADDY_PLUGIN_ID: pluginId }
+      env: { ...process.env, AGY_DADDY_WORKER: '1', AGY_DADDY_PLUGIN_ID: pluginId, AGY_DADDY_HOST_DIR: HOST_ROOT }
     });
     this._liveWorkers.add(worker);
     worker.once('exit', () => this._liveWorkers.delete(worker));

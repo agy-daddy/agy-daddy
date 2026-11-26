@@ -6,6 +6,9 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { StringDecoder } = require('node:string_decoder');
+const { resolveWorkspaceOrg } = require('./session-org-bridge');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const RING_BUFFER_BYTES = 65536;
 const MAX_INPUT_BYTES = 65536;
@@ -142,11 +145,7 @@ function clampDim(value, fallback, min, max) {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const caseInsensitive = process.platform === 'darwin' || process.platform === 'win32';
-  const a = caseInsensitive ? String(targetPath).toLowerCase() : String(targetPath);
-  const b = caseInsensitive ? String(baseDir).toLowerCase() : String(baseDir);
-  const rel = path.relative(b, a);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 function isForbiddenSystemRoot(p) {
@@ -163,7 +162,7 @@ function resolveAllowedRoots(allowedRoots) {
   for (const r of raw) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      const real = fs.realpathSync(r);
+      const real = workspaceOrg.resolveRealPath(r);
       if (!isForbiddenSystemRoot(real)) {
         realRoots.push(real);
       }
@@ -224,10 +223,12 @@ class SeqRingBuffer64K {
 }
 
 class PtySession extends EventEmitter {
-  constructor({ sessionId, title, cwd, cols = 80, rows = 24, pythonBin = 'python3', spawnFn = spawn } = {}) {
+  constructor({ sessionId, title, cwd, realCwd = null, worktreeId = null, cols = 80, rows = 24, pythonBin = 'python3', spawnFn = spawn } = {}) {
     super();
     this.sessionId = sessionId || crypto.randomUUID();
     this.cwd = cwd;
+    this.realCwd = realCwd || cwd;
+    this.worktreeId = worktreeId || null;
     this.shell = path.basename(process.env.SHELL || '/bin/sh') || 'sh';
     this.title = (typeof title === 'string' && title.trim())
       ? title.trim()
@@ -374,6 +375,8 @@ class PtySession extends EventEmitter {
       sessionId: this.sessionId,
       title: this.title,
       cwd: this.cwd,
+      realCwd: this.realCwd,
+      worktreeId: this.worktreeId,
       shell: this.shell,
       cols: this.cols,
       rows: this.rows,
@@ -438,7 +441,8 @@ function createPtyManager({
   pythonBin = 'python3',
   probeFn = null,
   spawnFn = spawn,
-  onTaskUpdated = null
+  onTaskUpdated = null,
+  worktreeDiscovery = null
 } = {}) {
   const sessions = new Map();
   const recentClosed = [];
@@ -506,7 +510,7 @@ function createPtyManager({
 
     let realCwd;
     try {
-      realCwd = fs.realpathSync(candidate);
+      realCwd = workspaceOrg.resolveRealPath(candidate);
     } catch {
       return { ok: false, statusCode: 403, error: 'PATH_OUTSIDE_WORKSPACE' };
     }
@@ -585,8 +589,40 @@ function createPtyManager({
     }
   }
 
-  function listSessions() {
-    return Array.from(sessions.values()).map((s) => s.toDto());
+  function resolveCwdWorktreeInfo(realCwd) {
+    const knownWts = worktreeDiscovery ? worktreeDiscovery.getAllKnownWorktrees() : [];
+    const matched = knownWts.length > 0
+      ? workspaceOrg.matchWorktreeByLongestPrefix(realCwd, knownWts)
+      : null;
+    return {
+      realCwd,
+      worktreeId: matched ? matched.worktreeId : workspaceOrg.makeWorktreeId(realCwd)
+    };
+  }
+
+  function listSessions(opts = {}) {
+    const all = Array.from(sessions.values()).map((s) => s.toDto());
+    const rawCwd = typeof opts?.cwd === 'string' && opts.cwd.trim() ? opts.cwd.trim() : '';
+    if (!rawCwd) return all;
+    const targetCanon = workspaceOrg.canonicalizePath(rawCwd) || workspaceOrg.normalizeLocalPath(rawCwd);
+    if (!targetCanon) return [];
+    const targetKey = workspaceOrg.canonicalKey(targetCanon);
+    const knownWts = worktreeDiscovery ? [...worktreeDiscovery.getAllKnownWorktrees()] : [];
+    if (!knownWts.some((w) => w.canonicalKey === targetKey || workspaceOrg.canonicalKey(w.path) === targetKey)) {
+      knownWts.push({
+        path: targetCanon,
+        canonicalKey: targetKey,
+        worktreeId: workspaceOrg.makeWorktreeId(targetCanon)
+      });
+    }
+    const targetMatch = workspaceOrg.matchWorktreeByLongestPrefix(targetCanon, knownWts);
+    const targetWtId = targetMatch?.worktreeId || workspaceOrg.makeWorktreeId(targetCanon);
+    return all.filter((dto) => {
+      const sessPath = dto.realCwd || dto.cwd || '';
+      const matched = workspaceOrg.matchWorktreeByLongestPrefix(sessPath, knownWts);
+      if (matched) return matched.worktreeId === targetWtId;
+      return workspaceOrg.isSameOrInside(sessPath, targetCanon);
+    });
   }
 
   function listAllForTasks() {
@@ -621,6 +657,21 @@ function createPtyManager({
     if (cleanId && sessions.has(cleanId)) {
       const existing = sessions.get(cleanId);
       if (existing.alive && !existing.disposed) {
+        if (typeof cwd === 'string' && cwd.trim()) {
+          const cwdCheck = validateCwd(cwd);
+          if (!cwdCheck.ok) return cwdCheck;
+          const targetInfo = resolveCwdWorktreeInfo(cwdCheck.realCwd);
+          if (workspaceOrg.canonicalKey(existing.realCwd) !== workspaceOrg.canonicalKey(cwdCheck.realCwd)
+            || existing.worktreeId !== targetInfo.worktreeId) {
+            return {
+              ok: false,
+              statusCode: 409,
+              error: 'PTY_CWD_MISMATCH',
+              expectedCwd: existing.realCwd,
+              requestedCwd: cwdCheck.realCwd
+            };
+          }
+        }
         if (cols !== undefined && rows !== undefined) {
           existing.resize(cols, rows);
         }
@@ -636,6 +687,7 @@ function createPtyManager({
 
     const cwdCheck = validateCwd(cwd);
     if (!cwdCheck.ok) return cwdCheck;
+    const wtInfo = resolveCwdWorktreeInfo(cwdCheck.realCwd);
 
     sessionCounter += 1;
     const resolvedTitle = (typeof title === 'string' && title.trim())
@@ -646,6 +698,8 @@ function createPtyManager({
       sessionId: cleanId || crypto.randomUUID(),
       title: resolvedTitle,
       cwd: cwdCheck.realCwd,
+      realCwd: wtInfo.realCwd,
+      worktreeId: wtInfo.worktreeId,
       cols,
       rows,
       pythonBin,

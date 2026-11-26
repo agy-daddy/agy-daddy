@@ -4,6 +4,9 @@ const { Buffer } = require('node:buffer');
 const os = require('node:os');
 const path = require('node:path');
 const { isPermissionAtLeast } = require('./tunnel-security');
+const { resolveWorkspaceOrg } = require('./session-org-store');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const LOG_TAIL_MAX_BYTES = 65536;
 const RECENT_TASKS_LIMIT = 24;
@@ -206,6 +209,7 @@ function createTaskManager({
   ptyManager = null,
   listSessions = null,
   getAllowedRoots = null,
+  worktreeDiscovery = null,
   getSessionSteps = null,
   cancelSession = null,
   approveStep = null,
@@ -286,6 +290,23 @@ function createTaskManager({
         id: p.id,
         aliases: p.aliases
       });
+      if (Array.isArray(p.worktrees)) {
+        for (const wt of p.worktrees) {
+          if (wt?.path) {
+            registerKnownProject(wt.path, {
+              name: p.name || wt.displayLabel,
+              id: p.id
+            });
+          }
+        }
+      }
+    }
+    if (worktreeDiscovery) {
+      for (const wt of worktreeDiscovery.getAllKnownWorktrees()) {
+        if (wt?.path) {
+          registerKnownProject(wt.path, { name: wt.displayLabel || '' });
+        }
+      }
     }
     if (typeof getAllowedRoots === 'function') {
       try {

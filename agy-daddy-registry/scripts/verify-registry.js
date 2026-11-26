@@ -56,7 +56,7 @@ function verifyAnchorsMatrix() {
   assert.equal(Buffer.compare(regRaw, hostRaw), 0, 'agy-daddy-registry/anchors.json and agy-daddy-host/data/anchors.json must be byte-identical');
 
   const anchorsReg = JSON.parse(regRaw.toString('utf8'));
-  assert.equal(KNOWN_ANCHORS.length, 14, `Expected 14 KNOWN_ANCHORS, got ${KNOWN_ANCHORS.length}`);
+  assert.equal(KNOWN_ANCHORS.length, 15, `Expected 15 KNOWN_ANCHORS, got ${KNOWN_ANCHORS.length}`);
   for (const anchorName of KNOWN_ANCHORS) {
     assert.ok(anchorsReg.anchors && anchorsReg.anchors[anchorName], `Missing anchor definition in anchors.json: ${anchorName}`);
   }

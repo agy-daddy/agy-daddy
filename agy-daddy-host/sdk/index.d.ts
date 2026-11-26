@@ -12,6 +12,7 @@ export type AnchorName =
   | 'chat.thinkingTrigger'
   | 'chat.actionButtons'
   | 'sidebar.conversationRows'
+  | 'sidebar.root'
   | 'fileViewer.header'
   | 'settings.dialog'
   | 'settings.nav'

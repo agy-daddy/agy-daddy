@@ -6,6 +6,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { StringDecoder } = require('node:string_decoder');
+const { resolveWorkspaceOrg } = require('./session-org-store');
+
+const workspaceOrg = resolveWorkspaceOrg(null);
 
 const WS_MAGIC_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_WS_FRAME_BYTES = 16 * 1024 * 1024;
@@ -470,10 +473,12 @@ class RingBuffer64K {
 }
 
 class PtySession extends EventEmitter {
-  constructor({ sessionId, cwd, cols = 80, rows = 24, pythonBin = 'python3' } = {}) {
+  constructor({ sessionId, cwd, realCwd = null, worktreeId = null, cols = 80, rows = 24, pythonBin = 'python3', spawnFn = spawn } = {}) {
     super();
     this.sessionId = sessionId || crypto.randomUUID();
     this.cwd = cwd;
+    this.realCwd = realCwd || cwd;
+    this.worktreeId = worktreeId || null;
     this.cols = clampDim(cols, 80, 1, 500);
     this.rows = clampDim(rows, 24, 1, 200);
     this.createdAt = Date.now();
@@ -488,7 +493,7 @@ class PtySession extends EventEmitter {
     this.endedAt = null;
     this._killTimer = null;
 
-    this.child = spawn(pythonBin, ['-u', '-c', PYTHON_PTY_SCRIPT], {
+    this.child = spawnFn(pythonBin, ['-u', '-c', PYTHON_PTY_SCRIPT], {
       cwd: this.cwd,
       env: {
         ...process.env,
@@ -671,8 +676,7 @@ function clampDim(value, fallback, min, max) {
 }
 
 function isInsideDir(targetPath, baseDir) {
-  const rel = path.relative(baseDir, targetPath);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return workspaceOrg.isSameOrInside(targetPath, baseDir);
 }
 
 function resolveAllowedRoots(allowedRoots) {
@@ -682,7 +686,7 @@ function resolveAllowedRoots(allowedRoots) {
   for (const r of raw) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      realRoots.push(fs.realpathSync(r));
+      realRoots.push(workspaceOrg.resolveRealPath(r));
     } catch {
       // Ignore non-existent roots
     }
@@ -699,7 +703,9 @@ function createPtyManager({
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   maxSessions = DEFAULT_MAX_SESSIONS,
   pythonBin = 'python3',
-  onTaskEvent = null
+  spawnFn = spawn,
+  onTaskEvent = null,
+  worktreeDiscovery = null
 } = {}) {
   const RECENT_CLOSED_LIMIT = 12;
   const DATA_EVENT_THROTTLE_MS = 1000;
@@ -732,7 +738,7 @@ function createPtyManager({
 
     let realCwd;
     try {
-      realCwd = fs.realpathSync(candidate);
+      realCwd = workspaceOrg.resolveRealPath(candidate);
     } catch {
       return { ok: false, statusCode: 403, error: 'PATH_OUTSIDE_WORKSPACE' };
     }
@@ -841,10 +847,23 @@ function createPtyManager({
     }
   }
 
-  function listSessions() {
-    return Array.from(sessions.values()).map((s) => ({
+  function resolveCwdWorktreeInfo(realCwd) {
+    const knownWts = worktreeDiscovery ? worktreeDiscovery.getAllKnownWorktrees() : [];
+    const matched = knownWts.length > 0
+      ? workspaceOrg.matchWorktreeByLongestPrefix(realCwd, knownWts)
+      : null;
+    return {
+      realCwd,
+      worktreeId: matched ? matched.worktreeId : workspaceOrg.makeWorktreeId(realCwd)
+    };
+  }
+
+  function listSessions(opts = {}) {
+    const all = Array.from(sessions.values()).map((s) => ({
       sessionId: s.sessionId,
       cwd: s.cwd,
+      realCwd: s.realCwd,
+      worktreeId: s.worktreeId,
       cols: s.cols,
       rows: s.rows,
       clients: s.clients.size,
@@ -852,6 +871,27 @@ function createPtyManager({
       lastActivityAt: s.lastActivityAt,
       alive: s.alive
     }));
+    const rawCwd = typeof opts?.cwd === 'string' && opts.cwd.trim() ? opts.cwd.trim() : '';
+    if (!rawCwd) return all;
+    const targetCanon = workspaceOrg.canonicalizePath(rawCwd) || workspaceOrg.normalizeLocalPath(rawCwd);
+    if (!targetCanon) return [];
+    const targetKey = workspaceOrg.canonicalKey(targetCanon);
+    const knownWts = worktreeDiscovery ? [...worktreeDiscovery.getAllKnownWorktrees()] : [];
+    if (!knownWts.some((w) => w.canonicalKey === targetKey || workspaceOrg.canonicalKey(w.path) === targetKey)) {
+      knownWts.push({
+        path: targetCanon,
+        canonicalKey: targetKey,
+        worktreeId: workspaceOrg.makeWorktreeId(targetCanon)
+      });
+    }
+    const targetMatch = workspaceOrg.matchWorktreeByLongestPrefix(targetCanon, knownWts);
+    const targetWtId = targetMatch?.worktreeId || workspaceOrg.makeWorktreeId(targetCanon);
+    return all.filter((dto) => {
+      const sessPath = dto.realCwd || dto.cwd || '';
+      const matched = workspaceOrg.matchWorktreeByLongestPrefix(sessPath, knownWts);
+      if (matched) return matched.worktreeId === targetWtId;
+      return workspaceOrg.isSameOrInside(sessPath, targetCanon);
+    });
   }
 
   function listTaskRecords() {
@@ -859,6 +899,8 @@ function createPtyManager({
       id: s.sessionId,
       sessionId: s.sessionId,
       cwd: s.cwd,
+      realCwd: s.realCwd,
+      worktreeId: s.worktreeId,
       createdAt: s.createdAt,
       endedAt: null,
       exitCode: null,
@@ -880,6 +922,8 @@ function createPtyManager({
         id: active.sessionId,
         sessionId: active.sessionId,
         cwd: active.cwd,
+        realCwd: active.realCwd,
+        worktreeId: active.worktreeId,
         createdAt: active.createdAt,
         endedAt: null,
         exitCode: null,
@@ -902,6 +946,21 @@ function createPtyManager({
     if (cleanId && sessions.has(cleanId)) {
       const existing = sessions.get(cleanId);
       if (existing.alive && !existing.disposed) {
+        if (typeof cwd === 'string' && cwd.trim()) {
+          const cwdCheck = validateCwd(cwd);
+          if (!cwdCheck.ok) return cwdCheck;
+          const targetInfo = resolveCwdWorktreeInfo(cwdCheck.realCwd);
+          if (workspaceOrg.canonicalKey(existing.realCwd) !== workspaceOrg.canonicalKey(cwdCheck.realCwd)
+            || existing.worktreeId !== targetInfo.worktreeId) {
+            return {
+              ok: false,
+              statusCode: 409,
+              error: 'PTY_CWD_MISMATCH',
+              expectedCwd: existing.realCwd,
+              requestedCwd: cwdCheck.realCwd
+            };
+          }
+        }
         if (cols !== undefined && rows !== undefined) {
           existing.resize(cols, rows);
         }
@@ -917,13 +976,17 @@ function createPtyManager({
 
     const cwdCheck = validateCwd(cwd);
     if (!cwdCheck.ok) return cwdCheck;
+    const wtInfo = resolveCwdWorktreeInfo(cwdCheck.realCwd);
 
     const session = new PtySession({
       sessionId: cleanId || crypto.randomUUID(),
       cwd: cwdCheck.realCwd,
+      realCwd: wtInfo.realCwd,
+      worktreeId: wtInfo.worktreeId,
       cols,
       rows,
-      pythonBin
+      pythonBin,
+      spawnFn
     });
 
     sessions.set(session.sessionId, session);
@@ -981,7 +1044,9 @@ function createPtyManager({
     if (!res.ok) {
       const statusText = res.statusCode === 403
         ? 'Forbidden'
-        : (res.statusCode === 429 ? 'Too Many Requests' : 'Bad Request');
+        : (res.statusCode === 409
+          ? 'Conflict'
+          : (res.statusCode === 429 ? 'Too Many Requests' : 'Bad Request'));
       socket.write(`HTTP/1.1 ${res.statusCode} ${statusText}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
       return res;

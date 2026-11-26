@@ -369,7 +369,7 @@ test('daemon health merges live DOM and authenticated renderer reports and feeds
   let snapshot = await (await post('/host/health')).json();
   assert.equal(snapshot.injection.probeSource, 'runtime');
   assert.equal(snapshot.injection.injectedCount, 1);
-  assert.equal(snapshot.injection.anchors.total, 14);
+  assert.equal(snapshot.injection.anchors.total, 15);
   assert.equal(snapshot.injection.anchors.healthyCount, 1);
   assert.equal(snapshot.fault.active, false, 'closed native settings are expected to be missing');
   assert.equal(snapshot.plugins[0].rendererMounted, true);
@@ -420,7 +420,7 @@ test('daemon health merges live DOM and authenticated renderer reports and feeds
   assert.equal((await fetch(base + '/diagnostics')).status, 404);
 
   const legacy = await daemon.bridge.invokeHostRoute('/host/health', {}, { via: 'host.control' });
-  assert.equal(legacy.anchors.count, 14);
+  assert.equal(legacy.anchors.count, 15);
   assert.ok(Array.isArray(legacy.plugins.items));
   assert.equal(legacy.hostHealth.plugins[0].id, id);
 
@@ -437,5 +437,5 @@ test('daemon health merges live DOM and authenticated renderer reports and feeds
   assert.deepEqual(Object.keys(offline), Object.keys(live));
   assert.equal(offline.daemon.pid, null);
   assert.equal(offline.injection.probeSource, 'static');
-  assert.equal(offline.injection.anchors.total, 14);
+  assert.equal(offline.injection.anchors.total, 15);
 });

@@ -9,7 +9,7 @@ const { createWorkspaceService, normalizeInputRoot, isForbiddenSystemRoot } = re
 const { createWorkspaceBrowser } = require('./workspace-browser');
 const { createRemoteProjectProvisioner } = require('./remote-project-provisioner');
 const { createWorkspaceMetaStore, normalizeLocalPath } = require('./workspace-meta-store');
-const { createSessionOrgBridge, buildOrgBusSummary } = require('./session-org-bridge');
+const { createSessionOrgBridge, buildOrgBusSummary, resolveWorkspaceOrg } = require('./session-org-bridge');
 const { createHostProxy } = require('./host-proxy');
 const { createPtyManager } = require('./pty-manager');
 const { createSideChatService } = require('./side-chat-service');
@@ -193,8 +193,13 @@ async function activate(host) {
   let lastUiSettingsJson = JSON.stringify(readUiSettingsSnapshot(settings));
 
   let runtime = null;
+  const workspaceOrg = resolveWorkspaceOrg(host);
+  const worktreeDiscovery = host?.workspaceOrg?.worktreeDiscovery
+    || workspaceOrg.createWorktreeDiscoveryService();
   const sessionOrgBridge = createSessionOrgBridge({
+    host,
     pluginId: 'agy-daddy.web',
+    worktreeDiscovery,
     onOrgChanged: (_org, summary) => {
       if (typeof host?.state?.set === 'function') {
         host.state.set('state:session.org@1', summary);
@@ -204,6 +209,7 @@ async function activate(host) {
           key: 'state:session.org@1',
           value: summary
         });
+        runtime.webServer.broadcast('org.updated', summary);
       }
     },
     onExternalOrgChanged: (_org, summary) => {
@@ -212,12 +218,14 @@ async function activate(host) {
           key: 'state:session.org@1',
           value: summary
         });
+        runtime.webServer.broadcast('org.updated', summary);
       }
     }
   });
   const workspaceMetaStore = createWorkspaceMetaStore({
     storage: host.storage,
-    sessionOrgBridge
+    sessionOrgBridge,
+    worktreeDiscovery
   });
   let discoveredSessionRoots = [];
   let discoveredSessionRootsUpdatedAt = 0;
@@ -268,12 +276,15 @@ async function activate(host) {
 
   function getAllowedRoots() {
     const defaultSessionPath = workspaceMetaStore.getState().defaultSessionPath;
-    return deduplicateSafeRoots([
+    const seeds = deduplicateSafeRoots([
       ...getConfiguredAllowedRoots(),
       ...workspaceMetaStore.getProjectRootPaths(),
       defaultSessionPath,
       ...discoveredSessionRoots
     ]);
+    return worktreeDiscovery
+      ? worktreeDiscovery.getAuthorizedWorktreeRoots(seeds)
+      : seeds;
   }
 
   const brainDir = typeof settings.brainDir === 'string' && settings.brainDir.trim()
@@ -282,7 +293,32 @@ async function activate(host) {
   const staticDir = path.resolve(__dirname, '..', 'dist', 'web');
 
   const harnessAdapter = createHarnessAdapter({ rpc: host.rpc });
-  const workspaceService = createWorkspaceService({ getAllowedRoots, brainDir });
+  const workspaceService = createWorkspaceService({
+    getAllowedRoots,
+    brainDir,
+    worktreeDiscovery,
+    hasRunningSessionInPath: async (targetPath) => {
+      if (ptyManager && typeof ptyManager.listSessions === 'function') {
+        const ptys = ptyManager.listSessions({ cwd: targetPath });
+        if (ptys.length > 0) return true;
+      }
+      try {
+        const listRes = await harnessAdapter.listSessions({ limit: 500 });
+        const sessions = Array.isArray(listRes?.sessions) ? listRes.sessions : [];
+        return sessions.some((s) => {
+          const st = String(s?.status || '');
+          const running = Boolean(s?.isRunning || /RUNNING|GENERATING/i.test(st) || s?.notFullyIdle);
+          if (!running) return false;
+          const rawWs = s.workspacePath || s.workspaceUri || '';
+          const normWs = workspaceOrg.normalizeLocalPath(rawWs);
+          const normTarget = workspaceOrg.normalizeLocalPath(targetPath);
+          return Boolean(normWs && normTarget && workspaceOrg.isSameOrInside(normWs, normTarget));
+        });
+      } catch {
+        return false;
+      }
+    }
+  });
   const workspaceBrowser = createWorkspaceBrowser({
     getDefaultSessionPath: () => workspaceMetaStore.getState().defaultSessionPath,
     getProjectRootPaths: () => workspaceMetaStore.getProjectRootPaths()
@@ -752,6 +788,7 @@ async function activate(host) {
   ptyManager = createPtyManager({
     allowedRoots: getAllowedRoots,
     defaultCwd: () => workspaceMetaStore.getState().defaultSessionPath || getAllowedRoots()[0] || '',
+    worktreeDiscovery,
     onTaskUpdated: (ev) => {
       runtime.webServer?.broadcast('task.updated', ev);
     }
@@ -764,11 +801,15 @@ async function activate(host) {
     rpc: host.rpc,
     harnessAdapter,
     ptyManager,
-    workspaceMetaStore
+    workspaceMetaStore,
+    worktreeDiscovery
   });
   runtime.ptyManager = ptyManager;
   runtime.sideChatService = sideChatService;
   runtime.taskManager = taskManager;
+  runtime.disposeWorktreeSub = worktreeDiscovery.onWorktreeUpdated((payload) => {
+    runtime.webServer?.broadcast('worktree.updated', payload);
+  });
 
   runtime.webServer = createWebServer({
     host: resolveBindHost({ channels: runtimeAccess.channels, mode: runtimeAccess.bindHostMode }),
@@ -799,6 +840,7 @@ async function activate(host) {
     remoteProvisioner,
     workspaceMetaStore,
     sessionOrgBridge,
+    worktreeDiscovery,
     ptyManager,
     sideChatService,
     taskManager,
@@ -962,6 +1004,13 @@ async function deactivate() {
     }
   } catch {}
   runtime.disposeService = null;
+
+  try {
+    if (typeof runtime.disposeWorktreeSub === 'function') {
+      runtime.disposeWorktreeSub();
+    }
+  } catch {}
+  runtime.disposeWorktreeSub = null;
 
   try {
     if (runtime.ptyManager) {

@@ -109,6 +109,7 @@ interface DeleteModalState {
   session: SessionSummary;
   step: 'confirm' | 'fallback_local';
   busy: boolean;
+  reasonCode?: string;
   errorMsg?: string;
 }
 
@@ -773,7 +774,15 @@ export function LeftDrawer({
     }
     if (outcome.canFallbackLocalHide && mode === 'auto') {
       setDeleteModal((prev) =>
-        prev ? { ...prev, step: 'fallback_local', busy: false, errorMsg: outcome.message } : null
+        prev
+          ? {
+              ...prev,
+              step: 'fallback_local',
+              busy: false,
+              reasonCode: outcome.reasonCode,
+              errorMsg: outcome.message
+            }
+          : null
       );
       return;
     }
@@ -1041,7 +1050,7 @@ export function LeftDrawer({
           <button
             type="button"
             className={styles.actionBtn}
-            aria-label={t('left.newInProject')}
+            aria-label={t('left.newInProject', { name: p.name })}
             disabled={permissionLevel === 'L0'}
             onClick={() => {
               setNewWorkspaceUri(p.uri || p.path || '');
@@ -2071,12 +2080,16 @@ export function LeftDrawer({
             </strong>
             <div style={{ fontSize: 12.5, color: 'var(--ag-secondary)', lineHeight: 1.45 }}>
               {deleteModal.step === 'fallback_local'
-                ? t('left.deleteModalFallbackDesc')
+                ? t('left.deleteModalFallbackDesc', {
+                    reason:
+                      deleteModal.errorMsg || deleteModal.reasonCode || 'HOST_DELETE_UNAVAILABLE',
+                    title: deleteModal.session.title
+                  })
                 : t('left.deleteModalDesc', { title: deleteModal.session.title })}
             </div>
             {deleteModal.step === 'confirm' && deleteModal.session.projectName && (
               <div style={{ fontSize: 12, color: 'var(--ag-muted)' }}>
-                {t('left.deleteModalProject', { project: deleteModal.session.projectName })}
+                {t('left.deleteModalProject', { name: deleteModal.session.projectName })}
               </div>
             )}
             <div className={styles.modalActions}>
@@ -2144,14 +2157,14 @@ export function LeftDrawer({
                   className={`ag-pill-btn ${soundAlert ? 'ag-pill-btn-primary' : ''}`}
                   onClick={onToggleSound}
                 >
-                  {t('left.soundShort')}: {soundAlert ? t('left.on') : t('left.off')}
+                  {t('left.soundShort', { state: soundAlert ? t('left.on') : t('left.off') })}
                 </button>
                 <button
                   type="button"
                   className={`ag-pill-btn ${vibrateAlert ? 'ag-pill-btn-primary' : ''}`}
                   onClick={onToggleVibrate}
                 >
-                  {t('left.vibrateShort')}: {vibrateAlert ? t('left.on') : t('left.off')}
+                  {t('left.vibrateShort', { state: vibrateAlert ? t('left.on') : t('left.off') })}
                 </button>
               </div>
             </div>

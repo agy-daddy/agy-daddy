@@ -681,7 +681,7 @@ export function NewProjectSheet({
 
             {gh && !gh.gitInstalled ? (
               <div className={styles.warnCard}>
-                <div>{t('newProject.ghGitMissing')}</div>
+                <div>{t('newProject.ghGitMissing', { hint: gh.installHints?.git || 'git' })}</div>
                 {gh.installHints?.git && <code>{gh.installHints.git}</code>}
               </div>
             ) : (
@@ -707,7 +707,11 @@ export function NewProjectSheet({
 
                 {ghMode === 'gh_create_and_clone' && gh && !gh.ghAuthenticated && (
                   <div className={styles.warnCard}>
-                    <div>{t('newProject.ghNotAuthed')}</div>
+                    <div>
+                      {t('newProject.ghNotAuthed', {
+                        hint: gh.installHints?.ghLogin || 'gh auth login'
+                      })}
+                    </div>
                     {gh.installHints?.ghLogin && <code>{gh.installHints.ghLogin}</code>}
                   </div>
                 )}
@@ -980,7 +984,11 @@ export function NewProjectSheet({
 
             {gd?.tier === 'cli' && (
               <div className={styles.card}>
-                <strong>{t('newProject.gdCliTierTitle')}</strong>
+                <strong>
+                  {t('newProject.gdCliTierTitle', {
+                    tool: gd.rclone?.installed ? 'rclone' : 'gdrive'
+                  })}
+                </strong>
                 <div className={styles.hint}>{t('newProject.gdCliSyncNote')}</div>
                 <div className={`${styles.segmented} ${styles.segmentedTwo}`}>
                   <button

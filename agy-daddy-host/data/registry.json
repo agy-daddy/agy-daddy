@@ -125,6 +125,18 @@
       "subpath": "agy-daddy-plugin-web",
       "npmPackage": "@agy-daddy/plugin-web",
       "description": "18767 本地安全 PC Web 桌面工作台：完整对话流、工作区文件树、Git Diff、Artifacts 与底座管理台"
+    },
+    {
+      "shortName": "design",
+      "id": "hubo1989.design",
+      "name": "Agy Design Studio",
+      "layer": 4,
+      "trustLevel": "T1",
+      "defaultEnabled": false,
+      "external": true,
+      "repo": "https://github.com/hubo1989/agy-plugin-design.git",
+      "ref": "v0.1.0",
+      "description": "本地优先的 Antigravity 可视化设计工作台：统一管理幻灯片、无限画布、设计系统、数据看板与动效五类作品，与 <workspace>/.design/ 双向互通"
     }
   ]
 }

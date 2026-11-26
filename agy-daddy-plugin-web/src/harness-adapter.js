@@ -8,6 +8,10 @@ const DEFAULT_METADATA = Object.freeze({
 });
 
 const TERMINAL_STEP_STATUSES = new Set(['done', 'error', 'canceled']);
+const DEFAULT_DETAIL_TIMEOUT_MS = 10000;
+const DEFAULT_POLL_TIMEOUT_MS = 6000;
+const DEFAULT_DETAIL_CACHE_TTL_MS = 1500;
+const DEFAULT_DETAIL_CACHE_MAX_ENTRIES = 32;
 
 const STEP_STATUS_MAP = Object.freeze({
   CORTEX_STEP_STATUS_DONE: 'done',
@@ -35,6 +39,63 @@ function createAdapterError(message, statusCode, code) {
   err.statusCode = statusCode;
   err.code = code;
   return err;
+}
+
+function withTimeout(promise, timeoutMs, buildError) {
+  const limit = Number(timeoutMs);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return Promise.resolve(promise);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(typeof buildError === 'function' ? buildError() : createAdapterError('Operation timed out', 504, 'ETIMEDOUT'));
+    }, limit);
+    Promise.resolve(promise).then(
+      (val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function isTimeoutLikeError(err) {
+  if (!err) return false;
+  if (err.code === 'ETIMEDOUT' || err.code === 'SESSION_DETAIL_TIMEOUT' || err.statusCode === 504) {
+    return true;
+  }
+  return /timeout|timed[\s_]*out/i.test(String(err.message || ''));
+}
+
+function isRpcUnavailableError(err) {
+  if (!err) return false;
+  if (err.code === 'RPC_UNAVAILABLE' || err.statusCode === 503) return true;
+  return /RPC_UNAVAILABLE|ECONNREFUSED|ECONNRESET|EPIPE|ENOTFOUND|socket hang up|not connected|Unable to resolve LanguageServer/i.test(
+    String(err.message || '')
+  );
+}
+
+function isCascadeNotFoundError(err) {
+  if (!err) return false;
+  if (err.statusCode === 404 || err.code === 'SESSION_NOT_FOUND') return true;
+  return /not[\s_]*found|no[\s_]*trajectory|unknown[\s_]*cascade/i.test(String(err.message || ''));
+}
+
+function isNonRetryableClientOrAuthError(err) {
+  if (!err) return false;
+  if ([400, 401, 403, 404].includes(err.statusCode)) return true;
+  return /RPC_METHOD_BLOCKED|RPC_PERMISSION_DENIED|INVALID_CASCADE_ID/i.test(String(err.code || err.message || ''));
 }
 
 function extractItemsText(items) {
@@ -1366,20 +1427,88 @@ function buildAskQuestionResponses(step, answers, payload = {}) {
   return responses;
 }
 
-function createHarnessAdapter({ rpc } = {}) {
+function createHarnessAdapter({
+  rpc,
+  detailTimeoutMs = DEFAULT_DETAIL_TIMEOUT_MS,
+  pollTimeoutMs = DEFAULT_POLL_TIMEOUT_MS,
+  detailCacheTtlMs = DEFAULT_DETAIL_CACHE_TTL_MS
+} = {}) {
   if (!rpc || typeof rpc.call !== 'function') {
     throw new TypeError('createHarnessAdapter requires an rpc transport with .call(method, params)');
   }
 
+  const resolvedDetailTimeoutMs = Number.isFinite(Number(detailTimeoutMs)) && Number(detailTimeoutMs) > 0
+    ? Number(detailTimeoutMs)
+    : DEFAULT_DETAIL_TIMEOUT_MS;
+  const resolvedPollTimeoutMs = Number.isFinite(Number(pollTimeoutMs)) && Number(pollTimeoutMs) > 0
+    ? Number(pollTimeoutMs)
+    : DEFAULT_POLL_TIMEOUT_MS;
+  const resolvedDetailCacheTtlMs = Number.isFinite(Number(detailCacheTtlMs)) && Number(detailCacheTtlMs) >= 0
+    ? Number(detailCacheTtlMs)
+    : DEFAULT_DETAIL_CACHE_TTL_MS;
+
   // Per-session cursor: { stepOffset: number, fingerprints: Map<number, string> }
   const sessionCursors = new Map();
   const createdCascadeIds = new Set();
+  const detailCache = new Map(); // cascadeId -> { fetchedAt, detail, rawSteps }
+  const inflightDetails = new Map(); // cascadeId -> Promise
   const modelCatalogCache = {
     variantMap: new Map(),
     idToFamily: new Map(),
     orchestratorIds: new Set(),
     orchestratorBackingMap: new Map()
   };
+
+  function getCachedDetailEntry(cascadeId) {
+    if (resolvedDetailCacheTtlMs <= 0) return null;
+    const entry = detailCache.get(cascadeId);
+    if (!entry) return null;
+    if ((Date.now() - entry.fetchedAt) >= resolvedDetailCacheTtlMs) {
+      detailCache.delete(cascadeId);
+      return null;
+    }
+    return entry;
+  }
+
+  function setCachedDetailEntry(cascadeId, detail, rawSteps) {
+    if (resolvedDetailCacheTtlMs <= 0) return;
+    detailCache.delete(cascadeId);
+    detailCache.set(cascadeId, {
+      fetchedAt: Date.now(),
+      detail,
+      rawSteps: Array.isArray(rawSteps) ? rawSteps : []
+    });
+    while (detailCache.size > DEFAULT_DETAIL_CACHE_MAX_ENTRIES) {
+      const oldestKey = detailCache.keys().next().value;
+      if (!oldestKey) break;
+      detailCache.delete(oldestKey);
+    }
+  }
+
+  function invalidateDetailCache(cascadeId = null) {
+    if (cascadeId === undefined || cascadeId === null) {
+      detailCache.clear();
+      return;
+    }
+    detailCache.delete(String(cascadeId).trim());
+  }
+
+  function seedCursorFromEvents(cascadeId, events) {
+    const cursor = getOrCreateCursor(cascadeId);
+    cursor.fingerprints.clear();
+    let contiguousTerminal = 0;
+    for (const ev of events) {
+      if (ev.seq !== contiguousTerminal) break;
+      if (!TERMINAL_STEP_STATUSES.has(ev.status)) break;
+      contiguousTerminal++;
+    }
+    cursor.stepOffset = contiguousTerminal;
+    for (const ev of events) {
+      if (ev.seq >= contiguousTerminal) {
+        cursor.fingerprints.set(ev.seq, computeEventFingerprint(ev));
+      }
+    }
+  }
 
   function updateModelCatalogCache(catalog) {
     modelCatalogCache.variantMap.clear();
@@ -1437,6 +1566,61 @@ function createHarnessAdapter({ rpc } = {}) {
     return cascadeId.trim();
   }
 
+  function buildSessionDetailPayload(id, resp, overrideRawSteps = null, overrideStatus = null, overrideNumTotal = null) {
+    const trajectory = isPlainObject(resp?.trajectory) ? resp.trajectory : (isPlainObject(resp) ? resp : {});
+    const rawSteps = Array.isArray(overrideRawSteps)
+      ? overrideRawSteps
+      : (Array.isArray(trajectory.steps)
+          ? trajectory.steps
+          : (Array.isArray(resp?.steps) ? resp.steps : []));
+    const events = rawSteps.map((step, idx) => {
+      const seq = Number.isInteger(step?.stepIndex) ? step.stepIndex : idx;
+      return normalizeStepToSessionEvent(step, seq);
+    });
+    const hasNonTerminal = events.some((ev) => !TERMINAL_STEP_STATUSES.has(ev.status));
+    const status = (typeof resp?.status === 'string' && resp.status.trim())
+      || (typeof trajectory.status === 'string' && trajectory.status.trim())
+      || (typeof overrideStatus === 'string' && overrideStatus.trim())
+      || (hasNonTerminal ? 'CASCADE_RUN_STATUS_RUNNING' : 'CASCADE_RUN_STATUS_IDLE');
+    const rawNumTotal = overrideNumTotal !== null && overrideNumTotal !== undefined
+      ? overrideNumTotal
+      : resp?.numTotalSteps;
+    const hasNumTotal = rawNumTotal !== null
+      && rawNumTotal !== undefined
+      && Number.isFinite(Number(rawNumTotal));
+    const session = {
+      cascadeId: trajectory.cascadeId || id,
+      trajectoryId: trajectory.trajectoryId || null,
+      trajectoryType: trajectory.trajectoryType || null,
+      status,
+      numTotalSteps: hasNumTotal ? Number(rawNumTotal) : rawSteps.length,
+      source: trajectory.source || null,
+      metadata: trajectory.metadata || null,
+      generatorMetadata: Array.isArray(trajectory.generatorMetadata) ? trajectory.generatorMetadata : []
+    };
+    return {
+      detail: { ok: true, session, events },
+      rawSteps
+    };
+  }
+
+  function buildEmptyCreatedSessionDetail(id) {
+    return {
+      ok: true,
+      session: {
+        cascadeId: id,
+        trajectoryId: null,
+        trajectoryType: null,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        numTotalSteps: 0,
+        source: null,
+        metadata: null,
+        generatorMetadata: []
+      },
+      events: []
+    };
+  }
+
   return {
     async listSessions({ limit = 50 } = {}) {
       const resp = await rpc.call('GetAllCascadeTrajectories', {});
@@ -1456,55 +1640,163 @@ function createHarnessAdapter({ rpc } = {}) {
       return { ok: true, sessions: bounded };
     },
 
+    getCachedSessionSteps(cascadeId) {
+      if (typeof cascadeId !== 'string' || !cascadeId.trim()) return null;
+      const entry = getCachedDetailEntry(cascadeId.trim());
+      return entry ? [...entry.rawSteps] : null;
+    },
+
+    hasActiveDetailRequest() {
+      return inflightDetails.size > 0;
+    },
+
     async getSessionDetail(cascadeId) {
       const id = assertCascadeId(cascadeId);
-      let resp = null;
-      try {
-        resp = await rpc.call('GetCascadeTrajectory', { cascadeId: id });
-      } catch (err) {
-        const msg = String(err?.message || '');
-        const isNotFound = err?.statusCode === 404
-          || /not[\s_]*found|no[\s_]*trajectory|unknown[\s_]*cascade/i.test(msg);
-        if (isNotFound && createdCascadeIds.has(id)) {
-          return {
-            ok: true,
-            session: {
-              cascadeId: id,
-              trajectoryId: null,
-              trajectoryType: null,
-              status: 'CASCADE_RUN_STATUS_IDLE',
-              numTotalSteps: 0,
-              source: null,
-              metadata: null,
-              generatorMetadata: []
-            },
-            events: []
-          };
-        }
-        throw err;
+      const cached = getCachedDetailEntry(id);
+      if (cached) {
+        return cached.detail;
       }
-      const trajectory = isPlainObject(resp?.trajectory) ? resp.trajectory : (isPlainObject(resp) ? resp : {});
-      const rawSteps = Array.isArray(trajectory.steps)
-        ? trajectory.steps
-        : (Array.isArray(resp?.steps) ? resp.steps : []);
-      const events = rawSteps.map((step, idx) => normalizeStepToSessionEvent(step, idx));
-      const status = (typeof resp?.status === 'string' && resp.status.trim())
-        || (typeof trajectory.status === 'string' && trajectory.status.trim())
-        || 'CASCADE_RUN_STATUS_IDLE';
-      const hasNumTotal = resp?.numTotalSteps !== null
-        && resp?.numTotalSteps !== undefined
-        && Number.isFinite(Number(resp.numTotalSteps));
-      const session = {
-        cascadeId: trajectory.cascadeId || id,
-        trajectoryId: trajectory.trajectoryId || null,
-        trajectoryType: trajectory.trajectoryType || null,
-        status,
-        numTotalSteps: hasNumTotal ? Number(resp.numTotalSteps) : rawSteps.length,
-        source: trajectory.source || null,
-        metadata: trajectory.metadata || null,
-        generatorMetadata: Array.isArray(trajectory.generatorMetadata) ? trajectory.generatorMetadata : []
-      };
-      return { ok: true, session, events };
+      const existingInflight = inflightDetails.get(id);
+      if (existingInflight) {
+        return await existingInflight;
+      }
+
+      const fetchTask = (async () => {
+        const deadlineAt = Date.now() + resolvedDetailTimeoutMs;
+        const primaryBudgetMs = Math.max(15, Math.floor(resolvedDetailTimeoutMs * 0.65));
+        let resp = null;
+        let primaryErr = null;
+
+        try {
+          resp = await withTimeout(
+            rpc.call('GetCascadeTrajectory', { cascadeId: id }, {
+              timeoutMs: primaryBudgetMs,
+              retryOnTimeout: false
+            }),
+            primaryBudgetMs,
+            () => createAdapterError('GetCascadeTrajectory timed out', 504, 'SESSION_DETAIL_TIMEOUT')
+          );
+        } catch (err) {
+          primaryErr = err;
+        }
+
+        if (primaryErr) {
+          if (isCascadeNotFoundError(primaryErr)) {
+            if (createdCascadeIds.has(id)) {
+              const emptyDetail = buildEmptyCreatedSessionDetail(id);
+              seedCursorFromEvents(id, emptyDetail.events);
+              setCachedDetailEntry(id, emptyDetail, []);
+              return emptyDetail;
+            }
+            throw createAdapterError(primaryErr?.message || 'Session not found', 404, 'SESSION_NOT_FOUND');
+          }
+          if (isNonRetryableClientOrAuthError(primaryErr)) {
+            throw primaryErr;
+          }
+
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs <= 10) {
+            if (isTimeoutLikeError(primaryErr)) {
+              throw createAdapterError('Session timeline request timed out', 504, 'SESSION_DETAIL_TIMEOUT');
+            }
+            if (isRpcUnavailableError(primaryErr)) {
+              throw createAdapterError(primaryErr?.message || 'LanguageServer RPC unavailable', 503, 'RPC_UNAVAILABLE');
+            }
+            throw createAdapterError(
+              primaryErr?.message || 'Failed to load session timeline',
+              Number.isInteger(primaryErr?.statusCode) ? primaryErr.statusCode : 502,
+              primaryErr?.code || 'SESSION_DETAIL_FAILED'
+            );
+          }
+
+          try {
+            const stepResp = await withTimeout(
+              rpc.call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: 0 }, {
+                timeoutMs: remainingMs,
+                retryOnTimeout: false
+              }),
+              remainingMs,
+              () => createAdapterError('Session timeline request timed out', 504, 'SESSION_DETAIL_TIMEOUT')
+            );
+            const fallbackSteps = Array.isArray(stepResp?.steps)
+              ? stepResp.steps
+              : (Array.isArray(stepResp?.trajectory?.steps) ? stepResp.trajectory.steps : []);
+            const built = buildSessionDetailPayload(
+              id,
+              stepResp,
+              fallbackSteps,
+              stepResp?.status || stepResp?.trajectory?.status,
+              stepResp?.numTotalSteps
+            );
+            seedCursorFromEvents(id, built.detail.events);
+            setCachedDetailEntry(id, built.detail, built.rawSteps);
+            return built.detail;
+          } catch (fallbackErr) {
+            if (isCascadeNotFoundError(fallbackErr) && createdCascadeIds.has(id)) {
+              const emptyDetail = buildEmptyCreatedSessionDetail(id);
+              seedCursorFromEvents(id, emptyDetail.events);
+              setCachedDetailEntry(id, emptyDetail, []);
+              return emptyDetail;
+            }
+            if (isTimeoutLikeError(primaryErr) || isTimeoutLikeError(fallbackErr)) {
+              throw createAdapterError('Session timeline request timed out', 504, 'SESSION_DETAIL_TIMEOUT');
+            }
+            const effectiveErr = fallbackErr || primaryErr;
+            if (isRpcUnavailableError(effectiveErr)) {
+              throw createAdapterError(effectiveErr?.message || 'LanguageServer RPC unavailable', 503, 'RPC_UNAVAILABLE');
+            }
+            throw createAdapterError(
+              effectiveErr?.message || 'Failed to load session timeline',
+              Number.isInteger(effectiveErr?.statusCode) ? effectiveErr.statusCode : 502,
+              effectiveErr?.code || 'SESSION_DETAIL_FAILED'
+            );
+          }
+        }
+
+        let built = buildSessionDetailPayload(id, resp);
+        if (built.detail.session.numTotalSteps > 0 && built.rawSteps.length === 0) {
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs > 15) {
+            try {
+              const stepResp = await withTimeout(
+                rpc.call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: 0 }, {
+                  timeoutMs: remainingMs,
+                  retryOnTimeout: false
+                }),
+                remainingMs,
+                () => createAdapterError('GetCascadeTrajectorySteps timed out', 504, 'SESSION_DETAIL_TIMEOUT')
+              );
+              const fallbackSteps = Array.isArray(stepResp?.steps)
+                ? stepResp.steps
+                : (Array.isArray(stepResp?.trajectory?.steps) ? stepResp.trajectory.steps : []);
+              if (fallbackSteps.length > 0) {
+                built = buildSessionDetailPayload(
+                  id,
+                  resp,
+                  fallbackSteps,
+                  stepResp?.status || stepResp?.trajectory?.status,
+                  stepResp?.numTotalSteps ?? resp?.numTotalSteps
+                );
+              }
+            } catch {
+              // Keep metadata-only response when primary GetCascadeTrajectory already succeeded.
+            }
+          }
+        }
+
+        seedCursorFromEvents(id, built.detail.events);
+        setCachedDetailEntry(id, built.detail, built.rawSteps);
+        return built.detail;
+      })();
+
+      inflightDetails.set(id, fetchTask);
+      try {
+        return await fetchTask;
+      } finally {
+        if (inflightDetails.get(id) === fetchTask) {
+          inflightDetails.delete(id);
+        }
+      }
     },
 
     async pollDelta(cascadeId, { afterSeq } = {}) {
@@ -1515,10 +1807,17 @@ function createHarnessAdapter({ rpc } = {}) {
         ? Math.max(0, Number(afterSeq) + 1)
         : cursor.stepOffset;
 
-      const resp = await rpc.call('GetCascadeTrajectorySteps', {
-        cascadeId: id,
-        stepOffset: requestOffset
-      });
+      const resp = await withTimeout(
+        rpc.call('GetCascadeTrajectorySteps', {
+          cascadeId: id,
+          stepOffset: requestOffset
+        }, {
+          timeoutMs: resolvedPollTimeoutMs,
+          retryOnTimeout: false
+        }),
+        resolvedPollTimeoutMs,
+        () => createAdapterError('pollDelta timed out', 504, 'SESSION_POLL_TIMEOUT')
+      );
 
       const rawSteps = Array.isArray(resp?.steps)
         ? resp.steps
@@ -1582,9 +1881,12 @@ function createHarnessAdapter({ rpc } = {}) {
     resetSessionCursor(cascadeId) {
       if (cascadeId === undefined || cascadeId === null) {
         sessionCursors.clear();
+        invalidateDetailCache();
         return { ok: true };
       }
-      sessionCursors.delete(String(cascadeId).trim());
+      const cleanId = String(cascadeId).trim();
+      sessionCursors.delete(cleanId);
+      invalidateDetailCache(cleanId);
       return { ok: true };
     },
 
@@ -1621,6 +1923,7 @@ function createHarnessAdapter({ rpc } = {}) {
 
     async sendMessage(cascadeId, { text, modelId, thinkingLevel, mode, attachments, images } = {}) {
       const id = assertCascadeId(cascadeId);
+      invalidateDetailCache(id);
       const hasText = typeof text === 'string' && text.trim().length > 0;
       const normalizedImages = normalizeImageAttachments(images);
       if (!hasText && normalizedImages.length === 0) {
@@ -1726,6 +2029,7 @@ function createHarnessAdapter({ rpc } = {}) {
 
     async cancelSession(cascadeId) {
       const id = assertCascadeId(cascadeId);
+      invalidateDetailCache(id);
       await rpc.call('CancelCascadeInvocation', { cascadeId: id });
       return { ok: true, cascadeId: id };
     },
@@ -1735,11 +2039,13 @@ function createHarnessAdapter({ rpc } = {}) {
       await rpc.call('DeleteCascadeTrajectory', { cascadeId: id });
       sessionCursors.delete(id);
       createdCascadeIds.delete(id);
+      invalidateDetailCache(id);
       return { ok: true, cascadeId: id, hostCleaned: true };
     },
 
     async approveStep(cascadeId, stepIdx, decision = 'allow', payload = {}) {
       const id = assertCascadeId(cascadeId);
+      invalidateDetailCache(id);
       const idx = Number(stepIdx);
       if (!Number.isInteger(idx) || idx < 0) {
         throw createAdapterError('stepIdx must be a non-negative integer', 400, 'INVALID_STEP_INDEX');
@@ -1787,6 +2093,7 @@ function createHarnessAdapter({ rpc } = {}) {
 
     async answerQuestion(cascadeId, stepIdx, answers = [], payload = {}) {
       const id = assertCascadeId(cascadeId);
+      invalidateDetailCache(id);
       const idx = Number(stepIdx);
       if (!Number.isInteger(idx) || idx < 0) {
         throw createAdapterError('stepIdx must be a non-negative integer', 400, 'INVALID_STEP_INDEX');

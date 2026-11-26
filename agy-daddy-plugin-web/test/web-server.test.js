@@ -2863,3 +2863,96 @@ test('HUB-296: getPairingUrl() prioritizes highest-priority enabled non-loopback
     await srv.stop();
   }
 });
+
+test('HUB-314: GET /api/v1/sessions/:id enforces route timeout (504) and GET /api/v1/tasks passes sessionId/project filters', async () => {
+  const listTaskCalls = [];
+  const srv = createWebServer({
+    host: '127.0.0.1',
+    port: 0,
+    pairingToken: 'tok-hub314-http',
+    sessionDetailTimeoutMs: 60,
+    harnessAdapter: {
+      async getSessionDetail(id) {
+        if (id === 'hang-session') {
+          return await new Promise(() => {});
+        }
+        return { ok: true, session: { cascadeId: id }, events: [] };
+      }
+    },
+    taskManager: {
+      async listTasks(opts = {}) {
+        listTaskCalls.push(opts);
+        const allRunning = [
+          {
+            taskId: 'session:s1',
+            kind: 'session',
+            title: 'Alpha Session',
+            projectPath: '/work/alpha',
+            projectName: 'alpha',
+            sessionId: 's1',
+            sessionTitle: 'Alpha Session',
+            status: 'running'
+          },
+          {
+            taskId: 'session:s2',
+            kind: 'session',
+            title: 'Beta Session',
+            projectPath: '/work/beta',
+            projectName: 'beta',
+            sessionId: 's2',
+            sessionTitle: 'Beta Session',
+            status: 'running'
+          }
+        ];
+        const filtered = allRunning.filter((t) => {
+          if (opts.sessionId && t.sessionId !== opts.sessionId) return false;
+          if (opts.project && t.projectPath !== opts.project) return false;
+          return true;
+        });
+        return {
+          ok: true,
+          runningCount: filtered.length,
+          totalRunningCount: allRunning.length,
+          running: filtered,
+          recent: [],
+          filters: {
+            projects: [
+              { key: '/work/alpha', name: 'alpha', path: '/work/alpha', count: 1 },
+              { key: '/work/beta', name: 'beta', path: '/work/beta', count: 1 }
+            ],
+            sessions: [
+              { id: 's1', title: 'Alpha Session', projectPath: '/work/alpha', count: 1 },
+              { id: 's2', title: 'Beta Session', projectPath: '/work/beta', count: 1 }
+            ]
+          },
+          serverTime: Date.now()
+        };
+      }
+    }
+  });
+
+  try {
+    const info = await srv.start();
+    const baseUrl = `http://127.0.0.1:${info.port}`;
+    const auth = { Authorization: 'Bearer tok-hub314-http' };
+
+    const hangRes = await httpRequest(`${baseUrl}/api/v1/sessions/hang-session`, { headers: auth });
+    assert.equal(hangRes.status, 504);
+    assert.equal(hangRes.json.ok, false);
+    assert.equal(hangRes.json.error, 'SESSION_DETAIL_TIMEOUT');
+
+    const tasksRes = await httpRequest(
+      `${baseUrl}/api/v1/tasks?sessionId=s1&project=${encodeURIComponent('/work/alpha')}`,
+      { headers: auth }
+    );
+    assert.equal(tasksRes.status, 200);
+    assert.equal(tasksRes.json.runningCount, 1);
+    assert.equal(tasksRes.json.totalRunningCount, 2);
+    assert.equal(tasksRes.json.running.length, 1);
+    assert.equal(tasksRes.json.running[0].taskId, 'session:s1');
+    assert.equal(tasksRes.json.filters.projects.length, 2);
+    assert.deepEqual(listTaskCalls[0], { sessionId: 's1', project: '/work/alpha' });
+  } finally {
+    await srv.stop();
+  }
+});

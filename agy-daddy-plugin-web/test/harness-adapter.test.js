@@ -1180,3 +1180,97 @@ test('B11: listModels injects Claude Opus planner preset into Orchestrator and s
   assert.equal(sentPayloads[0].cascadeConfig.plannerConfig.requestedModel.model, 'MODEL_PLACEHOLDER_M401');
   assert.equal(sentPayloads[0].cascadeConfig.plannerConfig.thinkingLevel, undefined);
 });
+
+test('HUB-314: getSessionDetail enforces bounded timeout without retry storm and returns 504 SESSION_DETAIL_TIMEOUT', async () => {
+  const rpcCalls = [];
+  const rpc = {
+    async call(method, params, opts) {
+      rpcCalls.push({ method, params, opts });
+      return new Promise(() => {}); // Simulate hung LanguageServer RPC
+    }
+  };
+
+  const adapter = createHarnessAdapter({ rpc, detailTimeoutMs: 70 });
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => adapter.getSessionDetail('cid-hang'),
+    (err) => err && err.statusCode === 504 && err.code === 'SESSION_DETAIL_TIMEOUT'
+  );
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 500, `Expected bounded timeout, took ${elapsedMs}ms`);
+  assert.ok(rpcCalls.every((c) => c.opts && c.opts.retryOnTimeout === false));
+});
+
+test('HUB-314: getSessionDetail falls back to GetCascadeTrajectorySteps, deduplicates inflight, caches briefly, and seeds poll cursor', async () => {
+  let trajCalls = 0;
+  let stepCalls = 0;
+  const stepOffsets = [];
+  const rpc = {
+    async call(method, params) {
+      if (method === 'GetCascadeTrajectory') {
+        trajCalls += 1;
+        await new Promise((r) => setTimeout(r, 25));
+        throw new Error('RESOURCE_EXHAUSTED: trajectory payload too large');
+      }
+      if (method === 'GetCascadeTrajectorySteps') {
+        stepCalls += 1;
+        stepOffsets.push(params.stepOffset);
+        if (params.stepOffset === 0) {
+          return {
+            status: 'CASCADE_RUN_STATUS_IDLE',
+            numTotalSteps: 2,
+            steps: [
+              { stepIndex: 0, type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { userResponse: 'hi' } },
+              { stepIndex: 1, type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', status: 'CORTEX_STEP_STATUS_DONE', plannerResponse: { response: 'hello' } }
+            ]
+          };
+        }
+        return { status: 'CASCADE_RUN_STATUS_IDLE', numTotalSteps: 2, steps: [] };
+      }
+      return {};
+    }
+  };
+
+  const adapter = createHarnessAdapter({ rpc, detailTimeoutMs: 500, detailCacheTtlMs: 2000 });
+  const [d1, d2] = await Promise.all([
+    adapter.getSessionDetail('cid-fb'),
+    adapter.getSessionDetail('cid-fb')
+  ]);
+  assert.equal(d1.ok, true);
+  assert.equal(d2.ok, true);
+  assert.equal(d1.events.length, 2);
+  assert.equal(trajCalls, 1, 'inflight requests must coalesce');
+  assert.equal(stepCalls, 1);
+
+  // Short-TTL cache hit + shared steps for task-manager
+  const d3 = await adapter.getSessionDetail('cid-fb');
+  assert.equal(d3.events.length, 2);
+  assert.equal(trajCalls, 1, 'cached detail should avoid duplicate RPC');
+  assert.equal(adapter.getCachedSessionSteps('cid-fb')?.length, 2);
+
+  // Seeded cursor avoids re-pulling stepOffset=0 on immediate pollDelta
+  const delta = await adapter.pollDelta('cid-fb');
+  assert.equal(delta.hasChanges, false);
+  assert.equal(stepOffsets.at(-1), 2);
+});
+
+test('HUB-314: getSessionDetail classifies RPC_UNAVAILABLE (503) and SESSION_NOT_FOUND (404)', async () => {
+  const rpcOffline = createMockRpc({
+    GetCascadeTrajectory: () => { throw new Error('connect ECONNREFUSED 127.0.0.1:51234'); },
+    GetCascadeTrajectorySteps: () => { throw new Error('connect ECONNREFUSED 127.0.0.1:51234'); }
+  });
+  const offlineAdapter = createHarnessAdapter({ rpc: rpcOffline, detailTimeoutMs: 200 });
+  await assert.rejects(
+    () => offlineAdapter.getSessionDetail('cid-offline'),
+    (err) => err && err.statusCode === 503 && err.code === 'RPC_UNAVAILABLE'
+  );
+
+  const rpcMissing = createMockRpc({
+    GetCascadeTrajectory: () => { throw new Error('trajectory not found'); }
+  });
+  const missingAdapter = createHarnessAdapter({ rpc: rpcMissing, detailTimeoutMs: 200 });
+  await assert.rejects(
+    () => missingAdapter.getSessionDetail('cid-missing'),
+    (err) => err && err.statusCode === 404 && err.code === 'SESSION_NOT_FOUND'
+  );
+});

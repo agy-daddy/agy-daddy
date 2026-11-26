@@ -222,7 +222,13 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const catInstallBtn = shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]');
     assert.ok(catInstallBtn);
     catInstallBtn.click();
-    await waitFor(() => Boolean(shadow.querySelector('#agy-host-restart-banner')));
+    const installUiReady = await waitFor(() => {
+      const btn = shadow.querySelector('#agy-host-restart-btn');
+      return Boolean(shadow.querySelector('#agy-host-restart-banner'))
+        && Boolean(btn && !btn.disabled)
+        && Boolean(shadow.querySelector('#agy-manage-toast'));
+    });
+    assert.equal(installUiReady, true);
 
     assert.equal(daemon.activePlugins.has('agy-daddy.proxy'), true);
     const installBanner = shadow.querySelector('#agy-host-restart-banner');
@@ -263,7 +269,14 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     assert.ok(listToggle);
     listToggle.checked = false;
     listToggle.dispatchEvent({ type: 'change', target: listToggle });
-    await waitFor(() => !daemon.activePlugins.has('agy-daddy.proxy') && daemon.getSessionProxyFallbackStatus().active);
+    const disabledUiReady = await waitFor(() => {
+      const toggle = shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]');
+      return !daemon.activePlugins.has('agy-daddy.proxy')
+        && daemon.getSessionProxyFallbackStatus().active
+        && Boolean(shadow.querySelector('[data-proxy-fallback="true"]'))
+        && Boolean(toggle && !toggle.disabled);
+    });
+    assert.equal(disabledUiReady, true);
 
     // UI 不应要求强制重启横幅，而应展示直连兜底提示与芯片
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
@@ -290,17 +303,34 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const reEnableToggle = shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]');
     reEnableToggle.checked = true;
     reEnableToggle.dispatchEvent({ type: 'change', target: reEnableToggle });
-    await waitFor(() => daemon.activePlugins.has('agy-daddy.proxy'));
+    const reEnabledUiReady = await waitFor(() => {
+      const toggle = shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]');
+      return daemon.activePlugins.has('agy-daddy.proxy')
+        && !daemon.getSessionProxyFallbackStatus().active
+        && !shadow.querySelector('[data-proxy-fallback="true"]')
+        && Boolean(toggle && toggle.checked && !toggle.disabled);
+    });
+    assert.equal(reEnabledUiReady, true);
     assert.equal(daemon.getSessionProxyFallbackStatus().active, false);
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
 
     // 5. 卸载插件：UI 层要求重启生效，并提示不重启将无法使用
     shadow.querySelector('[data-plugin-detail="agy-daddy.proxy"]').click();
-    await waitFor(() => Boolean(shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]')));
+    const uninstallBtnReady = await waitFor(() => {
+      const unBtn = shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]');
+      return Boolean(unBtn && !unBtn.disabled);
+    });
+    assert.equal(uninstallBtnReady, true);
     shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').click();
     assert.equal(shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').textContent, '确认卸载?');
     shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').click();
-    await waitFor(() => !daemon.activePlugins.has('agy-daddy.proxy') && Boolean(shadow.querySelector('#agy-host-restart-banner')));
+    const uninstallUiReady = await waitFor(() => {
+      const btn = shadow.querySelector('#agy-host-restart-btn');
+      return !daemon.activePlugins.has('agy-daddy.proxy')
+        && Boolean(shadow.querySelector('#agy-host-restart-banner'))
+        && Boolean(btn && !btn.disabled);
+    });
+    assert.equal(uninstallUiReady, true);
 
     assert.equal(daemon.getSessionProxyFallbackStatus().active, false);
     const uninstallBanner = shadow.querySelector('#agy-host-restart-banner');
@@ -310,7 +340,8 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
 
     // 点击重启后以干净无 --proxy-server= 参数拉起
     shadow.querySelector('#agy-host-restart-btn').click();
-    await waitFor(() => relaunchCalls.length === 2 && !shadow.querySelector('#agy-host-restart-banner'));
+    const relaunchedClean = await waitFor(() => relaunchCalls.length === 2 && !shadow.querySelector('#agy-host-restart-banner'));
+    assert.equal(relaunchedClean, true);
     assert.equal(relaunchCalls[1].extraArgs.some((a) => a.startsWith('--proxy-server=')), false);
     assert.equal(relaunchCalls[1].proxyEnv.HTTP_PROXY, undefined);
   } finally {

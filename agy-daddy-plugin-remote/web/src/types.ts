@@ -7,7 +7,14 @@ export type ChatMode = 'chat' | 'plan';
 export type DispatchMode = 'steer' | 'queue';
 export type RightTabId = 'diff' | 'files' | 'git' | 'artifacts' | 'pty';
 export type PinKind = 'session' | 'project' | 'group';
-export type ActiveSheetId = null | 'telemetry' | 'channels' | 'menu' | 'tasks' | 'modelPicker';
+export type ActiveSheetId =
+  | null
+  | 'telemetry'
+  | 'channels'
+  | 'menu'
+  | 'tasks'
+  | 'modelPicker'
+  | 'newProject';
 
 export type ThinkingTier =
   | 'minimal'
@@ -149,18 +156,43 @@ export interface WorkspaceOption {
   branchName?: string | null;
 }
 
+export interface ProjectRemoteMeta {
+  provider?: string;
+  ownerRepo?: string;
+  repoUrl?: string;
+  branch?: string;
+  driveMode?: 'mount' | 'cli' | string;
+  account?: string;
+  remoteName?: string;
+  remoteFolderId?: string;
+}
+
 export interface SessionPins {
   sessions: string[];
   projects: string[];
   groups: string[];
 }
 
+export interface ZoneOrder {
+  pinned: string[];
+  normal: string[];
+}
+
+export type SessionOrderMap = {
+  __pinned__?: string[];
+  __standalone__?: ZoneOrder;
+  [containerId: string]: ZoneOrder | string[] | undefined;
+};
+
 export interface SessionGroup {
   id: string;
   name: string;
   source?: 'host' | 'user' | string;
   pinned?: boolean;
+  pinnedAt?: string | null;
+  collapsed?: boolean;
   order?: number;
+  sortOrder?: number;
   projectIds: string[];
   workspaceUris: string[];
   sessionIds: string[];
@@ -171,11 +203,276 @@ export interface HostProject {
   name: string;
   uri: string | null;
   path: string | null;
+  rootPath?: string | null;
   groupId?: string | null;
   pinned?: boolean;
+  pinnedAt?: string | null;
+  implicit?: boolean;
+  syncedFromApp?: boolean;
+  source?: string;
+  remote?: ProjectRemoteMeta | null;
   branchName?: string | null;
   sessionCount?: number;
   lastModifiedTime?: string | null;
+  archived?: boolean;
+}
+
+export interface ArchivedSessionMeta {
+  archivedAt: string;
+  archivedAtStepCount?: number;
+  archivedWasRunning?: boolean;
+  projectId?: string | null;
+  projectName?: string | null;
+  titleSnapshot?: string;
+}
+
+export interface SessionOrgSnapshot {
+  ok: boolean;
+  version?: number;
+  revision?: number;
+  groups: SessionGroup[];
+  projects: HostProject[];
+  pins: SessionPins;
+  pinTimestamps?: {
+    sessions?: Record<string, string>;
+    projects?: Record<string, string>;
+    groups?: Record<string, string>;
+  };
+  projectGroupMap?: Record<string, string>;
+  sessionGroupMap?: Record<string, string>;
+  groupOrder?: ZoneOrder;
+  projectOrder?: Record<string, ZoneOrder>;
+  sessionOrder?: SessionOrderMap;
+  archivedCount?: number;
+  archivedSessions?: Record<string, ArchivedSessionMeta>;
+  defaultSessionPath?: string;
+}
+
+export interface OrgReorderRequest {
+  targetType: 'group' | 'project' | 'session';
+  containerId?: string;
+  zone: 'pinned' | 'normal';
+  orderedIds: string[];
+  movedProject?: {
+    projectId: string;
+    workspaceUri?: string;
+    fromGroupId?: string | null;
+    toGroupId?: string | null;
+  };
+  expectedRevision?: number;
+}
+
+export interface OrgReorderResponse {
+  ok: boolean;
+  revision?: number;
+  org?: SessionOrgSnapshot;
+}
+
+export interface ArchiveSessionRequest {
+  archived: boolean;
+  stepCount?: number;
+  isRunning?: boolean;
+  projectId?: string | null;
+  projectName?: string | null;
+  titleSnapshot?: string;
+}
+
+export interface ArchiveSessionResponse {
+  ok: boolean;
+  cascadeId: string;
+  archived: boolean;
+  unpinned: boolean;
+  revision?: number;
+  archivedCount?: number;
+}
+
+export interface DeleteSessionResponse {
+  ok: boolean;
+  cascadeId: string;
+  deletionMode: 'host_deleted' | 'local_tombstone' | string;
+  hostCleaned: boolean;
+  revision?: number;
+  archivedCount?: number;
+}
+
+export interface WorkspaceBrowseEntry {
+  name: string;
+  path: string;
+  isGitRepo: boolean;
+  isSymlink: boolean;
+}
+
+export interface WorkspaceBreadcrumb {
+  name: string;
+  path: string;
+}
+
+export interface WorkspaceShortcut {
+  kind: 'home' | 'default' | 'projects_parent' | 'desktop' | 'documents' | 'gdrive' | string;
+  label: string;
+  path: string;
+}
+
+export interface WorkspaceBrowseResponse {
+  ok: boolean;
+  requestedPath: string;
+  resolvedPath: string;
+  exists: boolean;
+  willCreateRelative: string;
+  parentPath: string | null;
+  breadcrumbs: WorkspaceBreadcrumb[];
+  entries: WorkspaceBrowseEntry[];
+  shortcuts: WorkspaceShortcut[];
+}
+
+export interface WorkspaceMkdirResponse {
+  ok: boolean;
+  name: string;
+  path: string;
+  parentPath: string;
+}
+
+export interface GithubPreflightInfo {
+  gitInstalled: boolean;
+  gitVersion: string | null;
+  ghInstalled: boolean;
+  ghAuthenticated: boolean;
+  activeAccount: string | null;
+  accounts: string[];
+  orgs: string[];
+  canClonePublicOrSsh: boolean;
+  canCreateRepo: boolean;
+  installHints: {
+    git?: string;
+    ghLogin?: string;
+  };
+}
+
+export interface GoogleDriveMountInfo {
+  id: string;
+  account: string | null;
+  rootPath: string;
+  myDrivePath: string;
+  responsive: boolean;
+}
+
+export interface GoogleDrivePreflightInfo {
+  tier: 'mount' | 'cli' | 'unavailable';
+  mounts: GoogleDriveMountInfo[];
+  rclone: {
+    installed: boolean;
+    driveRemotes: string[];
+  };
+  gdriveCli: {
+    installed: boolean;
+    authenticated: boolean;
+    account: string | null;
+  };
+  setupHints: string[];
+}
+
+export interface RemotePreflightResponse {
+  ok: boolean;
+  github?: GithubPreflightInfo;
+  gdrive?: GoogleDrivePreflightInfo;
+}
+
+export interface GithubRepoItem {
+  nameWithOwner: string;
+  url: string;
+  sshUrl?: string;
+  isPrivate: boolean;
+  defaultBranchRef?: { name?: string } | null;
+  updatedAt?: string;
+}
+
+export interface GithubReposResponse {
+  ok: boolean;
+  repos: GithubRepoItem[];
+}
+
+export type RemoteProvisionMode =
+  | 'gh_clone'
+  | 'gh_create_and_clone'
+  | 'gdrive_mount_select'
+  | 'gdrive_mount_mkdir'
+  | 'gdrive_cli_pull'
+  | 'gdrive_cli_mkdir';
+
+export interface StartRemoteJobRequest {
+  provider: 'github' | 'gdrive';
+  mode: RemoteProvisionMode;
+  parentDir: string;
+  localDirName?: string;
+  projectName: string;
+  groupId?: string | null;
+  github?: {
+    repoSpec?: string;
+    newRepoName?: string;
+    owner?: string;
+    visibility?: 'private' | 'public';
+    description?: string;
+    addReadme?: boolean;
+    branch?: string;
+  };
+  gdrive?: {
+    mountPath?: string;
+    account?: string;
+    cliTool?: 'rclone' | 'gdrive';
+    remoteName?: string;
+    folderIdOrPath?: string;
+  };
+}
+
+export interface RemoteProvisionJob {
+  jobId: string;
+  provider: 'github' | 'gdrive';
+  mode: RemoteProvisionMode;
+  projectName: string;
+  localDirName: string;
+  groupId: string | null;
+  targetDir: string;
+  createdTargetDir: string | null;
+  remoteCreated: {
+    ownerRepo: string;
+    cloneUrl: string;
+    htmlUrl: string;
+  } | null;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  step:
+    | 'validating'
+    | 'creating_remote'
+    | 'cloning'
+    | 'preparing_mount'
+    | 'pulling'
+    | 'registering'
+    | 'done'
+    | 'cancelled'
+    | string;
+  error: string | null;
+  message: string | null;
+  project: HostProject | null;
+  startedAt: string;
+  updatedAt: string;
+  elapsedMs: number;
+}
+
+export interface StartRemoteJobResponse {
+  ok: boolean;
+  jobId: string;
+  job: RemoteProvisionJob;
+}
+
+export interface GetRemoteJobResponse {
+  ok: boolean;
+  job: RemoteProvisionJob;
+}
+
+export interface CancelRemoteJobResponse {
+  ok: boolean;
+  jobId: string;
+  cancelled: boolean;
+  job: RemoteProvisionJob;
 }
 
 export interface PermissionLevelDetail {
@@ -366,9 +663,17 @@ export interface BootstrapResponse {
   orchestratorThinking?: Partial<OrchestratorThinkingMap>;
   modelPreferences?: Partial<ModelPreferences>;
   workspaces: Array<WorkspaceOption | string>;
+  version?: number;
+  revision?: number;
   groups?: SessionGroup[];
   projects?: HostProject[];
   pins?: SessionPins;
+  groupOrder?: ZoneOrder;
+  projectOrder?: Record<string, ZoneOrder>;
+  sessionOrder?: SessionOrderMap;
+  archivedCount?: number;
+  archivedSessions?: Record<string, ArchivedSessionMeta>;
+  defaultSessionPath?: string;
   vapidPublicKey?: string | null;
   voiceSupported?: boolean;
   pcWebHidden?: boolean;
@@ -392,6 +697,9 @@ export interface SessionSummary {
   projectId?: string | null;
   projectName?: string | null;
   pinned?: boolean;
+  pinnedAt?: string | null;
+  archived?: boolean;
+  archivedAt?: string | null;
   parentConversationId?: string | null;
   nestingDepth?: number;
   agentName?: string | null;

@@ -75,6 +75,23 @@ export function scrubSwitchTicketFromUrl(): void {
   } catch {}
 }
 
+export function syncSessionUrl(sessionId: string | null | undefined): void {
+  try {
+    const url = new URL(window.location.href);
+    const clean = String(sessionId || '').trim();
+    if (clean) {
+      if (url.searchParams.get('session') === clean) return;
+      url.searchParams.set('session', clean);
+    } else {
+      if (!url.searchParams.has('session')) return;
+      url.searchParams.delete('session');
+    }
+    const nextSearch = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+    window.history?.replaceState?.(null, '', nextUrl);
+  } catch {}
+}
+
 export function extractTokenAndScrubUrl(): InitialUrlState {
   let token = '';
   let sessionId = '';

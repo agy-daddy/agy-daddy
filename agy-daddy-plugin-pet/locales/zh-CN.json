@@ -1,0 +1,10 @@
+{
+  "panel.title": "伴侣宠物控制台",
+  "panel.desktopVisible": "桌面置顶",
+  "panel.webVisible": "PC-Web 页面",
+  "panel.importPack": "导入本地形象包",
+  "panel.status": "当前状态",
+  "panel.approvals": "待审核项",
+  "panel.replies": "新回复项",
+  "panel.noAttention": "暂无待处理审核或未读回复"
+}

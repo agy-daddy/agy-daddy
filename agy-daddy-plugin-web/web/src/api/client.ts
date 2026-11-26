@@ -51,6 +51,9 @@ import type {
   OrgGroupMutationRequest,
   OrgReorderRequest,
   OrgReorderResponse,
+  PetInteractRequest,
+  PetStateResponse,
+  PetThemeSummary,
   PinSessionResponse,
   PluginArtifactPreviewResponse,
   PluginSettingsResponse,
@@ -1317,6 +1320,39 @@ export function stopBackgroundTask(taskId: string): Promise<StopBackgroundTaskRe
   );
 }
 
+export function getPetState(signal?: AbortSignal): Promise<PetStateResponse> {
+  return apiRequest<PetStateResponse>('/api/v1/pet/state', { signal });
+}
+
+export function interactPet(payload: PetInteractRequest): Promise<Record<string, unknown>> {
+  return apiRequest<Record<string, unknown>>('/api/v1/pet/interact', {
+    method: 'POST',
+    body: payload,
+    interactiveConfirm: false,
+  });
+}
+
+export function importPetTheme(payload: {
+  fileName: string;
+  jsonText?: string;
+  svgText?: string;
+  archiveBase64?: string;
+}): Promise<{ ok: boolean; theme?: PetThemeSummary; error?: string }> {
+  return apiRequest<{ ok: boolean; theme?: PetThemeSummary; error?: string }>('/api/v1/pet/themes', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function deletePetTheme(themeId: string): Promise<{ ok: boolean; error?: string }> {
+  return apiRequest<{ ok: boolean; error?: string }>(
+    `/api/v1/pet/themes/${encodeURIComponent(themeId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
 export const apiClient = {
   getHealth,
   listSessions,
@@ -1399,5 +1435,9 @@ export const apiClient = {
   listBackgroundTasks,
   getBackgroundTaskDetail,
   stopBackgroundTask,
+  getPetState,
+  interactPet,
+  importPetTheme,
+  deletePetTheme,
   setConfirmWriteHandler,
 };

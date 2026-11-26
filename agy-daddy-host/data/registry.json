@@ -125,6 +125,18 @@
       "subpath": "agy-daddy-plugin-web",
       "npmPackage": "@agy-daddy/plugin-web",
       "description": "18767 本地安全 PC Web 桌面工作台：完整对话流、工作区文件树、Git Diff、Artifacts 与底座管理台"
+    },
+    {
+      "shortName": "pet",
+      "id": "agy-daddy.pet",
+      "name": "桌面与网页伴侣宠",
+      "layer": 4,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-pet",
+      "npmPackage": "@agy-daddy/plugin-pet",
+      "description": "系统级透明置顶与 PC-Web 同步伴侣宠物：12 款 MIT 原创矢量主题、本地形象导入、Token 流速联动及多会话审阅提醒"
     }
   ]
 }

@@ -1,0 +1,10 @@
+{
+  "panel.title": "Companion Pet Console",
+  "panel.desktopVisible": "Desktop Overlay",
+  "panel.webVisible": "PC-Web Overlay",
+  "panel.importPack": "Import Local Theme Pack",
+  "panel.status": "Status",
+  "panel.approvals": "Waiting for Review",
+  "panel.replies": "New Replies",
+  "panel.noAttention": "No pending approvals or unread replies"
+}

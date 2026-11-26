@@ -369,12 +369,12 @@ test('installer supports Windows local paths, npm dist-tags, and plugin install 
         }
       }
     );
-    // Uses default registry (10 plugins against mock server returning 404 -> ok:false, exit 1)
+    // Uses default registry (11 plugins against mock server returning 404 -> ok:false, exit 1)
     assert.equal(cliRes.status, 1);
     const parsedCli = JSON.parse(cliRes.stdout);
     assert.equal(parsedCli.ok, false);
-    assert.equal(parsedCli.total, 10);
-    assert.equal(parsedCli.failedCount, 10);
+    assert.equal(parsedCli.total, 11);
+    assert.equal(parsedCli.failedCount, 11);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(tmp, { recursive: true, force: true });

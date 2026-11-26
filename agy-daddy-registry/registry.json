@@ -49,7 +49,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-context",
       "localRepo": "agy-daddy-plugin-context",
-      "manifestSha512": "sha512-u1nGxZKbTCsML//fsEgoauLZT2hrj48GwMGLCsqHn0ILYkcaTlANziU8rsbXMiRhkusOJeO24EpxYxip+1sKpw=="
+      "manifestSha512": "sha512-rSUizSLo1No+8zRxy1iwKcM4LhcRnstH7lXXnF/cBkK0D865ITs6xl+HtiVHeis6AkQyTv37LPU+pUEAIAfKBg=="
     },
     {
       "id": "agy-daddy.usage",
@@ -121,7 +121,19 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-web",
       "localRepo": "agy-daddy-plugin-web",
-      "manifestSha512": "sha512-TeQNGypx3EHvnwwCdLkHi5E3ytuMtrm/QHYd/pE5gkOA5Q4FwEU0FJp3sTC6YBPy8GuW0bFDz5zklkfLOTI9ag=="
+      "manifestSha512": "sha512-1k0DybFE+zwHYeWqJ6kooIUYxzHBYTU7H0bSCc1cQ6Ezn4nRV7VYWeXodQTBGFfgEjzEp1P4GF8eh2oFlHdw/Q=="
+    },
+    {
+      "id": "agy-daddy.pet",
+      "shortName": "pet",
+      "layer": 4,
+      "trustLevel": "T0",
+      "version": "1.1.1",
+      "npmPackage": "@agy-daddy/plugin-pet",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-pet",
+      "localRepo": "agy-daddy-plugin-pet",
+      "manifestSha512": "sha512-VRqxL0MiDer5r98F/F8J2specGIh9PdsWFe2o/FwcnnoluG6P9oCS064D9g7PtjIb3VZQn2CirUzBCSRqBGoPw=="
     }
   ]
 }

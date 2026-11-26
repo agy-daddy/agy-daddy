@@ -337,3 +337,34 @@ test('enum 字段支持 optionsCommand 动态拉取且校验不误拦截新档�
   assert.equal(invalidStatic.ok, false);
   assert.ok(invalidStatic.errors.some((e) => e.includes('staticMode')));
 });
+
+test('ui:desktop-overlay 权限分级与 desktop.overlay 贡献点校验', () => {
+  const manifest = makeBaseManifest({
+    permissions: ['ui:desktop-overlay'],
+    contributes: {
+      'desktop.overlay': { id: 'pet', defaultWidth: 220, defaultHeight: 200 }
+    }
+  });
+  assert.equal(validateManifest(manifest).ok, true);
+
+  const badWidth = validateManifest(makeBaseManifest({
+    contributes: { 'desktop.overlay': { id: 'pet', defaultWidth: 500 } }
+  }));
+  assert.equal(badWidth.ok, false);
+
+  const t0 = evaluateTrustPolicy(manifest, 'T0', []);
+  assert.equal(t0.allowed, true);
+  assert.ok(t0.granted.includes('ui:desktop-overlay'));
+
+  const t1 = evaluateTrustPolicy(manifest, 'T1', []);
+  assert.equal(t1.allowed, true);
+  assert.equal(t1.nodeIsolation, 'worker');
+  assert.ok(t1.needsConfirmation.includes('ui:desktop-overlay'));
+
+  const t2Denied = evaluateTrustPolicy(manifest, 'T2', []);
+  assert.equal(t2Denied.allowed, false);
+  assert.ok(t2Denied.denied.includes('ui:desktop-overlay'));
+
+  const t2Granted = evaluateTrustPolicy(manifest, 'T2', ['ui:desktop-overlay']);
+  assert.equal(t2Granted.allowed, true);
+});

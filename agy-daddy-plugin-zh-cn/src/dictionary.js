@@ -163,13 +163,38 @@ function getLanguageMeta(lang) {
 const ENGLISH_LABELS_PRESET = new Set([
   'This Conversation',
   'Request Review',
-  'Default',
   'Auto',
   'Turbo',
+  'Planning',
+  'Fast',
+  'Always Proceed',
+  'Ask Every Time',
+  'Agent Decides',
+  'Full Access',
+  'Read Only',
+  'Read-Only',
+  'Always Allow',
+  'Always Ask',
+  'Sandboxed'
+].map((s) => s.toLowerCase()));
+
+// 通用词（如 Default / High / Medium / Low）仅在模型或权限选项上下文中保留英文，避免误伤对话宽度/对比度等常规设置
+const ENGLISH_CONTEXT_LABELS_PRESET = new Set([
+  'Default',
   'High',
   'Medium',
   'Low'
 ].map((s) => s.toLowerCase()));
+
+const MODEL_OPTION_LABEL_RE = /^(?:Gemini|Claude|GPT|o[134])(?:\s+[\w.-]+)*(?:\s*\([^)]+\))?$/i;
+const NON_MODEL_PHRASES = new Set(['gemini models', 'gemini live']);
+
+function isModelOptionLabel(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || trimmed.length > 64) return false;
+  if (NON_MODEL_PHRASES.has(trimmed.toLowerCase())) return false;
+  return MODEL_OPTION_LABEL_RE.test(trimmed);
+}
 
 const BRAND_TITLE_MODES = Object.freeze({
   ENGLISH: 'english',
@@ -746,9 +771,22 @@ function translateText(raw, options = {}) {
     return input;
   }
 
-  // 3. 选项名保留英文开关
-  if (translated === null && options.englishLabels && ENGLISH_LABELS_PRESET.has(lower)) {
-    return input;
+  // 3. 选项名保留英文开关（通用词仅在模型/权限选项上下文生效，不误伤常规设置项如 Default）
+  if (translated === null && options.englishLabels) {
+    if (ENGLISH_LABELS_PRESET.has(lower)) {
+      return input;
+    }
+    if (options.inOptionContext && ENGLISH_CONTEXT_LABELS_PRESET.has(lower)) {
+      return input;
+    }
+    if (isModelOptionLabel(trimmed)) {
+      return input;
+    }
+  }
+
+  // 3.5 斜杠命令上下文优先按小写命令名匹配（避免 "Plan" 误翻为计费术语 "套餐方案"）
+  if (translated === null && options.slashCommandContext && lower === 'plan' && dict.exactMap.has('plan')) {
+    translated = dict.exactMap.get('plan');
   }
 
   // 4. 精确词典（先精确大小写命中，再大小写不敏感命中）
@@ -803,6 +841,7 @@ module.exports = {
   SUPPORTED_LANGUAGES,
   LANGUAGE_MAP,
   ENGLISH_LABELS_PRESET,
+  ENGLISH_CONTEXT_LABELS_PRESET,
   BRAND_TITLE_MODES,
   EXACT_DICTIONARY,
   REGEX_DICTIONARY,
@@ -811,6 +850,7 @@ module.exports = {
   getLanguageDictionary,
   getDictionaryStats,
   isProtectedPathOrCode,
+  isModelOptionLabel,
   normalizeBrandTitleMode,
   translateBrandTitle,
   parseCustomRules,

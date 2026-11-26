@@ -371,6 +371,32 @@ async function activate(host, options = {}) {
       message: `已切换至 ${meta.nativeName}`
     };
   });
+  const stopGetRendererStateCmd = host.commands.register('zh-cn.get-renderer-state', async () => ({
+    ...config,
+    lastNonEnLang,
+    customRules: customRulesRaw,
+    titles: { ...customTitles }
+  }));
+  const stopTranslateTitlesCmd = host.commands.register('zh-cn.translate-titles', async (items = [], options = {}) => {
+    const list = Array.isArray(items) ? items.slice(0, 50) : [];
+    const results = [];
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const cid = String(item.cascadeId || '').trim();
+      const raw = String(item.text || '').trim();
+      if (!raw) continue;
+      const res = await serviceMethods.translateConversationTitle(cid, raw, options);
+      results.push({
+        cascadeId: cid,
+        text: raw,
+        translated: res.title || res.text || raw,
+        source: res.source || 'unknown',
+        blocked: Boolean(res.blocked),
+        ok: res.ok !== false
+      });
+    }
+    return { ok: true, lang: config.lang, results };
+  });
   const stopToggleDisplayCmd = host.commands.register('zh-cn.toggle-thinking-display', async () => {
     const nextMode = config.thinkingDisplayMode === THINKING_DISPLAY_MODES.TRANSLATED
       ? THINKING_DISPLAY_MODES.BILINGUAL
@@ -410,6 +436,8 @@ async function activate(host, options = {}) {
     stopCotTestApiRoute,
     stopToggleCmd,
     stopSetLangCmd,
+    stopGetRendererStateCmd,
+    stopTranslateTitlesCmd,
     stopToggleDisplayCmd,
     stopTestApiCmd,
     stopListAgyModelsCmd

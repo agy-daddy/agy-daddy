@@ -114,9 +114,15 @@ test('10 语言元数据、别名规范化、全量词典与正则规则、品�
     assert.equal(translateText('/Users/dev/Settings/New Chat', { lang: code }), '/Users/dev/Settings/New Chat');
     assert.equal(translateText('https://example.com/Accept', { lang: code }), 'https://example.com/Accept');
 
-    // 英文保留档位跨语言生效
+    // 英文保留档位跨语言生效：Default 等通用词仅在模型/权限选项上下文保留英文，不误伤常规设置项
     assert.notEqual(translateText('Default', { lang: code, englishLabels: false }), 'Default');
-    assert.equal(translateText('Default', { lang: code, englishLabels: true }), 'Default');
+    assert.notEqual(translateText('Default', { lang: code, englishLabels: true }), 'Default');
+    assert.equal(translateText('Default', { lang: code, englishLabels: true, inOptionContext: true }), 'Default');
+    assert.equal(translateText('Turbo', { lang: code, englishLabels: true }), 'Turbo');
+    assert.equal(translateText('Always Proceed', { lang: code, englishLabels: true }), 'Always Proceed');
+    assert.equal(translateText('Gemini 4 Neon (High)', { lang: code, englishLabels: true }), 'Gemini 4 Neon (High)');
+    assert.notEqual(translateText('Gemini 4 Neon (High)', { lang: code, englishLabels: false }), 'Gemini 4 Neon (High)');
+    assert.notEqual(translateText('Claude Sonnet 4.6 (Thinking)', { lang: code, englishLabels: false }), 'Claude Sonnet 4.6 (Thinking)');
 
     // 品牌标题三档切换
     assert.equal(translateText('Antigravity', { lang: code, brandTitle: BRAND_TITLE_MODES.ENGLISH }), 'Antigravity');
@@ -482,6 +488,256 @@ test('动态弹出窗口（设置弹窗/切页）MutationObserver 自动增量�
     harness.assertCleanDispose('agy-daddy.zh-cn');
   } finally {
     globalThis.MutationObserver = prevObserver;
+    await harness.cleanup();
+  }
+});
+
+test('HUB-299 回归：品牌标题多层级、模型与权限选项上下文、动态会话标题、Schedules 与内置斜杠命令全量翻译', async () => {
+  const fetchCalls = [];
+  const mockFetch = async (url) => {
+    fetchCalls.push(String(url));
+    const m = String(url).match(/[?&]q=([^&]+)/);
+    const q = m ? decodeURIComponent(m[1]) : '';
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [[[`[译] ${q}`, q]]]
+    };
+  };
+
+  const harness = createMockHostHarness({
+    seedAnchors: [{ tag: 'div', attr: 'data-testid', val: 'conversation-row-sidebar' }],
+    fetch: mockFetch
+  });
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port, hostToken: harness.bridge.hostToken });
+
+    // 1. 品牌标题混合 DOM（textNode 与 icon 兄弟节点，以及纯文本节点）
+    const brandMixed = createMockElement('div', harness.mockDoc);
+    const brandIcon = createMockElement('span', harness.mockDoc);
+    brandMixed.appendChild(brandIcon);
+    const brandTextNode = { nodeType: 3, nodeValue: 'Antigravity', parentElement: brandMixed, parentNode: brandMixed, isConnected: true };
+    brandMixed.childNodes.push(brandTextNode);
+    harness.mockDoc.body.appendChild(brandMixed);
+
+    const brandLeaf = createMockElement('span', harness.mockDoc);
+    brandLeaf.setAttribute('data-testid', 'brand-title');
+    brandLeaf.textContent = 'Antigravity';
+    harness.mockDoc.body.appendChild(brandLeaf);
+
+    // 2. 对话宽度与对比度的 Default vs 权限预设 Default vs 模型选择
+    const widthSection = createMockElement('div', harness.mockDoc);
+    const widthTitle = createMockElement('span', harness.mockDoc);
+    widthTitle.textContent = 'Conversation Width';
+    const widthDefault = createMockElement('span', harness.mockDoc);
+    widthDefault.textContent = 'Default';
+    widthSection.appendChild(widthTitle);
+    widthSection.appendChild(widthDefault);
+    harness.mockDoc.body.appendChild(widthSection);
+
+    const contrastDefault = createMockElement('span', harness.mockDoc);
+    contrastDefault.textContent = 'Default';
+    harness.mockDoc.body.appendChild(contrastDefault);
+
+    const permGroup = createMockElement('div', harness.mockDoc);
+    permGroup.setAttribute('data-testid', 'permission-preset');
+    const permDefault = createMockElement('span', harness.mockDoc);
+    permDefault.textContent = 'Default';
+    const permReadOnly = createMockElement('span', harness.mockDoc);
+    permReadOnly.textContent = 'Read Only';
+    const permExecPolicy = createMockElement('span', harness.mockDoc);
+    permExecPolicy.textContent = 'Execution Policy';
+    const permAgentDecides = createMockElement('span', harness.mockDoc);
+    permAgentDecides.textContent = 'Agent Decides';
+    permGroup.appendChild(permDefault);
+    permGroup.appendChild(permReadOnly);
+    permGroup.appendChild(permExecPolicy);
+    permGroup.appendChild(permAgentDecides);
+    harness.mockDoc.body.appendChild(permGroup);
+
+    const modelSelector = createMockElement('button', harness.mockDoc);
+    modelSelector.setAttribute('aria-label', 'Select model, current: Gemini 4 Neon (High)');
+    const modelText = createMockElement('span', harness.mockDoc);
+    modelText.textContent = 'Gemini 4 Neon (High)';
+    modelSelector.appendChild(modelText);
+    harness.mockDoc.body.appendChild(modelSelector);
+
+    // 3. 浏览器 Change、环境 Local Storage、侧边栏 Search... 与 Side Question
+    const changeBtn = createMockElement('button', harness.mockDoc);
+    changeBtn.textContent = 'Change';
+    const storageOpt = createMockElement('span', harness.mockDoc);
+    storageOpt.textContent = 'Local Storage';
+    const sidebarSearch = createMockElement('input', harness.mockDoc);
+    sidebarSearch.setAttribute('placeholder', 'Search...');
+    const sideQuestion = createMockElement('span', harness.mockDoc);
+    sideQuestion.textContent = 'Side Question';
+    harness.mockDoc.body.appendChild(changeBtn);
+    harness.mockDoc.body.appendChild(storageOpt);
+    harness.mockDoc.body.appendChild(sidebarSearch);
+    harness.mockDoc.body.appendChild(sideQuestion);
+
+    // 4. Schedules 自动化弹窗文案
+    const schedModal = createMockElement('div', harness.mockDoc);
+    const reqBadge = createMockElement('span', harness.mockDoc);
+    reqBadge.textContent = 'Required';
+    const reqStar = createMockElement('span', harness.mockDoc);
+    reqStar.textContent = '* Required';
+    const schedSub = createMockElement('p', harness.mockDoc);
+    schedSub.textContent = 'Uses your local files and tools. Schedules only.';
+    const trigTitle = createMockElement('span', harness.mockDoc);
+    trigTitle.textContent = 'Trigger';
+    const atNode = createMockElement('span', harness.mockDoc);
+    atNode.textContent = 'at';
+    const instrTitle = createMockElement('span', harness.mockDoc);
+    instrTitle.textContent = 'Instructions';
+    const instrArea = createMockElement('textarea', harness.mockDoc);
+    instrArea.setAttribute('placeholder', 'What should the agent do on each run? For example: summarize new bugs assigned to me and anything that changed overnight.');
+    schedModal.appendChild(reqBadge);
+    schedModal.appendChild(reqStar);
+    schedModal.appendChild(schedSub);
+    schedModal.appendChild(trigTitle);
+    schedModal.appendChild(atNode);
+    schedModal.appendChild(instrTitle);
+    schedModal.appendChild(instrArea);
+    harness.mockDoc.body.appendChild(schedModal);
+
+    // 5. 内置斜杠命令名称与描述（含 plan 不得误翻为套餐方案）
+    const slashRowPlan = createMockElement('div', harness.mockDoc);
+    const slashPlanName = createMockElement('span', harness.mockDoc);
+    slashPlanName.textContent = 'plan';
+    const slashPlanCap = createMockElement('span', harness.mockDoc);
+    slashPlanCap.textContent = 'Plan';
+    const slashPlanDesc = createMockElement('span', harness.mockDoc);
+    slashPlanDesc.textContent = 'Plan carefully before executing a task.';
+    slashRowPlan.appendChild(slashPlanName);
+    slashRowPlan.appendChild(slashPlanCap);
+    slashRowPlan.appendChild(slashPlanDesc);
+    harness.mockDoc.body.appendChild(slashRowPlan);
+
+    const slashCompact = createMockElement('span', harness.mockDoc);
+    slashCompact.textContent = 'compact';
+    const slashCompactDesc = createMockElement('span', harness.mockDoc);
+    slashCompactDesc.textContent = 'Compact the conversation now (summarize history to free up the context window).';
+    const slashGrill = createMockElement('span', harness.mockDoc);
+    slashGrill.textContent = 'grill-me';
+    const slashGrillDesc = createMockElement('span', harness.mockDoc);
+    slashGrillDesc.textContent = 'Interview me to align on a plan.';
+    const slashTeamwork = createMockElement('span', harness.mockDoc);
+    slashTeamwork.textContent = 'teamwork';
+    const slashTeamworkDesc = createMockElement('span', harness.mockDoc);
+    slashTeamworkDesc.textContent = 'Invoke a team of agents to autonomously tackle large projects.';
+    const slashLearn = createMockElement('span', harness.mockDoc);
+    slashLearn.textContent = 'learn';
+    const slashLearnDesc = createMockElement('span', harness.mockDoc);
+    slashLearnDesc.textContent = 'Reflect on recent successes or corrections to capture reusable skills or rules.';
+    const slashBoost = createMockElement('span', harness.mockDoc);
+    slashBoost.textContent = 'boost';
+    const slashBoostDesc = createMockElement('span', harness.mockDoc);
+    slashBoostDesc.textContent = 'Deep thinking, strategic planning, multiple perspectives, and rigorous verification.';
+    for (const el of [
+      slashCompact, slashCompactDesc, slashGrill, slashGrillDesc,
+      slashTeamwork, slashTeamworkDesc, slashLearn, slashLearnDesc,
+      slashBoost, slashBoostDesc
+    ]) {
+      harness.mockDoc.body.appendChild(el);
+    }
+
+    // 6. 侧边栏动态会话标题
+    const dynRow = createMockElement('div', harness.mockDoc);
+    dynRow.setAttribute('data-testid', 'conversation-row-sidebar');
+    dynRow.setAttribute('data-cascade-id', 'conv-dyn-1');
+    const dynTitle = createMockElement('span', harness.mockDoc);
+    dynTitle.setAttribute('data-testid', 'conversation-title');
+    dynTitle.textContent = 'Fix sidebar translation sync';
+    dynRow.appendChild(dynTitle);
+    harness.mockDoc.body.appendChild(dynRow);
+
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    // 验证初始中文翻译
+    assert.equal(widthDefault.textContent, '默认');
+    assert.equal(contrastDefault.textContent, '默认');
+    assert.equal(permDefault.textContent, '默认');
+    assert.equal(permReadOnly.textContent, '只读');
+    assert.equal(permExecPolicy.textContent, '执行策略');
+    assert.equal(permAgentDecides.textContent, '由智能体决定');
+    assert.equal(modelText.textContent, 'Gemini 4 Neon (高)');
+    assert.equal(changeBtn.textContent, '更改');
+    assert.equal(storageOpt.textContent, '本地存储');
+    assert.equal(sidebarSearch.getAttribute('placeholder'), '搜索...');
+    assert.equal(sideQuestion.textContent, '旁路提问');
+
+    assert.equal(reqBadge.textContent, '必填');
+    assert.equal(reqStar.textContent, '* 必填');
+    assert.equal(schedSub.textContent, '使用您的本地文件与工具。仅限定时任务。');
+    assert.equal(trigTitle.textContent, '触发器');
+    assert.equal(atNode.textContent, '于');
+    assert.equal(instrTitle.textContent, '指令');
+    assert.equal(
+      instrArea.getAttribute('placeholder'),
+      'Agent 每次运行时应执行什么操作？例如：汇总分配给我的新 Bug 以及夜间发生的所有变更。'
+    );
+
+    assert.equal(slashPlanName.textContent, '规划');
+    assert.equal(slashPlanCap.textContent, '规划');
+    assert.equal(slashPlanDesc.textContent, '在执行任务前仔细制定规划。');
+    assert.equal(slashCompact.textContent, '压缩上下文');
+    assert.equal(slashCompactDesc.textContent, '立即压缩当前会话（总结历史内容以释放上下文窗口）。');
+    assert.equal(slashGrill.textContent, '深度访谈');
+    assert.equal(slashGrillDesc.textContent, '通过交互式访谈与我对齐执行方案。');
+    assert.equal(slashTeamwork.textContent, '团队协作');
+    assert.equal(slashTeamworkDesc.textContent, '调用多个智能体协同团队，自主攻克大型项目。');
+    assert.equal(slashLearn.textContent, '沉淀经验');
+    assert.equal(slashLearnDesc.textContent, '复盘近期的成功经验或纠偏过程，沉淀为可复用的技能或规则。');
+    assert.equal(slashBoost.textContent, '深度增强');
+    assert.equal(slashBoostDesc.textContent, '深度思考、战略规划、多视角推演与严格验证。');
+
+    // 验证 englishLabels=true：模型与权限保留英文，但对话宽度/对比度的 Default 仍保持中文「默认」
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { englishLabels: true });
+    assert.equal(modelText.textContent, 'Gemini 4 Neon (High)');
+    assert.equal(permDefault.textContent, 'Default');
+    assert.equal(permReadOnly.textContent, 'Read Only');
+    assert.equal(permAgentDecides.textContent, 'Agent Decides');
+    assert.equal(widthDefault.textContent, '默认');
+    assert.equal(contrastDefault.textContent, '默认');
+
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { englishLabels: false });
+    assert.equal(modelText.textContent, 'Gemini 4 Neon (高)');
+    assert.equal(permDefault.textContent, '默认');
+
+    // 验证 brandTitle 三档在 textNode 与 leafEl 均实时生效
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { brandTitle: 'translated' });
+    assert.equal(brandTextNode.nodeValue, '反重力');
+    assert.equal(brandLeaf.textContent, '反重力');
+
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { brandTitle: 'hidden' });
+    assert.equal(brandTextNode.nodeValue, '');
+    assert.equal(brandLeaf.style.getPropertyValue('display'), 'none');
+
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { brandTitle: 'english' });
+    assert.equal(brandTextNode.nodeValue, 'Antigravity');
+    assert.equal(brandLeaf.style.getPropertyValue('display'), '');
+    assert.equal(brandLeaf.textContent, 'Antigravity');
+
+    // 验证远程会话标题翻译与开关切换即时还原/恢复
+    assert.equal(fetchCalls.length, 0);
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { enableRemoteThinkingTranslation: true });
+    assert.ok(await waitUntil(() => dynTitle.textContent === '[译] Fix sidebar translation sync'));
+    assert.equal(fetchCalls.length, 1);
+
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { translateConversationTitles: false });
+    assert.equal(dynTitle.textContent, 'Fix sidebar translation sync');
+
+    await harness.updatePluginSettings('agy-daddy.zh-cn', { translateConversationTitles: true });
+    assert.equal(dynTitle.textContent, '[译] Fix sidebar translation sync');
+    assert.equal(fetchCalls.length, 1);
+
+    await harness.unloadPlugin('agy-daddy.zh-cn');
+    assert.equal(dynTitle.textContent, 'Fix sidebar translation sync');
+    harness.assertCleanDispose('agy-daddy.zh-cn');
+  } finally {
     await harness.cleanup();
   }
 });

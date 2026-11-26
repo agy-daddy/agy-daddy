@@ -32,6 +32,12 @@ import type {
 import { SchemaSettingsForm, localizeText } from './SchemaSettingsForm';
 import type { HostAdminTab } from './TopbarCapsules';
 import { WebAccessPanel } from './WebAccessPanel';
+import {
+  getNotificationPermission,
+  isNotificationSupported,
+  requestNotificationPermission,
+  type NotificationPermissionState,
+} from '../notifications/notificationManager';
 import styles from './HostAdminModal.module.css';
 
 export interface HostCommandSuggestion {
@@ -50,6 +56,7 @@ export interface HostAdminModalProps {
   initialSelectedPluginId?: string | null;
   locale?: string;
   onPluginsChanged?: () => void;
+  onWebSettingsUpdated?: (values: Record<string, unknown>) => void;
   onCommandExecuted?: (res: RunCommandResponse) => void;
   knownCommands?: HostCommandSuggestion[];
   channel?: string;
@@ -106,6 +113,7 @@ export function HostAdminModal({
   initialSelectedPluginId = null,
   locale: localeProp,
   onPluginsChanged,
+  onWebSettingsUpdated,
   onCommandExecuted,
   knownCommands,
   channel: channelProp,
@@ -206,6 +214,9 @@ export function HostAdminModal({
   const [appearanceError, setAppearanceError] = useState<string | null>(null);
   const [appearanceSaving, setAppearanceSaving] = useState(false);
   const [webAccessRefreshToken, setWebAccessRefreshToken] = useState(0);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermissionState>(() =>
+    getNotificationPermission(),
+  );
 
   const [commandFilter, setCommandFilter] = useState('');
   const [cmdIdInput, setCmdIdInput] = useState('');
@@ -408,6 +419,12 @@ export function HostAdminModal({
       if (nextColor) setColorTheme(nextColor);
       const nextSpeed = normalizeDrawerSpeed(patch.drawerSpeed);
       if (nextSpeed) setDrawerSpeed(nextSpeed);
+      if (patch.enableNotifications === true) {
+        void requestNotificationPermission().then((perm) => setNotifPermission(perm));
+      } else {
+        setNotifPermission(getNotificationPermission());
+      }
+      onWebSettingsUpdated?.(res?.values ?? patch);
     }
     onPluginsChanged?.();
     return res;
@@ -1009,6 +1026,38 @@ export function HostAdminModal({
                               {selectedPlugin.id === 'agy-daddy.web' && (
                                 <WebAccessPanel refreshToken={webAccessRefreshToken} />
                               )}
+                              {selectedPlugin.id === 'agy-daddy.web' &&
+                                Boolean(settingsState?.values?.enableNotifications) && (
+                                  <div
+                                    className={styles.bannerInfo}
+                                    role="status"
+                                    data-testid="host-admin-notification-status"
+                                  >
+                                    <span>
+                                      {!isNotificationSupported()
+                                        ? t('notifications.unsupportedHint')
+                                        : notifPermission === 'granted'
+                                          ? t('notifications.permissionGrantedHint')
+                                          : notifPermission === 'denied'
+                                            ? t('notifications.permissionDeniedHint')
+                                            : t('notifications.permissionPromptTitle')}
+                                    </span>
+                                    {isNotificationSupported() && notifPermission === 'default' && (
+                                      <button
+                                        type="button"
+                                        className={`${styles.btn} ${styles.btnPrimary}`}
+                                        data-testid="host-admin-notification-grant-btn"
+                                        onClick={() => {
+                                          void requestNotificationPermission().then((perm) =>
+                                            setNotifPermission(perm),
+                                          );
+                                        }}
+                                      >
+                                        {t('notifications.permissionGrantBtn')}
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               <SchemaSettingsForm
                                 pluginId={selectedPlugin.id}
                                 schema={effectiveSchema}

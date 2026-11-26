@@ -914,6 +914,38 @@ export interface I18nMessages {
   'tasks.filterEmpty': string;
   'tasks.filterProjectAria': string;
   'tasks.filterSessionAria': string;
+  'pet.ariaOverlay': string;
+  'pet.clickToFocus': string;
+  'pet.dismissBubble': string;
+  'pet.openSettings': string;
+  'pet.importTheme': string;
+  'pet.hideWebPet': string;
+  'pet.tpsLabel': string;
+  'pet.approvalBadge': string;
+  'pet.replyBadge': string;
+  'pet.errorBadge': string;
+  'pet.importSuccess': string;
+  'pet.importFailed': string;
+  'pet.menuAria': string;
+  'pet.statusIdle': string;
+  'pet.statusRunning': string;
+  'pet.statusSleeping': string;
+  'pet.dragHint': string;
+  'notifications.taskDoneTitle': string;
+  'notifications.taskDoneBody': string;
+  'notifications.taskErrorTitle': string;
+  'notifications.taskErrorBody': string;
+  'notifications.sessionDoneTitle': string;
+  'notifications.sessionDoneBody': string;
+  'notifications.sessionErrorTitle': string;
+  'notifications.sessionErrorBody': string;
+  'notifications.approvalTitle': string;
+  'notifications.approvalBody': string;
+  'notifications.permissionPromptTitle': string;
+  'notifications.permissionGrantBtn': string;
+  'notifications.permissionDeniedHint': string;
+  'notifications.permissionGrantedHint': string;
+  'notifications.unsupportedHint': string;
 }
 
 export type I18nKey = keyof I18nMessages;

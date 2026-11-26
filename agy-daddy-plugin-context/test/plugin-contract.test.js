@@ -205,7 +205,11 @@ test('插件契约：极简 icon+数字 互斥胶囊、就近向上弹窗、详�
     assert.match(panelEl.textContent, /刷新/);
     assert.equal(panelEl.textContent.includes('$'), false, 'Context panel should not display billing currency');
 
-    // 验证方案 A 流式实时测速：出现 cancelBtn 且正文增长 -> ~tok/s，结束后恢复精确值
+    // 验证方案 A 流式实时测速：出现 cancelBtn 且正文增长 -> ~tok/s，并实时同步 state:context.live@1，结束后恢复精确值
+    const liveStates = [];
+    const unsubLive = harness.bus.subscribeState('test', 'state:context.live@1', (val) => {
+      if (val) liveStates.push(val);
+    });
     const composerRoot = harness.mockDoc.querySelector('.surface-composer');
     composerRoot.appendChild(cancelBtn);
     cancelBtn.disabled = false;
@@ -214,17 +218,23 @@ test('插件契约：极简 icon+数字 互斥胶囊、就近向上弹窗、详�
     assert.match(pulseBtn.textContent, /…|~[\d.]+\/s/);
     assert.equal(pulseBtn.getAttribute('data-streaming'), 'true');
     agentResp.textContent = 'A'.repeat(480);
-    await new Promise((r) => setTimeout(r, 900));
+    await new Promise((r) => setTimeout(r, 1050));
     assert.match(pulseBtn.textContent, /~[\d.]+\/s/);
     assert.match(panelEl.textContent, /流式估算/);
+    assert.ok(liveStates.some((s) => s.busy === true && s.phase === 'streaming' && Number(s.tps) > 0), 'Expected live state tps > 0 during streaming');
 
-    // 结束流式 -> 自动切回 RPC 精确 200/s
+    // 结束流式 -> 自动切回 RPC 精确 200/s，live 状态回落为 idle
     cancelBtn.disabled = true;
     cancelBtn.remove();
     await new Promise((r) => setTimeout(r, 480));
     assert.equal(pulseBtn.getAttribute('data-streaming'), 'false');
     assert.match(pulseBtn.textContent, /200\/s/);
     assert.match(panelEl.textContent, /实测/);
+    const lastLive = liveStates[liveStates.length - 1];
+    assert.equal(lastLive?.busy, false);
+    assert.equal(lastLive?.phase, 'idle');
+    assert.equal(lastLive?.tps, null);
+    unsubLive();
 
     // 切换为顶栏模式：底部胶囊卸载，顶栏单元挂载多段 icon+数字，点击顶栏向下弹出；支持百分比阈值
     await harness.updatePluginSettings('agy-daddy.context', {

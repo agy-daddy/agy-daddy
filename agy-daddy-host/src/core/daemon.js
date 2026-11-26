@@ -52,6 +52,7 @@ const {
 const { HostHealth } = require('./health-snapshot');
 const { MarketplaceStatsService } = require('./marketplace-stats');
 const { TrayManager } = require('./tray-manager');
+const { OverlayManager } = require('./overlay-manager');
 const {
   detectActiveWorkspaceRoot,
   scanCustomizations,
@@ -437,6 +438,11 @@ class AgyDaddyDaemon extends EventEmitter {
         executeCommand: (cmdId, args, opts) => this.executeCommand(cmdId, args, opts)
       });
     }
+    this.overlayManager = options.overlayManager || new OverlayManager({
+      bus: this.bus,
+      stateDir: this.stateDir,
+      ...(options.overlayOptions || {})
+    });
     this.running = false;
     this.lockAcquired = false;
     this.workspaceOrg = options.workspaceOrg || createWorkspaceOrgRuntime();
@@ -879,6 +885,10 @@ class AgyDaddyDaemon extends EventEmitter {
         pluginDir: installPath,
         recordFailure: (id, err) => daemon.recordPluginFailure(id, err),
         executeCommand: (cmdId, args, opts) => daemon.executeCommand(cmdId, args, opts)
+      }),
+      overlay: daemon.overlayManager.createScopedApi(pluginId, {
+        pluginDir: installPath,
+        permissions: perms
       })
     };
   }
@@ -896,6 +906,7 @@ class AgyDaddyDaemon extends EventEmitter {
     const pendingService = new Map();
     const pendingCommand = new Map();
     const pendingTrayClick = new Map();
+    const workerOverlayHandles = new Map();
     let seq = 0;
 
     const hydrateWorkerTrayDef = (raw) => {
@@ -1082,6 +1093,46 @@ class AgyDaddyDaemon extends EventEmitter {
             reply(this.trayManager.unregisterPluginMenuItem(pluginId, payload.itemId));
           } else if (action === 'listTrayMenuItems') {
             reply(this.trayManager.listPluginMenuItems(pluginId));
+          } else if (action === 'overlay:isSupported') {
+            reply(this.overlayManager.isSupported());
+          } else if (action === 'overlay:createWindow') {
+            const handle = await this.overlayManager.createWindow(pluginId, payload?.def || {}, {
+              pluginDir,
+              permissions: perms
+            });
+            handle.onInteraction((ev) => {
+              if (worker.connected) {
+                worker.send({ type: 'overlay-interaction', windowId: ev.windowId, event: ev });
+              }
+            });
+            workerOverlayHandles.set(handle.id, handle);
+            reply({ id: handle.id, fullId: handle.fullId });
+          } else if (action === 'overlay:setScene') {
+            const h = workerOverlayHandles.get(payload?.windowId);
+            if (!h) throw new Error(`OVERLAY_WINDOW_NOT_FOUND: ${String(payload?.windowId || '')}`);
+            reply(await h.setScene(payload?.scene));
+          } else if (action === 'overlay:updateState') {
+            const h = workerOverlayHandles.get(payload?.windowId);
+            if (!h) throw new Error(`OVERLAY_WINDOW_NOT_FOUND: ${String(payload?.windowId || '')}`);
+            reply(await h.updateState(payload?.patch || {}));
+          } else if (action === 'overlay:setBounds') {
+            const h = workerOverlayHandles.get(payload?.windowId);
+            if (!h) throw new Error(`OVERLAY_WINDOW_NOT_FOUND: ${String(payload?.windowId || '')}`);
+            reply(await h.setBounds(payload?.bounds || {}));
+          } else if (action === 'overlay:setVisible') {
+            const h = workerOverlayHandles.get(payload?.windowId);
+            if (!h) throw new Error(`OVERLAY_WINDOW_NOT_FOUND: ${String(payload?.windowId || '')}`);
+            reply(await h.setVisible(Boolean(payload?.visible)));
+          } else if (action === 'overlay:listWindows') {
+            reply(this.overlayManager.listPluginWindows(pluginId));
+          } else if (action === 'overlay:dispose') {
+            const h = workerOverlayHandles.get(payload?.windowId);
+            workerOverlayHandles.delete(payload?.windowId);
+            reply(h ? await h.dispose() : false);
+          } else if (action === 'overlay:disposeAll') {
+            workerOverlayHandles.clear();
+            await this.overlayManager.disposePluginWindows(pluginId);
+            reply(true);
           } else if (action === 'hostControl') {
             if (!perms.includes('host:control')) {
               throw Object.assign(new Error(`HOST_CONTROL_PERMISSION_DENIED: ${pluginId} lacks host:control`), {
@@ -1172,6 +1223,8 @@ class AgyDaddyDaemon extends EventEmitter {
         this.bridge.unregisterPluginRoutes(pluginId);
         this.unregisterPluginCommands(pluginId);
         this.trayManager.unregisterPluginItems(pluginId);
+        workerOverlayHandles.clear();
+        void this.overlayManager.disposePluginWindows(pluginId).catch(() => {});
         this.settingsListeners.delete(pluginId);
         this.activePlugins.delete(pluginId);
       }
@@ -1271,6 +1324,7 @@ class AgyDaddyDaemon extends EventEmitter {
       this.bridge.unregisterPluginRoutes(manifest.id);
       this.unregisterPluginCommands(manifest.id);
       this.trayManager.unregisterPluginItems(manifest.id);
+      await this.overlayManager.disposePluginWindows(manifest.id).catch(() => {});
       this.settingsListeners.delete(manifest.id);
       throw err;
     }
@@ -1314,6 +1368,7 @@ class AgyDaddyDaemon extends EventEmitter {
     this.bridge.unregisterPluginRoutes(pluginId);
     this.unregisterPluginCommands(pluginId);
     this.trayManager.unregisterPluginItems(pluginId);
+    await this.overlayManager.disposePluginWindows(pluginId).catch(() => {});
     this.settingsListeners.delete(pluginId);
     return true;
   }
@@ -2887,6 +2942,7 @@ class AgyDaddyDaemon extends EventEmitter {
     for (const pluginId of Array.from(this.activePlugins.keys()).reverse()) {
       await this.deactivatePlugin(pluginId);
     }
+    try { await this.overlayManager.dispose(); } catch {}
     await this.bridge.stop();
     for (const w of Array.from(this._liveWorkers)) {
       w._intentionalStop = true;

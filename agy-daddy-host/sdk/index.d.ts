@@ -33,7 +33,8 @@ export type Permission =
   | 'net:listen'
   | 'process:spawn'
   | 'host:launch-args'
-  | 'native:install';
+  | 'native:install'
+  | 'ui:desktop-overlay';
 
 export interface LocalizedText {
   'zh-CN'?: string;
@@ -100,6 +101,7 @@ export interface AgyPluginManifest {
     'topbar.units'?: Array<{ id: string; order?: number }>;
     'topbar.popovers'?: Array<{ id: string; anchorId: string }>;
     'tray.menu'?: TrayMenuItemInput[];
+    'desktop.overlay'?: { id: string; defaultWidth?: number; defaultHeight?: number };
     settings?: { schema: string };
     'remote.panels'?: Array<{ id: string; service: string; title?: string }>;
     commands?: Array<{ id: string; title: string | LocalizedText }>;
@@ -154,6 +156,105 @@ export interface TrayMenuSnapshotItem {
   order: number;
   position: TrayMenuItemPosition;
   faulted: boolean;
+}
+
+export interface OverlaySupportInfo {
+  supported: boolean;
+  platform: string;
+  backend: 'macos-appkit' | 'win32-wpf' | 'linux-gtk3' | 'memory' | 'none';
+  reason?: string;
+}
+
+export interface OverlaySceneLayer {
+  id: string;
+  kind: 'path' | 'circle' | 'rect' | 'ellipse' | 'sprite';
+  d?: string;
+  cx?: number;
+  cy?: number;
+  r?: number;
+  rx?: number;
+  ry?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  cornerRadius?: number;
+  spritePath?: string;
+  frameRects?: Array<{ x: number; y: number; w: number; h: number }>;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  opacity?: number;
+  pivotX?: number;
+  pivotY?: number;
+  motion?: {
+    bobAmpY?: number;
+    bobFreqHz?: number;
+    swayAmpX?: number;
+    swayFreqHz?: number;
+    rotAmpDeg?: number;
+    rotFreqHz?: number;
+    phaseRad?: number;
+    blinkIntervalMs?: number;
+    states?: string[];
+  };
+}
+
+export interface OverlaySceneSpec {
+  sceneId: string;
+  viewBox: { width: number; height: number };
+  fps?: { active?: number; idle?: number; sleep?: number };
+  hitBox: { x: number; y: number; width: number; height: number };
+  layers: OverlaySceneLayer[];
+  particles?: {
+    preset: 'none' | 'bubbles' | 'sparks' | 'pixels' | 'stars' | 'matrix' | 'exhaust';
+    color: string;
+  };
+}
+
+export interface OverlayBubbleSpec {
+  id: string;
+  kind: 'approval' | 'reply' | 'error' | 'info';
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  accentHex?: string;
+  dismissible?: boolean;
+}
+
+export interface OverlayRuntimeState {
+  animState: 'sleeping' | 'idle' | 'thinking' | 'walking' | 'trotting' | 'sprinting' | 'approval' | 'error';
+  speedFactor: number;
+  tps?: number | null;
+  roam: {
+    enabled: boolean;
+    mode: 'none' | 'bottom-edge' | 'screen-edges' | 'free-workarea';
+    baseSpeedPxPerSec: number;
+  };
+  scale?: number;
+  flipX?: boolean;
+  statusPill?: { text: string; tone: 'neutral' | 'active' | 'warn' | 'danger' } | null;
+  bubble?: OverlayBubbleSpec | null;
+  contextMenu?: TrayMenuItemInput[];
+}
+
+export interface OverlayInteractionEvent {
+  type: 'pet-click' | 'pet-double-click' | 'bubble-click' | 'bubble-dismiss' | 'menu-click' | 'position-changed';
+  windowId: string;
+  bubbleId?: string;
+  itemId?: string;
+  bounds?: { x: number; y: number; width: number; height: number; screenIndex?: number };
+}
+
+export interface OverlayWindowHandle {
+  id: string;
+  fullId: string;
+  setScene(scene: OverlaySceneSpec): Promise<boolean>;
+  updateState(patch: Partial<OverlayRuntimeState>): Promise<boolean>;
+  setBounds(bounds: { x?: number; y?: number; width?: number; height?: number; anchor?: 'bottom-right' | 'bottom-left' }): Promise<boolean>;
+  setVisible(visible: boolean): Promise<boolean>;
+  onInteraction(handler: (event: OverlayInteractionEvent) => void): () => void;
+  dispose(): Promise<boolean>;
 }
 
 export interface ServiceCallResult<T = unknown> {
@@ -213,6 +314,16 @@ export interface AgyHostApi {
     updateMenuItem(itemId: string, patch: Partial<TrayMenuItemInput>): boolean | Promise<boolean>;
     unregisterMenuItem(itemId: string): boolean | Promise<boolean>;
     listMenuItems(): TrayMenuSnapshotItem[] | Promise<TrayMenuSnapshotItem[]>;
+  };
+  overlay: {
+    isSupported(): Promise<OverlaySupportInfo>;
+    createWindow(def: {
+      id: string;
+      bounds?: { x?: number; y?: number; width?: number; height?: number; anchor?: 'bottom-right' | 'bottom-left' };
+      visible?: boolean;
+    }): Promise<OverlayWindowHandle>;
+    listWindows(): Array<{ id: string; fullId: string; visible: boolean; bounds: { x: number; y: number; width: number; height: number } }> | Promise<Array<{ id: string; fullId: string; visible: boolean; bounds: { x: number; y: number; width: number; height: number } }>>;
+    disposeAll(): Promise<boolean>;
   };
 }
 

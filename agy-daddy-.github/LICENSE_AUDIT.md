@@ -45,6 +45,7 @@ This document tracks the open-source license compliance, upstream copyright attr
 | `agy-daddy-plugin-composer/` | MIT | Present | Present | Derived from `antigravity-suite`, `antigravity-panel`, `agy-fast-io` |
 | `agy-daddy-plugin-remote/` | MIT | Present | Present | Derived from `antigravity-suite` (`mobile-remote.js`) |
 | `agy-daddy-plugin-web/` | MIT | *Pending standalone file* | N/A (original) | Original work by `Agy-Daddy Contributors` (`"license": "MIT"` in `package.json` & `agy-plugin.json`); add standalone `LICENSE` before public release |
+| `agy-daddy-plugin-pet/` | MIT | Present | N/A (original) | Clean-room original MIT companion pet & 12 declarative vector themes by `Agy-Daddy Contributors` (zero third-party sprites/fonts) |
 | `agy-daddy-plugin-template/` | MIT | Present | N/A (original) | Original starter template by `Agy-Daddy Contributors` |
 | `agy-daddy-registry/` | MIT | Present | N/A (original) | Original registry index and DOM fixtures by `Agy-Daddy Contributors` |
 

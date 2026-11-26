@@ -2956,3 +2956,148 @@ test('HUB-314: GET /api/v1/sessions/:id enforces route timeout (504) and GET /ap
     await srv.stop();
   }
 });
+
+test('D21: /api/v1/pet/state, /api/v1/pet/interact, and /api/v1/pet/themes enforce channel tiers & Cloudflare confirmation', async () => {
+  const interactCalls = [];
+  const { srv, state } = channelServer({
+    channels: { loopback: true, lan: true, cloudflare: true },
+    permissionLevel: 'L0',
+    hostProxy: {
+      ...createFakeDeps().hostProxy,
+      async getPetState() {
+        return {
+          ok: true,
+          available: true,
+          state: { enabled: true, desktopVisible: true, webVisible: true, themeId: 'daddy-orb' },
+          scene: { sceneId: 'daddy-orb', layers: [] },
+          themes: []
+        };
+      },
+      async interactPet(payload) {
+        interactCalls.push(payload);
+        if (payload?.action === 'import-theme') {
+          return { ok: true, theme: { id: 'custom-imported', builtin: false } };
+        }
+        return { ok: true };
+      }
+    }
+  });
+
+  const info = await srv.start();
+  const baseUrl = `http://127.0.0.1:${info.port}`;
+  const bearer = { Authorization: 'Bearer pairing-secret-token-12345' };
+
+  try {
+    state.channel = 'lan';
+    const petGet = await httpRequest(`${baseUrl}/api/v1/pet/state`, { headers: bearer });
+    assert.equal(petGet.status, 200);
+    assert.equal(petGet.json.available, true);
+    assert.equal(petGet.json.state.themeId, 'daddy-orb');
+
+    // L0 allows lightweight L0 interaction (bubble-dismiss / set-active-session / update-web-anchor)
+    const l0Interact = await httpRequest(`${baseUrl}/api/v1/pet/interact`, {
+      method: 'POST',
+      headers: bearer,
+      body: { action: 'set-active-session', cascadeId: 's-1' }
+    });
+    assert.equal(l0Interact.status, 200);
+    assert.equal(l0Interact.json.ok, true);
+
+    // L0 rejects theme import even when tunneled via /api/v1/pet/interact
+    const l0ImportViaInteract = await httpRequest(`${baseUrl}/api/v1/pet/interact`, {
+      method: 'POST',
+      headers: bearer,
+      body: { action: 'import-theme', fileName: 'x.svg', svgText: '<svg/>' }
+    });
+    assert.equal(l0ImportViaInteract.status, 403);
+    assert.equal(l0ImportViaInteract.json.error, 'PERMISSION_DENIED');
+    assert.equal(l0ImportViaInteract.json.required, 'L1');
+
+    // Cloudflare L1 requires CONFIRMATION_REQUIRED for POST /api/v1/pet/themes
+    srv.updateAccessConfig({ permissionLevel: 'L1' });
+    state.channel = 'cloudflare';
+    const cfChallenge = await httpRequest(`${baseUrl}/api/v1/pet/themes`, {
+      method: 'POST',
+      headers: bearer,
+      body: { fileName: 'buddy.svg', svgText: '<svg/>' }
+    });
+    assert.equal(cfChallenge.status, 403);
+    assert.equal(cfChallenge.json.error, 'CONFIRMATION_REQUIRED');
+    assert.equal(cfChallenge.json.action, 'POST /api/v1/pet/themes');
+
+    const cfConfirmed = await httpRequest(`${baseUrl}/api/v1/pet/themes`, {
+      method: 'POST',
+      headers: { ...bearer, 'X-Agy-Confirm': cfChallenge.json.confirmToken },
+      body: { fileName: 'buddy.svg', svgText: '<svg/>' }
+    });
+    assert.equal(cfConfirmed.status, 200);
+    assert.equal(cfConfirmed.json.theme.id, 'custom-imported');
+    assert.equal(interactCalls.length, 2);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('HUB-332: web-server exposes enableNotifications default/value and syncs PUT updates over SSE', async () => {
+  let persistedWebSettings = { port: 18767 };
+  const srv = createWebServer({
+    port: 0,
+    pairingToken: 'tok-hub332-http',
+    enableNotifications: false,
+    hostProxy: {
+      async getPluginSettings(pluginId) {
+        if (pluginId === 'agy-daddy.web') {
+          return { ok: true, values: { ...persistedWebSettings }, schema: { fields: [] } };
+        }
+        return { ok: true, values: {} };
+      },
+      async setPluginSettings(pluginId, patch) {
+        if (pluginId === 'agy-daddy.web') {
+          persistedWebSettings = { ...persistedWebSettings, ...patch };
+          return { ok: true, values: { ...persistedWebSettings } };
+        }
+        return { ok: true, values: patch };
+      }
+    }
+  });
+
+  try {
+    const info = await srv.start();
+    const baseUrl = `http://127.0.0.1:${info.port}`;
+    const authHeaders = { Authorization: 'Bearer tok-hub332-http' };
+
+    const statusInitial = await httpRequest(`${baseUrl}/api/v1/web/status`, { headers: authHeaders });
+    assert.equal(statusInitial.status, 200);
+    assert.equal(statusInitial.json.enableNotifications, false);
+
+    const settingsInitial = await httpRequest(`${baseUrl}/api/v1/host/plugins/agy-daddy.web/settings`, {
+      headers: authHeaders
+    });
+    assert.equal(settingsInitial.status, 200);
+    assert.equal(settingsInitial.json.values.enableNotifications, false);
+
+    const sseClient = await openSse(`${baseUrl}/api/v1/stream`, authHeaders);
+    const putRes = await httpRequest(`${baseUrl}/api/v1/host/plugins/agy-daddy.web/settings`, {
+      method: 'PUT',
+      headers: authHeaders,
+      body: { patch: { enableNotifications: true } }
+    });
+    assert.equal(putRes.status, 200);
+    assert.equal(putRes.json.values.enableNotifications, true);
+
+    const sseEv = await sseClient.waitForEvent(
+      (ev) =>
+        ev.event === 'state.patch' &&
+        ev.json?.key === 'state:plugin.settings@1' &&
+        ev.json?.value?.pluginId === 'agy-daddy.web'
+    );
+    assert.equal(sseEv.json.value.values.enableNotifications, true);
+    sseClient.close();
+
+    const statusAfter = await httpRequest(`${baseUrl}/api/v1/web/status`, { headers: authHeaders });
+    assert.equal(statusAfter.status, 200);
+    assert.equal(statusAfter.json.enableNotifications, true);
+  } finally {
+    await srv.stop();
+  }
+});

@@ -1,6 +1,6 @@
 'use strict';
 
-const HOST_API_VERSION = '1.0.0';
+const HOST_API_VERSION = '1.2.0';
 
 const TRUST_LEVELS = Object.freeze(['T0', 'T1', 'T2']);
 
@@ -22,7 +22,8 @@ const STATIC_PERMISSIONS = Object.freeze([
   'process:spawn',
   'host:launch-args',
   'host:control',
-  'native:install'
+  'native:install',
+  'ui:desktop-overlay'
 ]);
 
 const HIGH_RISK_PERMISSIONS = Object.freeze([
@@ -33,7 +34,8 @@ const HIGH_RISK_PERMISSIONS = Object.freeze([
   'rpc:write',
   'fs:user-files',
   'net:listen',
-  'native:install'
+  'native:install',
+  'ui:desktop-overlay'
 ]);
 
 // T1 社区已审默认不含以下权限，除非审查单独批准
@@ -81,6 +83,7 @@ const CONTRIBUTION_POINTS = Object.freeze([
   'topbar.units',
   'topbar.popovers',
   'tray.menu',
+  'desktop.overlay',
   'settings',
   'settings.pages',
   'commands',

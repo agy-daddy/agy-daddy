@@ -31,6 +31,7 @@ export interface BackgroundTasksPopoverProps {
   onRefresh?: () => void;
   onStopTask?: (taskId: string) => Promise<StopBackgroundTaskResponse | void>;
   onSelectSession?: (sessionId: string) => void;
+  focusedTaskRequest?: { taskId: string; nonce: number } | null;
   onClose: () => void;
 }
 
@@ -87,6 +88,7 @@ export function BackgroundTasksPopover({
   onRefresh,
   onStopTask,
   onSelectSession,
+  focusedTaskRequest,
   onClose,
 }: BackgroundTasksPopoverProps) {
   const { t } = useI18n();
@@ -299,6 +301,12 @@ export function BackgroundTasksPopover({
       setDetailLoading(false);
     }
   }, [t]);
+
+  useEffect(() => {
+    if (focusedTaskRequest?.taskId) {
+      setSelectedTaskId(focusedTaskRequest.taskId);
+    }
+  }, [focusedTaskRequest?.taskId, focusedTaskRequest?.nonce]);
 
   useEffect(() => {
     if (!selectedTaskId) {

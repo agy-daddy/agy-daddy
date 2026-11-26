@@ -60,6 +60,7 @@ agy-daddy plugin install npm:@agy-daddy/plugin-web
 | `drawerSpeed` | `enum` | `"normal"` | 抽屉展开/收起动画速度：可选 `fast` (120ms)、`normal` (200ms)、`smooth` (320ms)、`off` (0ms 无动画) |
 | `allowedRoots` | `list` | `[]` | 允许访问的工作区根目录白名单：允许浏览器工作台访问的本地项目目录列表 |
 | `autoOpenBrowser` | `boolean` | `true` | 启动时自动打开浏览器：启动宿主时是否自动打开默认浏览器访问 Web 工作台 |
+| `enableNotifications` | `boolean` | `false` | 浏览器系统通知：在标签页处于后台或最小化时，任务完成、后台运行结束或收到新消息时发送浏览器系统通知 |
 
 ---
 

@@ -1,0 +1,5 @@
+Agy-Daddy Sidebar & Worktree Organizer Plugin (@agy-daddy/plugin-sidebar)
+
+Built on the shared Agy-Daddy workspace-org core (session-org v2 schema,
+longest-prefix path canonicalizer, and non-blocking Git worktree discovery).
+Copyright (c) 2026 Agy-Daddy Contributors (MIT License).

@@ -20,10 +20,10 @@ test('registry: Antigravity 2.32/2.33 x 15 锚点兼容矩阵与 anchors.json �
   }
 });
 
-test('registry: 13 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.design 与 agy-daddy.pet）与 Antigravity 2.32/2.33 x 15 锚点兼容矩阵', () => {
+test('registry: 14 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.design、agy-daddy.pet 与 agy-daddy.sidebar）与 Antigravity 2.32/2.33 x 15 锚点兼容矩阵', () => {
   const res = verifyRegistryAndMatrix();
   assert.equal(res.ok, true);
-  assert.equal(res.pluginsVerified, 13);
+  assert.equal(res.pluginsVerified, 14);
   const themeEntry = res.plugins.find((p) => p.id === 'agy-daddy.theme');
   assert.ok(themeEntry, 'agy-daddy.theme must be present in registry');
   const designEntry = res.plugins.find((p) => p.id === 'hubo1989.design');
@@ -32,6 +32,8 @@ test('registry: 13 插件完整性 SHA-512（含 agy-daddy.theme、hubo1989.desi
   assert.equal(designEntry.trustLevel, 'T1');
   const petEntry = res.plugins.find((p) => p.id === 'agy-daddy.pet');
   assert.ok(petEntry, 'agy-daddy.pet must be present in registry');
+  const sidebarEntry = res.plugins.find((p) => p.id === 'agy-daddy.sidebar');
+  assert.ok(sidebarEntry, 'agy-daddy.sidebar must be present in registry');
   assert.equal(res.anchorsCount, 15);
   assert.equal(res.matrix.length, 2);
   for (const row of res.matrix) {

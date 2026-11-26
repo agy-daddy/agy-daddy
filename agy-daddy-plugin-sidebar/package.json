@@ -1,0 +1,32 @@
+{
+  "name": "@agy-daddy/plugin-sidebar",
+  "version": "1.1.1",
+  "description": "Zero-patch Antigravity Desktop sidebar organizer with project groups, drag-and-drop sorting, Git multi-worktree subgroups, and session workspace sandboxing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agy-daddy/agy-daddy.git",
+    "directory": "agy-daddy-plugin-sidebar"
+  },
+  "main": "./src/node.js",
+  "agyPlugin": "./agy-plugin.json",
+  "files": [
+    "agy-plugin.json",
+    "settings.schema.json",
+    "baseline.json",
+    "src/",
+    "locales/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node -e \"const cp=require('node:child_process'),fs=require('node:fs'),p=require('node:path');const files=fs.readdirSync('test').filter(f=>f.endsWith('.test.js')).sort().map(f=>p.join('test',f));process.exit(cp.spawnSync(process.execPath,['--test',...files],{stdio:'inherit',env:{...process.env,AGY_DADDY_TEST_MODE:'1'}}).status??1)\""
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  }
+}

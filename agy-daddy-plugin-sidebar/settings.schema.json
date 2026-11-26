@@ -1,0 +1,45 @@
+{
+  "title": {
+    "zh-CN": "侧边栏与多工作区增强",
+    "en": "Sidebar & Worktree Organizer"
+  },
+  "fields": [
+    {
+      "key": "viewMode",
+      "type": "enum",
+      "default": "enhanced",
+      "options": [
+        { "value": "enhanced", "label": "增强视图 (Enhanced)" },
+        { "value": "native", "label": "原生视图 (Native)" }
+      ],
+      "group": { "zh-CN": "视图模式", "en": "View Mode" },
+      "label": { "zh-CN": "侧边栏显示模式", "en": "Sidebar view mode" },
+      "description": {
+        "zh-CN": "在增强组织视图与 Antigravity 原生侧边栏之间一键无损切换",
+        "en": "Switch losslessly between the enhanced organizer view and the native Antigravity sidebar"
+      }
+    },
+    {
+      "key": "autoExpandActiveWorktree",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "工作区与交互", "en": "Worktree & Interaction" },
+      "label": { "zh-CN": "自动展开当前会话所属 Worktree", "en": "Auto-expand active session worktree" },
+      "description": {
+        "zh-CN": "查看某会话时临时展开其所属项目与 Worktree 子组，不覆盖手动折叠偏好",
+        "en": "Temporarily expand the parent project and worktree subgroup of the active session without overwriting saved collapse state"
+      }
+    },
+    {
+      "key": "showWorktreePathHint",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "工作区与交互", "en": "Worktree & Interaction" },
+      "label": { "zh-CN": "显示 Worktree 路径标识", "en": "Show worktree path hint" },
+      "description": {
+        "zh-CN": "在多 Worktree 子组标题旁展示相对区分路径提示",
+        "en": "Display relative path hints alongside multi-worktree subgroup headers"
+      }
+    }
+  ]
+}

@@ -157,6 +157,18 @@
       "subpath": "agy-daddy-plugin-pet",
       "localRepo": "agy-daddy-plugin-pet",
       "manifestSha512": "sha512-VRqxL0MiDer5r98F/F8J2specGIh9PdsWFe2o/FwcnnoluG6P9oCS064D9g7PtjIb3VZQn2CirUzBCSRqBGoPw=="
+    },
+    {
+      "id": "agy-daddy.sidebar",
+      "shortName": "sidebar",
+      "layer": 2,
+      "trustLevel": "T0",
+      "version": "1.1.1",
+      "npmPackage": "@agy-daddy/plugin-sidebar",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-sidebar",
+      "localRepo": "agy-daddy-plugin-sidebar",
+      "manifestSha512": "sha512-5LBG0v8eZdF4sUBvt1DK7v83w7qwfJLtbpoJgERH0yI/90aXiW69yKQVPU+pktu/fk2KkHjSmd/J2K9O55II3g=="
     }
   ]
 }

@@ -265,6 +265,8 @@ export const api = {
           action?: 'upsert';
           id?: string;
           name?: string;
+          icon?: string | null;
+          source?: string;
           collapsed?: boolean;
           projectIds?: string[];
           workspaceUris?: string[];
@@ -321,6 +323,7 @@ export const api = {
     createDir?: boolean;
     source?: string;
     remote?: ProjectRemoteMeta | null;
+    icon?: string | null;
   }) =>
     requestJson<{
       ok: boolean;
@@ -339,6 +342,7 @@ export const api = {
     id: string,
     patch: {
       name?: string;
+      icon?: string | null;
       groupId?: string | null;
       pinned?: boolean;
       workspaceUri?: string;

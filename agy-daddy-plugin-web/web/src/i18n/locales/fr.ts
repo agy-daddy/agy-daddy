@@ -2,6 +2,12 @@ import type { I18nMessages } from '../types';
 
 export const fr: Partial<I18nMessages> = {
   'brand.title': 'Agy-Daddy Web',
+  'sidebar.setIcon': 'Définir l’icône',
+  'sidebar.clearIcon': 'Réinitialiser',
+  'sidebar.iconPresetGroup': 'Icônes',
+  'sidebar.iconEmojiGroup': 'Émoji',
+  'sidebar.iconCustomPlaceholder': 'Émoji ou symbole...',
+  'sidebar.groupIconAria': 'Choisir l’icône du groupe',
 
   'shell.expandSidebar': 'Déplier le panneau latéral',
   'shell.collapseSidebar': 'Replier le panneau latéral',

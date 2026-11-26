@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { EntityIcon, EntityIconPicker } from '../components/EntityIcon';
 import {
   type DragItemMeta,
   partitionAndOrderItems,
@@ -59,8 +60,9 @@ export interface LeftDrawerProps {
   onSelectSession: (cascadeId: string) => void;
   onCreateSession: (title?: string, workspaceUri?: string) => Promise<void>;
   onTogglePin?: (kind: PinKind, id: string, nextPinned?: boolean) => Promise<void>;
-  onCreateGroup?: (name: string) => Promise<void>;
+  onCreateGroup?: (name: string, icon?: string | null) => Promise<void>;
   onRenameGroup?: (groupId: string, name: string) => Promise<void>;
+  onSetGroupIcon?: (groupId: string, icon: string | null) => Promise<void>;
   onDeleteGroup?: (groupId: string) => Promise<void>;
   onToggleGroupCollapsed?: (groupId: string, collapsed?: boolean) => Promise<void>;
   onAssignProjectGroup?: (
@@ -68,6 +70,7 @@ export interface LeftDrawerProps {
     target: { projectId?: string; sessionId?: string; workspaceUri?: string }
   ) => Promise<void>;
   onRenameProject?: (projectId: string, name: string) => Promise<void>;
+  onSetProjectIcon?: (projectId: string, icon: string | null) => Promise<void>;
   onRemoveProject?: (projectId: string) => Promise<void>;
   onReorderOrg?: (req: OrgReorderRequest) => Promise<void>;
   onArchiveSession?: (cascadeId: string, archived: boolean) => Promise<boolean | void>;
@@ -215,10 +218,12 @@ export function LeftDrawer({
   onTogglePin,
   onCreateGroup,
   onRenameGroup,
+  onSetGroupIcon,
   onDeleteGroup,
   onToggleGroupCollapsed,
   onAssignProjectGroup,
   onRenameProject,
+  onSetProjectIcon,
   onRemoveProject,
   onReorderOrg,
   onArchiveSession,
@@ -253,12 +258,15 @@ export function LeftDrawer({
   const [creating, setCreating] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupIcon, setNewGroupIcon] = useState<string | null>(null);
+  const [showNewGroupIconPicker, setShowNewGroupIconPicker] = useState(false);
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [footerOpen, setFooterOpen] = useState(false);
 
   const [actionSheet, setActionSheet] = useState<ActionSheetTarget | null>(null);
   const [renameMode, setRenameMode] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
+  const [iconPickerMode, setIconPickerMode] = useState(false);
   const [moveToGroupMode, setMoveToGroupMode] = useState(false);
   const [confirmRemoveProject, setConfirmRemoveProject] = useState(false);
   const [deleteModal, setDeleteModal] = useState<DeleteModalState | null>(null);
@@ -576,6 +584,7 @@ export function LeftDrawer({
         suppressRowClickRef.current = false;
       }, 200);
       setRenameMode(false);
+      setIconPickerMode(false);
       setMoveToGroupMode(false);
       setConfirmRemoveProject(false);
 
@@ -652,6 +661,7 @@ export function LeftDrawer({
           navigator.vibrate?.(15);
         } catch {}
         setRenameMode(false);
+        setIconPickerMode(false);
         setMoveToGroupMode(false);
         setConfirmRemoveProject(false);
         setActionSheet({
@@ -685,6 +695,7 @@ export function LeftDrawer({
   const openGroupActionSheet = (group: SessionGroup) => {
     const zone: 'pinned' | 'normal' = isGroupPinned(group) ? 'pinned' : 'normal';
     setRenameMode(false);
+    setIconPickerMode(false);
     setMoveToGroupMode(false);
     setConfirmRemoveProject(false);
     setActionSheet({
@@ -698,6 +709,7 @@ export function LeftDrawer({
   const openProjectActionSheet = (project: HostProject, containerId: string) => {
     const zone: 'pinned' | 'normal' = isProjectPinned(project) ? 'pinned' : 'normal';
     setRenameMode(false);
+    setIconPickerMode(false);
     setMoveToGroupMode(false);
     setConfirmRemoveProject(false);
     setActionSheet({
@@ -716,6 +728,7 @@ export function LeftDrawer({
     zone: 'pinned' | 'normal'
   ) => {
     setRenameMode(false);
+    setIconPickerMode(false);
     setMoveToGroupMode(false);
     setConfirmRemoveProject(false);
     setActionSheet({
@@ -861,8 +874,14 @@ export function LeftDrawer({
     if (!clean) return;
     setCreatingGroup(true);
     try {
-      await onCreateGroup?.(clean);
+      if (newGroupIcon) {
+        await onCreateGroup?.(clean, newGroupIcon);
+      } else {
+        await onCreateGroup?.(clean);
+      }
       setNewGroupName('');
+      setNewGroupIcon(null);
+      setShowNewGroupIconPicker(false);
       setShowNewGroup(false);
     } finally {
       setCreatingGroup(false);
@@ -1038,6 +1057,11 @@ export function LeftDrawer({
                     <PinGlyph filled />
                   </span>
                 )}
+                {p.icon && (
+                  <span className={styles.entityIconBadge} data-testid={`project-icon-${p.id}`}>
+                    <EntityIcon icon={p.icon} size={14} />
+                  </span>
+                )}
                 {p.name}
               </span>
               <span className={styles.projectSub}>
@@ -1168,6 +1192,11 @@ export function LeftDrawer({
             {pinned && (
               <span className={styles.pinIconActive}>
                 <PinGlyph filled />
+              </span>
+            )}
+            {g.icon && (
+              <span className={styles.entityIconBadge} data-testid={`group-icon-${g.id}`}>
+                <EntityIcon icon={g.icon} size={14} />
               </span>
             )}
             <span className={styles.groupNameText}>{g.name}</span>
@@ -1370,6 +1399,7 @@ export function LeftDrawer({
               }}
             >
               <PinGlyph filled />
+              {g.icon && <EntityIcon icon={g.icon} size={13} />}
               <span>{g.name}</span>
             </button>
           ))}
@@ -1416,6 +1446,7 @@ export function LeftDrawer({
                 setSelectedGroupFilter(g.id);
               }}
             >
+              {g.icon && <EntityIcon icon={g.icon} size={13} />}
               <span>{g.name}</span>
             </button>
           ))}
@@ -1494,18 +1525,45 @@ export function LeftDrawer({
       {showNewGroup && (
         <div className={styles.newCard}>
           <strong style={{ fontSize: 12.5 }}>{t('left.newGroupTitle')}</strong>
-          <input
-            type="text"
-            className="ag-input"
-            placeholder={t('left.groupNamePlaceholder')}
-            value={newGroupName}
-            onInput={(e) => setNewGroupName((e.target as HTMLInputElement).value)}
-          />
+          <div className={styles.newGroupRow}>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label={t('left.groupIconAria')}
+              aria-expanded={showNewGroupIconPicker}
+              data-testid="new-group-icon-btn"
+              onClick={() => setShowNewGroupIconPicker((v) => !v)}
+            >
+              <EntityIcon icon={newGroupIcon || 'preset:layers'} size={15} />
+            </button>
+            <input
+              type="text"
+              className="ag-input"
+              placeholder={t('left.groupNamePlaceholder')}
+              value={newGroupName}
+              onInput={(e) => setNewGroupName((e.target as HTMLInputElement).value)}
+            />
+          </div>
+          {showNewGroupIconPicker && (
+            <EntityIconPicker
+              value={newGroupIcon}
+              disabled={creatingGroup}
+              testIdPrefix="new-group-icon"
+              onSelect={(icon) => {
+                setNewGroupIcon(icon);
+                setShowNewGroupIconPicker(false);
+              }}
+              onCancel={() => setShowNewGroupIconPicker(false)}
+            />
+          )}
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
             <button
               type="button"
               className="ag-pill-btn"
-              onClick={() => setShowNewGroup(false)}
+              onClick={() => {
+                setShowNewGroup(false);
+                setShowNewGroupIconPicker(false);
+              }}
             >
               {t('common.cancel')}
             </button>
@@ -1734,7 +1792,32 @@ export function LeftDrawer({
                   : actionSheet.session.title}
             </div>
 
-            {renameMode && (actionSheet.kind === 'group' || actionSheet.kind === 'project') ? (
+            {iconPickerMode &&
+            (actionSheet.kind === 'group' || actionSheet.kind === 'project') ? (
+              <EntityIconPicker
+                value={
+                  actionSheet.kind === 'group'
+                    ? actionSheet.group.icon
+                    : actionSheet.project.icon
+                }
+                disabled={permissionLevel === 'L0'}
+                testIdPrefix={
+                  actionSheet.kind === 'group'
+                    ? `sheet-group-icon-${actionSheet.group.id}`
+                    : `sheet-project-icon-${actionSheet.project.id}`
+                }
+                onSelect={async (nextIcon) => {
+                  if (actionSheet.kind === 'group') {
+                    await onSetGroupIcon?.(actionSheet.group.id, nextIcon);
+                  } else {
+                    await onSetProjectIcon?.(actionSheet.project.id, nextIcon);
+                  }
+                  setIconPickerMode(false);
+                  setActionSheet(null);
+                }}
+                onCancel={() => setIconPickerMode(false)}
+              />
+            ) : renameMode && (actionSheet.kind === 'group' || actionSheet.kind === 'project') ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <input
                   type="text"
@@ -1873,6 +1956,17 @@ export function LeftDrawer({
                     >
                       <span>{t('left.renameGroup')}</span>
                     </button>
+                    {onSetGroupIcon && (
+                      <button
+                        type="button"
+                        className={styles.actionSheetBtn}
+                        disabled={permissionLevel === 'L0'}
+                        data-testid="action-set-group-icon"
+                        onClick={() => setIconPickerMode(true)}
+                      >
+                        <span>{t('left.setIcon')}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       className={`${styles.actionSheetBtn} ${styles.actionSheetBtnDanger}`}
@@ -1919,6 +2013,17 @@ export function LeftDrawer({
                     >
                       <span>{t('left.renameProject')}</span>
                     </button>
+                    {onSetProjectIcon && (
+                      <button
+                        type="button"
+                        className={styles.actionSheetBtn}
+                        disabled={permissionLevel === 'L0'}
+                        data-testid="action-set-project-icon"
+                        onClick={() => setIconPickerMode(true)}
+                      >
+                        <span>{t('left.setIcon')}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       className={styles.actionSheetBtn}

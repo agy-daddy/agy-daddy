@@ -39,7 +39,8 @@ const {
   isTempBridgeWorkspace,
   sanitizeModelCatalogResult,
   createSessionOrgStore,
-  canonicalKey
+  canonicalKey,
+  sanitizeEntityIcon
 } = require('./session-org-store');
 
 const CHANNEL_KEYS = ['loopback', 'lan', 'tailscale', 'bonjour', 'cloudflare'];
@@ -1754,7 +1755,11 @@ async function activate(host) {
     }
   });
 
-  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null } = {}) {
+  function createProjectInOrg({ name, rootPath, groupId = null, createDir = false, source = 'local', remote = null, icon = undefined } = {}) {
+    const iconCheck = sanitizeEntityIcon(icon);
+    if (!iconCheck.ok) {
+      return { ok: false, statusCode: 400, error: iconCheck.error };
+    }
     const normalizedRoot = normalizeLocalPath(rootPath);
     if (!normalizedRoot) {
       return { ok: false, statusCode: 400, error: 'INVALID_PATH' };
@@ -1848,6 +1853,7 @@ async function activate(host) {
       const project = sessionOrgStore.materializeProjectInOrg(org, {
         id: `proj_${crypto.randomUUID()}`,
         name: cleanName,
+        ...(iconCheck.value ? { icon: iconCheck.value } : {}),
         rootPath: normalizedRoot,
         groupId: resolvedGroupId,
         source: cleanSource,
@@ -2890,6 +2896,16 @@ async function activate(host) {
       if (Object.prototype.hasOwnProperty.call(patch, 'name') && (!String(patch.name || '').trim())) {
         return { ok: false, statusCode: 400, error: 'INVALID_PROJECT_NAME' };
       }
+      let hasIconChange = false;
+      let nextIcon = null;
+      if (Object.prototype.hasOwnProperty.call(patch, 'icon')) {
+        const iconCheck = sanitizeEntityIcon(patch.icon);
+        if (!iconCheck.ok) {
+          return { ok: false, statusCode: 400, error: iconCheck.error };
+        }
+        hasIconChange = true;
+        nextIcon = iconCheck.value;
+      }
       return sessionOrgStore.mutateOrgAtomically((org) => {
         let proj = org.projects.find((p) => p.id === cleanId || (Array.isArray(p.aliases) && p.aliases.includes(cleanId))) || null;
         if (!proj) {
@@ -2910,6 +2926,10 @@ async function activate(host) {
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'name')) {
           proj.name = String(patch.name).trim();
+        }
+        if (hasIconChange) {
+          if (nextIcon) proj.icon = nextIcon;
+          else delete proj.icon;
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'groupId')) {
           const nextGid = patch.groupId ? String(patch.groupId).trim() : null;

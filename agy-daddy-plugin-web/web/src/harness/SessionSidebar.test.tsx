@@ -906,4 +906,55 @@ describe('SessionSidebar v2 org: pinning, archive, permissions, keyboard/menu re
     expect(resolveNextActiveSessionId(sessList.slice(1), 'p1-s2', 'p1-s2')).toBe('p2-s1');
     expect(resolveNextActiveSessionId([sessList[0]], 'p1-s1', 'p1-s1')).toBeNull();
   });
+
+  it('HUB-319: renders and updates custom icons on groups and projects, including new group icon', async () => {
+    const onUpdateProject = vi.fn().mockResolvedValue(undefined);
+    const onUpdateGroup = vi.fn().mockResolvedValue(undefined);
+    const onCreateGroup = vi.fn().mockResolvedValue(undefined);
+
+    const groups: ProjectGroup[] = [
+      { id: 'g-1', name: 'Core', icon: 'preset:layers', sortOrder: 0, collapsed: false },
+    ];
+    const projects: ProjectItem[] = [
+      { id: 'p-1', name: 'Alpha', icon: '🚀', rootPath: '/ws/alpha', groupId: 'g-1' },
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={[]}
+        projects={projects}
+        projectGroups={groups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onUpdateProject={onUpdateProject}
+        onUpdateGroup={onUpdateGroup}
+        onCreateGroup={onCreateGroup}
+      />,
+    );
+
+    // Existing custom icons render
+    expect(screen.getByTestId('group-icon-g-1').querySelector('[data-entity-icon="preset:layers"]')).toBeTruthy();
+    expect(screen.getByTestId('project-icon-p-1')).toHaveTextContent('🚀');
+
+    // Update project icon via action popover -> preset icon
+    fireEvent.click(screen.getByTestId('project-actions-p-1'));
+    fireEvent.click(screen.getByTestId('set-project-icon-p-1'));
+    fireEvent.click(screen.getByTestId('project-icon-p-1-preset-code'));
+    expect(onUpdateProject).toHaveBeenCalledWith('p-1', { icon: 'preset:code' });
+
+    // Update group icon via action popover -> custom emoji input
+    fireEvent.click(screen.getByTestId('group-actions-g-1'));
+    fireEvent.click(screen.getByTestId('set-group-icon-g-1'));
+    fireEvent.change(screen.getByTestId('group-icon-g-1-custom-input'), { target: { value: '🔥' } });
+    fireEvent.click(screen.getByTestId('group-icon-g-1-custom-apply'));
+    expect(onUpdateGroup).toHaveBeenCalledWith('g-1', { icon: '🔥' });
+
+    // Create new group with selected icon
+    fireEvent.click(screen.getByTestId('open-new-group-btn'));
+    fireEvent.click(screen.getByTestId('new-group-icon-btn'));
+    fireEvent.click(screen.getByTestId('new-group-icon-emoji-⚡'));
+    fireEvent.change(screen.getByTestId('new-group-name'), { target: { value: 'Infra' } });
+    fireEvent.click(screen.getByTestId('create-group-submit'));
+    expect(onCreateGroup).toHaveBeenCalledWith('Infra', '⚡');
+  });
 });

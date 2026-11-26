@@ -90,6 +90,358 @@
       "group": { "zh-CN": "按需文本翻译", "en": "On-Demand Translation" },
       "label": { "zh-CN": "允许远程翻译思考片段", "en": "Enable remote thinking translation" },
       "description": { "zh-CN": "默认关闭；开启后仅在触发时将选中内容发送至 translate.googleapis.com（按当前语言目标翻译）", "en": "Default OFF; sends selected snippet to translate.googleapis.com for the active target language only on trigger" }
+    },
+    {
+      "key": "thinkingTranslationMode",
+      "type": "enum",
+      "default": "off",
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "options": [
+        {
+          "value": "off",
+          "label": {
+            "zh-CN": "关闭（保持原生思维链原文）",
+            "zh-TW": "關閉（保持原生思維鏈原文）",
+            "ja": "オフ（元の思考プロセスを維持）",
+            "ko": "끄기 (원본 사고 과정 유지)",
+            "es": "Desactivado (mantener texto original)",
+            "pt": "Desativado (manter texto original)",
+            "fr": "Désactivé (conserver l'original)",
+            "ru": "Выкл. (оригинал CoT)",
+            "it": "Disattivato (mantieni originale)",
+            "en": "Off (Keep original CoT)"
+          }
+        },
+        {
+          "value": "free",
+          "label": {
+            "zh-CN": "免配置机翻（开箱即用 · Google Translate）",
+            "zh-TW": "免設定機翻（開箱即用 · Google Translate）",
+            "ja": "自動機械翻訳（設定不要 · Google Translate）",
+            "ko": "자동 기계 번역 (설정 불필요 · Google Translate)",
+            "es": "Traducción automática (Google Translate)",
+            "pt": "Tradução automática (Google Translate)",
+            "fr": "Traduction automatique (Google Translate)",
+            "ru": "Машинный перевод (Google Translate)",
+            "it": "Traduzione automatica (Google Translate)",
+            "en": "Built-in Machine Translation (Google Translate)"
+          }
+        },
+        {
+          "value": "antigravity",
+          "label": {
+            "zh-CN": "Antigravity 内置模型转译（调用宿主 RPC · 无需外部 Key）",
+            "zh-TW": "Antigravity 內置模型轉譯（呼叫宿主 RPC · 無需外部 Key）",
+            "ja": "Antigravity 内蔵モデル翻訳（ホスト RPC · 外部キー不要）",
+            "ko": "Antigravity 내장 모델 번역 (호스트 RPC · 외부 키 불필요)",
+            "es": "Modelo integrado de Antigravity (RPC del host)",
+            "pt": "Modelo integrado do Antigravity (RPC do host)",
+            "fr": "Modèle intégré Antigravity (RPC hôte)",
+            "ru": "Встроенная модель Antigravity (RPC хоста)",
+            "it": "Modello integrato Antigravity (RPC host)",
+            "en": "Antigravity Built-in Model (Host RPC, No External Key)"
+          }
+        },
+        {
+          "value": "custom_api",
+          "label": {
+            "zh-CN": "自定义 AI 模型流式转译（OpenAI 兼容 / Ollama）",
+            "zh-TW": "自訂 AI 模型串流轉譯（OpenAI 相容 / Ollama）",
+            "ja": "カスタム AI ストリーミング翻訳（OpenAI 互換 / Ollama）",
+            "ko": "사용자 지정 AI 스트리밍 번역 (OpenAI 호환 / Ollama)",
+            "es": "API OpenAI compatible en streaming (Ollama / Cloud)",
+            "pt": "API compatível com OpenAI em streaming (Ollama / Cloud)",
+            "fr": "API compatible OpenAI en streaming (Ollama / Cloud)",
+            "ru": "Потоковый перевод через OpenAI-совместимый API / Ollama",
+            "it": "API compatibile OpenAI in streaming (Ollama / Cloud)",
+            "en": "Custom OpenAI-Compatible API (Streaming)"
+          }
+        }
+      ],
+      "label": {
+        "zh-CN": "思考转译模式",
+        "zh-TW": "思考轉譯模式",
+        "ja": "思考翻訳モード",
+        "ko": "사고 번역 모드",
+        "es": "Modo de traducción CoT",
+        "pt": "Modo de tradução CoT",
+        "fr": "Mode de traduction CoT",
+        "ru": "Режим перевода CoT",
+        "it": "Modalità traduzione CoT",
+        "en": "Thinking translation mode"
+      },
+      "description": {
+        "zh-CN": "默认关闭以保持原生思维链零干扰。可选「免配置机翻」（发送至 translate.googleapis.com，file:// 路径自动脱敏保护）、「Antigravity 内置模型」（通过宿主只读 RPC GetModelResponse 调用已登录模型）或「自定义 AI 模型流式转译」（发送至下方配置的 OpenAI 兼容端点，支持本地 Ollama / LM Studio）",
+        "en": "Default OFF to keep native CoT untouched. Choose 'free' (translate.googleapis.com with file:// URI protection), 'antigravity' (host RPC GetModelResponse using Antigravity's built-in logged-in model), or 'custom_api' (streaming OpenAI-compatible endpoint / local Ollama)."
+      }
+    },
+    {
+      "key": "thinkingTargetLang",
+      "type": "enum",
+      "default": "follow",
+      "visibleWhen": { "key": "thinkingTranslationMode", "notEquals": "off" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "options": [
+        {
+          "value": "follow",
+          "label": {
+            "zh-CN": "跟随当前界面语言（全 10 语言）",
+            "zh-TW": "跟隨目前介面語言（全 10 語言）",
+            "ja": "現在の表示言語に従う（全10言語）",
+            "ko": "현재 인터페이스 언어 따르기 (10개 언어)",
+            "es": "Seguir idioma de la interfaz (10 idiomas)",
+            "pt": "Seguir idioma da interface (10 idiomas)",
+            "fr": "Suivre la langue de l'interface (10 langues)",
+            "ru": "Как язык интерфейса (все 10 языков)",
+            "it": "Segui lingua interfaccia (10 lingue)",
+            "en": "Follow UI Language (All 10 Languages)"
+          }
+        },
+        { "value": "zh", "label": "简体中文 (zh-CN)" },
+        { "value": "zh-TW", "label": "繁體中文 (zh-TW)" },
+        { "value": "ja", "label": "日本語 (Japanese)" },
+        { "value": "ko", "label": "한국어 (Korean)" },
+        { "value": "es", "label": "Español (Spanish)" },
+        { "value": "pt", "label": "Português (Portuguese)" },
+        { "value": "fr", "label": "Français (French)" },
+        { "value": "ru", "label": "Русский (Russian)" },
+        { "value": "it", "label": "Italiano (Italian)" },
+        { "value": "en", "label": "English (英文)" }
+      ],
+      "label": {
+        "zh-CN": "思考转译目标语言",
+        "zh-TW": "思考轉譯目標語言",
+        "ja": "思考翻訳の対象言語",
+        "ko": "사고 번역 대상 언어",
+        "es": "Idioma destino de CoT",
+        "pt": "Idioma de destino do CoT",
+        "fr": "Langue cible CoT",
+        "ru": "Целевой язык CoT",
+        "it": "Lingua di destinazione CoT",
+        "en": "Thinking target language"
+      },
+      "description": {
+        "zh-CN": "默认跟随界面显示语言；也可单独指定为插件支持的任意目标语言（覆盖简/繁/日/韩/西/葡/法/俄/意/英全部 10 种语言）",
+        "en": "Defaults to following the active UI language, or explicitly select any of the 10 supported target languages"
+      }
+    },
+    {
+      "key": "thinkingDisplayMode",
+      "type": "enum",
+      "default": "bilingual",
+      "visibleWhen": { "key": "thinkingTranslationMode", "notEquals": "off" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "options": [
+        {
+          "value": "bilingual",
+          "label": {
+            "zh-CN": "双语上下对照（保留原文 + 译文）",
+            "zh-TW": "雙語上下對照（保留原文 + 譯文）",
+            "ja": "対訳表示（原文 + 翻訳）",
+            "ko": "이중 언어 대조 (원문 + 번역)",
+            "es": "Vista bilingüe (original + traducción)",
+            "pt": "Modo bilíngue (original + tradução)",
+            "fr": "Vue bilingue (original + traduction)",
+            "ru": "Двуязычный режим (оригинал + перевод)",
+            "it": "Vista bilingue (originale + traduzione)",
+            "en": "Bilingual Stacked (Original + Translation)"
+          }
+        },
+        {
+          "value": "translated",
+          "label": {
+            "zh-CN": "沉浸式纯译文（隐藏原文）",
+            "zh-TW": "沉浸式純譯文（隱藏原文）",
+            "ja": "翻訳のみ（原文を非表示）",
+            "ko": "번역만 보기 (원문 숨김)",
+            "es": "Solo traducción (ocultar original)",
+            "pt": "Apenas tradução (ocultar original)",
+            "fr": "Traduction seule (masquer l'original)",
+            "ru": "Только перевод (скрыть оригинал)",
+            "it": "Solo traduzione (nascondi originale)",
+            "en": "Immersive Translation Only"
+          }
+        }
+      ],
+      "label": {
+        "zh-CN": "思考排版模式",
+        "zh-TW": "思考排版模式",
+        "ja": "思考表示レイアウト",
+        "ko": "사고 표시 레이아웃",
+        "es": "Diseño de visualización CoT",
+        "pt": "Layout de exibição CoT",
+        "fr": "Disposition d'affichage CoT",
+        "ru": "Режим отображения CoT",
+        "it": "Layout visualizzazione CoT",
+        "en": "Thinking layout mode"
+      },
+      "description": {
+        "zh-CN": "切换「双语上下对照」或「沉浸式纯译文」；支持在思考面板右上角一键快速切换",
+        "en": "Switch between bilingual stacked view and immersive translation-only view"
+      }
+    },
+    {
+      "key": "thinkingAntigravityModel",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "antigravity" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "options": [
+        {
+          "value": "",
+          "label": {
+            "zh-CN": "自动选择轻量快速模型（推荐）",
+            "zh-TW": "自動選擇輕量快速模型（推薦）",
+            "ja": "高速モデルを自動選択（推奨）",
+            "ko": "빠른 모델 자동 선택 (권장)",
+            "es": "Selección automática de modelo rápido (Recomendado)",
+            "pt": "Selecionar modelo rápido automaticamente (Recomendado)",
+            "fr": "Sélection automatique de modèle rapide (Recommandé)",
+            "ru": "Автовыбор быстрой модели (Рекомендуется)",
+            "it": "Selezione automatica modello veloce (Consigliato)",
+            "en": "Auto-select fast model (Recommended)"
+          }
+        }
+      ],
+      "optionsCommand": "zh-cn.list-antigravity-models",
+      "placeholder": {
+        "zh-CN": "留空自动优选轻量模型，或下拉选择可用 Antigravity 模型",
+        "en": "Leave blank to auto-select a fast model, or pick an Antigravity model"
+      },
+      "label": {
+        "zh-CN": "Antigravity 转译模型",
+        "zh-TW": "Antigravity 轉譯模型",
+        "ja": "Antigravity 翻訳モデル",
+        "ko": "Antigravity 번역 모델",
+        "es": "Modelo de Antigravity",
+        "pt": "Modelo do Antigravity",
+        "fr": "Modèle Antigravity",
+        "ru": "Модель Antigravity",
+        "it": "Modello Antigravity",
+        "en": "Antigravity Translation Model"
+      },
+      "description": {
+        "zh-CN": "从当前已登录 Antigravity 宿主动态拉取可用模型（含配额优先排序）；留空自动优先使用 Flash Lite 等轻量低耗模型",
+        "en": "Dynamically lists models from the logged-in Antigravity host; leave blank to auto-select lightweight fast models"
+      }
+    },
+    {
+      "key": "thinkingApiBaseUrl",
+      "type": "string",
+      "default": "http://127.0.0.1:11434/v1",
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "placeholder": { "zh-CN": "http://127.0.0.1:11434/v1 或 https://api.openai.com/v1", "en": "http://127.0.0.1:11434/v1 or https://api.openai.com/v1" },
+      "label": { "zh-CN": "自定义 API Base URL", "en": "Custom API Base URL" },
+      "description": {
+        "zh-CN": "OpenAI 兼容格式端点地址（支持本地免密 Ollama http://127.0.0.1:11434/v1、LM Studio http://127.0.0.1:1234/v1 或云端服务）",
+        "en": "OpenAI-compatible endpoint base URL (supports passwordless local Ollama/LM Studio or cloud APIs)"
+      }
+    },
+    {
+      "key": "thinkingApiKey",
+      "type": "string",
+      "default": "",
+      "secret": true,
+      "writeOnly": true,
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "placeholder": { "zh-CN": "本地 Ollama / LM Studio 可留空；云端 API 填入 Key", "en": "Leave blank for local Ollama/LM Studio; enter API key for cloud endpoints" },
+      "label": { "zh-CN": "API Key（可选 · 仅写保密）", "en": "API Key (Optional, Write-Only)" },
+      "description": {
+        "zh-CN": "仅写保存，保存后不再向界面回显明文；调用本地免密端点时无需填写",
+        "en": "Write-only secret (never echoed back); optional for passwordless local endpoints"
+      }
+    },
+    {
+      "key": "thinkingApiModel",
+      "type": "string",
+      "default": "qwen2.5:7b",
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": {
+        "zh-CN": "思考转译",
+        "zh-TW": "思考轉譯",
+        "ja": "思考翻訳 (CoT)",
+        "ko": "사고 번역 (CoT)",
+        "es": "Traducción de CoT",
+        "pt": "Tradução de CoT",
+        "fr": "Traduction CoT",
+        "ru": "Перевод CoT",
+        "it": "Traduzione CoT",
+        "en": "Thinking Translation (CoT)"
+      },
+      "placeholder": { "zh-CN": "qwen2.5:7b / gpt-4o-mini / deepseek-chat", "en": "qwen2.5:7b / gpt-4o-mini / deepseek-chat" },
+      "label": { "zh-CN": "转译模型名称", "en": "Translation Model" },
+      "description": {
+        "zh-CN": "发送至自定义 OpenAI 兼容端点的 model 字段",
+        "en": "Model identifier sent to the custom OpenAI-compatible chat completions endpoint"
+      }
     }
   ],
   "actions": [
@@ -107,6 +459,38 @@
         "ru": "Переключить язык / English",
         "it": "Cambia lingua corrente / English",
         "en": "Toggle Active Language / English"
+      }
+    },
+    {
+      "id": "toggle-thinking-display",
+      "command": "zh-cn.toggle-thinking-display",
+      "label": {
+        "zh-CN": "切换思考双语对照 / 沉浸纯译文",
+        "zh-TW": "切換思考雙語對照 / 沉浸純譯文",
+        "ja": "思考翻訳の対訳 / 翻訳のみ表示を切り替え",
+        "ko": "사고 번역 이중 언어 / 번역 전용 전환",
+        "es": "Alternar CoT bilingüe / solo traducción",
+        "pt": "Alternar CoT bilíngue / apenas tradução",
+        "fr": "Basculer CoT bilingue / traduction seule",
+        "ru": "Переключить режим CoT: двуязычный / только перевод",
+        "it": "Alterna CoT bilingue / solo traduzione",
+        "en": "Toggle Thinking Bilingual / Translated-Only"
+      }
+    },
+    {
+      "id": "test-thinking-api",
+      "command": "zh-cn.test-thinking-api",
+      "label": {
+        "zh-CN": "测试思考转译服务连通性",
+        "zh-TW": "測試思考轉譯服務連通性",
+        "ja": "思考翻訳サービス接続テスト",
+        "ko": "사고 번역 서비스 연결 테스트",
+        "es": "Probar conexión del servicio CoT",
+        "pt": "Testar conexão do serviço CoT",
+        "fr": "Tester la connexion du service CoT",
+        "ru": "Проверить подключение сервиса CoT",
+        "it": "Verifica connessione servizio CoT",
+        "en": "Test Thinking Translation Service Connectivity"
       }
     }
   ]

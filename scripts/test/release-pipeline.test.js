@@ -23,7 +23,7 @@ test('parseReleaseTag resolves coordinated root tags and package-scoped tags', (
   const allRes = parseReleaseTag('v1.0.0', ROOT_DIR);
   assert.equal(allRes.kind, 'all');
   assert.equal(allRes.expectedVersion, '1.0.0');
-  assert.equal(allRes.targets.length, 13);
+  assert.equal(allRes.targets.length, 14);
 
   const rcRes = parseReleaseTag('v1.2.3-rc.1', ROOT_DIR);
   assert.equal(rcRes.kind, 'all');
@@ -73,15 +73,15 @@ test('resolveEnvironmentConfig isolates dev / next / latest channels and allows 
 
 test('validateReleaseConsistency passes on current monorepo packages and catches version drift', () => {
   const packages = listPublishablePackages(ROOT_DIR);
-  assert.equal(packages.length, 13);
+  assert.equal(packages.length, 14);
 
   const okRes = validateReleaseConsistency({ rootDir: ROOT_DIR, packages, expectedVersion: packages[0].version });
   assert.equal(okRes.ok, true);
-  assert.equal(okRes.checked.length, 13);
+  assert.equal(okRes.checked.length, 14);
 
   const driftRes = validateReleaseConsistency({ rootDir: ROOT_DIR, packages, expectedVersion: '9.9.9' });
   assert.equal(driftRes.ok, false);
-  assert.equal(driftRes.errors.length, 13);
+  assert.equal(driftRes.errors.length, 14);
 });
 
 test('publishRelease dry-run emits public access & dist-tag commands without mutating registry', () => {

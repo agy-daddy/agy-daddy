@@ -127,6 +127,18 @@
       "description": "18767 本地安全 PC Web 桌面工作台：完整对话流、工作区文件树、Git Diff、Artifacts 与底座管理台"
     },
     {
+      "shortName": "theme",
+      "id": "agy-daddy.theme",
+      "name": "视觉主题与光学定制",
+      "layer": 3,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-theme",
+      "npmPackage": "@agy-daddy/plugin-theme",
+      "description": "独立视觉主题插件：默认零变动保持宿主原生外观，支持光学预设、组件级样式自定义与可选动效余晖开关"
+    },
+    {
       "shortName": "design",
       "id": "hubo1989.design",
       "name": "Agy Design Studio",

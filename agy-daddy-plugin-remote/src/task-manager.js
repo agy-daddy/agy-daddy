@@ -260,9 +260,9 @@ function createTaskManager({
       }
     }
 
-    const knownProjectMap = new Map(); // key -> { key, path, name, id, aliases }
+    const knownProjectMap = new Map(); // key -> { key, path, name, id, aliases, worktreeId, worktreeBranch }
     const projectIdToKey = new Map();
-    const registerKnownProject = (rawPath, { name = '', id = '', aliases = [] } = {}) => {
+    const registerKnownProject = (rawPath, { name = '', id = '', aliases = [], worktreeId = '', worktreeBranch = '' } = {}) => {
       const normPath = normalizeProjectPath(rawPath);
       const key = canonicalProjectKey(normPath);
       if (!key) return;
@@ -270,12 +270,16 @@ function createTaskManager({
       const resolvedName = existing?.name || String(name || '').trim() || extractProjectBasename(normPath) || normPath;
       const mergedAliases = new Set([...(existing?.aliases || []), ...(Array.isArray(aliases) ? aliases : [])]);
       const resolvedId = id || existing?.id || '';
+      const resolvedWtId = existing?.worktreeId || (typeof worktreeId === 'string' ? worktreeId.trim() : '');
+      const resolvedWtBranch = existing?.worktreeBranch || (typeof worktreeBranch === 'string' ? worktreeBranch.trim() : '');
       knownProjectMap.set(key, {
         key,
         path: existing?.path || normPath,
         name: resolvedName,
         id: resolvedId,
-        aliases: Array.from(mergedAliases)
+        aliases: Array.from(mergedAliases),
+        ...(resolvedWtId ? { worktreeId: resolvedWtId } : {}),
+        ...(resolvedWtBranch ? { worktreeBranch: resolvedWtBranch } : {})
       });
       if (resolvedId) projectIdToKey.set(resolvedId, key);
       for (const al of mergedAliases) {
@@ -295,7 +299,9 @@ function createTaskManager({
           if (wt?.path) {
             registerKnownProject(wt.path, {
               name: p.name || wt.displayLabel,
-              id: p.id
+              id: p.id,
+              worktreeId: wt.worktreeId || '',
+              worktreeBranch: wt.branch || wt.displayLabel || ''
             });
           }
         }
@@ -304,7 +310,11 @@ function createTaskManager({
     if (worktreeDiscovery) {
       for (const wt of worktreeDiscovery.getAllKnownWorktrees()) {
         if (wt?.path) {
-          registerKnownProject(wt.path, { name: wt.displayLabel || '' });
+          registerKnownProject(wt.path, {
+            name: wt.displayLabel || '',
+            worktreeId: wt.worktreeId || '',
+            worktreeBranch: wt.branch || wt.displayLabel || ''
+          });
         }
       }
     }
@@ -316,9 +326,32 @@ function createTaskManager({
         }
       } catch {}
     }
+
+    const knownWorktreesDesc = Array.from(knownProjectMap.values())
+      .filter((proj) => Boolean(proj.worktreeId))
+      .sort((a, b) => b.key.length - a.key.length);
+    const isCoveredByKnownWorktree = (rawPath) => {
+      const norm = normalizeProjectPath(rawPath);
+      if (!norm) return false;
+      const key = canonicalProjectKey(norm);
+      const canon = workspaceOrg.canonicalizePath(norm) || norm;
+      const canonKey = canonicalProjectKey(canon);
+      for (const wt of knownWorktreesDesc) {
+        const wtPrefix = wt.key.endsWith('/') ? wt.key : `${wt.key}/`;
+        if (key === wt.key || key.startsWith(wtPrefix)) return true;
+        const wtCanon = workspaceOrg.canonicalizePath(wt.path) || wt.path;
+        const wtCanonKey = canonicalProjectKey(wtCanon);
+        const wtCanonPrefix = wtCanonKey.endsWith('/') ? wtCanonKey : `${wtCanonKey}/`;
+        if (canonKey && wtCanonKey && (canonKey === wtCanonKey || canonKey.startsWith(wtCanonPrefix))) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     for (const s of sessions) {
       const wsRaw = s?.workspacePath || (typeof s?.workspaceUri === 'string' ? s.workspaceUri : '');
-      if (wsRaw) {
+      if (wsRaw && !isCoveredByKnownWorktree(wsRaw)) {
         registerKnownProject(wsRaw, { name: s.projectName || '', id: s.projectId || '' });
       }
     }
@@ -327,11 +360,26 @@ function createTaskManager({
     const resolveProjectInfo = (candidateRaw, fallbackProject = null) => {
       const normCand = normalizeProjectPath(candidateRaw);
       const candKey = canonicalProjectKey(normCand);
+      const candCanon = normCand ? (workspaceOrg.canonicalizePath(normCand) || normCand) : '';
+      const candCanonKey = canonicalProjectKey(candCanon);
       if (candKey) {
         for (const proj of knownProjectsDesc) {
           const prefix = proj.key.endsWith('/') ? proj.key : `${proj.key}/`;
-          if (candKey === proj.key || candKey.startsWith(prefix)) {
-            return { key: proj.key, path: proj.path, name: proj.name };
+          let matched = candKey === proj.key || candKey.startsWith(prefix);
+          if (!matched && candCanonKey) {
+            const projCanon = workspaceOrg.canonicalizePath(proj.path) || proj.path;
+            const projCanonKey = canonicalProjectKey(projCanon);
+            const projCanonPrefix = projCanonKey.endsWith('/') ? projCanonKey : `${projCanonKey}/`;
+            matched = candCanonKey === projCanonKey || candCanonKey.startsWith(projCanonPrefix);
+          }
+          if (matched) {
+            return {
+              key: proj.key,
+              path: proj.path,
+              name: proj.name,
+              ...(proj.worktreeId ? { worktreeId: proj.worktreeId } : {}),
+              ...(proj.worktreeBranch ? { worktreeBranch: proj.worktreeBranch } : {})
+            };
           }
         }
       }
@@ -368,6 +416,8 @@ function createTaskManager({
           cwd: rec.cwd || undefined,
           projectPath: projInfo.path,
           projectName: projInfo.name,
+          ...(projInfo.worktreeId ? { worktreeId: projInfo.worktreeId } : {}),
+          ...(projInfo.worktreeBranch ? { worktreeBranch: projInfo.worktreeBranch } : {}),
           sessionTitle: rec.sessionTitle || null,
           startedAt: toTimestampMs(rec.createdAt, Date.now()),
           endedAt: status === 'running' ? null : toTimestampMs(rec.endedAt, Date.now()),
@@ -413,6 +463,8 @@ function createTaskManager({
         cwd,
         projectPath: projInfo.path,
         projectName: projInfo.name,
+        ...(projInfo.worktreeId ? { worktreeId: projInfo.worktreeId } : {}),
+        ...(projInfo.worktreeBranch ? { worktreeBranch: projInfo.worktreeBranch } : {}),
         startedAt,
         endedAt,
         exitCode: null,
@@ -468,6 +520,8 @@ function createTaskManager({
             cwd: parsed.cwd || undefined,
             projectPath: projInfo.path,
             projectName: projInfo.name,
+            ...(projInfo.worktreeId ? { worktreeId: projInfo.worktreeId } : {}),
+            ...(projInfo.worktreeBranch ? { worktreeBranch: projInfo.worktreeBranch } : {}),
             startedAt: parsed.startedAt,
             endedAt: parsed.status === 'running' ? null : parsed.endedAt,
             exitCode: parsed.exitCode,
@@ -553,6 +607,9 @@ function createTaskManager({
     const resolvedFilterProjectKey = filterProjectRaw
       ? (projectIdToKey.get(filterProjectRaw) || canonicalProjectKey(filterProjectRaw))
       : '';
+    const resolvedFilterCanonKey = resolvedFilterProjectKey
+      ? canonicalProjectKey(workspaceOrg.canonicalizePath(resolvedFilterProjectKey) || resolvedFilterProjectKey)
+      : '';
 
     const matchesFilter = (dto) => {
       if (filterSessionId && dto.sessionId !== filterSessionId) {
@@ -560,8 +617,14 @@ function createTaskManager({
       }
       if (filterProjectRaw) {
         const taskProjKey = dto.projectPath ? canonicalProjectKey(dto.projectPath) : '';
-        if (!taskProjKey || taskProjKey !== resolvedFilterProjectKey) {
+        if (!taskProjKey) {
           return false;
+        }
+        if (taskProjKey !== resolvedFilterProjectKey) {
+          const taskProjCanonKey = canonicalProjectKey(workspaceOrg.canonicalizePath(dto.projectPath) || dto.projectPath);
+          if (!taskProjCanonKey || taskProjCanonKey !== resolvedFilterCanonKey) {
+            return false;
+          }
         }
       }
       return true;

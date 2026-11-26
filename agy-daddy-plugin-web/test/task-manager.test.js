@@ -402,3 +402,91 @@ test('HUB-314: taskManager resolves projectPath/projectName, filters before RECE
   assert.equal(comboMiss.recent.length, 0);
   assert.equal(comboMiss.totalRunningCount, 2);
 });
+
+test('HUB-346: nested worktree subdirectory session does not shadow worktree root entry or drop worktreeId', async () => {
+  const repoRoot = path.resolve('/work/hub346-repo');
+  const nestedWt = path.join(repoRoot, '.worktrees', 'wt-inner');
+  const nestedSubdir = path.join(nestedWt, 'src', 'sub');
+  const wtId = 'wt_inner_001';
+
+  const workspaceMetaStore = {
+    getState() {
+      return { defaultSessionPath: path.resolve('/work/standalone') };
+    },
+    listProjectsAndGroups() {
+      return {
+        projects: [
+          {
+            id: 'proj-main',
+            name: 'Hub346 Repo',
+            rootPath: repoRoot,
+            isMultiWorktree: true,
+            worktrees: [
+              { worktreeId: 'wt_main_001', path: repoRoot, branch: 'main', displayLabel: 'main' },
+              { worktreeId: wtId, path: nestedWt, branch: 'feat/inner', displayLabel: 'feat/inner' }
+            ]
+          }
+        ],
+        groups: []
+      };
+    }
+  };
+
+  const harnessAdapter = {
+    async listSessions() {
+      return {
+        sessions: [
+          {
+            cascadeId: 'cid-subdir',
+            title: 'Subdir Session',
+            status: 'CASCADE_RUN_STATUS_IDLE',
+            projectId: 'proj-main',
+            projectName: 'Hub346 Repo',
+            workspaceUri: url.pathToFileURL(nestedSubdir).href,
+            createdTime: '2026-11-26T10:00:00Z',
+            lastModifiedTime: '2026-11-26T10:01:00Z'
+          }
+        ]
+      };
+    }
+  };
+
+  const rpc = {
+    async call(method) {
+      if (method === 'GetCascadeTrajectorySteps') {
+        return {
+          steps: [
+            {
+              stepIndex: 0,
+              type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+              status: 'CORTEX_STEP_STATUS_DONE',
+              runCommand: {
+                commandLine: 'npm test',
+                cwd: nestedSubdir,
+                exitCode: 0,
+                combinedOutput: 'ok'
+              }
+            }
+          ]
+        };
+      }
+      return {};
+    }
+  };
+
+  const mgr = createTaskManager({ rpc, harnessAdapter, workspaceMetaStore });
+  const res = await mgr.listTasks();
+  assert.equal(res.ok, true);
+
+  const cmdTask = res.recent.find((t) => t.taskId === 'cmd:cid-subdir:0');
+  assert.ok(cmdTask);
+  assert.equal(cmdTask.projectPath, nestedWt);
+  assert.equal(cmdTask.projectName, 'Hub346 Repo');
+  assert.equal(cmdTask.worktreeId, wtId);
+  assert.equal(cmdTask.worktreeBranch, 'feat/inner');
+
+  const sessTask = res.recent.find((t) => t.taskId === 'session:cid-subdir');
+  assert.ok(sessTask);
+  assert.equal(sessTask.projectPath, nestedWt);
+  assert.equal(sessTask.worktreeId, wtId);
+});

@@ -133,9 +133,25 @@ function readAccessSettings(settings) {
   };
 }
 
+function readNotificationSetting(settings) {
+  return Boolean(settings?.enableNotifications);
+}
+
+function readUiSettingsSnapshot(settings) {
+  return {
+    theme: settings?.theme,
+    colorTheme: settings?.colorTheme,
+    drawerSpeed: settings?.drawerSpeed,
+    enableNotifications: readNotificationSetting(settings)
+  };
+}
+
 function buildPublicStatus(runtime) {
   const port = runtime.webServer?.port || null;
   const access = runtime.webServer?.getAccessStatus ? runtime.webServer.getAccessStatus() : null;
+  const enableNotifications = runtime.webServer?.getEnableNotifications
+    ? Boolean(runtime.webServer.getEnableNotifications())
+    : Boolean(runtime.webServer?.enableNotifications);
   return {
     ok: true,
     running: Boolean(runtime.webServer && port),
@@ -152,6 +168,7 @@ function buildPublicStatus(runtime) {
     allowRemoteWrite: access?.allowRemoteWrite || false,
     tunnelHostname: access?.tunnelHostname || '',
     cloudflareState: access?.cloudflareState || null,
+    enableNotifications,
     rpcConnected: Boolean(runtime.lastHubOrigin),
     hubOrigin: runtime.lastHubOrigin || null,
     pluginVersion: PLUGIN_VERSION
@@ -172,6 +189,8 @@ async function activate(host) {
   const localToken = webConfig.localToken || webConfig.token;
   const localConfirmSecret = crypto.randomBytes(32).toString('hex');
   let runtimeAccess = readAccessSettings(settings);
+  let runtimeEnableNotifications = readNotificationSetting(settings);
+  let lastUiSettingsJson = JSON.stringify(readUiSettingsSnapshot(settings));
 
   let runtime = null;
   const sessionOrgBridge = createSessionOrgBridge({
@@ -606,7 +625,26 @@ async function activate(host) {
    */
   async function runReconcileAccess() {
     if (activeRuntime !== runtime || !runtime.webServer) return;
-    const next = readAccessSettings(readStoredSettings(host));
+    const latestSettings = readStoredSettings(host);
+    const next = readAccessSettings(latestSettings);
+    const nextEnableNotifications = readNotificationSetting(latestSettings);
+    const nextUiSettings = readUiSettingsSnapshot(latestSettings);
+    const nextUiSettingsJson = JSON.stringify(nextUiSettings);
+    if (nextEnableNotifications !== runtimeEnableNotifications) {
+      runtimeEnableNotifications = nextEnableNotifications;
+      runtime.webServer.updateNotificationConfig?.({ enableNotifications: nextEnableNotifications });
+    }
+    if (nextUiSettingsJson !== lastUiSettingsJson) {
+      lastUiSettingsJson = nextUiSettingsJson;
+      runtime.webServer.broadcast('state.patch', {
+        key: 'state:plugin.settings@1',
+        value: {
+          pluginId: 'agy-daddy.web',
+          values: nextUiSettings,
+          updatedAt: Date.now()
+        }
+      });
+    }
     const previousAccess = {
       ...runtimeAccess,
       channels: { ...runtimeAccess.channels }
@@ -745,6 +783,8 @@ async function activate(host) {
     getTunnelHostname: () => runtime.effectiveTunnelHostname,
     getCloudflareMountPath: () => runtime.effectiveMountPath,
     getCloudflareState: () => runtime.cloudflareState,
+    enableNotifications: runtimeEnableNotifications,
+    getEnableNotifications: () => runtimeEnableNotifications,
     port: listenPort,
     pairingToken: runtime.pairingToken,
     confirmSecret: runtime.confirmSecret,

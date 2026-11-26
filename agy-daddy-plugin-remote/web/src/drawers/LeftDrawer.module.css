@@ -856,3 +856,17 @@
   color: var(--ag-muted);
   line-height: 1.4;
 }
+
+.entityIconBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--ag-secondary);
+}
+
+.newGroupRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

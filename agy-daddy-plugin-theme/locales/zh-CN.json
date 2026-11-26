@@ -1,0 +1,7 @@
+{
+  "unit.label": "主题",
+  "popover.title": "视觉主题与光学预设",
+  "status.native": "原生外观（零注入）",
+  "status.active": "已启用自定义光学外观",
+  "status.powerSave": "静默省电模式已开启"
+}

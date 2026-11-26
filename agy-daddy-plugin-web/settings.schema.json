@@ -241,6 +241,23 @@
         "en": "Auto-open Browser on Launch",
         "zh-CN": "启动时自动打开浏览器"
       }
+    },
+    {
+      "key": "enableNotifications",
+      "type": "boolean",
+      "default": false,
+      "group": {
+        "zh-CN": "通知与提醒",
+        "en": "Notifications & Alerts"
+      },
+      "label": {
+        "zh-CN": "浏览器系统通知",
+        "en": "Browser Notifications"
+      },
+      "description": {
+        "zh-CN": "在标签页处于后台或最小化时，任务完成、后台运行结束或收到新消息时发送浏览器系统通知。",
+        "en": "Show system notifications for task completions, background runs, and new messages when the tab is hidden or backgrounded."
+      }
     }
   ]
 }

@@ -23,6 +23,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   keepThinkingExpanded: false,
   enableInlineFileEditor: true,
   enableCmdClickLinks: true,
+  enableCodeBlockSticky: true,
+  enableCodeBlockFold: true,
+  codeFoldMinLines: 48,
+  showOutlineRail: true,
+  enableTurnShortcuts: true,
   searchRegexMode: false,
   searchCaseSensitive: false,
   exportSaveBehavior: 'dialog',
@@ -424,6 +429,22 @@ async function activate(host) {
   const stopCmdBrowseDir = await host.commands.register('chat-nav.browseExportDir', async (opts = {}) => {
     return serviceMethods.browseExportDir(opts || {});
   });
+  const stopCmdToggleOutline = await host.commands.register('chat-nav.toggle-outline', () => {
+    host.events.emit('chat-nav:command@1', { command: 'toggle-outline' });
+    return { ok: true, command: 'chat-nav.toggle-outline', action: 'toggleOutline' };
+  });
+  const stopCmdCollapseLongCode = await host.commands.register('chat-nav.collapse-long-code', () => {
+    host.events.emit('chat-nav:command@1', { command: 'collapse-long-code' });
+    return { ok: true, command: 'chat-nav.collapse-long-code', action: 'collapseLongCode' };
+  });
+  const stopCmdTurnPrev = await host.commands.register('chat-nav.turn-prev', () => {
+    host.events.emit('chat-nav:command@1', { command: 'turn-prev' });
+    return { ok: true, command: 'chat-nav.turn-prev', action: 'turnPrev' };
+  });
+  const stopCmdTurnNext = await host.commands.register('chat-nav.turn-next', () => {
+    host.events.emit('chat-nav:command@1', { command: 'turn-next' });
+    return { ok: true, command: 'chat-nav.turn-next', action: 'turnNext' };
+  });
 
   disposers.push(
     stopSettings,
@@ -443,7 +464,11 @@ async function activate(host) {
     stopCmdExportMd,
     stopCmdExport,
     stopCmdExportAll,
-    stopCmdBrowseDir
+    stopCmdBrowseDir,
+    stopCmdToggleOutline,
+    stopCmdCollapseLongCode,
+    stopCmdTurnPrev,
+    stopCmdTurnNext
   );
 }
 

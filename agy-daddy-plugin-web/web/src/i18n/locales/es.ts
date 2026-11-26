@@ -2,6 +2,12 @@ import type { I18nMessages } from '../types';
 
 export const es: Partial<I18nMessages> = {
   'brand.title': 'Agy-Daddy Web',
+  'sidebar.setIcon': 'Establecer icono',
+  'sidebar.clearIcon': 'Restablecer',
+  'sidebar.iconPresetGroup': 'Iconos',
+  'sidebar.iconEmojiGroup': 'Emoji',
+  'sidebar.iconCustomPlaceholder': 'Emoji o símbolo...',
+  'sidebar.groupIconAria': 'Seleccionar icono del grupo',
 
   'shell.expandSidebar': 'Expandir barra lateral',
   'shell.collapseSidebar': 'Contraer barra lateral',
@@ -479,4 +485,20 @@ export const es: Partial<I18nMessages> = {
   'tasks.filterEmpty': 'No hay tareas en segundo plano que coincidan con los filtros.',
   'tasks.filterProjectAria': 'Filtrar por proyecto',
   'tasks.filterSessionAria': 'Filtrar por sesión',
+
+  'notifications.taskDoneTitle': 'Tarea completada: {title}',
+  'notifications.taskDoneBody': 'El proceso ({kind}) en segundo plano finalizó.',
+  'notifications.taskErrorTitle': 'Tarea fallida: {title}',
+  'notifications.taskErrorBody': 'El proceso ({kind}) en segundo plano terminó con un error.',
+  'notifications.sessionDoneTitle': 'Agente finalizado: {session}',
+  'notifications.sessionDoneBody': 'Haz clic para ver la última respuesta.',
+  'notifications.sessionErrorTitle': 'Error del agente: {session}',
+  'notifications.sessionErrorBody': 'Haz clic para revisar los detalles del error.',
+  'notifications.approvalTitle': 'Acción requerida: {session}',
+  'notifications.approvalBody': 'Un paso espera tu aprobación o respuesta.',
+  'notifications.permissionPromptTitle': 'Las notificaciones del navegador están activadas',
+  'notifications.permissionGrantBtn': 'Conceder permiso',
+  'notifications.permissionDeniedHint': 'El permiso de notificaciones está bloqueado. Permítelo en la configuración del sitio.',
+  'notifications.permissionGrantedHint': 'Las notificaciones del navegador están autorizadas.',
+  'notifications.unsupportedHint': 'Este navegador no admite notificaciones del sistema.',
 };

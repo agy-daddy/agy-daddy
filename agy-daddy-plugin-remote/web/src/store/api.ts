@@ -265,6 +265,8 @@ export const api = {
           action?: 'upsert';
           id?: string;
           name?: string;
+          icon?: string | null;
+          source?: string;
           collapsed?: boolean;
           projectIds?: string[];
           workspaceUris?: string[];
@@ -321,6 +323,7 @@ export const api = {
     createDir?: boolean;
     source?: string;
     remote?: ProjectRemoteMeta | null;
+    icon?: string | null;
   }) =>
     requestJson<{
       ok: boolean;
@@ -339,6 +342,7 @@ export const api = {
     id: string,
     patch: {
       name?: string;
+      icon?: string | null;
       groupId?: string | null;
       pinned?: boolean;
       workspaceUri?: string;
@@ -689,7 +693,22 @@ export const api = {
     }),
 
   getVapidKey: () =>
-    requestJson<{ ok: boolean; publicKey?: string; vapidPublicKey?: string }>('/api/v1/push/vapid-key'),
+    requestJson<{
+      ok: boolean;
+      publicKey?: string;
+      vapidPublicKey?: string;
+      enablePushNotifications?: boolean;
+      enableAppBadge?: boolean;
+    }>('/api/v1/push/vapid-key'),
+
+  getPushStatus: () =>
+    requestJson<{
+      ok: boolean;
+      available?: boolean;
+      enablePushNotifications: boolean;
+      enableAppBadge: boolean;
+      subscriptionsCount?: number;
+    }>('/api/v1/push/status'),
 
   subscribePush: (subscription: PushSubscriptionJSON) =>
     requestJson<{ ok: boolean }>('/api/v1/push/subscribe', {
@@ -704,7 +723,13 @@ export const api = {
     }),
 
   testPush: () =>
-    requestJson<{ ok: boolean }>('/api/v1/push/test', {
+    requestJson<{
+      ok: boolean;
+      sent?: number;
+      disabled?: boolean;
+      skipped?: boolean;
+      reason?: string;
+    }>('/api/v1/push/test', {
       method: 'POST',
       body: '{}'
     }),

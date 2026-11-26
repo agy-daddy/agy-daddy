@@ -47,6 +47,7 @@ export interface TopbarCapsulesProps {
   onRefreshTasks?: () => void;
   onStopTask?: (taskId: string) => Promise<StopBackgroundTaskResponse | void>;
   onSelectTaskSession?: (sessionId: string) => void;
+  focusedTaskRequest?: { taskId: string; nonce: number } | null;
   onRefreshSession?: () => void;
   onOpenDiffReview?: () => void;
   onPluginsChanged?: () => void;
@@ -348,6 +349,7 @@ export function TopbarCapsules({
   onRefreshTasks,
   onStopTask,
   onSelectTaskSession,
+  focusedTaskRequest,
   onRefreshSession,
   onOpenDiffReview,
   onPluginsChanged,
@@ -366,6 +368,12 @@ export function TopbarCapsules({
   const { t } = useI18n();
 
   const [activePopover, setActivePopover] = useState<ActivePopoverKey>(null);
+
+  useEffect(() => {
+    if (focusedTaskRequest?.taskId) {
+      setActivePopover('tasks');
+    }
+  }, [focusedTaskRequest?.taskId, focusedTaskRequest?.nonce]);
   const [anchorLeft, setAnchorLeft] = useState<number>(0);
   const [channelProbeCache, setChannelProbeCache] = useState<Record<string, ChannelProbeEntry>>({});
 
@@ -694,6 +702,7 @@ export function TopbarCapsules({
               onRefresh={onRefreshTasks}
               onStopTask={onStopTask}
               onSelectSession={onSelectTaskSession}
+              focusedTaskRequest={focusedTaskRequest}
               onClose={closePopover}
             />
           )}

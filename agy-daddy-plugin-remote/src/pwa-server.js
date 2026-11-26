@@ -233,6 +233,12 @@ class MobileRemoteServer {
     this.ptyManager = options.ptyManager || null;
     this.taskManager = options.taskManager || null;
     this.webPush = options.webPush || null;
+    this.getNotificationConfig = typeof options.getNotificationConfig === 'function'
+      ? options.getNotificationConfig
+      : () => ({
+          enablePushNotifications: this.webPush?.isEnabled ? this.webPush.isEnabled() !== false : true,
+          enableAppBadge: this.webPush?.isBadgeEnabled ? this.webPush.isBadgeEnabled() !== false : true
+        });
     this.mobileWorkspace = options.mobileWorkspace || null;
     this.workspaceBrowser = options.workspaceBrowser || null;
     this.remoteProvisioner = options.remoteProvisioner || null;
@@ -917,6 +923,9 @@ class MobileRemoteServer {
       }
       const snap = await this.getSnapshot();
       const taskSummary = this.taskManager ? await this.taskManager.listTasks(permissionLevel).catch(() => null) : null;
+      const rawNotif = this.getNotificationConfig() || {};
+      const enablePushNotifications = rawNotif.enablePushNotifications !== false;
+      const enableAppBadge = rawNotif.enableAppBadge !== false;
       sendJson(res, 200, {
         ok: true,
         channel,
@@ -941,6 +950,9 @@ class MobileRemoteServer {
         projects: [],
         pins: { sessions: [], projects: [], groups: [] },
         vapidPublicKey: this.webPush ? this.webPush.getPublicKey() : null,
+        enablePushNotifications,
+        enableAppBadge,
+        notifications: { enablePushNotifications, enableAppBadge },
         voiceSupported: false,
         runningTasksCount: taskSummary?.runningCount ?? 0,
         telemetry: snap
@@ -1661,7 +1673,26 @@ class MobileRemoteServer {
         return;
       }
       const publicKey = this.webPush.getPublicKey();
-      sendJson(res, 200, { ok: true, publicKey, vapidPublicKey: publicKey });
+      const notifCfg = this.getNotificationConfig() || {};
+      sendJson(res, 200, {
+        ok: true,
+        publicKey,
+        vapidPublicKey: publicKey,
+        enablePushNotifications: notifCfg.enablePushNotifications !== false,
+        enableAppBadge: notifCfg.enableAppBadge !== false
+      });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/push/status') {
+      const notifCfg = this.getNotificationConfig() || {};
+      sendJson(res, 200, {
+        ok: true,
+        available: Boolean(this.webPush),
+        enablePushNotifications: notifCfg.enablePushNotifications !== false,
+        enableAppBadge: notifCfg.enableAppBadge !== false,
+        subscriptionsCount: this.webPush ? this.webPush.listSubscriptions().length : 0
+      });
       return;
     }
 
@@ -1695,7 +1726,10 @@ class MobileRemoteServer {
         return;
       }
       await readJsonBody(req);
-      const result = await this.webPush.sendTestNotification();
+      const notifCfg = this.getNotificationConfig() || {};
+      const result = await this.webPush.sendTestNotification({
+        badgeEnabled: notifCfg.enableAppBadge !== false
+      });
       sendResult(res, result);
       return;
     }

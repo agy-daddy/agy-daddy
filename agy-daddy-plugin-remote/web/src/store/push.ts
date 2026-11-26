@@ -85,6 +85,63 @@ export async function unsubscribeWebPush(): Promise<void> {
   }
 }
 
+export interface AppBadgeNavigator {
+  setAppBadge?: (contents?: number) => Promise<void> | void;
+  clearAppBadge?: () => Promise<void> | void;
+}
+
+function resolveBadgeNavigator(customNav?: AppBadgeNavigator | null): AppBadgeNavigator | null {
+  if (customNav && typeof customNav === 'object') return customNav;
+  if (typeof navigator !== 'undefined' && navigator && typeof navigator === 'object') {
+    return navigator as unknown as AppBadgeNavigator;
+  }
+  return null;
+}
+
+export function isAppBadgeSupported(customNav?: AppBadgeNavigator | null): boolean {
+  const nav = resolveBadgeNavigator(customNav);
+  return Boolean(nav && 'setAppBadge' in nav && typeof nav.setAppBadge === 'function');
+}
+
+export async function clearAppBadgeSafe(opts?: {
+  navigator?: AppBadgeNavigator | null;
+}): Promise<boolean> {
+  const nav = resolveBadgeNavigator(opts?.navigator);
+  if (!nav || !('clearAppBadge' in nav) || typeof nav.clearAppBadge !== 'function') {
+    return false;
+  }
+  try {
+    await Promise.resolve(nav.clearAppBadge());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function setAppBadgeSafe(
+  count: number,
+  opts?: { enabled?: boolean; navigator?: AppBadgeNavigator | null }
+): Promise<boolean> {
+  if (opts?.enabled === false) {
+    return false;
+  }
+  const nav = resolveBadgeNavigator(opts?.navigator);
+  if (!nav) return false;
+  const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (normalized <= 0) {
+    return clearAppBadgeSafe({ navigator: nav });
+  }
+  if (!('setAppBadge' in nav) || typeof nav.setAppBadge !== 'function') {
+    return false;
+  }
+  try {
+    await Promise.resolve(nav.setAppBadge(normalized));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function triggerForegroundAlert(opts: { sound: boolean; vibrate: boolean }): void {
   if (opts.vibrate && typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
     try {

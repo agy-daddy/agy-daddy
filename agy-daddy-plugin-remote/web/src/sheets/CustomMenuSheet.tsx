@@ -23,6 +23,8 @@ export interface CustomMenuSheetProps {
   drawerSpeed: DrawerSpeedId;
   soundAlert: boolean;
   vibrateAlert: boolean;
+  enablePushNotifications?: boolean;
+  enableAppBadge?: boolean;
   pushSubscribed: boolean;
   pushBusy: boolean;
   onSetAppearance: (next: AppearanceMode) => void;
@@ -60,6 +62,8 @@ export function CustomMenuSheet({
   drawerSpeed,
   soundAlert,
   vibrateAlert,
+  enablePushNotifications = true,
+  enableAppBadge = true,
   pushSubscribed,
   pushBusy,
   onSetAppearance,
@@ -239,13 +243,25 @@ export function CustomMenuSheet({
           <div className={styles.choiceWrap}>
             <button
               type="button"
-              className={`${styles.choiceBtn} ${pushSubscribed ? styles.choiceBtnActive : ''}`}
-              disabled={pushBusy}
+              className={`${styles.choiceBtn} ${pushSubscribed && enablePushNotifications ? styles.choiceBtnActive : ''}`}
+              disabled={pushBusy || (!enablePushNotifications && !pushSubscribed)}
               onClick={onTogglePush}
+              data-testid="menu-push-toggle-btn"
             >
-              {t('menu.pushLockScreen')}: {pushSubscribed ? t('menu.pushEnabled') : t('menu.pushEnable')}
+              {t('menu.pushLockScreen')}:{' '}
+              {!enablePushNotifications && !pushSubscribed
+                ? t('left.off')
+                : pushSubscribed
+                  ? t('menu.pushEnabled')
+                  : t('menu.pushEnable')}
             </button>
-            <button type="button" className={styles.choiceBtn} onClick={onTestPush}>
+            <button
+              type="button"
+              className={styles.choiceBtn}
+              disabled={!enablePushNotifications}
+              onClick={onTestPush}
+              data-testid="menu-push-test-btn"
+            >
               {t('menu.pushTest')}
             </button>
             <button
@@ -262,6 +278,16 @@ export function CustomMenuSheet({
             >
               {t('menu.vibrate')}: {vibrateAlert ? 'ON' : 'OFF'}
             </button>
+          </div>
+          <div className={styles.rowBetween}>
+            <span className={styles.noteText}>
+              {t('menu.appBadge')}: {enableAppBadge ? t('left.on') : t('left.off')}
+            </span>
+            {!enablePushNotifications && (
+              <span className={styles.noteText} data-testid="menu-push-host-disabled">
+                {t('menu.pushHostDisabledNote')}
+              </span>
+            )}
           </div>
         </div>
 

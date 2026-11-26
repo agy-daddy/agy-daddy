@@ -2,6 +2,12 @@ import type { I18nMessages } from '../types';
 
 export const it: Partial<I18nMessages> = {
   'brand.title': 'Agy-Daddy Web',
+  'sidebar.setIcon': 'Imposta icona',
+  'sidebar.clearIcon': 'Ripristina',
+  'sidebar.iconPresetGroup': 'Icone',
+  'sidebar.iconEmojiGroup': 'Emoji',
+  'sidebar.iconCustomPlaceholder': 'Emoji o simbolo...',
+  'sidebar.groupIconAria': 'Seleziona icona del gruppo',
 
   'shell.expandSidebar': 'Espandi barra laterale',
   'shell.collapseSidebar': 'Comprimi barra laterale',
@@ -479,4 +485,20 @@ export const it: Partial<I18nMessages> = {
   'tasks.filterEmpty': 'Nessuna attività in background corrisponde ai filtri.',
   'tasks.filterProjectAria': 'Filtra per progetto',
   'tasks.filterSessionAria': 'Filtra per sessione',
+
+  'notifications.taskDoneTitle': 'Attività completata: {title}',
+  'notifications.taskDoneBody': 'L’esecuzione in background ({kind}) è terminata.',
+  'notifications.taskErrorTitle': 'Attività non riuscita: {title}',
+  'notifications.taskErrorBody': 'L’esecuzione in background ({kind}) è terminata con un errore.',
+  'notifications.sessionDoneTitle': 'Agente completato: {session}',
+  'notifications.sessionDoneBody': 'Fai clic per vedere l’ultima risposta.',
+  'notifications.sessionErrorTitle': 'Errore dell’agente: {session}',
+  'notifications.sessionErrorBody': 'Fai clic per esaminare i dettagli dell’errore.',
+  'notifications.approvalTitle': 'Azione richiesta: {session}',
+  'notifications.approvalBody': 'Un passaggio attende la tua approvazione o risposta.',
+  'notifications.permissionPromptTitle': 'Le notifiche del browser sono attive',
+  'notifications.permissionGrantBtn': 'Consenti notifiche',
+  'notifications.permissionDeniedHint': 'Il permesso per le notifiche è bloccato. Consentilo nelle impostazioni del sito.',
+  'notifications.permissionGrantedHint': 'Le notifiche del browser sono autorizzate.',
+  'notifications.unsupportedHint': 'Questo browser non supporta le notifiche di sistema.',
 };

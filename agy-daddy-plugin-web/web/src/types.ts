@@ -105,6 +105,7 @@ export interface ProjectRemoteMeta {
 export interface ProjectItem {
   id: string;
   name: string;
+  icon?: string | null;
   rootPath: string;
   groupId: string | null;
   pinned?: boolean;
@@ -123,6 +124,7 @@ export interface ProjectItem {
 export interface ProjectGroup {
   id: string;
   name: string;
+  icon?: string | null;
   sortOrder: number;
   collapsed: boolean;
   pinned?: boolean;
@@ -170,18 +172,23 @@ export interface CreateProjectRequest {
   createDir?: boolean;
   source?: string;
   remote?: ProjectRemoteMeta | null;
+  icon?: string | null;
 }
 
 export interface UpdateProjectRequest {
   name?: string;
   groupId?: string | null;
   archived?: boolean;
+  icon?: string | null;
+  workspaceUri?: string;
+  rootPath?: string;
 }
 
 export interface UpdateProjectGroupRequest {
   name?: string;
   collapsed?: boolean;
   sortOrder?: number;
+  icon?: string | null;
 }
 
 export interface ProjectMutationResponse {
@@ -263,6 +270,7 @@ export interface OrgGroupMutationRequest {
   action?: 'upsert' | 'delete' | 'assign';
   id?: string;
   name?: string;
+  icon?: string | null;
   collapsed?: boolean;
   order?: number;
   groupId?: string | null;
@@ -1100,6 +1108,7 @@ export interface SettingsEnumOption {
 export interface SettingsSchemaField {
   key: string;
   type: SettingsFieldType;
+  group?: LocalizedText;
   label?: LocalizedText;
   description?: LocalizedText;
   default?: unknown;
@@ -1337,6 +1346,7 @@ export interface WebAccessStatusResponse {
   allowRemoteWrite?: boolean;
   tunnelHostname?: string;
   cloudflareState?: CloudflareStateInfo | null;
+  enableNotifications?: boolean;
 }
 
 export interface OptimizePromptResponse {

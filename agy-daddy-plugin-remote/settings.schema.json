@@ -140,6 +140,22 @@
       }
     },
     {
+      "key": "enablePushNotifications",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "通知与提醒", "en": "Notifications & Alerts" },
+      "label": { "zh-CN": "远程推送通知", "en": "Push Notifications" },
+      "description": { "zh-CN": "开启移动端 PWA 远程 Web Push 消息推送（任务完成、会话回复、后台预警）", "en": "Enable mobile PWA Web Push notifications for completions, replies, and alerts" }
+    },
+    {
+      "key": "enableAppBadge",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "通知与提醒", "en": "Notifications & Alerts" },
+      "label": { "zh-CN": "PWA 图标角标", "en": "PWA App Icon Badge" },
+      "description": { "zh-CN": "若系统与浏览器支持（App Badging API），在桌面/手机主屏幕图标上显示未读消息或进行中任务角标计数", "en": "Show unread/task count badge on app icon via App Badging API if supported" }
+    },
+    {
       "key": "loopback",
       "type": "boolean",
       "default": true,

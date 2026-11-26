@@ -519,10 +519,13 @@ export function deleteProject(id: string): Promise<DeleteEntityResponse> {
   });
 }
 
-export function createProjectGroup(name: string): Promise<ProjectGroupMutationResponse> {
+export function createProjectGroup(
+  name: string,
+  icon?: string | null,
+): Promise<ProjectGroupMutationResponse> {
   return apiRequest<ProjectGroupMutationResponse>('/api/v1/project-groups', {
     method: 'POST',
-    body: { name },
+    body: icon !== undefined ? { name, icon } : { name },
   });
 }
 

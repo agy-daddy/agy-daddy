@@ -230,3 +230,59 @@ test('S3-1: auto-unarchive detector, archive unpins atomically, and fs.watch ext
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('HUB-319: group & project icons persist, sanitize, clear, and sync across session-org v2', () => {
+  const tmpDir = makeTempDir('agy-org-icons-');
+  try {
+    const orgPath = path.join(tmpDir, 'session-org.json');
+    const projDir = path.join(tmpDir, 'icon-proj');
+    fs.mkdirSync(projDir, { recursive: true });
+
+    const bridge = createSessionOrgBridge({ orgPath });
+    const metaStore = createWorkspaceMetaStore({
+      storage: createMemoryStorage(),
+      sessionOrgBridge: bridge,
+      conversationDbPath: null,
+      sharedReadStatePath: null
+    });
+
+    const grp = metaStore.createGroup({ name: 'Platform', icon: 'preset:layers' });
+    assert.equal(grp.ok, true);
+    assert.equal(grp.group.icon, 'preset:layers');
+
+    const proj = metaStore.createProject({ name: 'Web UI', rootPath: projDir, groupId: grp.group.id, icon: '🚀' });
+    assert.equal(proj.ok, true);
+    assert.equal(proj.project.icon, '🚀');
+
+    // Invalid icon rejected
+    const badGrp = metaStore.updateGroup(grp.group.id, { icon: '<script>' });
+    assert.equal(badGrp.ok, false);
+    assert.equal(badGrp.statusCode, 400);
+    assert.equal(badGrp.error, 'INVALID_ICON');
+
+    const badProj = metaStore.updateProject(proj.project.id, { icon: 'a'.repeat(30) });
+    assert.equal(badProj.ok, false);
+    assert.equal(badProj.statusCode, 400);
+    assert.equal(badProj.error, 'INVALID_ICON');
+
+    // Update & clear icons
+    const updGrp = metaStore.updateGroup(grp.group.id, { icon: '🎨' });
+    assert.equal(updGrp.ok, true);
+    assert.equal(updGrp.group.icon, '🎨');
+
+    const clrProj = metaStore.updateProject(proj.project.id, { icon: null });
+    assert.equal(clrProj.ok, true);
+    assert.equal(clrProj.project.icon, undefined);
+
+    // Reload from disk via a second bridge
+    const bridge2 = createSessionOrgBridge({ orgPath });
+    const loaded = bridge2.getOrg();
+    assert.equal(loaded.groups.find((g) => g.id === grp.group.id)?.icon, '🎨');
+    assert.equal(loaded.projects.find((p) => p.id === proj.project.id)?.icon, undefined);
+
+    bridge.dispose();
+    bridge2.dispose();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

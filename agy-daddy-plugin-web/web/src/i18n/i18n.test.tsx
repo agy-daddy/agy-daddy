@@ -330,6 +330,21 @@ describe('I18nProvider & formatSessionTitle', () => {
       'tasks.filterEmpty',
       'tasks.filterProjectAria',
       'tasks.filterSessionAria',
+      'notifications.taskDoneTitle',
+      'notifications.taskDoneBody',
+      'notifications.taskErrorTitle',
+      'notifications.taskErrorBody',
+      'notifications.sessionDoneTitle',
+      'notifications.sessionDoneBody',
+      'notifications.sessionErrorTitle',
+      'notifications.sessionErrorBody',
+      'notifications.approvalTitle',
+      'notifications.approvalBody',
+      'notifications.permissionPromptTitle',
+      'notifications.permissionGrantBtn',
+      'notifications.permissionDeniedHint',
+      'notifications.permissionGrantedHint',
+      'notifications.unsupportedHint',
     ];
 
     const ALL_LOCALES: Locale[] = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'fr', 'ru', 'it'];

@@ -22,8 +22,17 @@ import {
 import { formatSessionTitle, useI18n, type TranslateFn } from './i18n';
 import { ThreeColumnShell } from './layout/ThreeColumnShell';
 import { WebPetOverlay } from './pet/WebPetOverlay';
+import {
+  createNotificationManager,
+  getNotificationPermission,
+  isNotificationSupported,
+  requestNotificationPermission,
+  type NotificationManager,
+  type NotificationPermissionState,
+} from './notifications/notificationManager';
 import { useTheme } from './theme/ThemeProvider';
 import type {
+  BackgroundTaskStatus,
   BackgroundTasksListResponse,
   ComposerStateResponse,
   ContextDisplayLocation,
@@ -549,6 +558,19 @@ export function App() {
       // Companion pet soft-degrades when plugin is disabled
     }
   }, []);
+  const [enableNotifications, setEnableNotifications] = useState<boolean>(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(() =>
+    getNotificationPermission(),
+  );
+  const [notificationPromptDismissed, setNotificationPromptDismissed] = useState<boolean>(false);
+  const [focusedTaskRequest, setFocusedTaskRequest] = useState<{ taskId: string; nonce: number } | null>(null);
+  const notificationManagerRef = useRef<NotificationManager | null>(null);
+  if (!notificationManagerRef.current) {
+    notificationManagerRef.current = createNotificationManager(false);
+  }
+  const prevTaskStatusesRef = useRef<Map<string, BackgroundTaskStatus> | null>(null);
+  const recentSessionNotifyRef = useRef<Map<string, number>>(new Map());
+  const notifiedApprovalKeysRef = useRef<Set<string>>(new Set());
 
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [confirmQueue, setConfirmQueue] = useState<
@@ -637,6 +659,26 @@ export function App() {
   const lastMarkedReadRef = useRef<{ cascadeId: string; stepCount: number } | null>(null);
 
   const prevRunningRef = useRef<boolean>(false);
+
+  const applyWebPluginSettings = useCallback(
+    (values: Record<string, unknown> | null | undefined) => {
+      if (!values || typeof values !== 'object') return;
+      hydrateFromSettings(values);
+      if (typeof values.enableNotifications === 'boolean') {
+        setEnableNotifications(values.enableNotifications);
+        notificationManagerRef.current?.setEnabled(values.enableNotifications);
+        if (values.enableNotifications) {
+          setNotificationPromptDismissed(false);
+        }
+        setNotificationPermission(getNotificationPermission());
+      }
+    },
+    [hydrateFromSettings],
+  );
+
+  useEffect(() => {
+    notificationManagerRef.current?.setEnabled(enableNotifications);
+  }, [enableNotifications]);
 
   const markActiveSessionAsRead = useCallback(
     (sessionId: string, stepCount?: number, force = false) => {
@@ -898,6 +940,15 @@ export function App() {
           syncOptimisticRefForSession(sessionId, next);
           return next;
         });
+        for (const ev of res.events) {
+          if (
+            ev.seq >= 0 &&
+            ev.kind !== 'user' &&
+            (ev.status === 'pending' || (ev.kind === 'ask_question' && ev.status === 'running'))
+          ) {
+            notifiedApprovalKeysRef.current.add(`${sessionId}:${ev.seq}`);
+          }
+        }
         prevRunningRef.current = isRunningStatus(res.session.status);
         markActiveSessionAsRead(sessionId, res.session.numTotalSteps);
       } catch (err) {
@@ -1031,7 +1082,7 @@ export function App() {
       setTopbarLoading(false);
 
       if (webSettingsRes.status === 'fulfilled' && webSettingsRes.value?.values) {
-        hydrateFromSettings(webSettingsRes.value.values);
+        applyWebPluginSettings(webSettingsRes.value.values);
       }
 
       if (hostLocaleRes.status === 'fulfilled') {
@@ -1063,6 +1114,13 @@ export function App() {
 
       if (webAccessRes.status === 'fulfilled' && webAccessRes.value) {
         setWebAccessStatus(webAccessRes.value);
+        const hasExplicitSetting =
+          webSettingsRes.status === 'fulfilled' &&
+          typeof webSettingsRes.value?.values?.enableNotifications === 'boolean';
+        if (!hasExplicitSetting && typeof webAccessRes.value.enableNotifications === 'boolean') {
+          setEnableNotifications(webAccessRes.value.enableNotifications);
+          notificationManagerRef.current?.setEnabled(webAccessRes.value.enableNotifications);
+        }
       }
 
       if (tasksRes.status === 'fulfilled' && tasksRes.value) {
@@ -1078,7 +1136,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [bootstrapNonce, hydrateFromSettings, mergeRecentCreatedSessions, syncHostLocale]);
+  }, [applyWebPluginSettings, bootstrapNonce, mergeRecentCreatedSessions, syncHostLocale]);
 
   // Load detail whenever activeSessionId changes
   useEffect(() => {
@@ -1188,8 +1246,63 @@ export function App() {
           );
         });
 
+        const wasRunning = prevRunningRef.current;
         const nowRunning = isRunningStatus(delta.status);
-        if (prevRunningRef.current && !nowRunning) {
+        const deltaSessionId = delta.cascadeId || activeSessionId;
+        const translate = tRef.current;
+        const deltaSessionSummary =
+          sessionsRef.current.find((s) => s.cascadeId === deltaSessionId) ?? null;
+        const deltaSessionTitle = formatSessionTitle(deltaSessionSummary, translate);
+
+        if (Array.isArray(delta.events)) {
+          for (const ev of delta.events) {
+            const needsIntervention =
+              ev.seq >= 0 &&
+              ev.kind !== 'user' &&
+              (ev.status === 'pending' || (ev.kind === 'ask_question' && ev.status === 'running'));
+            if (!needsIntervention) continue;
+            const approvalKey = `${deltaSessionId}:${ev.seq}`;
+            if (notifiedApprovalKeysRef.current.has(approvalKey)) continue;
+            notifiedApprovalKeysRef.current.add(approvalKey);
+            notificationManagerRef.current?.notify({
+              id: `approval:${approvalKey}`,
+              title: translate('notifications.approvalTitle', { session: deltaSessionTitle }),
+              body: ev.title ? String(ev.title) : translate('notifications.approvalBody'),
+              tag: `approval:${deltaSessionId}`,
+              onClick: () => {
+                setActiveSessionId(deltaSessionId);
+                syncSessionUrl(deltaSessionId);
+                setScrollToSeqState((prev) => ({ seq: ev.seq, nonce: prev.nonce + 1 }));
+              },
+            });
+          }
+        }
+
+        if (wasRunning && !nowRunning) {
+          recentSessionNotifyRef.current.set(deltaSessionId, Date.now());
+          const tailEv =
+            Array.isArray(delta.events) && delta.events.length > 0
+              ? delta.events[delta.events.length - 1]
+              : null;
+          const hasError = tailEv?.kind === 'error' || tailEv?.status === 'error';
+          notificationManagerRef.current?.notify({
+            id: `session-done:${deltaSessionId}:${delta.totalSteps}`,
+            title: translate(
+              hasError ? 'notifications.sessionErrorTitle' : 'notifications.sessionDoneTitle',
+              { session: deltaSessionTitle },
+            ),
+            body: translate(
+              hasError ? 'notifications.sessionErrorBody' : 'notifications.sessionDoneBody',
+            ),
+            tag: `session-done:${deltaSessionId}`,
+            onClick: () => {
+              setActiveSessionId(deltaSessionId);
+              syncSessionUrl(deltaSessionId);
+              if (tailEv && tailEv.seq >= 0) {
+                setScrollToSeqState((prev) => ({ seq: tailEv.seq, nonce: prev.nonce + 1 }));
+              }
+            },
+          });
           setDockRefreshKey((k) => k + 1);
           markActiveSessionAsRead(activeSessionId, delta.totalSteps, true);
           void refreshSessions();
@@ -1258,6 +1371,28 @@ export function App() {
                 return s;
               }),
             );
+          }
+
+          if (completedSessionId) {
+            const lastNotifiedAt = recentSessionNotifyRef.current.get(completedSessionId);
+            if (lastNotifiedAt === undefined || Date.now() - lastNotifiedAt >= 5000) {
+              recentSessionNotifyRef.current.set(completedSessionId, Date.now());
+              const translate = tRef.current;
+              const targetSummary =
+                sessionsRef.current.find((s) => s.cascadeId === completedSessionId) ?? null;
+              const sessionTitle = formatSessionTitle(targetSummary, translate);
+              notificationManagerRef.current?.notify({
+                id: `session-done:${completedSessionId}`,
+                title: translate('notifications.sessionDoneTitle', { session: sessionTitle }),
+                body: translate('notifications.sessionDoneBody'),
+                tag: `session-done:${completedSessionId}`,
+                onClick: () => {
+                  setActiveSessionId(completedSessionId);
+                  syncSessionUrl(completedSessionId);
+                  markActiveSessionAsRead(completedSessionId, undefined, true);
+                },
+              });
+            }
           }
 
           if (completedSessionId && completedSessionId !== activeSessionIdRef.current) {
@@ -1385,7 +1520,7 @@ export function App() {
             }
             void refreshTopbar();
           } else if (targetPlugin === 'agy-daddy.web' && pSettings) {
-            hydrateFromSettings(pSettings);
+            applyWebPluginSettings(pSettings);
           } else if (targetPlugin === 'agy-daddy.composer') {
             void apiClient
               .getComposerState()
@@ -1450,7 +1585,7 @@ export function App() {
     };
   }, [
     activeSessionId,
-    hydrateFromSettings,
+    applyWebPluginSettings,
     loadSessionDetail,
     markActiveSessionAsRead,
     refreshHealth,
@@ -1501,6 +1636,81 @@ export function App() {
       document.removeEventListener('visibilitychange', handleFocusOrVisible);
     };
   }, [markActiveSessionAsRead]);
+
+  // Notify when background tasks transition from running -> done/error/pending while page is inactive
+  useEffect(() => {
+    if (!tasksData) return;
+    const allTasks = [...(tasksData.running || []), ...(tasksData.recent || [])];
+    const nextMap = new Map<string, BackgroundTaskStatus>();
+    for (const task of allTasks) {
+      nextMap.set(task.taskId, task.status);
+    }
+
+    const prevMap = prevTaskStatusesRef.current;
+    prevTaskStatusesRef.current = nextMap;
+    if (!prevMap) {
+      return;
+    }
+
+    const translate = tRef.current;
+    for (const task of allTasks) {
+      const prevStatus = prevMap.get(task.taskId);
+      if (prevStatus !== 'running') continue;
+
+      if (task.status === 'done' || task.status === 'error') {
+        if (task.kind === 'session' && task.sessionId) {
+          const lastAt = recentSessionNotifyRef.current.get(task.sessionId);
+          if (lastAt !== undefined && Date.now() - lastAt < 5000) {
+            continue;
+          }
+          recentSessionNotifyRef.current.set(task.sessionId, Date.now());
+        }
+
+        const kindLabel = translate(`tasks.kind.${task.kind}` as Parameters<TranslateFn>[0]);
+        notificationManagerRef.current?.notify({
+          id: `task:${task.taskId}:${task.status}`,
+          title: translate(
+            task.status === 'error' ? 'notifications.taskErrorTitle' : 'notifications.taskDoneTitle',
+            { title: task.title },
+          ),
+          body: translate(
+            task.status === 'error' ? 'notifications.taskErrorBody' : 'notifications.taskDoneBody',
+            { kind: kindLabel },
+          ),
+          tag: `task:${task.taskId}`,
+          onClick: () => {
+            if (task.sessionId) {
+              setActiveSessionId(task.sessionId);
+              syncSessionUrl(task.sessionId);
+              markActiveSessionAsRead(task.sessionId);
+            }
+            setFocusedTaskRequest((prev) => ({
+              taskId: task.taskId,
+              nonce: (prev?.nonce ?? 0) + 1,
+            }));
+          },
+        });
+      } else if (task.status === 'pending') {
+        const sessionLabel = task.sessionTitle || task.title;
+        notificationManagerRef.current?.notify({
+          id: `task-approval:${task.taskId}`,
+          title: translate('notifications.approvalTitle', { session: sessionLabel }),
+          body: task.commandLine || translate('notifications.approvalBody'),
+          tag: `task-approval:${task.taskId}`,
+          onClick: () => {
+            if (task.sessionId) {
+              setActiveSessionId(task.sessionId);
+              syncSessionUrl(task.sessionId);
+            }
+            setFocusedTaskRequest((prev) => ({
+              taskId: task.taskId,
+              nonce: (prev?.nonce ?? 0) + 1,
+            }));
+          },
+        });
+      }
+    }
+  }, [markActiveSessionAsRead, tasksData]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.cascadeId === activeSessionId) ?? null,
@@ -2069,10 +2279,23 @@ export function App() {
   );
 
   const handleCreateGroup = useCallback(
-    async (name: string) => {
+    async (name: string, icon?: string | null) => {
       setBannerError(null);
       try {
-        await apiClient.createProjectGroup(name);
+        await apiClient.createProjectGroup(name, icon);
+        await refreshProjects();
+      } catch (err) {
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [refreshProjects, t],
+  );
+
+  const handleUpdateGroup = useCallback(
+    async (id: string, patch: { name?: string; collapsed?: boolean; icon?: string | null }) => {
+      setBannerError(null);
+      try {
+        await apiClient.updateProjectGroup(id, patch);
         await refreshProjects();
       } catch (err) {
         setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
@@ -2326,7 +2549,13 @@ export function App() {
       .then((res) => syncHostLocale(res.locale, res.supportedLanguages))
       .catch(() => {});
     void refreshPet();
-  }, [refreshHealth, refreshPet, refreshRemoteStatus, refreshTopbar, syncHostLocale]);
+    void apiClient
+      .getPluginSettings('agy-daddy.web')
+      .then((res) => {
+        if (res?.values) applyWebPluginSettings(res.values);
+      })
+      .catch(() => {});
+  }, [applyWebPluginSettings, refreshHealth, refreshPet, refreshRemoteStatus, refreshTopbar, syncHostLocale]);
 
   const handleCommandExecuted = useCallback(() => {
     void refreshTopbar();
@@ -2509,6 +2738,7 @@ export function App() {
               onRefreshTasks={() => void refreshTasks()}
               onStopTask={handleStopTask}
               onSelectTaskSession={(sid) => handleSelectSession(sid)}
+              focusedTaskRequest={focusedTaskRequest}
               onRefreshSession={
                 activeSessionId ? () => void loadSessionDetail(activeSessionId) : undefined
               }
@@ -2567,6 +2797,7 @@ export function App() {
             onCreateGroup={handleCreateGroup}
             onToggleGroupCollapsed={handleToggleGroupCollapsed}
             onRenameGroup={handleRenameGroup}
+            onUpdateGroup={handleUpdateGroup}
             onDeleteGroup={handleDeleteGroup}
             onMarkSessionRead={(cid) => markActiveSessionAsRead(cid, undefined, true)}
           />
@@ -2605,6 +2836,41 @@ export function App() {
                 </button>
               </div>
             )}
+
+            {enableNotifications &&
+              isNotificationSupported() &&
+              notificationPermission === 'default' &&
+              !notificationPromptDismissed && (
+                <div
+                  className={styles.notificationBanner}
+                  role="status"
+                  data-testid="notification-permission-banner"
+                >
+                  <span>{t('notifications.permissionPromptTitle')}</span>
+                  <div className={styles.notificationBannerActions}>
+                    <button
+                      type="button"
+                      className={styles.notificationGrantBtn}
+                      data-testid="notification-grant-btn"
+                      onClick={() => {
+                        void requestNotificationPermission().then((perm) => {
+                          setNotificationPermission(perm);
+                        });
+                      }}
+                    >
+                      {t('notifications.permissionGrantBtn')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.dismissBtn}
+                      aria-label={t('common.close')}
+                      onClick={() => setNotificationPromptDismissed(true)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              )}
 
             <div className={styles.streamRegion}>
               <SessionStream
@@ -2761,6 +3027,7 @@ export function App() {
           void refreshWebAccessStatus();
         }}
         onPluginsChanged={handlePluginsChanged}
+        onWebSettingsUpdated={applyWebPluginSettings}
         onCommandExecuted={handleCommandExecuted}
       />
 

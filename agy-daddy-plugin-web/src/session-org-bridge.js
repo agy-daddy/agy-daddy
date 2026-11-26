@@ -186,6 +186,34 @@ function sanitizeRemoteMeta(raw) {
   return out;
 }
 
+const PRESET_ICON_RE = /^preset:[a-z0-9-]{1,24}$/;
+const UNSAFE_ICON_RE = /[\u0000-\u001F\u007F<>]/;
+
+function sanitizeEntityIcon(raw) {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'INVALID_ICON' };
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+  if (UNSAFE_ICON_RE.test(trimmed) || trimmed.length > 24) {
+    return { ok: false, error: 'INVALID_ICON' };
+  }
+  if (trimmed.startsWith('preset:')) {
+    if (!PRESET_ICON_RE.test(trimmed)) {
+      return { ok: false, error: 'INVALID_ICON' };
+    }
+    return { ok: true, value: trimmed };
+  }
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    const segs = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(trimmed));
+    if (segs.length === 0 || segs.length > 4) {
+      return { ok: false, error: 'INVALID_ICON' };
+    }
+  } else if (Array.from(trimmed).length > 8) {
+    return { ok: false, error: 'INVALID_ICON' };
+  }
+  return { ok: true, value: trimmed };
+}
+
 function createEmptyPersistedOrg() {
   return {
     version: 2,
@@ -265,9 +293,12 @@ function sanitizePersistedOrg(raw) {
         const id = String(g.id).trim();
         if (seen.has(id)) return null;
         seen.add(id);
+        const iconCheck = sanitizeEntityIcon(g.icon);
+        const icon = iconCheck.ok ? iconCheck.value : null;
         return {
           id,
           name: String(g.name || id).trim() || id,
+          ...(icon ? { icon } : {}),
           source: g.source === 'host' ? 'host' : 'user',
           collapsed: Boolean(g.collapsed),
           order: Number.isFinite(Number(g.order)) ? Number(g.order) : (Number.isFinite(Number(g.sortOrder)) ? Number(g.sortOrder) : idx),
@@ -312,11 +343,14 @@ function sanitizePersistedOrg(raw) {
 
       const aliases = dedupeStrings([...(Array.isArray(p.aliases) ? p.aliases : [])]).filter((a) => a !== id);
       const remote = sanitizeRemoteMeta(p.remote);
+      const iconCheck = sanitizeEntityIcon(p.icon);
+      const icon = iconCheck.ok ? iconCheck.value : null;
 
       base.projects.push({
         id,
         aliases,
         name: String(p.name || path.basename(rootPath) || id).trim() || id,
+        ...(icon ? { icon } : {}),
         rootPath,
         uri: typeof p.uri === 'string' && p.uri.trim().startsWith('file://') ? p.uri.trim() : (pathToFileUri(rootPath) || ''),
         groupId: gid,
@@ -793,10 +827,14 @@ function createSessionOrgBridge(options = {}) {
       ? candidate.groupId.trim()
       : null;
 
+    const iconCheck = sanitizeEntityIcon(candidate.icon);
+    const entryIcon = iconCheck.ok ? iconCheck.value : null;
+
     const entry = {
       id: stableId,
       aliases,
       name: String(candidate.name || path.basename(normPath) || stableId).trim() || stableId,
+      ...(entryIcon ? { icon: entryIcon } : {}),
       rootPath: normPath,
       uri: pathToFileUri(normPath) || '',
       groupId: gid,
@@ -1260,11 +1298,20 @@ function createSessionOrgBridge(options = {}) {
         return { abort: true, result: { ok: false, statusCode: 400, error: 'MISSING_GROUP_NAME' } };
       }
       const prev = existingIdx >= 0 ? org.groups[existingIdx] : null;
+      let nextIcon = prev?.icon || null;
+      if (Object.prototype.hasOwnProperty.call(body, 'icon')) {
+        const iconCheck = sanitizeEntityIcon(body.icon);
+        if (!iconCheck.ok) {
+          return { abort: true, result: { ok: false, statusCode: 400, error: iconCheck.error } };
+        }
+        nextIcon = iconCheck.value;
+      }
       const nowIso = new Date().toISOString();
       const nextGroup = {
         id,
         name: name || prev?.name || id,
-        source: prev?.source || 'user',
+        ...(nextIcon ? { icon: nextIcon } : {}),
+        source: prev?.source || (body.source === 'host' ? 'host' : 'user'),
         collapsed: typeof body.collapsed === 'boolean' ? body.collapsed : Boolean(prev?.collapsed),
         order: Number.isFinite(Number(body.order)) ? Number(body.order) : (prev ? prev.order : org.groups.length),
         projectIds: Array.isArray(body.projectIds) ? dedupeStrings(body.projectIds) : (prev?.projectIds || []),
@@ -1717,5 +1764,6 @@ module.exports = {
   deriveWorkspaceProjectId,
   makeAppSyncedProjectId,
   makeImplicitProjectId,
-  makeStableProjectId
+  makeStableProjectId,
+  sanitizeEntityIcon
 };

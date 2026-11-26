@@ -183,6 +183,12 @@ export interface I18nMessages {
   'sidebar.activeProjects': string;
   'sidebar.renameProject': string;
   'sidebar.renameGroup': string;
+  'sidebar.setIcon': string;
+  'sidebar.clearIcon': string;
+  'sidebar.iconPresetGroup': string;
+  'sidebar.iconEmojiGroup': string;
+  'sidebar.iconCustomPlaceholder': string;
+  'sidebar.groupIconAria': string;
   'sidebar.markRead': string;
   'sidebar.copySessionId': string;
   'sidebar.copiedId': string;
@@ -925,6 +931,21 @@ export interface I18nMessages {
   'pet.statusRunning': string;
   'pet.statusSleeping': string;
   'pet.dragHint': string;
+  'notifications.taskDoneTitle': string;
+  'notifications.taskDoneBody': string;
+  'notifications.taskErrorTitle': string;
+  'notifications.taskErrorBody': string;
+  'notifications.sessionDoneTitle': string;
+  'notifications.sessionDoneBody': string;
+  'notifications.sessionErrorTitle': string;
+  'notifications.sessionErrorBody': string;
+  'notifications.approvalTitle': string;
+  'notifications.approvalBody': string;
+  'notifications.permissionPromptTitle': string;
+  'notifications.permissionGrantBtn': string;
+  'notifications.permissionDeniedHint': string;
+  'notifications.permissionGrantedHint': string;
+  'notifications.unsupportedHint': string;
 }
 
 export type I18nKey = keyof I18nMessages;

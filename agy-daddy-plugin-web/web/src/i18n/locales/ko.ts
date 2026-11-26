@@ -2,6 +2,12 @@ import type { I18nMessages } from '../types';
 
 export const ko: Partial<I18nMessages> = {
   'brand.title': 'Agy-Daddy Web',
+  'sidebar.setIcon': '아이콘 설정',
+  'sidebar.clearIcon': '기본값',
+  'sidebar.iconPresetGroup': '아이콘',
+  'sidebar.iconEmojiGroup': '이모지',
+  'sidebar.iconCustomPlaceholder': '이모지 또는 기호...',
+  'sidebar.groupIconAria': '그룹 아이콘 선택',
 
   'shell.expandSidebar': '사이드바 펼치기',
   'shell.collapseSidebar': '사이드바 접기',
@@ -483,4 +489,20 @@ export const ko: Partial<I18nMessages> = {
   'tasks.filterEmpty': '현재 필터 조건에 일치하는 백그라운드 작업이 없습니다.',
   'tasks.filterProjectAria': '프로젝트별 필터',
   'tasks.filterSessionAria': '세션별 필터',
+
+  'notifications.taskDoneTitle': '작업 완료: {title}',
+  'notifications.taskDoneBody': '백그라운드 {kind} 작업이 완료되었습니다.',
+  'notifications.taskErrorTitle': '작업 실패: {title}',
+  'notifications.taskErrorBody': '백그라운드 {kind} 작업이 오류로 종료되었습니다.',
+  'notifications.sessionDoneTitle': '에이전트 완료: {session}',
+  'notifications.sessionDoneBody': '클릭하여 최신 응답을 확인하세요.',
+  'notifications.sessionErrorTitle': '에이전트 오류: {session}',
+  'notifications.sessionErrorBody': '클릭하여 오류 세부 정보를 확인하세요.',
+  'notifications.approvalTitle': '승인 또는 입력 필요: {session}',
+  'notifications.approvalBody': '단계가 승인 또는 입력을 기다리고 있습니다.',
+  'notifications.permissionPromptTitle': '브라우저 알림이 활성화되었습니다',
+  'notifications.permissionGrantBtn': '알림 권한 허용',
+  'notifications.permissionDeniedHint': '브라우저 알림 권한이 차단되었습니다. 사이트 설정에서 알림을 허용해 주세요.',
+  'notifications.permissionGrantedHint': '브라우저 알림 권한이 허용되었습니다.',
+  'notifications.unsupportedHint': '현재 브라우저는 시스템 알림을 지원하지 않습니다.',
 };

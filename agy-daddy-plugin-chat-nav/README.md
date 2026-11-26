@@ -12,6 +12,9 @@ Agy-Daddy 官方 Layer 2 对话栏增强插件：右侧悬浮导航栏、思考�
 ## 核心功能与安全默认值
 
 - **右侧悬浮导航栏**：动态贴合对话区右侧边缘，提供一键直达顶部、直达底部、展开思考块、全文检索及复制会话 ID 按钮。
+- **左侧会话导轨与悬停大纲**：在对话区左侧展示章节刻度导轨，悬停展开快速大纲，支持「全部 / 关键提问 / 含代码」筛选及二级标题跳转。
+- **代码块 Sticky 吸顶与长代码块折叠**：Markdown 与 Artifacts 代码块顶栏滚动吸顶；已完成且 `>= 48` 行的代码块支持手动折叠/展开，折叠时自动补偿视口滚动防止跳动。
+- **Alt+↑/↓ 快捷轮次跳转**：在非编辑焦点下使用 `Alt+↑` / `Alt+↓` 快速定位上一轮或下一轮对话。
 - **产物文件头内联编辑**：在对话生成的代码块头部提供直接编辑并保存回工作区文件的能力。
 - **全文检索与高亮定位**：支持普通关键字与正则表达式模式，在多轮对话中精准跳转。
 - **多格式本地导出**：纯函数本地渲染 Markdown、HTML 与 PDF，零网络外传。
@@ -45,6 +48,11 @@ agy-daddy plugin install npm:@agy-daddy/plugin-chat-nav
 | Key | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `showFloatDock` | `boolean` | `true` | 右侧悬浮导航条：在对话区右下侧显示浮动操作栏（直达顶部/底部、思考块开关与全文搜索） |
+| `showOutlineRail` | `boolean` | `true` | 左侧会话导轨与悬停大纲：展示章节刻度导轨，悬停展开大纲并支持关键提问筛选 |
+| `enableTurnShortcuts` | `boolean` | `true` | Alt+↑/↓ 快捷轮次跳转：非编辑焦点下按 Alt+↑ / Alt+↓ 切换上下轮对话 |
+| `enableCodeBlockSticky` | `boolean` | `true` | 代码块顶栏 Sticky 吸顶：Markdown 与 Artifacts 代码块滚动时保持顶栏可见 |
+| `enableCodeBlockFold` | `boolean` | `true` | 长代码块折叠/展开开关：已完成长代码块支持折叠展开并自动补偿滚动视口 |
+| `codeFoldMinLines` | `number` | `48` | 触发折叠的最小行数：达到或超过该行数显示手动折叠按钮 |
 | `keepThinkingExpanded` | `boolean` | `false` | 锁定思考块保持展开：开启后新进入会话或加载新轮次时，思考内容默认自动展开 |
 | `enableInlineFileEditor` | `boolean` | `true` | 产物文件头内联编辑：在产物卡片与代码块头部提供直接查看与保存原文件的内联编辑器 |
 | `enableCmdClickLinks` | `boolean` | `true` | Cmd/Ctrl+点击安全打开外链：按住 Cmd/Ctrl 键点击对话中的 http/https 链接直接调用外部浏览器打开 |
@@ -84,6 +92,10 @@ agy-daddy plugin install npm:@agy-daddy/plugin-chat-nav
   - `chat-nav.export`：导出当前对话 (MD/HTML/PDF)
   - `chat-nav.export-all`：批量导出当前对话为全部所选格式
   - `chat-nav.browseExportDir`：选择默认导出保存文件夹
+  - `chat-nav.toggle-outline`：切换会话快速大纲
+  - `chat-nav.collapse-long-code`：折叠或展开长代码块
+  - `chat-nav.turn-prev`：跳转到上一轮对话
+  - `chat-nav.turn-next`：跳转到下一轮对话
 
 ---
 

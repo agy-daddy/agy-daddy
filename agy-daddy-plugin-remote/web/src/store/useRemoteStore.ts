@@ -83,7 +83,9 @@ import {
   sanitizeOrchestratorThinkingMap
 } from './modelCatalog';
 import {
+  clearAppBadgeSafe,
   getActivePushSubscription,
+  setAppBadgeSafe,
   subscribeWebPush,
   triggerForegroundAlert,
   unsubscribeWebPush
@@ -175,6 +177,8 @@ export interface RemoteState {
   locale: SupportedLocale;
   soundAlert: boolean;
   vibrateAlert: boolean;
+  enablePushNotifications: boolean;
+  enableAppBadge: boolean;
   pushSubscribed: boolean;
   pushBusy: boolean;
   leftOpen: boolean;
@@ -633,6 +637,7 @@ export class RemoteStoreController {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private flushingQueue = false;
   private prevAttentionIds = new Set<string>();
+  private unreadAttentionIds = new Set<string>();
   private initialized = false;
   private pendingUserModelId = '';
   private isDraggingOrg = false;
@@ -720,6 +725,8 @@ export class RemoteStoreController {
       locale,
       soundAlert: readBoolPref(SOUND_KEY, true),
       vibrateAlert: readBoolPref(VIBRATE_KEY, true),
+      enablePushNotifications: true,
+      enableAppBadge: true,
       pushSubscribed: false,
       pushBusy: false,
       leftOpen: false,
@@ -830,10 +837,13 @@ export class RemoteStoreController {
       window.addEventListener('offline', () => {
         this.setState({ online: false });
       });
+      window.addEventListener('focus', this.handleAppForegroundActive);
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (ev) => {
           const data = ev.data as { type?: string; sessionId?: string } | null;
           if (data?.type === 'NAVIGATE_SESSION' && data.sessionId) {
+            this.unreadAttentionIds.delete(data.sessionId);
+            void clearAppBadgeSafe();
             this.selectSession(data.sessionId);
           }
         });
@@ -890,20 +900,63 @@ export class RemoteStoreController {
     }
   }
 
+  private isDocumentHidden(): boolean {
+    return typeof document !== 'undefined' && (document.visibilityState === 'hidden' || document.hidden);
+  }
+
+  private computeBackgroundBadgeCount(): number {
+    const ids = new Set<string>(this.unreadAttentionIds);
+    for (const s of this.state.sessions) {
+      const st = String(s.status || '').toUpperCase();
+      if (s.needsAttention || st.includes('PENDING') || st.includes('WAITING')) {
+        ids.add(s.cascadeId);
+      }
+    }
+    return Math.max(ids.size, this.state.runningTasksCount > 0 ? this.state.runningTasksCount : 0);
+  }
+
+  private syncAppBadge(): void {
+    if (!this.state.enableAppBadge) return;
+    if (!this.isDocumentHidden()) return;
+    const count = this.computeBackgroundBadgeCount();
+    if (count > 0) {
+      void setAppBadgeSafe(count, { enabled: this.state.enableAppBadge });
+    } else {
+      void clearAppBadgeSafe();
+    }
+  }
+
+  private handleAppForegroundActive = (): void => {
+    this.unreadAttentionIds.clear();
+    void clearAppBadgeSafe();
+    if (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller) {
+      try {
+        navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_APP_BADGE' });
+      } catch {}
+    }
+  };
+
   private handleVisibilityChange = (): void => {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'hidden' || document.hidden) {
       void flushDraftSave().catch(() => {});
       void flushSnapshotSave().catch(() => {});
+      this.syncAppBadge();
+    } else {
+      this.handleAppForegroundActive();
     }
   };
 
   public destroy(): void {
     this.sse?.destroy();
     this.sse = null;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', this.handleAppForegroundActive);
+    }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     }
+    this.unreadAttentionIds.clear();
     void flushDraftSave().catch(() => {});
     void flushSnapshotSave().catch(() => {});
     this.initialized = false;
@@ -1000,6 +1053,10 @@ export class RemoteStoreController {
         typeof boot.archivedCount === 'number'
           ? boot.archivedCount
           : Object.keys(bootArchivedSessions).length;
+      const enablePushNotifications =
+        (boot.notifications?.enablePushNotifications ?? boot.enablePushNotifications) !== false;
+      const enableAppBadge =
+        (boot.notifications?.enableAppBadge ?? boot.enableAppBadge) !== false;
 
       this.setState({
         bootstrap: { ...boot, models: catalog },
@@ -1024,9 +1081,16 @@ export class RemoteStoreController {
         archivedSessions: bootArchivedSessions,
         archivedCount: bootArchivedCount,
         defaultSessionPath: boot.defaultSessionPath ?? this.state.defaultSessionPath,
+        enablePushNotifications,
+        enableAppBadge,
         authError: '',
         ready: true
       });
+      if (!enableAppBadge) {
+        void clearAppBadgeSafe();
+      } else {
+        this.syncAppBadge();
+      }
 
       const [sessRes, presetsRes] = await Promise.all([
         api.listSessions({ limit: 200, includeArchived: this.includeArchivedSynced }),
@@ -1414,6 +1478,7 @@ export class RemoteStoreController {
     name: string,
     opts?: {
       id?: string;
+      icon?: string | null;
       pinned?: boolean;
       projectIds?: string[];
       workspaceUris?: string[];
@@ -1428,6 +1493,7 @@ export class RemoteStoreController {
       const res = await api.mutateSessionGroups({
         action: 'upsert',
         ...(opts?.id ? { id: opts.id } : {}),
+        ...(opts?.icon ? { icon: opts.icon } : {}),
         ...(typeof opts?.pinned === 'boolean' ? { pinned: opts.pinned } : {}),
         name: clean,
         projectIds: opts?.projectIds,
@@ -1481,6 +1547,46 @@ export class RemoteStoreController {
             typeof res.revision === 'number' ? res.revision : this.state.orgRevision
         });
       }
+    } catch (err) {
+      this.setState({ groups: prevGroups });
+      this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
+  public async setGroupIcon(groupId: string, icon: string | null): Promise<void> {
+    if (!groupId) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const current = this.state.groups.find((g) => g.id === groupId);
+    if (!current) return;
+    const prevGroups = this.state.groups;
+    this.setState({
+      groups: prevGroups.map((g) => (g.id === groupId ? { ...g, icon } : g))
+    });
+    try {
+      const res = await api.mutateSessionGroups({
+        action: 'upsert',
+        id: groupId,
+        name: current.name,
+        ...(current.source ? { source: current.source } : {}),
+        icon
+      });
+      if (Array.isArray(res.groups)) {
+        const syncedPins = res.pins ? normalizePins(res.pins) : this.state.pins;
+        const syncedOrg = applyPinsToOrg(
+          this.state.sessions,
+          this.state.projects,
+          res.groups,
+          syncedPins
+        );
+        this.setState({
+          groups: syncedOrg.groups,
+          pins: syncedPins,
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+      this.showToast(this.t('store.groupIconUpdated'));
     } catch (err) {
       this.setState({ groups: prevGroups });
       this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
@@ -1985,6 +2091,39 @@ export class RemoteStoreController {
     }
   }
 
+  public async setProjectIcon(projectId: string, icon: string | null): Promise<void> {
+    if (!projectId) return;
+    if (!this.ensureOrgWriteAllowed(false)) return;
+
+    const current = this.state.projects.find((p) => p.id === projectId);
+    const prevProjects = this.state.projects;
+    this.setState({
+      projects: prevProjects.map((p) => (p.id === projectId ? { ...p, icon } : p))
+    });
+    try {
+      const res = await api.updateProject(projectId, {
+        icon,
+        ...(current?.uri ? { workspaceUri: current.uri } : {}),
+        ...(current?.rootPath || current?.path
+          ? { rootPath: current.rootPath || current.path || undefined }
+          : {})
+      });
+      if (res.project) {
+        this.setState({
+          projects: this.state.projects.map((p) =>
+            p.id === projectId ? { ...p, ...res.project } : p
+          ),
+          orgRevision:
+            typeof res.revision === 'number' ? res.revision : this.state.orgRevision
+        });
+      }
+      this.showToast(this.t('store.projectIconUpdated'));
+    } catch (err) {
+      this.setState({ projects: prevProjects });
+      this.showToast(this.t('store.projectUpdateFailed', { msg: (err as Error).message }));
+    }
+  }
+
   public async removeProject(projectId: string): Promise<void> {
     if (!projectId) return;
     if (!this.ensureOrgWriteAllowed(true)) return;
@@ -2025,6 +2164,12 @@ export class RemoteStoreController {
 
   public async selectSession(cascadeId: string): Promise<void> {
     if (!cascadeId) return;
+    this.unreadAttentionIds.delete(cascadeId);
+    if (!this.isDocumentHidden()) {
+      void clearAppBadgeSafe();
+    } else {
+      this.syncAppBadge();
+    }
     const prevId = this.state.activeSessionId;
     await Promise.all([
       flushDraftSave(prevId).catch(() => {}),
@@ -2161,13 +2306,19 @@ export class RemoteStoreController {
 
   private recordAttentionSet(sessions: SessionSummary[]): void {
     const nextIds = new Set<string>();
+    const hidden = this.isDocumentHidden();
     let newlyTriggered = false;
     for (const s of sessions) {
       if (s.needsAttention) {
         nextIds.add(s.cascadeId);
         if (!this.prevAttentionIds.has(s.cascadeId)) {
           newlyTriggered = true;
+          if (hidden) {
+            this.unreadAttentionIds.add(s.cascadeId);
+          }
         }
+      } else {
+        this.unreadAttentionIds.delete(s.cascadeId);
       }
     }
     this.prevAttentionIds = nextIds;
@@ -2177,6 +2328,7 @@ export class RemoteStoreController {
         vibrate: this.state.vibrateAlert
       });
     }
+    this.syncAppBadge();
   }
 
   private handleSessionDelta(payload: Record<string, unknown>): void {
@@ -2361,6 +2513,19 @@ export class RemoteStoreController {
       });
     } else if (key === 'state:session.org@1' && val) {
       this.applyOrgSnapshot(val, { skipIfDragging: true });
+    } else if (key === 'state:remote.notifications@1' && val) {
+      const nextPush = val.enablePushNotifications !== false;
+      const nextBadge = val.enableAppBadge !== false;
+      const prevBadge = this.state.enableAppBadge;
+      this.setState({
+        enablePushNotifications: nextPush,
+        enableAppBadge: nextBadge
+      });
+      if (prevBadge && !nextBadge) {
+        void clearAppBadgeSafe();
+      } else if (nextBadge) {
+        this.syncAppBadge();
+      }
     }
   }
 
@@ -2388,6 +2553,7 @@ export class RemoteStoreController {
     const count = payload.totalRunningCount ?? payload.runningCount;
     if (typeof count === 'number' && Number.isFinite(count)) {
       this.setState({ runningTasksCount: count });
+      this.syncAppBadge();
     }
   }
 
@@ -2984,6 +3150,10 @@ export class RemoteStoreController {
   }
 
   public async togglePushSubscription(): Promise<void> {
+    if (!this.state.enablePushNotifications && !this.state.pushSubscribed) {
+      this.showToast(this.t('store.pushHostDisabled'));
+      return;
+    }
     this.setState({ pushBusy: true });
     try {
       if (this.state.pushSubscribed) {
@@ -3002,8 +3172,16 @@ export class RemoteStoreController {
   }
 
   public async sendTestPush(): Promise<void> {
+    if (!this.state.enablePushNotifications) {
+      this.showToast(this.t('store.pushHostDisabled'));
+      return;
+    }
     try {
-      await api.testPush();
+      const res = await api.testPush();
+      if (res?.disabled) {
+        this.showToast(this.t('store.pushHostDisabled'));
+        return;
+      }
       this.showToast(this.t('store.testPushSent'));
     } catch (err) {
       this.showToast(this.t('store.testPushFailed', { msg: (err as Error).message }));

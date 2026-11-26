@@ -251,10 +251,20 @@ function createWebPushManager({
   storage = null,
   fetchImpl = null,
   isTestMode = undefined,
-  subject = DEFAULT_SUBJECT
+  subject = DEFAULT_SUBJECT,
+  isEnabled = undefined,
+  isBadgeEnabled = undefined
 } = {}) {
   const store = storage || createInMemoryStorage();
   const customFetch = typeof fetchImpl === 'function' ? fetchImpl : null;
+  let enabledState = typeof isEnabled === 'boolean' ? isEnabled : true;
+  let badgeEnabledState = typeof isBadgeEnabled === 'boolean' ? isBadgeEnabled : true;
+  const resolveEnabled = () => (
+    typeof isEnabled === 'function' ? isEnabled() !== false : enabledState
+  );
+  const resolveBadgeEnabled = () => (
+    typeof isBadgeEnabled === 'function' ? isBadgeEnabled() !== false : badgeEnabledState
+  );
   const resolveTestMode = () => (
     typeof isTestMode === 'boolean'
       ? isTestMode
@@ -362,6 +372,21 @@ function createWebPushManager({
   }
 
   async function sendNotification(payload, opts = {}) {
+    const testMode = resolveTestMode();
+    if (!resolveEnabled()) {
+      return {
+        ok: true,
+        skipped: true,
+        disabled: true,
+        reason: 'PUSH_DISABLED',
+        sent: 0,
+        failed: 0,
+        pruned: 0,
+        dryRun: testMode && !customFetch,
+        results: []
+      };
+    }
+
     const keys = ensureVapidKeys();
     const subs = loadSubs();
     const filterEndpoint = typeof opts.endpoint === 'string' && opts.endpoint.trim()
@@ -371,7 +396,6 @@ function createWebPushManager({
       ? subs.filter((s) => s.endpoint === filterEndpoint)
       : subs;
 
-    const testMode = resolveTestMode();
     if (targets.length === 0) {
       return {
         ok: true,
@@ -479,16 +503,34 @@ function createWebPushManager({
   }
 
   async function sendTestNotification(opts = {}) {
+    const badgeEnabled = typeof opts.badgeEnabled === 'boolean'
+      ? opts.badgeEnabled
+      : resolveBadgeEnabled();
+    const rawCount = Number(opts.badgeCount);
+    const badgeCount = badgeEnabled
+      ? (Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 1)
+      : 0;
     return sendNotification({
       type: 'test',
       title: 'Agy-Daddy',
       body: 'Web Push notification test succeeded',
+      badgeEnabled,
+      badgeCount,
+      unreadCount: badgeCount,
       timestamp: new Date().toISOString()
     }, opts);
   }
 
   return {
     getPublicKey,
+    isEnabled: resolveEnabled,
+    setEnabled(next) {
+      enabledState = Boolean(next);
+    },
+    isBadgeEnabled: resolveBadgeEnabled,
+    setBadgeEnabled(next) {
+      badgeEnabledState = Boolean(next);
+    },
     listSubscriptions,
     subscribe,
     unsubscribe,

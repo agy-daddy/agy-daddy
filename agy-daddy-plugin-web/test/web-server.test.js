@@ -3037,3 +3037,67 @@ test('D21: /api/v1/pet/state, /api/v1/pet/interact, and /api/v1/pet/themes enfor
     await srv.stop();
   }
 });
+
+test('HUB-332: web-server exposes enableNotifications default/value and syncs PUT updates over SSE', async () => {
+  let persistedWebSettings = { port: 18767 };
+  const srv = createWebServer({
+    port: 0,
+    pairingToken: 'tok-hub332-http',
+    enableNotifications: false,
+    hostProxy: {
+      async getPluginSettings(pluginId) {
+        if (pluginId === 'agy-daddy.web') {
+          return { ok: true, values: { ...persistedWebSettings }, schema: { fields: [] } };
+        }
+        return { ok: true, values: {} };
+      },
+      async setPluginSettings(pluginId, patch) {
+        if (pluginId === 'agy-daddy.web') {
+          persistedWebSettings = { ...persistedWebSettings, ...patch };
+          return { ok: true, values: { ...persistedWebSettings } };
+        }
+        return { ok: true, values: patch };
+      }
+    }
+  });
+
+  try {
+    const info = await srv.start();
+    const baseUrl = `http://127.0.0.1:${info.port}`;
+    const authHeaders = { Authorization: 'Bearer tok-hub332-http' };
+
+    const statusInitial = await httpRequest(`${baseUrl}/api/v1/web/status`, { headers: authHeaders });
+    assert.equal(statusInitial.status, 200);
+    assert.equal(statusInitial.json.enableNotifications, false);
+
+    const settingsInitial = await httpRequest(`${baseUrl}/api/v1/host/plugins/agy-daddy.web/settings`, {
+      headers: authHeaders
+    });
+    assert.equal(settingsInitial.status, 200);
+    assert.equal(settingsInitial.json.values.enableNotifications, false);
+
+    const sseClient = await openSse(`${baseUrl}/api/v1/stream`, authHeaders);
+    const putRes = await httpRequest(`${baseUrl}/api/v1/host/plugins/agy-daddy.web/settings`, {
+      method: 'PUT',
+      headers: authHeaders,
+      body: { patch: { enableNotifications: true } }
+    });
+    assert.equal(putRes.status, 200);
+    assert.equal(putRes.json.values.enableNotifications, true);
+
+    const sseEv = await sseClient.waitForEvent(
+      (ev) =>
+        ev.event === 'state.patch' &&
+        ev.json?.key === 'state:plugin.settings@1' &&
+        ev.json?.value?.pluginId === 'agy-daddy.web'
+    );
+    assert.equal(sseEv.json.value.values.enableNotifications, true);
+    sseClient.close();
+
+    const statusAfter = await httpRequest(`${baseUrl}/api/v1/web/status`, { headers: authHeaders });
+    assert.equal(statusAfter.status, 200);
+    assert.equal(statusAfter.json.enableNotifications, true);
+  } finally {
+    await srv.stop();
+  }
+});

@@ -2,6 +2,12 @@ import type { I18nMessages } from '../types';
 
 export const ru: Partial<I18nMessages> = {
   'brand.title': 'Agy-Daddy Web',
+  'sidebar.setIcon': 'Выбрать значок',
+  'sidebar.clearIcon': 'Сбросить',
+  'sidebar.iconPresetGroup': 'Значки',
+  'sidebar.iconEmojiGroup': 'Эмодзи',
+  'sidebar.iconCustomPlaceholder': 'Эмодзи или символ...',
+  'sidebar.groupIconAria': 'Выбрать значок группы',
 
   'shell.expandSidebar': 'Развернуть боковую панель',
   'shell.collapseSidebar': 'Свернуть боковую панель',
@@ -479,4 +485,20 @@ export const ru: Partial<I18nMessages> = {
   'tasks.filterEmpty': 'Нет фоновых задач, соответствующих фильтрам.',
   'tasks.filterProjectAria': 'Фильтр по проекту',
   'tasks.filterSessionAria': 'Фильтр по сессии',
+
+  'notifications.taskDoneTitle': 'Задача завершена: {title}',
+  'notifications.taskDoneBody': 'Фоновая задача ({kind}) завершена.',
+  'notifications.taskErrorTitle': 'Ошибка задачи: {title}',
+  'notifications.taskErrorBody': 'Фоновая задача ({kind}) завершилась с ошибкой.',
+  'notifications.sessionDoneTitle': 'Агент завершил работу: {session}',
+  'notifications.sessionDoneBody': 'Нажмите, чтобы перейти к последнему ответу.',
+  'notifications.sessionErrorTitle': 'Ошибка агента: {session}',
+  'notifications.sessionErrorBody': 'Нажмите, чтобы посмотреть детали ошибки.',
+  'notifications.approvalTitle': 'Требуется действие: {session}',
+  'notifications.approvalBody': 'Шаг ожидает вашего подтверждения или ответа.',
+  'notifications.permissionPromptTitle': 'Уведомления браузера включены',
+  'notifications.permissionGrantBtn': 'Разрешить уведомления',
+  'notifications.permissionDeniedHint': 'Разрешение на уведомления заблокировано. Разрешите их в настройках сайта.',
+  'notifications.permissionGrantedHint': 'Уведомления браузера разрешены.',
+  'notifications.unsupportedHint': 'Этот браузер не поддерживает системные уведомления.',
 };

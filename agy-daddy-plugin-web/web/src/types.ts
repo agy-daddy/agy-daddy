@@ -1493,6 +1493,8 @@ export interface BackgroundTaskDto {
   title: string;
   commandLine?: string | null;
   cwd?: string | null;
+  projectPath?: string | null;
+  projectName?: string | null;
   sessionId?: string | null;
   sessionTitle?: string | null;
   status: BackgroundTaskStatus;
@@ -1510,11 +1512,32 @@ export interface BackgroundTaskDetailDto extends BackgroundTaskDto {
   retainedBytes: number;
 }
 
+export interface BackgroundTasksFilterProject {
+  key: string;
+  name: string;
+  path: string;
+  count: number;
+}
+
+export interface BackgroundTasksFilterSession {
+  id: string;
+  title: string;
+  projectPath: string | null;
+  count: number;
+}
+
+export interface BackgroundTasksFilters {
+  projects: BackgroundTasksFilterProject[];
+  sessions: BackgroundTasksFilterSession[];
+}
+
 export interface BackgroundTasksListResponse {
   ok: boolean;
   runningCount: number;
+  totalRunningCount?: number;
   running: BackgroundTaskDto[];
   recent: BackgroundTaskDto[];
+  filters?: BackgroundTasksFilters;
   serverTime: number;
 }
 
@@ -1534,6 +1557,7 @@ export interface StopBackgroundTaskResponse {
 
 export interface SseTaskUpdatedPayload {
   runningCount: number;
+  totalRunningCount?: number;
   taskId?: string;
   status?: BackgroundTaskStatus;
 }

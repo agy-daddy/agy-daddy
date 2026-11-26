@@ -904,7 +904,10 @@ export interface BackgroundTaskDto {
   subtitle?: string;
   status: BackgroundTaskStatus;
   sessionId?: string;
+  sessionTitle?: string | null;
   cwd?: string;
+  projectPath?: string | null;
+  projectName?: string | null;
   startedAt: number;
   endedAt?: number | null;
   exitCode?: number | null;
@@ -918,11 +921,32 @@ export interface BackgroundTaskDetailDto extends BackgroundTaskDto {
   retainedBytes: number;
 }
 
+export interface BackgroundTasksFilterProject {
+  key: string;
+  name: string;
+  path: string;
+  count: number;
+}
+
+export interface BackgroundTasksFilterSession {
+  id: string;
+  title: string;
+  projectPath: string | null;
+  count: number;
+}
+
+export interface BackgroundTasksFilters {
+  projects: BackgroundTasksFilterProject[];
+  sessions: BackgroundTasksFilterSession[];
+}
+
 export interface BackgroundTasksListResponse {
   ok: boolean;
   runningCount: number;
+  totalRunningCount?: number;
   running: BackgroundTaskDto[];
   recent: BackgroundTaskDto[];
+  filters?: BackgroundTasksFilters;
 }
 
 export interface StopBackgroundTaskResponse {

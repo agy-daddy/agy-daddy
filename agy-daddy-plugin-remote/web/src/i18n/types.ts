@@ -145,6 +145,14 @@ export interface I18nMessages {
   'tasks.alreadyFinished': string;
   'tasks.truncatedLog': string;
   'tasks.noLogs': string;
+  'tasks.filterAllProjects': string;
+  'tasks.filterCurrentProject': string;
+  'tasks.filterAllSessions': string;
+  'tasks.filterCurrentSession': string;
+  'tasks.filterClear': string;
+  'tasks.filterEmpty': string;
+  'tasks.filterProjectAria': string;
+  'tasks.filterSessionAria': string;
 
   'chat.thinking': string;
   'chat.thinkingLive': string;

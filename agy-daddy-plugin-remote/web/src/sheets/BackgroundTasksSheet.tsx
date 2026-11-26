@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useI18n } from '../i18n';
 import { BottomSheet } from '../layout/BottomSheet';
 import { api } from '../store/api';
 import type {
   BackgroundTaskDetailDto,
   BackgroundTaskDto,
+  BackgroundTasksFilterProject,
+  BackgroundTasksFilterSession,
   BackgroundTasksListResponse
 } from '../types';
 import styles from './SheetCommon.module.css';
 
 export interface BackgroundTasksSheetProps {
   open: boolean;
+  activeSessionId?: string | null;
+  activeSessionTitle?: string | null;
+  activeProjectPath?: string | null;
+  activeProjectName?: string | null;
   onRunningCountChange?: (count: number) => void;
   onShowToast?: (msg: string) => void;
   onClose: () => void;
@@ -24,8 +30,28 @@ function fmtDuration(startedAt: number, endedAt?: number | null): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function normalizeFilterPath(raw?: string | null): string {
+  if (!raw) return '';
+  return raw
+    .trim()
+    .replace(/^file:\/\//i, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function extractPathBasename(raw: string): string {
+  const cleaned = raw.replace(/^file:\/\//i, '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = cleaned.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : cleaned;
+}
+
 export function BackgroundTasksSheet({
   open,
+  activeSessionId = null,
+  activeSessionTitle = null,
+  activeProjectPath = null,
+  activeProjectName = null,
   onRunningCountChange,
   onShowToast,
   onClose
@@ -37,20 +63,37 @@ export function BackgroundTasksSheet({
   const [detail, setDetail] = useState<BackgroundTaskDetailDto | null>(null);
   const [armedStopId, setArmedStopId] = useState<string | null>(null);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const [filterProject, setFilterProject] = useState<string>('');
+  const [filterSessionId, setFilterSessionId] = useState<string>('');
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadList = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.listTasks();
-      setList(res);
-      onRunningCountChange?.(res.runningCount ?? 0);
-    } catch {
-      // ignore transient error
-    } finally {
-      setLoading(false);
-    }
-  }, [onRunningCountChange]);
+  const normalizedFilterProject = normalizeFilterPath(filterProject);
+  const normalizedActiveProject = normalizeFilterPath(activeProjectPath);
+  const hasActiveFilter = Boolean(filterProject || filterSessionId);
+
+  const loadList = useCallback(
+    async (override?: { project?: string; sessionId?: string }) => {
+      const nextProj = override ? (override.project ?? '') : filterProject;
+      const nextSess = override ? (override.sessionId ?? '') : filterSessionId;
+      setLoading(true);
+      try {
+        const res =
+          nextProj || nextSess
+            ? await api.listTasks({
+                project: nextProj || undefined,
+                sessionId: nextSess || undefined
+              })
+            : await api.listTasks();
+        setList(res);
+        onRunningCountChange?.(res.totalRunningCount ?? res.runningCount ?? 0);
+      } catch {
+        // ignore transient error
+      } finally {
+        setLoading(false);
+      }
+    },
+    [filterProject, filterSessionId, onRunningCountChange]
+  );
 
   const loadDetail = useCallback(async (taskId: string) => {
     try {
@@ -115,6 +158,93 @@ export function BackgroundTasksSheet({
   const running = list?.running || [];
   const recent = list?.recent || [];
 
+  const projectOptions = useMemo<BackgroundTasksFilterProject[]>(() => {
+    const base: BackgroundTasksFilterProject[] = list?.filters?.projects
+      ? list.filters.projects.map((p) => ({ ...p }))
+      : [];
+    if (
+      normalizedActiveProject &&
+      activeProjectPath &&
+      !base.some((p) => normalizeFilterPath(p.key || p.path) === normalizedActiveProject)
+    ) {
+      base.unshift({
+        key: normalizedActiveProject,
+        name: activeProjectName || extractPathBasename(activeProjectPath),
+        path: activeProjectPath,
+        count: 0
+      });
+    }
+    return base;
+  }, [list?.filters?.projects, normalizedActiveProject, activeProjectPath, activeProjectName]);
+
+  const allSessionOptions = useMemo<BackgroundTasksFilterSession[]>(() => {
+    const base: BackgroundTasksFilterSession[] = list?.filters?.sessions
+      ? list.filters.sessions.map((s) => ({ ...s }))
+      : [];
+    if (activeSessionId && !base.some((s) => s.id === activeSessionId)) {
+      base.unshift({
+        id: activeSessionId,
+        title: activeSessionTitle || activeSessionId,
+        projectPath: activeProjectPath || null,
+        count: 0
+      });
+    }
+    return base;
+  }, [list?.filters?.sessions, activeSessionId, activeSessionTitle, activeProjectPath]);
+
+  const visibleSessionOptions = useMemo(() => {
+    if (!normalizedFilterProject) return allSessionOptions;
+    return allSessionOptions.filter(
+      (s) =>
+        s.id === filterSessionId ||
+        normalizeFilterPath(s.projectPath) === normalizedFilterProject
+    );
+  }, [allSessionOptions, normalizedFilterProject, filterSessionId]);
+
+  const handleProjectChange = (nextProject: string) => {
+    const nextNorm = normalizeFilterPath(nextProject);
+    let nextSess = filterSessionId;
+    if (nextNorm && nextSess) {
+      const matched = allSessionOptions.find((s) => s.id === nextSess);
+      if (matched && normalizeFilterPath(matched.projectPath) !== nextNorm) {
+        nextSess = '';
+      }
+    }
+    setFilterProject(nextProject);
+    setFilterSessionId(nextSess);
+  };
+
+  const handleSessionChange = (nextSessionId: string) => {
+    setFilterSessionId(nextSessionId);
+  };
+
+  const handleToggleCurrentProject = () => {
+    if (!activeProjectPath) return;
+    const isSame = normalizedFilterProject === normalizedActiveProject;
+    handleProjectChange(isSame ? '' : (normalizedActiveProject || activeProjectPath));
+  };
+
+  const handleToggleCurrentSession = () => {
+    if (!activeSessionId) return;
+    if (filterSessionId === activeSessionId) {
+      setFilterSessionId('');
+      return;
+    }
+    if (
+      normalizedFilterProject &&
+      normalizedActiveProject &&
+      normalizedFilterProject !== normalizedActiveProject
+    ) {
+      setFilterProject('');
+    }
+    setFilterSessionId(activeSessionId);
+  };
+
+  const handleClearFilters = () => {
+    setFilterProject('');
+    setFilterSessionId('');
+  };
+
   const renderTaskCard = (task: BackgroundTaskDto) => {
     const isArmed = armedStopId === task.id;
     const isStopping = stoppingId === task.id;
@@ -130,17 +260,24 @@ export function BackgroundTasksSheet({
     return (
       <div key={task.id} className={styles.card} data-testid={`bg-task-${task.id}`}>
         <div className={styles.rowBetween}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <div className={styles.taskBadgeRow}>
             <span className="ag-chip">{t(`tasks.kind.${task.kind}`)}</span>
             <span className="ag-chip" data-tone={statusTone}>
               {t(`tasks.status.${task.status}`)}
             </span>
+            {task.projectName && (
+              <span className="ag-chip">
+                <span className="ag-chip-ellipsis">{task.projectName}</span>
+              </span>
+            )}
           </div>
           <span className={styles.kpiSub}>{fmtDuration(task.startedAt, task.endedAt)}</span>
         </div>
 
-        <strong style={{ fontSize: 13.5, wordBreak: 'break-word' }}>{task.title}</strong>
-        {task.subtitle && <div className={styles.monoSmall}>{task.subtitle}</div>}
+        <strong className={styles.taskCardTitle}>{task.title}</strong>
+        {(task.sessionTitle || task.subtitle) && (
+          <div className={styles.monoSmall}>{task.sessionTitle || task.subtitle}</div>
+        )}
 
         <div className={styles.choiceWrap}>
           <button
@@ -205,6 +342,81 @@ export function BackgroundTasksSheet({
       onClose={onClose}
     >
       <div className={styles.content}>
+        {!selectedId && (
+          <div className={styles.taskFilterCard} data-testid="bg-tasks-filter-bar">
+            <div className={styles.taskFilterGrid}>
+              <select
+                className={styles.taskFilterSelect}
+                value={filterProject}
+                onChange={(ev) => handleProjectChange(ev.currentTarget.value)}
+                aria-label={t('tasks.filterProjectAria')}
+                data-testid="bg-tasks-filter-project-select"
+              >
+                <option value="">{t('tasks.filterAllProjects')}</option>
+                {projectOptions.map((proj) => (
+                  <option key={proj.key} value={proj.key}>
+                    {proj.count > 0 ? `${proj.name} (${proj.count})` : proj.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={styles.taskFilterSelect}
+                value={filterSessionId}
+                onChange={(ev) => handleSessionChange(ev.currentTarget.value)}
+                aria-label={t('tasks.filterSessionAria')}
+                data-testid="bg-tasks-filter-session-select"
+              >
+                <option value="">{t('tasks.filterAllSessions')}</option>
+                {visibleSessionOptions.map((sess) => (
+                  <option key={sess.id} value={sess.id}>
+                    {sess.count > 0 ? `${sess.title} (${sess.count})` : sess.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {(activeProjectPath || activeSessionId || hasActiveFilter) && (
+              <div className={styles.choiceWrap}>
+                {activeProjectPath && (
+                  <button
+                    type="button"
+                    className={`${styles.choiceBtn} ${
+                      normalizedFilterProject === normalizedActiveProject ? styles.choiceBtnActive : ''
+                    }`}
+                    onClick={handleToggleCurrentProject}
+                    aria-pressed={normalizedFilterProject === normalizedActiveProject}
+                    data-testid="bg-tasks-filter-current-project"
+                  >
+                    {t('tasks.filterCurrentProject')}
+                  </button>
+                )}
+                {activeSessionId && (
+                  <button
+                    type="button"
+                    className={`${styles.choiceBtn} ${
+                      filterSessionId === activeSessionId ? styles.choiceBtnActive : ''
+                    }`}
+                    onClick={handleToggleCurrentSession}
+                    aria-pressed={filterSessionId === activeSessionId}
+                    data-testid="bg-tasks-filter-current-session"
+                  >
+                    {t('tasks.filterCurrentSession')}
+                  </button>
+                )}
+                {hasActiveFilter && (
+                  <button
+                    type="button"
+                    className={styles.choiceBtn}
+                    onClick={handleClearFilters}
+                    data-testid="bg-tasks-filter-clear"
+                  >
+                    {t('tasks.filterClear')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {selectedId ? (
           detail ? (
             <div className={styles.card} data-testid="bg-task-detail">
@@ -223,7 +435,21 @@ export function BackgroundTasksSheet({
             <div className="ag-empty">{t('common.refreshing')}</div>
           )
         ) : running.length === 0 && recent.length === 0 ? (
-          <div className="ag-empty">{t('tasks.empty')}</div>
+          <div className="ag-empty" data-testid="bg-tasks-empty">
+            <div>{hasActiveFilter ? t('tasks.filterEmpty') : t('tasks.empty')}</div>
+            {hasActiveFilter && (
+              <div className={styles.emptyActionWrap}>
+                <button
+                  type="button"
+                  className={styles.actionBtn}
+                  onClick={handleClearFilters}
+                  data-testid="bg-tasks-empty-clear"
+                >
+                  {t('tasks.filterClear')}
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <>
             {running.length > 0 && (

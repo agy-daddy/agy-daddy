@@ -396,4 +396,19 @@ describe('TopbarCapsules popovers & MobileQrPopover', () => {
     );
     expect(screen.queryByText('Context')).not.toBeInTheDocument();
   });
+
+  it('preserves global totalRunningCount on topbar badge when filtered runningCount is zero', () => {
+    renderTopbar({
+      tasksData: {
+        ok: true,
+        runningCount: 0,
+        totalRunningCount: 3,
+        running: [],
+        recent: [],
+        serverTime: Date.now(),
+      },
+    });
+
+    expect(screen.getByTestId('topbar-tasks-badge')).toHaveTextContent('3');
+  });
 });

@@ -315,6 +315,21 @@ describe('I18nProvider & formatSessionTitle', () => {
       'newProject.tabGdrive',
       'newProject.submitLocal',
       'newProject.gdUnavailableTitle',
+      'dock.workspaceSessionTag',
+      'dock.workspaceGroupSession',
+      'dock.workspaceGroupOther',
+      'dock.workspaceSearchPlaceholder',
+      'dock.workspaceNoMatches',
+      'dock.workspaceSelectAria',
+      'errors.sessionDetailTimeout',
+      'tasks.filterAllProjects',
+      'tasks.filterCurrentProject',
+      'tasks.filterAllSessions',
+      'tasks.filterCurrentSession',
+      'tasks.filterClear',
+      'tasks.filterEmpty',
+      'tasks.filterProjectAria',
+      'tasks.filterSessionAria',
     ];
 
     const ALL_LOCALES: Locale[] = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'fr', 'ru', 'it'];

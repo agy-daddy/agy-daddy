@@ -574,6 +574,8 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     activeOrchestratorMaster: st.activeOrchestratorMaster,
     permissionLevel: st.permissionLevel,
     activeSessionId: st.activeSessionId,
+    sessions: st.sessions,
+    projects: st.projects,
     groups: st.groups,
     defaultSessionPath: st.defaultSessionPath,
     latestJobEvent: st.latestJobEvent,
@@ -662,6 +664,26 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     return modelBadge.full;
   }, [modelBadge, t]);
 
+  const activeSessionSummary = useMemo(
+    () => s.sessions.find((item) => item.cascadeId === s.activeSessionId) || null,
+    [s.sessions, s.activeSessionId]
+  );
+
+  const activeProject = useMemo(
+    () =>
+      activeSessionSummary?.projectId
+        ? s.projects.find((proj) => proj.id === activeSessionSummary.projectId) || null
+        : null,
+    [s.projects, activeSessionSummary]
+  );
+
+  const activeProjectPath =
+    activeProject?.rootPath ||
+    activeProject?.path ||
+    activeProject?.uri ||
+    activeSessionSummary?.workspaceUri ||
+    null;
+
   const closeSheet = useCallback(() => remoteStore.setActiveSheet(null), []);
 
   return (
@@ -739,6 +761,10 @@ const ConnectedSheets = memo(function ConnectedSheets() {
 
       <BackgroundTasksSheet
         open={s.activeSheet === 'tasks'}
+        activeSessionId={s.activeSessionId || null}
+        activeSessionTitle={activeSessionSummary?.title || null}
+        activeProjectPath={activeProjectPath}
+        activeProjectName={activeProject?.name || activeSessionSummary?.projectName || null}
         onRunningCountChange={(count) => remoteStore.setRunningTasksCount(count)}
         onShowToast={(msg) => remoteStore.showToast(msg)}
         onClose={closeSheet}

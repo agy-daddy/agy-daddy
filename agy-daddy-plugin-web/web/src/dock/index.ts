@@ -1,4 +1,9 @@
 export { RightDock, type RightDockProps, type RightDockTab } from './RightDock';
+export {
+  WorkspacePicker,
+  type WorkspacePickerOption,
+  type WorkspacePickerProps,
+} from './WorkspacePicker';
 export { FileTreePanel, type FileTreePanelProps } from './FileTreePanel';
 export { GitDiffPanel, type GitDiffPanelProps } from './GitDiffPanel';
 export { ArtifactsPanel, type ArtifactsPanelProps } from './ArtifactsPanel';

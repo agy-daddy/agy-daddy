@@ -892,6 +892,22 @@ export interface I18nMessages {
   'newProject.createdToast': string;
   'newProject.createdNewSession': string;
   'newProject.l2RequiredHint': string;
+
+  'dock.workspaceSessionTag': string;
+  'dock.workspaceGroupSession': string;
+  'dock.workspaceGroupOther': string;
+  'dock.workspaceSearchPlaceholder': string;
+  'dock.workspaceNoMatches': string;
+  'dock.workspaceSelectAria': string;
+  'errors.sessionDetailTimeout': string;
+  'tasks.filterAllProjects': string;
+  'tasks.filterCurrentProject': string;
+  'tasks.filterAllSessions': string;
+  'tasks.filterCurrentSession': string;
+  'tasks.filterClear': string;
+  'tasks.filterEmpty': string;
+  'tasks.filterProjectAria': string;
+  'tasks.filterSessionAria': string;
 }
 
 export type I18nKey = keyof I18nMessages;

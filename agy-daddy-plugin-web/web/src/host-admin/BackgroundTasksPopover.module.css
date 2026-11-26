@@ -173,6 +173,87 @@
   gap: 8px;
 }
 
+.filterBar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.filterSelectRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.filterSelect {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.filterSelect:focus {
+  outline: none;
+  border-color: var(--accent-border-hover);
+  box-shadow: var(--shadow-accent);
+}
+
+.filterChipRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filterChip {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.filterChip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.filterChipActive {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.filterClearBtn {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.filterClearBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 .body {
   flex: 1;
   min-height: 0;
@@ -185,6 +266,14 @@
   text-align: center;
   font-size: var(--text-sm);
   color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.emptyText {
+  margin: 0;
 }
 
 .listWrap {
@@ -288,11 +377,20 @@
   font-family: var(--font-mono);
 }
 
+.projectHint,
 .sessionHint {
-  max-width: 150px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.projectHint {
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
 }
 
 .rowActions {

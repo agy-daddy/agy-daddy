@@ -8,6 +8,7 @@ import { FileTreePanel } from './FileTreePanel';
 import { GitDiffPanel } from './GitDiffPanel';
 import { SideChatPanel } from './SideChatPanel';
 import { TerminalPanel } from './TerminalPanel';
+import { WorkspacePicker, type WorkspacePickerOption } from './WorkspacePicker';
 import styles from './RightDock.module.css';
 
 export type RightDockTab = 'files' | 'diff' | 'artifacts' | 'terminal' | 'sideChat';
@@ -36,10 +37,9 @@ export interface RightDockProps {
   onGitMutated?: () => void;
 }
 
-interface RootOption {
-  value: string;
-  label: string;
-  fromSession: boolean;
+function extractRootBaseName(rootPath: string): string {
+  const parts = rootPath.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : rootPath;
 }
 
 const TAB_KEYS: Array<{ id: RightDockTab; labelKey: I18nKey }> = [
@@ -100,12 +100,6 @@ function TabIcon({ id }: { id: RightDockTab }) {
       <path d="M3 3.5h10v7.2H6.6L3.6 13v-2.3H3z" />
     </svg>
   );
-}
-
-function formatRootLabel(rootPath: string, fromSession: boolean, sessionSuffix: string): string {
-  const parts = rootPath.split('/').filter(Boolean);
-  const base = parts.length > 0 ? parts[parts.length - 1] : rootPath;
-  return fromSession ? `${base}${sessionSuffix} — ${rootPath}` : `${base} — ${rootPath}`;
 }
 
 function isRootInsideAllowed(candidate: string, allowedRoots: string[]): boolean {
@@ -195,10 +189,10 @@ export function RightDock({
     return normalized;
   }, [sessionWorkspaceUri, activeSession, normalizedAllowedRoots]);
 
-  const rootOptions = useMemo<RootOption[]>(() => {
+  const rootOptions = useMemo<WorkspacePickerOption[]>(() => {
     const sessionSet = new Set(sessionRoots);
     const seen = new Set<string>();
-    const options: RootOption[] = [];
+    const options: WorkspacePickerOption[] = [];
 
     const pushOption = (rawPath: string | undefined | null) => {
       const normalized = normalizeWorkspacePath(rawPath);
@@ -207,7 +201,8 @@ export function RightDock({
       const fromSession = sessionSet.has(normalized);
       options.push({
         value: normalized,
-        label: formatRootLabel(normalized, fromSession, t('dock.workspaceSessionSuffix')),
+        name: extractRootBaseName(normalized),
+        path: normalized,
         fromSession,
       });
     };
@@ -226,7 +221,7 @@ export function RightDock({
     }
 
     return options;
-  }, [sessionRoots, normalizedAllowedRoots, controlledRoot, defaultWorkspaceRoot, t]);
+  }, [sessionRoots, normalizedAllowedRoots, controlledRoot, defaultWorkspaceRoot]);
 
   const primaryDefaultRoot = useMemo(() => {
     if (defaultWorkspaceRoot) {
@@ -432,28 +427,20 @@ export function RightDock({
         </div>
 
         <div className={styles.rootBar}>
-          <label className={styles.rootLabel} htmlFor="right-dock-root-select">
+          <label
+            id="right-dock-root-label"
+            className={styles.rootLabel}
+            htmlFor="right-dock-root-select"
+          >
             {t('dock.workspaceLabel')}
           </label>
-          <select
+          <WorkspacePicker
             id="right-dock-root-select"
-            className={styles.rootSelect}
+            ariaLabelledBy="right-dock-root-label"
+            options={rootOptions}
             value={currentRoot}
-            onChange={(ev) => handleSelectRoot(ev.target.value)}
-            disabled={rootOptions.length === 0}
-            title={currentRoot || t('dock.workspaceEmpty')}
-            data-testid="dock-root-select"
-          >
-            {rootOptions.length === 0 ? (
-              <option value="">{t('dock.workspaceEmpty')}</option>
-            ) : (
-              rootOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))
-            )}
-          </select>
+            onChange={handleSelectRoot}
+          />
           <button
             type="button"
             className={styles.refreshIconBtn}

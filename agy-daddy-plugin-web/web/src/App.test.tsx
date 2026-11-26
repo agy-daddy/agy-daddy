@@ -279,6 +279,9 @@ describe('App optimistic send flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    if (typeof window !== 'undefined' && window.location.search) {
+      window.history.replaceState({}, '', window.location.pathname || '/');
+    }
     mockSseCallbacks.onOpen = undefined;
     mockSseCallbacks.onError = undefined;
     mockSseCallbacks.onHeartbeat = undefined;
@@ -970,5 +973,117 @@ describe('App optimistic send flow', () => {
       );
       expect(screen.getByTestId('topbar-session-title')).toHaveTextContent('Second Session');
     });
+  });
+
+  it('aborts stale getSessionDetail on session switch, supports timeout retry, and clears skeleton on SSE delta', async () => {
+    mocks.listSessions.mockResolvedValue({
+      ok: true,
+      sessions: [
+        {
+          cascadeId: 'sess-1',
+          title: 'Session One',
+          summary: '',
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          stepCount: 1,
+          lastModifiedTime: '2026-11-26T05:00:00Z',
+          createdTime: '2026-11-26T04:00:00Z',
+          workspaceUri: 'file:///workspace/demo',
+          gitRootUri: null,
+          repoName: 'demo',
+          branchName: 'main',
+          workspaces: [{ workspaceUri: 'file:///workspace/demo' }],
+        },
+        {
+          cascadeId: 'sess-2',
+          title: 'Session Two',
+          summary: '',
+          status: 'CASCADE_RUN_STATUS_RUNNING',
+          stepCount: 1,
+          lastModifiedTime: '2026-11-26T04:00:00Z',
+          createdTime: '2026-11-26T03:00:00Z',
+          workspaceUri: 'file:///workspace/demo',
+          gitRootUri: null,
+          repoName: 'demo',
+          branchName: 'main',
+          workspaces: [{ workspaceUri: 'file:///workspace/demo' }],
+        },
+      ],
+      hiddenInternalCount: 0,
+    });
+
+    const signalsBySession: Record<string, AbortSignal | undefined> = {};
+    mocks.getSessionDetail.mockImplementation((sessionId: string, signal?: AbortSignal) => {
+      signalsBySession[sessionId] = signal;
+      if (sessionId === 'sess-1') {
+        return new Promise(() => {});
+      }
+      if (sessionId === 'sess-2' && mocks.getSessionDetail.mock.calls.filter((c) => c[0] === 'sess-2').length === 1) {
+        return Promise.reject(new ApiError('SESSION_DETAIL_TIMEOUT', 504, 'SESSION_DETAIL_TIMEOUT'));
+      }
+      return Promise.resolve({
+        ok: true,
+        session: {
+          cascadeId: 'sess-2',
+          trajectoryId: null,
+          trajectoryType: null,
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          numTotalSteps: 1,
+          source: null,
+          metadata: null,
+          generatorMetadata: [],
+        },
+        events: [makeUserEvent(0, 'Recovered session two')],
+      });
+    });
+
+    mocks.subscribeSessionStream.mockImplementation((_sid, cbs) => {
+      mockSseCallbacks.onDelta = cbs.onDelta;
+      return () => {};
+    });
+
+    renderApp();
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('session-stream-loading')).toBeInTheDocument();
+      },
+      { timeout: 5000 },
+    );
+
+    // SSE first frame clears skeleton even while getSessionDetail is still pending
+    act(() => {
+      mockSseCallbacks.onDelta?.({
+        cascadeId: 'sess-1',
+        status: 'CASCADE_RUN_STATUS_RUNNING',
+        totalSteps: 1,
+        events: [makeUserEvent(0, 'Streamed first event')],
+      });
+    });
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId('session-stream-loading')).not.toBeInTheDocument();
+        expect(screen.getByTestId('session-event-0')).toHaveTextContent('Streamed first event');
+      },
+      { timeout: 5000 },
+    );
+
+    // Switching to sess-2 aborts sess-1's in-flight detail request
+    fireEvent.click(screen.getByText('Session Two'));
+    expect(signalsBySession['sess-1']?.aborted).toBe(true);
+
+    // sess-2 fails once with 504 timeout -> shows error & Retry button -> clicking Retry recovers
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('session-stream-error')).toHaveTextContent('Timed out loading session timeline');
+      },
+      { timeout: 5000 },
+    );
+    fireEvent.click(screen.getByTestId('session-stream-retry-btn'));
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('session-event-0')).toHaveTextContent('Recovered session two');
+      },
+      { timeout: 5000 },
+    );
   });
 });

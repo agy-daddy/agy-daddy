@@ -360,3 +360,56 @@
   color: var(--ag-muted);
   line-height: 1.5;
 }
+
+.taskFilterCard {
+  padding: 10px 12px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-card);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.taskFilterGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.taskFilterSelect {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-subcard);
+  color: var(--ag-fg);
+  font-size: 16px;
+}
+
+.taskFilterSelect:focus {
+  outline: none;
+  border-color: var(--ag-accent-border);
+  background: var(--ag-card);
+}
+
+.taskBadgeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.taskCardTitle {
+  font-size: 13.5px;
+  word-break: break-word;
+}
+
+.emptyActionWrap {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+}

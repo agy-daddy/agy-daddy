@@ -1951,6 +1951,9 @@ function createWorkspaceMetaStore({
     const lookup = buildRegisteredLookup(activeOrg);
     const appSyncedLookup = buildAppSyncedLookup(lookup);
     const implicitByKey = new Map();
+    const implicitProjects = [];
+    const explicitNullOverrideIds = new Set();
+    const overridesMap = activeOrg.sessionProjectOverrides || {};
     const initMs = toTimestampMs(state.readStateInitializedAt);
     const pinnedSet = new Set(activeOrg.pins?.sessions || []);
     const archivedMap = activeOrg.archivedSessions || {};
@@ -2118,7 +2121,16 @@ function createWorkspaceMetaStore({
       const sessionForAssignment = workspaceUri && !session.workspaceUri
         ? { ...session, workspaceUri }
         : session;
+      if (cid && Object.prototype.hasOwnProperty.call(overridesMap, cid) && overridesMap[cid] === null) {
+        explicitNullOverrideIds.add(cid);
+      }
+      const beforeImplicitSize = implicitByKey.size;
       const resolved = resolveSessionAssignment(sessionForAssignment, lookup, implicitByKey, appSyncedLookup);
+      if (resolved.implicitProject && implicitByKey.size > beforeImplicitSize) {
+        if (!implicitProjects.some((p) => p.id === resolved.implicitProject.id)) {
+          implicitProjects.push(resolved.implicitProject);
+        }
+      }
 
       enrichedAll.push({
         ...session,
@@ -2151,11 +2163,65 @@ function createWorkspaceMetaStore({
       });
     }
 
-    const knownWorktrees = activeWorktreeDiscovery ? activeWorktreeDiscovery.getAllKnownWorktrees() : [];
+    const pinnedProjectsSet = new Set(activeOrg.pins?.projects || []);
+    const registeredProjects = (activeOrg.projects || []).map((p) => ({
+      ...p,
+      groupId: activeOrg.projectGroupMap?.[p.id] ?? p.groupId ?? null,
+      pinned: pinnedProjectsSet.has(p.id),
+      implicit: false
+    }));
+    const appSyncedProjects = appSyncedLookup.list.map((p) => ({
+      id: p.id,
+      name: p.name,
+      rootPath: p.rootPath,
+      groupId: activeOrg.projectGroupMap?.[p.id] ?? null,
+      pinned: pinnedProjectsSet.has(p.id),
+      implicit: false,
+      syncedFromApp: true,
+      source: 'app'
+    }));
+    const implicitList = implicitProjects.map((p) => ({
+      ...p,
+      groupId: activeOrg.projectGroupMap?.[p.id] ?? p.groupId ?? null,
+      pinned: pinnedProjectsSet.has(p.id)
+    }));
+    const combinedProjects = [...registeredProjects, ...appSyncedProjects, ...implicitList];
+    const agg = aggregateWorktreeProjects({
+      projects: combinedProjects,
+      sessions: enrichedAll,
+      persistedOrg: activeOrg,
+      worktreeDiscovery: activeWorktreeDiscovery
+    });
+
+    const knownWtsMap = new Map();
+    for (const wt of (agg.allKnownWorktrees || [])) {
+      if (wt?.worktreeId && !knownWtsMap.has(wt.worktreeId)) {
+        knownWtsMap.set(wt.worktreeId, wt);
+      }
+    }
+    if (activeWorktreeDiscovery) {
+      for (const wt of activeWorktreeDiscovery.getAllKnownWorktrees()) {
+        if (wt?.worktreeId && !knownWtsMap.has(wt.worktreeId)) {
+          knownWtsMap.set(wt.worktreeId, wt);
+        }
+      }
+    }
+    const knownWorktrees = Array.from(knownWtsMap.values());
+    const primaryById = new Map((agg.projects || []).map((p) => [p.id, p]));
+    const primaryByRepoKey = new Map();
+    for (const p of (agg.projects || [])) {
+      const rk = p?.repoRootPath ? canonicalKey(p.repoRootPath) : '';
+      if (rk && !primaryByRepoKey.has(rk)) {
+        primaryByRepoKey.set(rk, p);
+      }
+    }
+
     const bindingsMap = activeOrg.sessionWorktreeBindings || {};
-    if (knownWorktrees.length > 0 || Object.keys(bindingsMap).length > 0) {
+    if (knownWorktrees.length > 0 || Object.keys(bindingsMap).length > 0 || (agg.mergedIdToPrimaryId && agg.mergedIdToPrimaryId.size > 0)) {
       for (const es of enrichedAll) {
-        const binding = bindingsMap[es.cascadeId] || null;
+        if (!es || typeof es !== 'object') continue;
+        const esCid = es.cascadeId;
+        const binding = bindingsMap[esCid] || null;
         const rawWs = es.workspacePath || es.workspaceUri || binding?.workspacePath || binding?.workspaceUri || '';
         const matchedWt = (rawWs && knownWorktrees.length > 0)
           ? matchWorktreeByLongestPrefix(rawWs, knownWorktrees)
@@ -2168,6 +2234,41 @@ function createWorkspaceMetaStore({
         } else if (binding?.worktreeId) {
           es.worktreeId = binding.worktreeId;
           es.worktreePath = binding.workspacePath || null;
+          const tombstone = activeOrg.worktreeTombstones?.[binding.worktreeId] || null;
+          if (tombstone) {
+            es.worktreeStatus = 'missing';
+            if (tombstone.branch && !es.worktreeBranch) {
+              es.worktreeBranch = tombstone.branch;
+            }
+          }
+        }
+
+        if (!explicitNullOverrideIds.has(esCid)) {
+          let targetPrimary = null;
+          if (es.projectId && agg.mergedIdToPrimaryId?.has(es.projectId)) {
+            const primaryId = agg.mergedIdToPrimaryId.get(es.projectId);
+            targetPrimary = primaryById.get(primaryId) || null;
+            if (!targetPrimary) {
+              es.projectId = primaryId;
+            }
+          } else if (matchedWt?.repoKey && primaryByRepoKey.has(matchedWt.repoKey)) {
+            targetPrimary = primaryByRepoKey.get(matchedWt.repoKey);
+          } else if (binding?.worktreeId && activeOrg.worktreeTombstones?.[binding.worktreeId]?.repoRootPath) {
+            const tbRepoKey = canonicalKey(normalizeLocalPath(activeOrg.worktreeTombstones[binding.worktreeId].repoRootPath));
+            if (tbRepoKey && primaryByRepoKey.has(tbRepoKey)) {
+              targetPrimary = primaryByRepoKey.get(tbRepoKey);
+            }
+          }
+
+          if (targetPrimary) {
+            es.projectId = targetPrimary.id;
+            es.projectName = targetPrimary.name;
+            es.groupId = (esCid && activeOrg.sessionGroupMap?.[esCid])
+              || targetPrimary.groupId
+              || activeOrg.projectGroupMap?.[targetPrimary.id]
+              || es.groupId
+              || null;
+          }
         }
       }
     }

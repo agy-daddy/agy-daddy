@@ -309,3 +309,105 @@ test('remote: worktree discovery, StartCascade workspaceUris, sibling fs/git aut
   assert.equal(crossAssign.status, 409);
   assert.equal(crossAssign.json.error, 'CROSS_CONTAINER_SESSION_MOVE_FORBIDDEN');
 });
+
+test('HUB-346: PWA GET /api/v1/tasks preserves worktreeId and worktree root projectPath for nested worktree subdir commands', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-rem-hub346-'));
+  const repo = path.join(tmp, 'rem-hub346-repo');
+  const nestedWt = path.join(repo, '.worktrees', 'wt-inner');
+  const nestedSubdir = path.join(nestedWt, 'src', 'sub');
+  initGitRepo(repo, 'main');
+  execFileSync('git', ['worktree', 'add', '-b', 'feat/inner', nestedWt], { cwd: repo, stdio: 'ignore' });
+  fs.mkdirSync(nestedSubdir, { recursive: true });
+
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(tmp, 'session-org.json');
+  t.after(() => {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    cleanupDir(tmp);
+  });
+
+  const realNestedWt = fs.realpathSync.native(nestedWt);
+  const realNestedSubdir = fs.realpathSync.native(nestedSubdir);
+  const nowIso = new Date().toISOString();
+
+  const harness = createMockHostHarness({
+    onRpc(method, params) {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'rem-subdir-1': {
+              summary: 'Remote Nested Subdir Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              createdTime: nowIso,
+              lastModifiedTime: nowIso,
+              stepCount: 1,
+              workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(realNestedSubdir).href }]
+            }
+          }
+        };
+      }
+      if (method === 'GetCascadeTrajectory' || method === 'GetCascadeTrajectorySteps') {
+        const steps = params?.cascadeId === 'rem-subdir-1'
+          ? [
+              {
+                stepIndex: 0,
+                type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+                status: 'CORTEX_STEP_STATUS_DONE',
+                runCommand: {
+                  commandLine: 'pwd',
+                  cwd: realNestedSubdir,
+                  exitCode: 0,
+                  combinedOutput: realNestedSubdir
+                },
+                metadata: { createdAt: nowIso, completedAt: nowIso }
+              }
+            ]
+          : [];
+        return method === 'GetCascadeTrajectory' ? { trajectory: { steps } } : { steps };
+      }
+      if (method === 'GetUserStatus') {
+        return { userStatus: { cascadeModelConfigData: { clientModelConfigs: [] } } };
+      }
+      if (method === 'GetAvailableModels') {
+        return { response: { models: {} } };
+      }
+      return { ok: true };
+    }
+  });
+
+  const { port: bridgePort } = await harness.bridge.start(0);
+  harness.rendererHost.configure({ bridgePort, hostToken: harness.bridge.hostToken });
+  await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+  t.after(() => harness.cleanup());
+  await harness.updatePluginSettings('agy-daddy.remote', {
+    permissionLevel: 'L2',
+    allowedRoots: [repo],
+    loopback: true
+  });
+
+  const remoteSvc = harness.bus.getServiceProxy('remote');
+  const st = await remoteSvc.getStatus();
+  const token = await remoteSvc.getPairingToken();
+  const base = st.url;
+  const auth = { Authorization: `Bearer ${token}` };
+
+  const orgRes = await httpRequest(`${base}/api/v1/sessions/org?refreshWorktrees=1`, { headers: auth });
+  assert.equal(orgRes.status, 200);
+
+  const tasksRes = await httpRequest(`${base}/api/v1/tasks`, { headers: auth });
+  assert.equal(tasksRes.status, 200);
+  const workspaceOrg = resolveWorkspaceOrg(null);
+  const expectedWtId = workspaceOrg.makeWorktreeId(realNestedWt);
+
+  const cmdTask = tasksRes.json.recent.find((x) => x.id === 'cmd:rem-subdir-1:0');
+  assert.ok(cmdTask);
+  assert.equal(cmdTask.projectPath, realNestedWt);
+  assert.equal(cmdTask.worktreeId, expectedWtId);
+  assert.equal(cmdTask.worktreeBranch, 'feat/inner');
+
+  const sessTask = tasksRes.json.recent.find((x) => x.id === 'session:rem-subdir-1');
+  assert.ok(sessTask);
+  assert.equal(sessTask.projectPath, realNestedWt);
+  assert.equal(sessTask.worktreeId, expectedWtId);
+});

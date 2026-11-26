@@ -433,3 +433,70 @@ test('GET /api/v1/tasks HTTP 接口支持 ?sessionId=&project= 参数及 filters
     fs.rmSync(wsTwo, { recursive: true, force: true });
   }
 });
+
+test('HUB-346: remote createTaskManager prevents nested worktree subdir session from shadowing worktreeId', async () => {
+  const repoRoot = path.resolve('/work/rem-hub346-unit');
+  const nestedWt = path.join(repoRoot, '.worktrees', 'wt-inner');
+  const nestedSubdir = path.join(nestedWt, 'src', 'sub');
+  const wtId = 'wt_rem_inner_001';
+  const nowIso = new Date().toISOString();
+
+  const tm = createTaskManager({
+    listSessions: async () => ({
+      sessions: [
+        {
+          cascadeId: 'cid-rem-subdir',
+          title: 'Subdir Session',
+          workspacePath: nestedSubdir,
+          projectName: 'Rem Hub346',
+          status: 'CASCADE_RUN_STATUS_IDLE',
+          createdTime: nowIso,
+          lastModifiedTime: nowIso,
+          stepCount: 1
+        }
+      ],
+      projects: [
+        {
+          id: 'proj-rem-main',
+          name: 'Rem Hub346',
+          rootPath: repoRoot,
+          worktrees: [
+            { worktreeId: 'wt_rem_main_001', path: repoRoot, branch: 'main', displayLabel: 'main' },
+            { worktreeId: wtId, path: nestedWt, branch: 'feat/inner', displayLabel: 'feat/inner' }
+          ]
+        }
+      ]
+    }),
+    getSessionSteps: async (cid) => {
+      if (cid !== 'cid-rem-subdir') return [];
+      return [
+        {
+          stepIndex: 0,
+          type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+          status: 'CORTEX_STEP_STATUS_DONE',
+          runCommand: {
+            commandLine: 'npm test',
+            cwd: nestedSubdir,
+            exitCode: 0,
+            combinedOutput: 'ok'
+          },
+          metadata: { createdAt: nowIso, completedAt: nowIso }
+        }
+      ];
+    }
+  });
+
+  const res = await tm.listTasks('L1');
+  assert.equal(res.ok, true);
+  const cmdTask = res.recent.find((t) => t.id === 'cmd:cid-rem-subdir:0');
+  assert.ok(cmdTask);
+  assert.equal(cmdTask.projectPath, nestedWt);
+  assert.equal(cmdTask.projectName, 'Rem Hub346');
+  assert.equal(cmdTask.worktreeId, wtId);
+  assert.equal(cmdTask.worktreeBranch, 'feat/inner');
+
+  const sessTask = res.recent.find((t) => t.id === 'session:cid-rem-subdir');
+  assert.ok(sessTask);
+  assert.equal(sessTask.projectPath, nestedWt);
+  assert.equal(sessTask.worktreeId, wtId);
+});

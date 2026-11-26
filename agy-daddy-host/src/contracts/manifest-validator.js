@@ -224,8 +224,17 @@ function validateSettingsSchema(schema) {
     if (!SETTINGS_FIELD_TYPES.includes(field.type)) {
       errors.push(`unsupported setting type for ${field.key}: ${String(field.type)}`);
     }
-    if (field.type === 'enum' && (!Array.isArray(field.options) || field.options.length === 0)) {
-      errors.push(`enum field ${field.key} must provide non-empty options`);
+    if (field.type === 'enum') {
+      const hasOptionsCmd = typeof field.optionsCommand === 'string' && field.optionsCommand.trim().length > 0;
+      if (!hasOptionsCmd && (!Array.isArray(field.options) || field.options.length === 0)) {
+        errors.push(`enum field ${field.key} must provide non-empty options`);
+      }
+      if (field.options !== undefined && !Array.isArray(field.options)) {
+        errors.push(`options for ${field.key} must be an array`);
+      }
+      if (field.optionsCommand !== undefined && (typeof field.optionsCommand !== 'string' || !/^[a-zA-Z0-9_.:-]+$/.test(field.optionsCommand))) {
+        errors.push(`invalid optionsCommand for ${field.key}: ${String(field.optionsCommand)}`);
+      }
     }
     if (field.type === 'string') {
       if (field.options !== undefined) {
@@ -470,8 +479,16 @@ function validateSettingsValues(schema, rawValues = {}) {
         values[field.key] = val;
       }
     } else if (field.type === 'enum') {
-      const allowed = field.options.map((o) => (isPlainObject(o) ? o.value : o));
-      if (!allowed.includes(val)) {
+      const allowed = Array.isArray(field.options)
+        ? field.options.map((o) => (isPlainObject(o) ? o.value : o))
+        : [];
+      if (field.optionsCommand) {
+        if (!allowed.includes(val) && typeof val !== 'string') {
+          errors.push(`${field.key} must be string`);
+        } else {
+          values[field.key] = val;
+        }
+      } else if (!allowed.includes(val)) {
         errors.push(`${field.key} must be one of ${allowed.join(', ')}`);
       } else {
         values[field.key] = val;

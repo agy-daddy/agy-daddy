@@ -1715,17 +1715,30 @@ class MobileRemoteServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/tasks') {
+      const sessionId = (urlObj.searchParams.get('sessionId') || '').trim();
+      const project = (urlObj.searchParams.get('project') || '').trim();
+      const filterOpts = {
+        ...(sessionId ? { sessionId } : {}),
+        ...(project ? { project } : {})
+      };
       if (typeof h.listTasks === 'function') {
-        const result = await h.listTasks({ permissionLevel });
+        const result = await h.listTasks({ permissionLevel, ...filterOpts });
         sendResult(res, result);
         return;
       }
       if (this.taskManager) {
-        const result = await this.taskManager.listTasks(permissionLevel);
+        const result = await this.taskManager.listTasks(permissionLevel, filterOpts);
         sendResult(res, result);
         return;
       }
-      sendJson(res, 200, { ok: true, runningCount: 0, running: [], recent: [] });
+      sendJson(res, 200, {
+        ok: true,
+        runningCount: 0,
+        totalRunningCount: 0,
+        running: [],
+        recent: [],
+        filters: { projects: [], sessions: [] }
+      });
       return;
     }
 

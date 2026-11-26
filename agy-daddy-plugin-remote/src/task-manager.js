@@ -1,6 +1,7 @@
 'use strict';
 
 const { Buffer } = require('node:buffer');
+const os = require('node:os');
 const path = require('node:path');
 const { isPermissionAtLeast } = require('./tunnel-security');
 
@@ -8,9 +9,47 @@ const LOG_TAIL_MAX_BYTES = 65536;
 const RECENT_TASKS_LIMIT = 24;
 const STEP_SCAN_SESSION_LIMIT = 8;
 const STEP_SCAN_CACHE_TTL_MS = 2500;
+const IS_CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
+const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
 
 function isPlainObject(val) {
   return Boolean(val) && typeof val === 'object' && !Array.isArray(val);
+}
+
+function normalizeProjectPath(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw.trim();
+  if (!s || s.includes('\0')) return '';
+  if (/^file:\/\//i.test(s)) {
+    try {
+      s = decodeURIComponent(new URL(s).pathname);
+      if (WINDOWS_DRIVE_RE.test(s.slice(1))) s = s.slice(1);
+    } catch {
+      s = s.replace(/^file:\/\//i, '');
+      if (/^localhost\//i.test(s)) s = s.slice('localhost'.length);
+    }
+  }
+  if (s === '~') s = os.homedir();
+  else if (s.startsWith('~/') || s.startsWith('~\\')) s = path.join(os.homedir(), s.slice(2));
+  if (WINDOWS_DRIVE_RE.test(s) && process.platform !== 'win32') {
+    const slashed = s.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+    return slashed.length > 3 ? slashed.replace(/\/+$/, '') : slashed;
+  }
+  const resolved = path.isAbsolute(s) ? path.resolve(s) : s.replace(/\\/g, '/');
+  return resolved.length > 1 && !/^[A-Za-z]:[\\/]$/.test(resolved) ? resolved.replace(/[\\/]+$/, '') : resolved;
+}
+
+function canonicalProjectKey(raw) {
+  const norm = normalizeProjectPath(raw);
+  if (!norm) return '';
+  const slashed = norm.replace(/\\/g, '/');
+  return IS_CASE_INSENSITIVE_FS ? slashed.toLowerCase() : slashed;
+}
+
+function extractProjectBasename(normPath) {
+  const slashed = String(normPath || '').replace(/\\/g, '/');
+  const parts = slashed.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : slashed;
 }
 
 /**
@@ -166,6 +205,7 @@ function extractCommandStepFields(step, fallbackIdx) {
 function createTaskManager({
   ptyManager = null,
   listSessions = null,
+  getAllowedRoots = null,
   getSessionSteps = null,
   cancelSession = null,
   approveStep = null,
@@ -197,10 +237,95 @@ function createTaskManager({
     return steps;
   }
 
-  async function collectAllTasks(permissionLevel = 'L0') {
+  async function collectAllTasks(permissionLevel = 'L0', { targetSessionId = '' } = {}) {
     const running = [];
     const recent = [];
     const detailIndex = new Map();
+
+    // Fetch sessions & projects first so PTY and command tasks can map cwds onto known project roots
+    let sessions = [];
+    let rawProjects = [];
+    if (typeof listSessions === 'function') {
+      try {
+        const res = await listSessions({ limit: 200, includeSubagents: true });
+        sessions = Array.isArray(res?.sessions) ? res.sessions : (Array.isArray(res) ? res : []);
+        if (Array.isArray(res?.projects)) rawProjects = res.projects;
+      } catch {
+        sessions = [];
+        rawProjects = [];
+      }
+    }
+
+    const knownProjectMap = new Map(); // key -> { key, path, name, id, aliases }
+    const projectIdToKey = new Map();
+    const registerKnownProject = (rawPath, { name = '', id = '', aliases = [] } = {}) => {
+      const normPath = normalizeProjectPath(rawPath);
+      const key = canonicalProjectKey(normPath);
+      if (!key) return;
+      const existing = knownProjectMap.get(key);
+      const resolvedName = existing?.name || String(name || '').trim() || extractProjectBasename(normPath) || normPath;
+      const mergedAliases = new Set([...(existing?.aliases || []), ...(Array.isArray(aliases) ? aliases : [])]);
+      const resolvedId = id || existing?.id || '';
+      knownProjectMap.set(key, {
+        key,
+        path: existing?.path || normPath,
+        name: resolvedName,
+        id: resolvedId,
+        aliases: Array.from(mergedAliases)
+      });
+      if (resolvedId) projectIdToKey.set(resolvedId, key);
+      for (const al of mergedAliases) {
+        if (al) projectIdToKey.set(String(al), key);
+      }
+    };
+
+    for (const p of rawProjects) {
+      if (!p) continue;
+      registerKnownProject(p.rootPath || p.workspaceUri || p.path || '', {
+        name: p.name,
+        id: p.id,
+        aliases: p.aliases
+      });
+    }
+    if (typeof getAllowedRoots === 'function') {
+      try {
+        const roots = getAllowedRoots();
+        for (const r of Array.isArray(roots) ? roots : []) {
+          registerKnownProject(r);
+        }
+      } catch {}
+    }
+    for (const s of sessions) {
+      const wsRaw = s?.workspacePath || (typeof s?.workspaceUri === 'string' ? s.workspaceUri : '');
+      if (wsRaw) {
+        registerKnownProject(wsRaw, { name: s.projectName || '', id: s.projectId || '' });
+      }
+    }
+
+    const knownProjectsDesc = Array.from(knownProjectMap.values()).sort((a, b) => b.key.length - a.key.length);
+    const resolveProjectInfo = (candidateRaw, fallbackProject = null) => {
+      const normCand = normalizeProjectPath(candidateRaw);
+      const candKey = canonicalProjectKey(normCand);
+      if (candKey) {
+        for (const proj of knownProjectsDesc) {
+          const prefix = proj.key.endsWith('/') ? proj.key : `${proj.key}/`;
+          if (candKey === proj.key || candKey.startsWith(prefix)) {
+            return { key: proj.key, path: proj.path, name: proj.name };
+          }
+        }
+      }
+      if (fallbackProject && fallbackProject.path) {
+        return fallbackProject;
+      }
+      if (normCand) {
+        return {
+          key: candKey,
+          path: normCand,
+          name: extractProjectBasename(normCand) || normCand
+        };
+      }
+      return { key: '', path: null, name: null };
+    };
 
     // 1. PTY tasks
     if (ptyManager && typeof ptyManager.listTaskRecords === 'function') {
@@ -211,6 +336,7 @@ function createTaskManager({
         const id = `pty:${ptyId}`;
         const status = rec.alive ? 'running' : normalizeTaskStatus(rec.status, rec.exitCode && rec.exitCode !== 0 ? 'failed' : 'completed');
         const dirName = rec.cwd ? path.basename(rec.cwd) : 'terminal';
+        const projInfo = resolveProjectInfo(rec.cwd || '');
         const dto = {
           id,
           taskId: id,
@@ -219,6 +345,9 @@ function createTaskManager({
           subtitle: rec.cwd || '',
           status,
           cwd: rec.cwd || undefined,
+          projectPath: projInfo.path,
+          projectName: projInfo.name,
+          sessionTitle: rec.sessionTitle || null,
           startedAt: toTimestampMs(rec.createdAt, Date.now()),
           endedAt: status === 'running' ? null : toTimestampMs(rec.endedAt, Date.now()),
           exitCode: rec.exitCode ?? null,
@@ -231,19 +360,10 @@ function createTaskManager({
     }
 
     // 2. Sessions & Subagents
-    let sessions = [];
-    if (typeof listSessions === 'function') {
-      try {
-        const res = await listSessions({ limit: 200, includeSubagents: true });
-        sessions = Array.isArray(res?.sessions) ? res.sessions : (Array.isArray(res) ? res : []);
-      } catch {
-        sessions = [];
-      }
-    }
-
     const stepScanTargets = new Set();
     const sessionTitleMap = new Map();
     const sessionMarkerMap = new Map();
+    const sessionProjectMap = new Map();
 
     for (const s of sessions) {
       const cid = s?.cascadeId || s?.id;
@@ -251,7 +371,12 @@ function createTaskManager({
       const status = normalizeTaskStatus(s.status, 'completed');
       const isSubagent = Boolean(s.isSubagent || s.parentCascadeId);
       const title = String(s.title || s.summary || (isSubagent ? 'Subagent' : 'Session')).trim();
-      const cwd = s.workspacePath || (typeof s.workspaceUri === 'string' ? s.workspaceUri.replace(/^file:\/\//, '') : undefined);
+      const rawWs = s.workspacePath || (typeof s.workspaceUri === 'string' ? s.workspaceUri : '');
+      const cwd = normalizeProjectPath(rawWs) || undefined;
+      const projInfo = resolveProjectInfo(rawWs);
+      if (s.projectName && projInfo.path && !knownProjectMap.has(projInfo.key)) {
+        projInfo.name = String(s.projectName).trim();
+      }
       const startedAt = toTimestampMs(s.createdTime, Date.now());
       const endedAt = status === 'running' ? null : toTimestampMs(s.lastModifiedTime || s.createdTime, startedAt);
       const id = `session:${cid}`;
@@ -263,7 +388,10 @@ function createTaskManager({
         subtitle: isSubagent ? 'Subagent 会话' : (cwd ? path.basename(cwd) : '主会话'),
         status,
         sessionId: cid,
+        sessionTitle: title,
         cwd,
+        projectPath: projInfo.path,
+        projectName: projInfo.name,
         startedAt,
         endedAt,
         exitCode: null,
@@ -272,11 +400,12 @@ function createTaskManager({
 
       sessionTitleMap.set(cid, title);
       sessionMarkerMap.set(cid, `${s.status || ''}:${s.stepCount || 0}:${s.lastModifiedTime || ''}`);
+      sessionProjectMap.set(cid, projInfo);
 
       if (status === 'running') {
         running.push(dto);
         stepScanTargets.add(cid);
-      } else if (isSubagent || stepScanTargets.size < STEP_SCAN_SESSION_LIMIT) {
+      } else {
         recent.push(dto);
       }
       detailIndex.set(id, { dto, rawLog: '', cascadeId: cid });
@@ -286,12 +415,16 @@ function createTaskManager({
       const cid = s?.cascadeId || s?.id;
       if (cid) stepScanTargets.add(cid);
     }
+    if (targetSessionId && sessionTitleMap.has(targetSessionId)) {
+      stepScanTargets.add(targetSessionId);
+    }
 
     // 3. Command steps inside active & recent sessions
     await Promise.all(
       Array.from(stepScanTargets).map(async (cid) => {
         const steps = await fetchStepsCached(cid, sessionMarkerMap.get(cid) || '');
         const sessionTitle = sessionTitleMap.get(cid) || cid;
+        const sessProj = sessionProjectMap.get(cid) || null;
         const cmdLogs = [];
 
         for (let i = 0; i < steps.length; i++) {
@@ -300,6 +433,7 @@ function createTaskManager({
           if (parsed.combinedOutput) {
             cmdLogs.push(`$ ${parsed.commandLine}\n${parsed.combinedOutput}`);
           }
+          const projInfo = resolveProjectInfo(parsed.cwd || '', sessProj);
           const id = `cmd:${cid}:${parsed.stepIndex}`;
           const dto = {
             id,
@@ -309,7 +443,10 @@ function createTaskManager({
             subtitle: sessionTitle,
             status: parsed.status,
             sessionId: cid,
+            sessionTitle,
             cwd: parsed.cwd || undefined,
+            projectPath: projInfo.path,
+            projectName: projInfo.name,
             startedAt: parsed.startedAt,
             endedAt: parsed.status === 'running' ? null : parsed.endedAt,
             exitCode: parsed.exitCode,
@@ -337,18 +474,95 @@ function createTaskManager({
 
     return {
       running,
-      recent: recent.slice(0, RECENT_TASKS_LIMIT),
-      detailIndex
+      recent,
+      detailIndex,
+      projectIdToKey
     };
   }
 
-  async function listTasks(permissionLevel = 'L0') {
-    const { running, recent } = await collectAllTasks(permissionLevel);
+  async function listTasks(permissionLevel = 'L0', filterOpts = {}) {
+    const filterSessionId = typeof filterOpts?.sessionId === 'string' ? filterOpts.sessionId.trim() : '';
+    const filterProjectRaw = typeof filterOpts?.project === 'string' ? filterOpts.project.trim() : '';
+
+    const { running: allRunning, recent: allRecent, projectIdToKey } = await collectAllTasks(permissionLevel, {
+      targetSessionId: filterSessionId
+    });
+
+    const totalRunningCount = allRunning.length;
+    const projectAggMap = new Map();
+    const sessionAggMap = new Map();
+
+    for (const dto of [...allRunning, ...allRecent]) {
+      if (dto.projectPath) {
+        const pKey = canonicalProjectKey(dto.projectPath);
+        if (pKey) {
+          let entry = projectAggMap.get(pKey);
+          if (!entry) {
+            entry = {
+              key: pKey,
+              name: dto.projectName || extractProjectBasename(dto.projectPath) || dto.projectPath,
+              path: dto.projectPath,
+              count: 0
+            };
+            projectAggMap.set(pKey, entry);
+          }
+          entry.count += 1;
+        }
+      }
+      if (dto.sessionId) {
+        const sid = String(dto.sessionId).trim();
+        if (sid) {
+          let entry = sessionAggMap.get(sid);
+          if (!entry) {
+            entry = {
+              id: sid,
+              title: dto.sessionTitle || (dto.kind === 'session' ? dto.title : dto.subtitle) || sid,
+              projectPath: dto.projectPath || null,
+              count: 0
+            };
+            sessionAggMap.set(sid, entry);
+          } else if (!entry.projectPath && dto.projectPath) {
+            entry.projectPath = dto.projectPath;
+          }
+          entry.count += 1;
+        }
+      }
+    }
+
+    const resolvedFilterProjectKey = filterProjectRaw
+      ? (projectIdToKey.get(filterProjectRaw) || canonicalProjectKey(filterProjectRaw))
+      : '';
+
+    const matchesFilter = (dto) => {
+      if (filterSessionId && dto.sessionId !== filterSessionId) {
+        return false;
+      }
+      if (filterProjectRaw) {
+        const taskProjKey = dto.projectPath ? canonicalProjectKey(dto.projectPath) : '';
+        if (!taskProjKey || taskProjKey !== resolvedFilterProjectKey) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    const filteredRunning = (filterSessionId || filterProjectRaw)
+      ? allRunning.filter(matchesFilter)
+      : allRunning;
+    const filteredRecent = (filterSessionId || filterProjectRaw)
+      ? allRecent.filter(matchesFilter)
+      : allRecent;
+
     return {
       ok: true,
-      runningCount: running.length,
-      running,
-      recent
+      runningCount: filteredRunning.length,
+      totalRunningCount,
+      running: filteredRunning,
+      recent: filteredRecent.slice(0, RECENT_TASKS_LIMIT),
+      filters: {
+        projects: Array.from(projectAggMap.values()).sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name)),
+        sessions: Array.from(sessionAggMap.values())
+      }
     };
   }
 

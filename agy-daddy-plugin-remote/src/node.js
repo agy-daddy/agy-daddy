@@ -100,12 +100,42 @@ const CONFIRM_INTERACTION_FIELDS = [
 let disposers = [];
 
 const ORCHESTRATOR_MASTER_KEYS = Object.freeze(['carbon', 'argon', 'neon', 'opus5.5']);
-const ORCHESTRATOR_THINKING_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh']);
+const ORCHESTRATOR_THINKING_LEVELS = Object.freeze(['off', 'none', 'minimal', 'low', 'medium', 'thinking', 'high', 'xhigh', 'max']);
+const ORCHESTRATOR_THINKING_FALLBACK_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh']);
+const ORCHESTRATOR_THINKING_OPTION_LABELS = Object.freeze({
+  off: Object.freeze({ 'zh-CN': 'Off · 关闭思考', en: 'Off' }),
+  none: Object.freeze({ 'zh-CN': 'None · 不思考', en: 'None' }),
+  minimal: Object.freeze({ 'zh-CN': 'Minimal · 极速轻思考', en: 'Minimal' }),
+  low: Object.freeze({ 'zh-CN': 'Low · 快速响应', en: 'Low' }),
+  medium: Object.freeze({ 'zh-CN': 'Medium · 均衡推理', en: 'Medium' }),
+  thinking: Object.freeze({ 'zh-CN': 'Thinking · 思考模式', en: 'Thinking' }),
+  high: Object.freeze({ 'zh-CN': 'High · 深度推理', en: 'High' }),
+  xhigh: Object.freeze({ 'zh-CN': 'XHigh · 超强推理', en: 'XHigh' }),
+  max: Object.freeze({ 'zh-CN': 'Max · 极限推理', en: 'Max' })
+});
+const ORCHESTRATOR_THINKING_ORDER = Object.freeze({
+  off: 0,
+  none: 0,
+  standard: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  thinking: 4,
+  high: 5,
+  xhigh: 6,
+  max: 7
+});
 const ORCHESTRATOR_SETTING_KEY_MAP = Object.freeze({
   carbon: 'orchestratorCarbonThinking',
   argon: 'orchestratorArgonThinking',
   neon: 'orchestratorNeonThinking',
   'opus5.5': 'orchestratorOpusThinking'
+});
+const ORCHESTRATOR_FIELD_TO_MASTER = Object.freeze({
+  orchestratorCarbonThinking: 'carbon',
+  orchestratorArgonThinking: 'argon',
+  orchestratorNeonThinking: 'neon',
+  orchestratorOpusThinking: 'opus5.5'
 });
 const MODEL_SORT_MODES = Object.freeze(['custom', 'name_asc', 'name_desc', 'provider', 'frequency']);
 
@@ -310,9 +340,204 @@ function normalizeOrchestratorMasterKey(raw) {
   return null;
 }
 
-function normalizeOrchestratorThinkingLevel(raw, fallback = 'high') {
-  const s = String(raw || '').trim().toLowerCase();
-  return ORCHESTRATOR_THINKING_LEVELS.includes(s) ? s : fallback;
+function normalizeOrchestratorThinkingLevel(raw, fallback = 'high', { allowCustom = false } = {}) {
+  const rawStr = String(raw || '').trim().toLowerCase().replace(/^thinking_level_/, '');
+  if (!rawStr) return fallback;
+  let s = rawStr;
+  if (s === 'x-high' || s === 'extra high' || s === 'extra_high') s = 'xhigh';
+  else if (s === 'med' || s === 'balanced') s = 'medium';
+  else if (s === 'min') s = 'minimal';
+  else if (s === 'fast') s = 'low';
+  else if (s === 'think' || s === 'extended thinking') s = 'thinking';
+  if (ORCHESTRATOR_THINKING_LEVELS.includes(s)) return s;
+  if (allowCustom && /^[a-z0-9][a-z0-9._-]{0,31}$/.test(s)) return s;
+  return fallback;
+}
+
+function formatOrchestratorThinkingOption(level) {
+  const clean = normalizeOrchestratorThinkingLevel(level, '', { allowCustom: true });
+  if (!clean) return null;
+  const known = ORCHESTRATOR_THINKING_OPTION_LABELS[clean];
+  return {
+    value: clean,
+    label: known ? { ...known } : { 'zh-CN': clean, en: clean }
+  };
+}
+
+function sortAndDedupeThinkingLevels(rawLevels = []) {
+  const out = [];
+  const seen = new Set();
+  for (const item of Array.isArray(rawLevels) ? rawLevels : []) {
+    const rawVal = isPlainObject(item)
+      ? (item.thinkingSuffix ?? item.thinkingLevel ?? item.level ?? item.value ?? item.id ?? '')
+      : item;
+    const norm = normalizeOrchestratorThinkingLevel(rawVal, '', { allowCustom: true });
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  out.sort((a, b) => {
+    const oa = ORCHESTRATOR_THINKING_ORDER[a] ?? 50;
+    const ob = ORCHESTRATOR_THINKING_ORDER[b] ?? 50;
+    if (oa !== ob) return oa - ob;
+    return a.localeCompare(b);
+  });
+  return out;
+}
+
+function matchesOrchestratorMaster(master, text) {
+  const hay = String(text || '').trim().toLowerCase();
+  if (!hay) return false;
+  if (master === 'opus5.5') {
+    return /opus/i.test(hay);
+  }
+  if (master === 'carbon' || master === 'argon' || master === 'neon') {
+    return new RegExp(`(?:^|[^a-z0-9])${master}(?:$|[^a-z0-9])`, 'i').test(hay);
+  }
+  return false;
+}
+
+function resolveOrchestratorMasterThinkingLevels(modelsRes, fieldKeyOrMaster) {
+  const rawKey = String(fieldKeyOrMaster || '').trim();
+  const master = ORCHESTRATOR_FIELD_TO_MASTER[rawKey] || normalizeOrchestratorMasterKey(rawKey) || 'carbon';
+  const fieldKey = ORCHESTRATOR_SETTING_KEY_MAP[master] || rawKey;
+
+  const rawModels = Array.isArray(modelsRes?.models) ? modelsRes.models : [];
+  const rawGroups = Array.isArray(modelsRes?.groups)
+    ? modelsRes.groups
+    : (Array.isArray(modelsRes?.modelGroups) ? modelsRes.modelGroups : []);
+  const treeNodes = Array.isArray(modelsRes?.tree?.nodes) ? modelsRes.tree.nodes : [];
+  const hasCatalog = Boolean(
+    modelsRes
+    && modelsRes.ok !== false
+    && (rawModels.length > 0 || rawGroups.length > 0 || treeNodes.length > 0)
+  );
+
+  if (!hasCatalog) {
+    return {
+      ok: true,
+      fieldKey,
+      master,
+      hostReady: false,
+      fallback: true,
+      supported: true,
+      options: ORCHESTRATOR_THINKING_FALLBACK_LEVELS.map(formatOrchestratorThinkingOption).filter(Boolean)
+    };
+  }
+
+  const cleanModels = sanitizeModelCatalogResult({
+    models: rawModels,
+    defaultModelId: modelsRes.defaultModelId || '',
+    rawGroups,
+    modelTree: modelsRes.tree || null
+  });
+
+  const buildResult = (levels, { discovered = true } = {}) => {
+    const sortedLevels = sortAndDedupeThinkingLevels(levels);
+    const options = sortedLevels.map(formatOrchestratorThinkingOption).filter(Boolean);
+    return {
+      ok: true,
+      fieldKey,
+      master,
+      hostReady: true,
+      fallback: false,
+      discovered,
+      supported: options.length > 0,
+      ...(options.length === 0
+        ? {
+            emptyReason: {
+              'zh-CN': discovered ? '当前主控模型不支持调节思考等级' : '当前宿主模型目录未发现该主控模型',
+              en: discovered ? 'This master model does not support thinking levels' : 'Master model not found in host catalog'
+            }
+          }
+        : {}),
+      options
+    };
+  };
+
+  // 1. Check modelTree orchestrator leaves (web-harness tree preserves exact per-master supportedThinkingLevels)
+  const orchBranch = treeNodes.find((n) => n?.kind === 'branch' && (n.key === 'orch' || n.role === 'orchestrator_root'));
+  if (orchBranch && Array.isArray(orchBranch.children)) {
+    const matchedLeaf = orchBranch.children.find((leaf) => leaf?.kind === 'leaf' && (
+      matchesOrchestratorMaster(master, leaf.key)
+      || matchesOrchestratorMaster(master, leaf.selection?.plannerFamilyId)
+      || matchesOrchestratorMaster(master, leaf.selection?.requestedModel)
+      || matchesOrchestratorMaster(master, leaf.selection?.modelId)
+      || matchesOrchestratorMaster(master, leaf.label)
+    ));
+    if (matchedLeaf && Array.isArray(matchedLeaf.supportedThinkingLevels)) {
+      return buildResult(matchedLeaf.supportedThinkingLevels, { discovered: true });
+    }
+  }
+
+  // 2. Check orchestrator model group variants
+  const orchGroup = cleanModels.modelGroups.find((g) => g?.id === 'orchestrator' || g?.isOrchestrator);
+  if (orchGroup && Array.isArray(orchGroup.variants)) {
+    const matchedVariants = orchGroup.variants.filter((v) => (
+      normalizeOrchestratorMasterKey(v.orchestratorMaster) === master
+      || matchesOrchestratorMaster(master, v.orchestratorMaster)
+      || matchesOrchestratorMaster(master, v.modelId)
+      || matchesOrchestratorMaster(master, v.orchestratorVariant)
+      || matchesOrchestratorMaster(master, v.label)
+    ));
+    if (matchedVariants.length > 0) {
+      const explicitLevels = matchedVariants.flatMap((v) => (Array.isArray(v.supportedThinkingLevels) ? v.supportedThinkingLevels : []));
+      const variantLevels = matchedVariants.map((v) => v.thinkingLevel).filter(Boolean);
+      const combined = explicitLevels.length > 0 ? explicitLevels : variantLevels;
+      return buildResult(combined, { discovered: true });
+    }
+  }
+
+  // 3. Check backing family group in cleanModels.modelGroups
+  const backingGroup = cleanModels.modelGroups.find((g) => !g?.isOrchestrator && (
+    matchesOrchestratorMaster(master, g.id)
+    || matchesOrchestratorMaster(master, g.label)
+  ));
+  if (backingGroup) {
+    const groupLevels = Array.isArray(backingGroup.supportedThinkingLevels) && backingGroup.supportedThinkingLevels.length > 0
+      ? backingGroup.supportedThinkingLevels
+      : (Array.isArray(backingGroup.variants) ? backingGroup.variants.map((v) => v.thinkingLevel).filter(Boolean) : []);
+    return buildResult(groupLevels, { discovered: true });
+  }
+
+  // 4. Check rawGroups metadata directly (e.g. groupedModels entry with explicit supportedThinkingLevels)
+  const flatRawGroups = [];
+  for (const g of rawGroups) {
+    if (!isPlainObject(g)) continue;
+    flatRawGroups.push(g);
+    if (Array.isArray(g.groups)) {
+      for (const sub of g.groups) {
+        if (isPlainObject(sub)) flatRawGroups.push(sub);
+      }
+    }
+  }
+  const matchedRawGroup = flatRawGroups.find((rg) => (
+    Array.isArray(rg.supportedThinkingLevels)
+    && (
+      matchesOrchestratorMaster(master, rg.groupId || rg.familyId || rg.id)
+      || matchesOrchestratorMaster(master, rg.displayName || rg.label)
+    )
+  ));
+  if (matchedRawGroup) {
+    return buildResult(matchedRawGroup.supportedThinkingLevels, { discovered: true });
+  }
+
+  // 5. Fallback scan across individual discovered models matching master
+  const matchedModels = cleanModels.models.filter((m) => (
+    matchesOrchestratorMaster(master, m.id)
+    || matchesOrchestratorMaster(master, m.modelId)
+    || matchesOrchestratorMaster(master, m.family)
+    || matchesOrchestratorMaster(master, m.displayName)
+    || matchesOrchestratorMaster(master, m.label)
+  ));
+  if (matchedModels.length > 0) {
+    const explicit = matchedModels.flatMap((m) => (Array.isArray(m.supportedThinkingLevels) ? m.supportedThinkingLevels : []));
+    const tiers = matchedModels.map((m) => m.thinkingLevel).filter(Boolean);
+    return buildResult(explicit.length > 0 ? explicit : tiers, { discovered: true });
+  }
+
+  return buildResult([], { discovered: false });
 }
 
 function sanitizeOrchestratorThinkingMap(raw = {}) {
@@ -1217,8 +1442,11 @@ function applyManagedSettingsToConfig(config, managed = {}, opts = {}) {
 
   for (const masterKey of ORCHESTRATOR_MASTER_KEYS) {
     const settingKey = ORCHESTRATOR_SETTING_KEY_MAP[masterKey];
-    if (typeof managed[settingKey] === 'string' && ORCHESTRATOR_THINKING_LEVELS.includes(managed[settingKey].trim().toLowerCase())) {
-      config.orchestratorThinking[masterKey] = managed[settingKey].trim().toLowerCase();
+    if (typeof managed[settingKey] === 'string') {
+      const normalized = normalizeOrchestratorThinkingLevel(managed[settingKey], '', { allowCustom: true });
+      if (normalized) {
+        config.orchestratorThinking[masterKey] = normalized;
+      }
     }
   }
   if (typeof managed.modelSortMode === 'string') {
@@ -2227,6 +2455,7 @@ async function activate(host) {
   taskManager = createTaskManager({
     ptyManager,
     listSessions: (opts) => safeListSessions(opts),
+    getAllowedRoots: getEffectiveAllowedRoots,
     getSessionSteps: async (cascadeId) => {
       const detail = await callHarness('getSessionDetail', [cascadeId]);
       return Array.isArray(detail?.events) ? detail.events : [];
@@ -2771,7 +3000,7 @@ async function activate(host) {
       if (isPlainObject(body.map)) {
         for (const [k, v] of Object.entries(body.map)) {
           const mk = normalizeOrchestratorMasterKey(k);
-          const lvl = normalizeOrchestratorThinkingLevel(v, '');
+          const lvl = normalizeOrchestratorThinkingLevel(v, '', { allowCustom: true });
           if (mk && lvl) {
             config.orchestratorThinking[mk] = lvl;
             patch[ORCHESTRATOR_SETTING_KEY_MAP[mk]] = lvl;
@@ -2779,7 +3008,7 @@ async function activate(host) {
         }
       } else {
         const mk = normalizeOrchestratorMasterKey(body.master);
-        const lvl = normalizeOrchestratorThinkingLevel(body.thinkingLevel, '');
+        const lvl = normalizeOrchestratorThinkingLevel(body.thinkingLevel, '', { allowCustom: true });
         if (!mk || !lvl) {
           return { ok: false, statusCode: 400, error: 'INVALID_ORCHESTRATOR_THINKING_PARAMS' };
         }
@@ -2921,8 +3150,8 @@ async function activate(host) {
       }
       return await dispatchCompactForSession(cleanId);
     },
-    async listTasks({ permissionLevel }) {
-      return await taskManager.listTasks(permissionLevel);
+    async listTasks({ permissionLevel, sessionId, project } = {}) {
+      return await taskManager.listTasks(permissionLevel, { sessionId, project });
     },
     async getTaskDetail(taskId, { permissionLevel }) {
       return await taskManager.getTaskDetail(taskId, permissionLevel);
@@ -3544,6 +3773,11 @@ async function activate(host) {
       }
       return { ok: true, items };
     },
+    async listOrchestratorThinkingLevelsForSettings(opts = {}) {
+      const modelsRes = await callHarness('listModels', []).catch(() => null);
+      const fieldKeyOrMaster = opts?.fieldKey || opts?.master || 'orchestratorCarbonThinking';
+      return resolveOrchestratorMasterThinkingLevels(modelsRes, fieldKeyOrMaster);
+    },
     async stopServer() {
       sseBroker.dispose();
       ptyManager.disposeAll();
@@ -3684,6 +3918,10 @@ async function activate(host) {
     return serviceMethods.listModelsForSettings();
   });
 
+  const stopListOrchestratorThinkingCmd = host.commands.register('remote.list-orchestrator-thinking-levels', async (opts = {}) => {
+    return serviceMethods.listOrchestratorThinkingLevelsForSettings(opts || {});
+  });
+
   disposers.push(
     stopSettingsSub,
     stopWebStateSub,
@@ -3721,6 +3959,7 @@ async function activate(host) {
     stopCheckCfCmd,
     stopBrowseRootCmd,
     stopListModelsCmd,
+    stopListOrchestratorThinkingCmd,
     () => {
       try {
         host.state?.set?.('state:remote.status@1', {

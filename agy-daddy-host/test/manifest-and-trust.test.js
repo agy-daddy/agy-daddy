@@ -282,3 +282,58 @@ test('RPC_WRITE_ALLOWLIST 放行 DeleteCascadeTrajectory 且 createScopedRpcClie
     /RPC_METHOD_BLOCKED/
   );
 });
+
+test('enum 字段支持 optionsCommand 动态拉取且校验不误拦截新档位', () => {
+  const dynSchema = {
+    fields: [
+      {
+        key: 'thinkingLevel',
+        type: 'enum',
+        default: 'high',
+        options: ['low', 'medium', 'high', 'xhigh'],
+        optionsCommand: 'demo.listThinkingLevels'
+      },
+      {
+        key: 'staticMode',
+        type: 'enum',
+        default: 'auto',
+        options: ['auto', 'manual']
+      },
+      {
+        key: 'noStaticOpts',
+        type: 'enum',
+        default: 'minimal',
+        optionsCommand: 'demo.listThinkingLevels'
+      }
+    ]
+  };
+  assert.equal(validateSettingsSchema(dynSchema).ok, true);
+
+  const badCmdSchema = validateSettingsSchema({
+    fields: [
+      {
+        key: 'badEnum',
+        type: 'enum',
+        options: ['a'],
+        optionsCommand: 'bad command with spaces'
+      }
+    ]
+  });
+  assert.equal(badCmdSchema.ok, false);
+
+  const validDyn = validateSettingsValues(dynSchema, {
+    thinkingLevel: 'minimal',
+    staticMode: 'manual',
+    noStaticOpts: 'off'
+  });
+  assert.equal(validDyn.ok, true);
+  assert.equal(validDyn.values.thinkingLevel, 'minimal');
+  assert.equal(validDyn.values.noStaticOpts, 'off');
+
+  const invalidStatic = validateSettingsValues(dynSchema, {
+    thinkingLevel: 'minimal',
+    staticMode: 'invalid-static'
+  });
+  assert.equal(invalidStatic.ok, false);
+  assert.ok(invalidStatic.errors.some((e) => e.includes('staticMode')));
+});

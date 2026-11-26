@@ -1137,7 +1137,11 @@ export class RemoteStoreController {
       if (!enableAppBadge) {
         void clearAppBadgeSafe();
       } else {
-        this.syncAppBadge();
+        if (!this.isDocumentHidden()) {
+          void clearAppBadgeSafe();
+        } else {
+          this.syncAppBadge();
+        }
       }
 
       const [sessRes, presetsRes] = await Promise.all([

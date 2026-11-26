@@ -301,6 +301,20 @@ describe('I18nProvider & formatSessionTitle', () => {
       'tasks.alreadyFinishedNotice',
       'tasks.l0StopDisabled',
       'tasks.l1PtyStopDisabled',
+      'sidebarOrg.pinProject',
+      'sidebarOrg.pinGroup',
+      'sidebarOrg.archiveSession',
+      'sidebarOrg.deleteSession',
+      'sidebarOrg.archivedFilter',
+      'sidebarOrg.archivedCountFilter',
+      'sidebarOrg.moveUp',
+      'sidebarOrg.deleteModalTitle',
+      'newProject.title',
+      'newProject.tabLocal',
+      'newProject.tabGithub',
+      'newProject.tabGdrive',
+      'newProject.submitLocal',
+      'newProject.gdUnavailableTitle',
     ];
 
     const ALL_LOCALES: Locale[] = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'fr', 'ru', 'it'];

@@ -4,8 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   KNOWN_ANCHORS,
-  CONTRIBUTION_POINTS
+  CONTRIBUTION_POINTS,
+  RPC_WRITE_ALLOWLIST
 } = require('../src/contracts/constants');
+const { createScopedRpcClient } = require('../src/core/rpc');
 const {
   parseSemver,
   compareSemver,
@@ -249,4 +251,34 @@ test('信任分级策略 T0 / T1 / T2 与权限隔离判定', () => {
   assert.equal(t2.badge, '未审核');
   assert.equal(t2.autoUpdateAllowed, false);
   assert.ok(t2.denied.includes('net:outbound:api.example.com'));
+});
+
+test('RPC_WRITE_ALLOWLIST 放行 DeleteCascadeTrajectory 且 createScopedRpcClient 强制权限门禁', async () => {
+  assert.equal(RPC_WRITE_ALLOWLIST.includes('DeleteCascadeTrajectory'), true);
+
+  const calls = [];
+  const transport = {
+    getOrigin: async () => 'https://127.0.0.1:50001',
+    call: async (method, body) => {
+      calls.push({ method, body });
+      return { ok: true, method };
+    }
+  };
+
+  const readOnlyRpc = createScopedRpcClient('agy-daddy.reader', ['rpc:read'], transport);
+  await assert.rejects(
+    () => readOnlyRpc.call('DeleteCascadeTrajectory', { cascadeId: 'cid-1' }),
+    /RPC_PERMISSION_DENIED/
+  );
+
+  const writeRpc = createScopedRpcClient('agy-daddy.writer', ['rpc:read', 'rpc:write'], transport);
+  const res = await writeRpc.call('DeleteCascadeTrajectory', { cascadeId: 'cid-1' });
+  assert.equal(res.ok, true);
+  assert.equal(res.method, 'DeleteCascadeTrajectory');
+  assert.deepEqual(calls, [{ method: 'DeleteCascadeTrajectory', body: { cascadeId: 'cid-1' } }]);
+
+  await assert.rejects(
+    () => writeRpc.call('DropAllTrajectories', {}),
+    /RPC_METHOD_BLOCKED/
+  );
 });

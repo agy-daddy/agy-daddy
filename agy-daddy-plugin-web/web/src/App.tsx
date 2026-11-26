@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiClient, type WriteConfirmChallenge } from './api/client';
 import { RightDock, type RightDockTab } from './dock';
 import {
@@ -11,6 +11,7 @@ import {
   SessionStream,
   type ChatSearchState,
 } from './harness';
+import { resolveNextActiveSessionId } from './harness/useSidebarDragSort';
 import {
   HostAdminModal,
   TopbarCapsules,
@@ -33,11 +34,14 @@ import type {
   ModelItem,
   ModelTreeLeafNode,
   ModelTreeNode,
+  OrgReorderRequest,
   ProjectGroup,
   ProjectItem,
+  RemoteProvisionJob,
   RemoteStatusResponse,
   SessionDetail,
   SessionEvent,
+  SessionOrderMap,
   SessionRunStatus,
   SessionSummary,
   StopBackgroundTaskResponse,
@@ -45,8 +49,11 @@ import type {
   UpdateProjectRequest,
   UserEventPayload,
   WebAccessStatusResponse,
+  ZoneOrder,
 } from './types';
 import styles from './App.module.css';
+
+const LazyNewProjectModal = lazy(() => import('./harness/NewProjectModal'));
 
 function isUnauthorizedError(err: unknown): boolean {
   if (err instanceof ApiError) {
@@ -434,6 +441,27 @@ export function App() {
   const [hiddenInternalCount, setHiddenInternalCount] = useState<number>(0);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
+  const [groupOrder, setGroupOrder] = useState<ZoneOrder | undefined>(undefined);
+  const [projectOrder, setProjectOrder] = useState<Record<string, ZoneOrder> | undefined>(undefined);
+  const [sessionOrder, setSessionOrder] = useState<SessionOrderMap | undefined>(undefined);
+  const [archivedCount, setArchivedCount] = useState<number>(0);
+  const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
+  const [loadingArchived, setLoadingArchived] = useState<boolean>(false);
+  const [sidebarViewMode, setSidebarViewMode] = useState<'active' | 'archived'>('active');
+  const [newProjectModalOpen, setNewProjectModalOpen] = useState<boolean>(false);
+  const [latestProjectJob, setLatestProjectJob] = useState<RemoteProvisionJob | null>(null);
+  const [deleteModalState, setDeleteModalState] = useState<{
+    session: SessionSummary;
+    stage: 'confirm' | 'fallback';
+    reasonCode?: string;
+    submitting?: boolean;
+  } | null>(null);
+  const [sidebarToast, setSidebarToast] = useState<{
+    id: number;
+    message: string;
+    actionLabel?: string;
+    onAction?: () => void;
+  } | null>(null);
   const [defaultSessionPath, setDefaultSessionPath] = useState<string>('');
   const [selectedProjectFilter, setSelectedProjectFilter] = useState<string>('all');
 
@@ -543,6 +571,15 @@ export function App() {
 
   const projectsRef = useRef<ProjectItem[]>(projects);
   projectsRef.current = projects;
+
+  const projectGroupsRef = useRef<ProjectGroup[]>(projectGroups);
+  projectGroupsRef.current = projectGroups;
+
+  const isDraggingRef = useRef<boolean>(false);
+  const pendingOrgPatchRef = useRef<boolean>(false);
+  const sidebarViewModeRef = useRef<'active' | 'archived'>(sidebarViewMode);
+  sidebarViewModeRef.current = sidebarViewMode;
+  const toastTimerRef = useRef<number | null>(null);
 
   const includeInternalRef = useRef<boolean>(includeInternal);
   includeInternalRef.current = includeInternal;
@@ -717,6 +754,9 @@ export function App() {
         const merged = mergeRecentCreatedSessions(res.sessions);
         setSessions(merged);
         setHiddenInternalCount(res.hiddenInternalCount ?? 0);
+        if (typeof res.archivedCount === 'number') {
+          setArchivedCount(res.archivedCount);
+        }
         setActiveSessionId((prev) => {
           if (prev && merged.some((s) => s.cascadeId === prev)) {
             return prev;
@@ -743,11 +783,37 @@ export function App() {
     [mergeRecentCreatedSessions, t],
   );
 
+  const refreshArchivedSessions = useCallback(async () => {
+    setLoadingArchived(true);
+    try {
+      const res = await apiClient.listSessions({
+        limit: 200,
+        includeInternal: includeInternalRef.current,
+        includeArchived: true,
+      });
+      const onlyArchived = (res.sessions || []).filter((s) => s.archived === true);
+      setArchivedSessions(onlyArchived);
+      if (typeof res.archivedCount === 'number') {
+        setArchivedCount(res.archivedCount);
+      } else {
+        setArchivedCount(onlyArchived.length);
+      }
+    } catch {
+      // Soft-ignore archived list load failure
+    } finally {
+      setLoadingArchived(false);
+    }
+  }, []);
+
   const refreshProjects = useCallback(async () => {
     try {
       const res = await apiClient.listProjects();
       setProjects(res.projects);
       setProjectGroups(res.groups);
+      if (res.groupOrder) setGroupOrder(res.groupOrder);
+      if (res.projectOrder) setProjectOrder(res.projectOrder);
+      if (res.sessionOrder) setSessionOrder(res.sessionOrder);
+      if (typeof res.archivedCount === 'number') setArchivedCount(res.archivedCount);
       if (res.defaultSessionPath) {
         setDefaultSessionPath(res.defaultSessionPath);
       }
@@ -854,6 +920,9 @@ export function App() {
         const list = mergeRecentCreatedSessions(sessionsRes.value.sessions);
         setSessions(list);
         setHiddenInternalCount(sessionsRes.value.hiddenInternalCount ?? 0);
+        if (typeof sessionsRes.value.archivedCount === 'number') {
+          setArchivedCount(sessionsRes.value.archivedCount);
+        }
         const urlMatched =
           initialUrlSessionId &&
           (list.some((s) => s.cascadeId === initialUrlSessionId) || list.length === 0)
@@ -913,6 +982,12 @@ export function App() {
       if (projectsRes.status === 'fulfilled') {
         setProjects(projectsRes.value.projects);
         setProjectGroups(projectsRes.value.groups);
+        if (projectsRes.value.groupOrder) setGroupOrder(projectsRes.value.groupOrder);
+        if (projectsRes.value.projectOrder) setProjectOrder(projectsRes.value.projectOrder);
+        if (projectsRes.value.sessionOrder) setSessionOrder(projectsRes.value.sessionOrder);
+        if (typeof projectsRes.value.archivedCount === 'number') {
+          setArchivedCount(projectsRes.value.archivedCount);
+        }
         if (projectsRes.value.defaultSessionPath) {
           setDefaultSessionPath(projectsRes.value.defaultSessionPath);
         }
@@ -1046,6 +1121,9 @@ export function App() {
       onTaskUpdated: () => {
         void refreshTasks();
       },
+      onProjectJob: (job) => {
+        setLatestProjectJob(job);
+      },
       onStatePatch: (patch) => {
         if (patch.key === 'state:host.locale@1' || patch.key === 'state:zh-cn.lang@1') {
           const valObj =
@@ -1147,8 +1225,19 @@ export function App() {
           void refreshWebAccessStatus();
           return;
         }
-        if (patch.key === 'state:projects@1' || patch.key === 'state:workspaces@1') {
-          void refreshProjects();
+        if (
+          patch.key === 'state:session.org@1' ||
+          patch.key === 'state:projects@1' ||
+          patch.key === 'state:workspaces@1'
+        ) {
+          if (isDraggingRef.current) {
+            pendingOrgPatchRef.current = true;
+            return;
+          }
+          void Promise.all([refreshProjects(), refreshSessions()]);
+          if (sidebarViewModeRef.current === 'archived') {
+            void refreshArchivedSessions();
+          }
           return;
         }
         if (patch.key === 'state:composer.settings@1') {
@@ -1426,11 +1515,77 @@ export function App() {
     [health?.allowedRoots, refreshProjects, refreshSessions, t],
   );
 
+  const showSidebarToast = useCallback(
+    (message: string, opts?: { actionLabel?: string; onAction?: () => void; durationMs?: number }) => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      const id = Date.now();
+      setSidebarToast({
+        id,
+        message,
+        actionLabel: opts?.actionLabel,
+        onAction: opts?.onAction,
+      });
+      const duration = opts?.durationMs ?? 4500;
+      toastTimerRef.current = window.setTimeout(() => {
+        setSidebarToast((prev) => (prev?.id === id ? null : prev));
+        toastTimerRef.current = null;
+      }, duration);
+    },
+    [],
+  );
+
+  const handleDraggingChange = useCallback(
+    (dragging: boolean) => {
+      isDraggingRef.current = dragging;
+      if (!dragging && pendingOrgPatchRef.current) {
+        pendingOrgPatchRef.current = false;
+        void Promise.all([refreshProjects(), refreshSessions()]);
+      }
+    },
+    [refreshProjects, refreshSessions],
+  );
+
+  const handleViewModeChange = useCallback(
+    (mode: 'active' | 'archived') => {
+      setSidebarViewMode(mode);
+      if (mode === 'archived') {
+        void refreshArchivedSessions();
+      }
+    },
+    [refreshArchivedSessions],
+  );
+
+  const handleSidebarSearchChange = useCallback(
+    (query: string) => {
+      if (query.trim() && archivedCount > 0 && archivedSessions.length === 0) {
+        void refreshArchivedSessions();
+      }
+    },
+    [archivedCount, archivedSessions.length, refreshArchivedSessions],
+  );
+
   const handlePinSession = useCallback(
     async (cascadeId: string, pinned: boolean) => {
       setBannerError(null);
+      const prevSessions = sessionsRef.current;
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.cascadeId === cascadeId
+            ? {
+                ...s,
+                pinned,
+                pinnedAt: pinned ? new Date().toISOString() : null,
+              }
+            : s,
+        ),
+      );
       try {
-        const res = await apiClient.pinSession(cascadeId, pinned);
+        const res =
+          typeof apiClient.toggleOrgPin === 'function'
+            ? await apiClient.toggleOrgPin({ type: 'session', id: cascadeId, pinned })
+            : await apiClient.pinSession(cascadeId, pinned);
         setSessions((prev) =>
           prev.map((s) =>
             s.cascadeId === cascadeId
@@ -1442,12 +1597,312 @@ export function App() {
               : s,
           ),
         );
-        await refreshSessions();
+        await Promise.all([refreshSessions(), refreshProjects()]);
       } catch (err) {
+        setSessions(prevSessions);
         setBannerError(formatErrorMessage(err, t('errors.sessionsFailed'), t));
       }
     },
-    [refreshSessions, t],
+    [refreshProjects, refreshSessions, t],
+  );
+
+  const handlePinProject = useCallback(
+    async (project: ProjectItem, pinned: boolean) => {
+      setBannerError(null);
+      const prevProjects = projectsRef.current;
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.id === project.id
+            ? { ...p, pinned, pinnedAt: pinned ? new Date().toISOString() : null }
+            : p,
+        ),
+      );
+      try {
+        if (typeof apiClient.toggleOrgPin === 'function') {
+          await apiClient.toggleOrgPin({
+            type: 'project',
+            id: project.id,
+            pinned,
+            rootPath: project.rootPath,
+            projectName: project.name,
+          });
+        }
+        await refreshProjects();
+      } catch (err) {
+        setProjects(prevProjects);
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [refreshProjects, t],
+  );
+
+  const handlePinGroup = useCallback(
+    async (group: ProjectGroup, pinned: boolean) => {
+      setBannerError(null);
+      const prevGroups = projectGroupsRef.current;
+      setProjectGroups((prev) =>
+        prev.map((g) =>
+          g.id === group.id
+            ? { ...g, pinned, pinnedAt: pinned ? new Date().toISOString() : null }
+            : g,
+        ),
+      );
+      try {
+        if (typeof apiClient.toggleOrgPin === 'function') {
+          await apiClient.toggleOrgPin({ type: 'group', id: group.id, pinned });
+        }
+        await refreshProjects();
+      } catch (err) {
+        setProjectGroups(prevGroups);
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [refreshProjects, t],
+  );
+
+  const handleReorderOrg = useCallback(
+    async (req: OrgReorderRequest) => {
+      if (typeof apiClient.reorderOrg !== 'function') return;
+      setBannerError(null);
+      const prevProjects = projectsRef.current;
+      const prevGroups = projectGroupsRef.current;
+      const prevGroupOrder = groupOrder;
+      const prevProjectOrder = projectOrder;
+      const prevSessionOrder = sessionOrder;
+
+      if (req.targetType === 'group') {
+        setGroupOrder((prev) => ({
+          pinned: prev?.pinned ?? [],
+          normal: prev?.normal ?? [],
+          [req.zone]: req.orderedIds,
+        }));
+      } else if (req.targetType === 'project') {
+        const cid = req.containerId || '__ungrouped__';
+        if (req.movedProject) {
+          const toGid = req.movedProject.toGroupId ?? null;
+          setProjects((prev) =>
+            prev.map((p) =>
+              p.id === req.movedProject!.projectId ? { ...p, groupId: toGid } : p,
+            ),
+          );
+        }
+        setProjectOrder((prev) => ({
+          ...(prev || {}),
+          [cid]: {
+            pinned: prev?.[cid]?.pinned ?? [],
+            normal: prev?.[cid]?.normal ?? [],
+            [req.zone]: req.orderedIds,
+          },
+        }));
+      } else if (req.targetType === 'session') {
+        const cid = req.containerId || '__standalone__';
+        setSessionOrder((prev) => {
+          const next = { ...(prev || {}) };
+          if (cid === '__pinned__') {
+            next.__pinned__ = req.orderedIds;
+          } else {
+            const curZone = next[cid] && !Array.isArray(next[cid]) ? (next[cid] as ZoneOrder) : undefined;
+            next[cid] = {
+              pinned: curZone?.pinned ?? [],
+              normal: curZone?.normal ?? [],
+              [req.zone]: req.orderedIds,
+            };
+          }
+          return next;
+        });
+      }
+
+      try {
+        await apiClient.reorderOrg(req);
+        await Promise.all([refreshProjects(), refreshSessions()]);
+      } catch (err) {
+        setProjects(prevProjects);
+        setProjectGroups(prevGroups);
+        setGroupOrder(prevGroupOrder);
+        setProjectOrder(prevProjectOrder);
+        setSessionOrder(prevSessionOrder);
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+      }
+    },
+    [groupOrder, projectOrder, refreshProjects, refreshSessions, sessionOrder, t],
+  );
+
+  const handleArchiveSession = useCallback(
+    async (session: SessionSummary, archived: boolean) => {
+      if (typeof apiClient.archiveSession !== 'function') return;
+      setBannerError(null);
+      const prevSessions = sessionsRef.current;
+      const prevArchived = archivedSessions;
+      const prevActiveId = activeSessionIdRef.current;
+      const prevCount = archivedCount;
+
+      if (archived) {
+        const nextActiveId = resolveNextActiveSessionId(
+          prevSessions,
+          session.cascadeId,
+          prevActiveId,
+        );
+        setSessions((prev) => prev.filter((s) => s.cascadeId !== session.cascadeId));
+        setArchivedSessions((prev) => [
+          { ...session, archived: true, pinned: false, archivedAt: new Date().toISOString() },
+          ...prev.filter((s) => s.cascadeId !== session.cascadeId),
+        ]);
+        setArchivedCount((c) => c + 1);
+        if (nextActiveId !== prevActiveId) {
+          setActiveSessionId(nextActiveId);
+          syncSessionUrl(nextActiveId);
+        }
+      } else {
+        setArchivedSessions((prev) => prev.filter((s) => s.cascadeId !== session.cascadeId));
+        setArchivedCount((c) => Math.max(0, c - 1));
+      }
+
+      try {
+        await apiClient.archiveSession(session.cascadeId, {
+          archived,
+          stepCount: session.stepCount,
+          isRunning: isRunningStatus(session.status),
+          projectId: session.projectId ?? null,
+          projectName: session.projectName ?? null,
+          titleSnapshot: session.title,
+        });
+        await Promise.all([refreshSessions(), refreshProjects()]);
+        if (sidebarViewModeRef.current === 'archived' || !archived) {
+          await refreshArchivedSessions();
+        }
+        if (archived) {
+          showSidebarToast(t('sidebarOrg.archivedToast'), {
+            actionLabel: t('sidebarOrg.undo'),
+            durationMs: 5000,
+            onAction: () => {
+              setSidebarToast(null);
+              void handleArchiveSession(session, false);
+            },
+          });
+        }
+      } catch (err) {
+        setSessions(prevSessions);
+        setArchivedSessions(prevArchived);
+        setArchivedCount(prevCount);
+        setActiveSessionId(prevActiveId);
+        syncSessionUrl(prevActiveId);
+        setBannerError(formatErrorMessage(err, t('errors.sessionsFailed'), t));
+      }
+    },
+    [
+      archivedCount,
+      archivedSessions,
+      refreshArchivedSessions,
+      refreshProjects,
+      refreshSessions,
+      showSidebarToast,
+      t,
+    ],
+  );
+
+  const handleRequestDeleteSession = useCallback((session: SessionSummary) => {
+    setDeleteModalState({ session, stage: 'confirm', submitting: false });
+  }, []);
+
+  const handleConfirmDeleteSession = useCallback(
+    async (mode: 'auto' | 'local_hide') => {
+      const current = deleteModalState;
+      if (!current || current.submitting || typeof apiClient.deleteSession !== 'function') return;
+      const target = current.session;
+      setDeleteModalState({ ...current, submitting: true });
+
+      const prevSessions = sessionsRef.current;
+      const prevArchived = archivedSessions;
+      const prevActiveId = activeSessionIdRef.current;
+      const prevCount = archivedCount;
+
+      try {
+        const res = await apiClient.deleteSession(target.cascadeId, mode);
+        const nextActiveId = resolveNextActiveSessionId(
+          prevSessions,
+          target.cascadeId,
+          prevActiveId,
+        );
+        setSessions((prev) => prev.filter((s) => s.cascadeId !== target.cascadeId));
+        setArchivedSessions((prev) => prev.filter((s) => s.cascadeId !== target.cascadeId));
+        if (target.archived) {
+          setArchivedCount((c) => Math.max(0, c - 1));
+        }
+        if (nextActiveId !== prevActiveId) {
+          setActiveSessionId(nextActiveId);
+          syncSessionUrl(nextActiveId);
+        }
+        setDeleteModalState(null);
+        showSidebarToast(
+          res.deletionMode === 'local_tombstone'
+            ? t('sidebarOrg.deletedLocalToast')
+            : t('sidebarOrg.deletedHostToast'),
+        );
+        await Promise.all([refreshSessions(), refreshProjects()]);
+      } catch (err) {
+        const payload = err instanceof ApiError ? (err.payload as Record<string, unknown> | undefined) : undefined;
+        if (
+          mode === 'auto' &&
+          err instanceof ApiError &&
+          (err.code === 'HOST_DELETE_UNAVAILABLE' || payload?.canFallbackLocalHide === true)
+        ) {
+          const reasonCode =
+            typeof payload?.reasonCode === 'string' ? payload.reasonCode : 'RPC_OFFLINE';
+          setDeleteModalState({
+            session: target,
+            stage: 'fallback',
+            reasonCode,
+            submitting: false,
+          });
+          return;
+        }
+        setSessions(prevSessions);
+        setArchivedSessions(prevArchived);
+        setArchivedCount(prevCount);
+        setActiveSessionId(prevActiveId);
+        syncSessionUrl(prevActiveId);
+        setDeleteModalState(null);
+        setBannerError(formatErrorMessage(err, t('errors.sessionsFailed'), t));
+      }
+    },
+    [
+      archivedCount,
+      archivedSessions,
+      deleteModalState,
+      refreshProjects,
+      refreshSessions,
+      showSidebarToast,
+      t,
+    ],
+  );
+
+  const handleCreateLocalProjectFromModal = useCallback(
+    async (payload: CreateProjectRequest): Promise<ProjectItem | null> => {
+      const res = await apiClient.createProject(payload);
+      return res.project || null;
+    },
+    [],
+  );
+
+  const handleProjectCreatedFromModal = useCallback(
+    (project: ProjectItem) => {
+      setNewProjectModalOpen(false);
+      setSidebarViewMode('active');
+      setSelectedProjectFilter('all');
+      void Promise.all([refreshProjects(), refreshHealth(), refreshSessions()]);
+      showSidebarToast(t('newProject.createdToast', { name: project.name }), {
+        actionLabel: t('newProject.createdNewSession'),
+        durationMs: 6000,
+        onAction: () => {
+          setSidebarToast(null);
+          void handleCreateSession({
+            projectId: project.id,
+            workspaceUri: project.rootPath ? `file://${project.rootPath}` : undefined,
+          });
+        },
+      });
+    },
+    [handleCreateSession, refreshHealth, refreshProjects, refreshSessions, showSidebarToast, t],
   );
 
   const handleAssignSessionProject = useCallback(
@@ -1963,6 +2418,7 @@ export function App() {
             onCreateSession={(opts) => void handleCreateSession(opts)}
             loading={sessionsLoading}
             creating={creatingSession}
+            onSearchQueryChange={handleSidebarSearchChange}
             projects={projects}
             projectGroups={projectGroups}
             selectedProjectFilter={selectedProjectFilter}
@@ -1971,8 +2427,25 @@ export function App() {
             hiddenInternalCount={hiddenInternalCount}
             includeInternal={includeInternal}
             onToggleIncludeInternal={handleToggleIncludeInternal}
+            permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
+            channel={webAccessStatus?.channel || 'loopback'}
+            groupOrder={groupOrder}
+            projectOrder={projectOrder}
+            sessionOrder={sessionOrder}
+            archivedCount={archivedCount}
+            archivedSessions={archivedSessions}
+            loadingArchived={loadingArchived}
+            viewMode={sidebarViewMode}
+            onViewModeChange={handleViewModeChange}
             onPinSession={handlePinSession}
+            onPinProject={handlePinProject}
+            onPinGroup={handlePinGroup}
             onAssignSessionProject={handleAssignSessionProject}
+            onArchiveSession={handleArchiveSession}
+            onRequestDeleteSession={handleRequestDeleteSession}
+            onReorderOrg={handleReorderOrg}
+            onOpenNewProjectModal={() => setNewProjectModalOpen(true)}
+            onDraggingChange={handleDraggingChange}
             onCreateProject={handleCreateProject}
             onUpdateProject={handleUpdateProject}
             onDeleteProject={handleDeleteProject}
@@ -2180,6 +2653,122 @@ export function App() {
         onConfirm={() => settleCurrentConfirm(true)}
         onCancel={() => settleCurrentConfirm(false)}
       />
+
+      {newProjectModalOpen && (
+        <Suspense fallback={null}>
+          <LazyNewProjectModal
+            open={newProjectModalOpen}
+            groups={projectGroups}
+            defaultSessionPath={defaultSessionPath || health?.defaultSessionPath}
+            canAdminWorkspace={
+              !webAccessStatus?.channel ||
+              webAccessStatus.channel === 'loopback' ||
+              webAccessStatus.permissionLevel === 'L2'
+            }
+            latestJobEvent={latestProjectJob}
+            onClose={() => setNewProjectModalOpen(false)}
+            onCreateLocalProject={handleCreateLocalProjectFromModal}
+            onProjectCreated={handleProjectCreatedFromModal}
+          />
+        </Suspense>
+      )}
+
+      {deleteModalState && (
+        <div
+          className={styles.modalBackdrop}
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget && !deleteModalState.submitting) {
+              setDeleteModalState(null);
+            }
+          }}
+        >
+          <div
+            className={styles.confirmDialog}
+            role="dialog"
+            aria-modal="true"
+            data-testid="delete-session-modal"
+          >
+            <h3 className={styles.confirmTitle}>
+              {deleteModalState.stage === 'fallback'
+                ? t('sidebarOrg.deleteModalFallbackTitle')
+                : t('sidebarOrg.deleteModalTitle')}
+            </h3>
+            <p className={styles.confirmDesc}>
+              {deleteModalState.stage === 'fallback'
+                ? t('sidebarOrg.deleteModalFallbackDesc', {
+                    title: formatSessionTitle(deleteModalState.session, t),
+                    reason: deleteModalState.reasonCode || 'RPC_OFFLINE',
+                  })
+                : t('sidebarOrg.deleteModalDesc', {
+                    title: formatSessionTitle(deleteModalState.session, t),
+                  })}
+            </p>
+            {deleteModalState.session.projectName && (
+              <div className={styles.confirmMeta}>
+                {t('sidebarOrg.deleteModalProject', {
+                  name: deleteModalState.session.projectName,
+                })}
+              </div>
+            )}
+            <div className={styles.confirmFooter}>
+              <button
+                type="button"
+                className={styles.confirmCancelBtn}
+                disabled={deleteModalState.submitting}
+                data-testid="delete-session-cancel"
+                onClick={() => setDeleteModalState(null)}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className={styles.confirmDangerBtn}
+                disabled={deleteModalState.submitting}
+                data-testid={
+                  deleteModalState.stage === 'fallback'
+                    ? 'delete-session-hide-local'
+                    : 'delete-session-confirm'
+                }
+                onClick={() =>
+                  void handleConfirmDeleteSession(
+                    deleteModalState.stage === 'fallback' ? 'local_hide' : 'auto',
+                  )
+                }
+              >
+                {deleteModalState.stage === 'fallback'
+                  ? t('sidebarOrg.deleteModalHideLocal')
+                  : t('sidebarOrg.deleteModalConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sidebarToast && (
+        <div className={styles.toastStack} role="status" data-testid="sidebar-toast">
+          <div className={styles.toastCard}>
+            <span>{sidebarToast.message}</span>
+            {sidebarToast.actionLabel && sidebarToast.onAction && (
+              <button
+                type="button"
+                className={styles.toastActionBtn}
+                data-testid="sidebar-toast-action"
+                onClick={sidebarToast.onAction}
+              >
+                {sidebarToast.actionLabel}
+              </button>
+            )}
+            <button
+              type="button"
+              className={styles.toastDismissBtn}
+              aria-label={t('common.close')}
+              onClick={() => setSidebarToast(null)}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {authLocked && (
         <div className={styles.authUnlockOverlay} role="dialog" aria-modal="true" data-testid="auth-unlock-card">

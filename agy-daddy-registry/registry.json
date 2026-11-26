@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-25T07:55:20Z",
+  "updatedAt": "2026-11-26T14:35:00Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
@@ -134,6 +134,17 @@
       "subpath": "agy-daddy-plugin-theme",
       "localRepo": "agy-daddy-plugin-theme",
       "manifestSha512": "sha512-bPCgh8vZ/Bnno67RPdmfCLvdwgdiQB/2OvSg8sy9AqE8HkhnUUKYI8dPoEQ3hBTTO/rh3P6dZySuvUc1ZXfMLA=="
+    },
+    {
+      "id": "hubo1989.design",
+      "shortName": "design",
+      "layer": 4,
+      "trustLevel": "T1",
+      "external": true,
+      "version": "0.1.0",
+      "repo": "https://github.com/hubo1989/agy-plugin-design.git",
+      "ref": "v0.1.0",
+      "manifestSha512": "sha512-oBq+/6e2W/jEjD4nUtZq8Tc62xcjUH3hJzwDeL36z2ucPoYKdT27ZFEy4KMbtKrDJWngNeM22UT6Ikn6KR7i9w=="
     }
   ]
 }

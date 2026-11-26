@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
 import { useI18n, type I18nKey } from '../i18n';
-import type { ModelItem, SessionSummary, SideChatSelectionContext } from '../types';
+import type {
+  ModelItem,
+  ProjectItem,
+  SessionSummary,
+  SideChatSelectionContext,
+  WorktreeDto,
+} from '../types';
+import {
+  matchWorktreeByLongestPrefix,
+  resolveSessionWorktree,
+  toClientCompareKey,
+} from '../harness/worktreeUtils';
 import { ArtifactsPanel } from './ArtifactsPanel';
 import { normalizeWorkspacePath, truncateSelectionSnippet } from './dockUtils';
 import { FileTreePanel } from './FileTreePanel';
@@ -18,8 +29,10 @@ export interface RightDockProps {
   activeSession?: SessionSummary | null;
   sessionWorkspaceUri?: string | null;
   allowedRoots?: string[];
+  projects?: ProjectItem[];
   workspaceRoot?: string;
   defaultWorkspaceRoot?: string;
+  requestedRoot?: { root: string; nonce: number } | null;
   onWorkspaceRootChange?: (root: string) => void;
   onAuthorizeRoot?: (root: string) => Promise<void> | void;
   activeTab?: RightDockTab;
@@ -125,8 +138,10 @@ export function RightDock({
   activeSession,
   sessionWorkspaceUri,
   allowedRoots,
+  projects,
   workspaceRoot: controlledRoot,
   defaultWorkspaceRoot,
+  requestedRoot,
   onWorkspaceRootChange,
   onAuthorizeRoot,
   activeTab: controlledTab,
@@ -147,22 +162,63 @@ export function RightDock({
   const [uncontrolledTab, setUncontrolledTab] = useState<RightDockTab>(defaultTab);
   const currentTab = controlledTab ?? uncontrolledTab;
 
+  const allWorktrees = useMemo<WorktreeDto[]>(() => {
+    if (!Array.isArray(projects) || projects.length === 0) return [];
+    const list: WorktreeDto[] = [];
+    for (const p of projects) {
+      if (Array.isArray(p.worktrees)) {
+        for (const wt of p.worktrees) {
+          list.push(wt);
+        }
+      }
+    }
+    return list;
+  }, [projects]);
+
   const normalizedAllowedRoots = useMemo(() => {
-    if (!allowedRoots || allowedRoots.length === 0) return [];
     const seen = new Set<string>();
     const normalized: string[] = [];
-    for (const raw of allowedRoots) {
-      const p = normalizeWorkspacePath(raw);
-      if (p && !seen.has(p)) {
+    if (allowedRoots && allowedRoots.length > 0) {
+      for (const raw of allowedRoots) {
+        const p = normalizeWorkspacePath(raw);
+        if (p && !seen.has(p)) {
+          seen.add(p);
+          normalized.push(p);
+        }
+      }
+    }
+    for (const wt of allWorktrees) {
+      if (wt.allowed === false || !wt.exists || wt.bare) continue;
+      const p = normalizeWorkspacePath(wt.path);
+      if (p && !seen.has(p) && isRootInsideAllowed(p, normalized)) {
         seen.add(p);
         normalized.push(p);
       }
     }
     return normalized;
-  }, [allowedRoots]);
+  }, [allowedRoots, allWorktrees]);
+
+  const boundWorktree = useMemo<WorktreeDto | null>(() => {
+    if (!activeSession || allWorktrees.length === 0) return null;
+    if (activeSession.worktreePath) {
+      const exact = matchWorktreeByLongestPrefix(activeSession.worktreePath, allWorktrees);
+      if (exact) return exact;
+    }
+    return resolveSessionWorktree(activeSession, allWorktrees);
+  }, [activeSession, allWorktrees]);
+
+  const isBoundWorktreeMissing = useMemo(() => {
+    if (!activeSession) return false;
+    if (activeSession.worktreeStatus === 'missing') return true;
+    if (boundWorktree && (boundWorktree.status === 'missing' || !boundWorktree.exists)) {
+      return true;
+    }
+    return false;
+  }, [activeSession, boundWorktree]);
 
   const sessionRoots = useMemo(() => {
     const rawList: Array<string | null | undefined> = [
+      activeSession?.worktreePath,
       sessionWorkspaceUri,
       activeSession?.workspaceUri,
       activeSession?.gitRootUri,
@@ -181,13 +237,28 @@ export function RightDock({
     const normalized: string[] = [];
     for (const raw of rawList) {
       const p = normalizeWorkspacePath(raw);
-      if (p && !seen.has(p) && isRootInsideAllowed(p, normalizedAllowedRoots)) {
+      if (!p || seen.has(p)) continue;
+      const isBoundMissing =
+        isBoundWorktreeMissing &&
+        activeSession?.worktreePath &&
+        toClientCompareKey(p) === toClientCompareKey(activeSession.worktreePath);
+      if (isBoundMissing || isRootInsideAllowed(p, normalizedAllowedRoots)) {
         seen.add(p);
         normalized.push(p);
       }
     }
     return normalized;
-  }, [sessionWorkspaceUri, activeSession, normalizedAllowedRoots]);
+  }, [sessionWorkspaceUri, activeSession, normalizedAllowedRoots, isBoundWorktreeMissing]);
+
+  const sessionSandboxRoot = useMemo(() => {
+    if (activeSession?.worktreePath) {
+      return normalizeWorkspacePath(activeSession.worktreePath);
+    }
+    if (boundWorktree?.path) {
+      return normalizeWorkspacePath(boundWorktree.path);
+    }
+    return sessionRoots[0] || '';
+  }, [activeSession?.worktreePath, boundWorktree?.path, sessionRoots]);
 
   const rootOptions = useMemo<WorkspacePickerOption[]>(() => {
     const sessionSet = new Set(sessionRoots);
@@ -207,8 +278,15 @@ export function RightDock({
       });
     };
 
+    if (sessionSandboxRoot) {
+      pushOption(sessionSandboxRoot);
+    }
     for (const sRoot of sessionRoots) {
       pushOption(sRoot);
+    }
+    for (const wt of allWorktrees) {
+      if (wt.allowed === false || !wt.exists || wt.bare) continue;
+      pushOption(wt.path);
     }
     for (const allowed of normalizedAllowedRoots) {
       pushOption(allowed);
@@ -221,22 +299,41 @@ export function RightDock({
     }
 
     return options;
-  }, [sessionRoots, normalizedAllowedRoots, controlledRoot, defaultWorkspaceRoot]);
+  }, [
+    sessionSandboxRoot,
+    sessionRoots,
+    allWorktrees,
+    normalizedAllowedRoots,
+    controlledRoot,
+    defaultWorkspaceRoot,
+  ]);
 
   const primaryDefaultRoot = useMemo(() => {
+    if (sessionSandboxRoot && isBoundWorktreeMissing) {
+      return sessionSandboxRoot;
+    }
     if (defaultWorkspaceRoot) {
       const norm = normalizeWorkspacePath(defaultWorkspaceRoot);
       if (norm && isRootInsideAllowed(norm, normalizedAllowedRoots)) return norm;
     }
+    if (sessionSandboxRoot) return sessionSandboxRoot;
     if (sessionRoots.length > 0) return sessionRoots[0];
     return rootOptions[0]?.value || '';
-  }, [defaultWorkspaceRoot, normalizedAllowedRoots, sessionRoots, rootOptions]);
+  }, [
+    sessionSandboxRoot,
+    isBoundWorktreeMissing,
+    defaultWorkspaceRoot,
+    normalizedAllowedRoots,
+    sessionRoots,
+    rootOptions,
+  ]);
 
   const [uncontrolledRoot, setUncontrolledRoot] = useState<string>(primaryDefaultRoot);
   const effectiveSessionId = activeSession?.cascadeId ?? activeSessionId ?? null;
-  const primarySessionRoot = sessionRoots[0] || '';
+  const primarySessionRoot = sessionSandboxRoot || sessionRoots[0] || '';
   const lastSessionIdRef = useRef<string | null | undefined>(undefined);
   const lastPrimarySessionRootRef = useRef<string>('');
+  const lastRequestedNonceRef = useRef<number | null>(null);
 
   // Sync uncontrolled root when active session changes or session root first becomes available
   useEffect(() => {
@@ -277,12 +374,66 @@ export function RightDock({
     onTabChange?.(tab);
   };
 
-  const handleSelectRoot = (nextRoot: string) => {
-    if (controlledRoot === undefined) {
-      setUncontrolledRoot(nextRoot);
+  const handleSelectRoot = useCallback(
+    (nextRoot: string) => {
+      const norm = normalizeWorkspacePath(nextRoot);
+      if (controlledRoot === undefined) {
+        setUncontrolledRoot(norm);
+      }
+      onWorkspaceRootChange?.(norm);
+    },
+    [controlledRoot, onWorkspaceRootChange],
+  );
+
+  useEffect(() => {
+    if (!requestedRoot?.root || lastRequestedNonceRef.current === requestedRoot.nonce) {
+      return;
     }
-    onWorkspaceRootChange?.(nextRoot);
-  };
+    lastRequestedNonceRef.current = requestedRoot.nonce;
+    handleSelectRoot(requestedRoot.root);
+  }, [requestedRoot?.root, requestedRoot?.nonce, handleSelectRoot]);
+
+  const showSandboxMismatch = useMemo(() => {
+    if (!sessionSandboxRoot || !currentRoot) return false;
+    return toClientCompareKey(currentRoot) !== toClientCompareKey(sessionSandboxRoot);
+  }, [sessionSandboxRoot, currentRoot]);
+
+  const showMissingSandboxState = useMemo(() => {
+    if (!isBoundWorktreeMissing) return false;
+    if (!sessionSandboxRoot) return true;
+    return toClientCompareKey(currentRoot) === toClientCompareKey(sessionSandboxRoot);
+  }, [isBoundWorktreeMissing, sessionSandboxRoot, currentRoot]);
+
+  const sessionSandboxBranchLabel = useMemo(() => {
+    if (boundWorktree?.branch) return boundWorktree.branch;
+    if (boundWorktree?.headShort || boundWorktree?.head) {
+      return `detached @ ${(boundWorktree.headShort || boundWorktree.head).slice(0, 7)}`;
+    }
+    if (activeSession?.worktreeBranch) return activeSession.worktreeBranch;
+    if (boundWorktree?.displayLabel) return boundWorktree.displayLabel;
+    return extractRootBaseName(sessionSandboxRoot || '');
+  }, [boundWorktree, activeSession?.worktreeBranch, sessionSandboxRoot]);
+
+  const activeWorktree = useMemo(
+    () => matchWorktreeByLongestPrefix(currentRoot, allWorktrees),
+    [currentRoot, allWorktrees],
+  );
+
+  const activeBranchLabel = useMemo(() => {
+    if (activeWorktree?.branch) return activeWorktree.branch;
+    if (activeWorktree?.headShort || activeWorktree?.head) {
+      return `detached @ ${(activeWorktree.headShort || activeWorktree.head).slice(0, 7)}`;
+    }
+    if (activeWorktree?.displayLabel) return activeWorktree.displayLabel;
+    if (
+      activeSession?.worktreeBranch &&
+      sessionSandboxRoot &&
+      toClientCompareKey(currentRoot) === toClientCompareKey(sessionSandboxRoot)
+    ) {
+      return activeSession.worktreeBranch;
+    }
+    return currentRoot ? extractRootBaseName(currentRoot) : null;
+  }, [activeWorktree, activeSession?.worktreeBranch, sessionSandboxRoot, currentRoot]);
 
   const handleAuthorizeRoot = useCallback(
     async (targetRoot: string) => {
@@ -454,44 +605,96 @@ export function RightDock({
         </div>
       </div>
 
+      {showSandboxMismatch && (
+        <div className={styles.sandboxMismatchBanner} role="status" data-testid="dock-sandbox-mismatch">
+          <span className={styles.sandboxMismatchText}>
+            {t('dock.sandboxMismatch', {
+              branch: sessionSandboxBranchLabel,
+              path: sessionSandboxRoot,
+            })}
+          </span>
+          <button
+            type="button"
+            className={styles.sandboxSwitchBtn}
+            onClick={() => handleSelectRoot(sessionSandboxRoot)}
+            data-testid="dock-switch-back-worktree-btn"
+          >
+            {t('dock.switchBackWorktree')}
+          </button>
+        </div>
+      )}
+
       <div className={styles.body} role="tabpanel">
-        {currentTab === 'files' && (
-          <FileTreePanel
-            root={currentRoot}
-            refreshKey={filesRefreshKey}
-            onFileSaved={() => setDiffBumpCount((n) => n + 1)}
-            onAuthorizeRoot={resolvedOnAuthorizeRoot}
-            focusedFile={focusedFilePath}
-            onSelectionChange={handleFileSelectionChange}
-          />
-        )}
-        {currentTab === 'diff' && (
-          <GitDiffPanel
-            root={currentRoot}
-            refreshKey={diffRefreshKey}
-            onAuthorizeRoot={resolvedOnAuthorizeRoot}
-            focusedFile={focusedDiffFile}
-            onSelectionChange={handleDiffSelectionChange}
-            channel={channel}
-            permissionLevel={permissionLevel}
-            onInsertToComposer={onInsertToComposer}
-            onSelectWorkspaceRoot={handleSelectRoot}
-            onGitMutated={() => {
-              setFilesBumpCount((n) => n + 1);
-              onGitMutated?.();
-            }}
-          />
-        )}
+        {currentTab === 'files' &&
+          (showMissingSandboxState ? (
+            <div className={styles.missingSandboxCard} data-testid="dock-worktree-missing">
+              <h4 className={styles.missingSandboxTitle}>{t('dock.worktreeMissingTitle')}</h4>
+              <p className={styles.missingSandboxDesc}>
+                {t('dock.worktreeMissingDesc', {
+                  path: sessionSandboxRoot || activeSession?.worktreePath || '',
+                })}
+              </p>
+            </div>
+          ) : (
+            <FileTreePanel
+              root={currentRoot}
+              refreshKey={filesRefreshKey}
+              onFileSaved={() => setDiffBumpCount((n) => n + 1)}
+              onAuthorizeRoot={resolvedOnAuthorizeRoot}
+              focusedFile={focusedFilePath}
+              onSelectionChange={handleFileSelectionChange}
+            />
+          ))}
+        {currentTab === 'diff' &&
+          (showMissingSandboxState ? (
+            <div className={styles.missingSandboxCard} data-testid="dock-worktree-missing">
+              <h4 className={styles.missingSandboxTitle}>{t('dock.worktreeMissingTitle')}</h4>
+              <p className={styles.missingSandboxDesc}>
+                {t('dock.worktreeMissingDesc', {
+                  path: sessionSandboxRoot || activeSession?.worktreePath || '',
+                })}
+              </p>
+            </div>
+          ) : (
+            <GitDiffPanel
+              root={currentRoot}
+              refreshKey={diffRefreshKey}
+              onAuthorizeRoot={resolvedOnAuthorizeRoot}
+              focusedFile={focusedDiffFile}
+              onSelectionChange={handleDiffSelectionChange}
+              channel={channel}
+              permissionLevel={permissionLevel}
+              onInsertToComposer={onInsertToComposer}
+              onSelectWorkspaceRoot={handleSelectRoot}
+              onGitMutated={() => {
+                setFilesBumpCount((n) => n + 1);
+                onGitMutated?.();
+              }}
+            />
+          ))}
         {currentTab === 'artifacts' && (
           <ArtifactsPanel sessionId={effectiveSessionId} refreshKey={combinedRefreshKey} />
         )}
         <div className={styles.keepalivePane} hidden={currentTab !== 'terminal'}>
-          <TerminalPanel
-            activeRoot={currentRoot}
-            channel={channel}
-            permissionLevel={permissionLevel}
-            refreshKey={combinedRefreshKey}
-          />
+          {showMissingSandboxState ? (
+            <div className={styles.missingSandboxCard} data-testid="dock-worktree-missing">
+              <h4 className={styles.missingSandboxTitle}>{t('dock.worktreeMissingTitle')}</h4>
+              <p className={styles.missingSandboxDesc}>
+                {t('dock.worktreeMissingDesc', {
+                  path: sessionSandboxRoot || activeSession?.worktreePath || '',
+                })}
+              </p>
+            </div>
+          ) : (
+            <TerminalPanel
+              activeRoot={currentRoot}
+              activeBranchLabel={activeBranchLabel}
+              worktrees={allWorktrees}
+              channel={channel}
+              permissionLevel={permissionLevel}
+              refreshKey={combinedRefreshKey}
+            />
+          )}
         </div>
         <div className={styles.keepalivePane} hidden={currentTab !== 'sideChat'}>
           <SideChatPanel

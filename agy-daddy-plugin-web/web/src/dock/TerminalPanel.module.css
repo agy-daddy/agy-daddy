@@ -49,6 +49,24 @@
   white-space: nowrap;
 }
 
+.sandboxCapsule {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .statusDot {
   width: 6px;
   height: 6px;

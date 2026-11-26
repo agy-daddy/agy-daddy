@@ -316,4 +316,160 @@ describe('RightDock 5-tab & keepalive', () => {
       expect.any(Object),
     );
   });
+
+  it('auto-locks to activeSession worktree, warns on manual mismatch with Switch back, and isolates missing worktrees', () => {
+    const projects = [
+      {
+        id: 'proj-1',
+        name: 'Monorepo',
+        rootPath: '/repo',
+        groupId: null,
+        isMultiWorktree: true,
+        worktrees: [
+          {
+            worktreeId: 'wt-main',
+            path: '/repo',
+            uri: 'file:///repo',
+            displaySubpath: 'repo',
+            head: '1111111',
+            headShort: '1111111',
+            branch: 'main',
+            displayLabel: 'main',
+            isMain: true,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: false,
+            exists: true,
+            status: 'ready' as const,
+            collapsed: false,
+            allowed: true,
+          },
+          {
+            worktreeId: 'wt-feat',
+            path: '/repo-feat',
+            uri: 'file:///repo-feat',
+            displaySubpath: 'repo-feat',
+            head: '2222222',
+            headShort: '2222222',
+            branch: 'feat/sandbox',
+            displayLabel: 'feat/sandbox',
+            isMain: false,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: false,
+            exists: true,
+            status: 'ready' as const,
+            collapsed: false,
+            allowed: true,
+          },
+          {
+            worktreeId: 'wt-gone',
+            path: '/repo-gone',
+            uri: 'file:///repo-gone',
+            displaySubpath: 'repo-gone',
+            head: '3333333',
+            headShort: '3333333',
+            branch: 'feat/gone',
+            displayLabel: 'feat/gone',
+            isMain: false,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: true,
+            exists: false,
+            status: 'missing' as const,
+            collapsed: false,
+            allowed: true,
+          },
+        ],
+      },
+    ];
+
+    const sessionFeat = {
+      cascadeId: 's-feat',
+      title: 'Feat Session',
+      summary: '',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      stepCount: 0,
+      lastModifiedTime: null,
+      createdTime: null,
+      workspaceUri: 'file:///repo-feat',
+      gitRootUri: null,
+      repoName: 'Monorepo',
+      branchName: 'feat/sandbox',
+      workspaces: [],
+      worktreeId: 'wt-feat',
+      worktreePath: '/repo-feat',
+      worktreeBranch: 'feat/sandbox',
+    };
+
+    const { rerender } = render(
+      <I18nProvider defaultLocale="en">
+        <RightDock
+          activeSessionId="s-feat"
+          activeSession={sessionFeat}
+          allowedRoots={['/repo', '/repo-feat']}
+          projects={projects}
+          channel="loopback"
+          permissionLevel="L2"
+          models={[]}
+        />
+      </I18nProvider>,
+    );
+
+    expect(apiClient.getFsTree).toHaveBeenCalledWith(
+      { root: '/repo-feat', depth: 2 },
+      expect.anything(),
+    );
+    expect(screen.queryByTestId('dock-sandbox-mismatch')).not.toBeInTheDocument();
+
+    // Manually switch picker root via picker change
+    fireEvent.click(screen.getByTestId('dock-root-select'));
+    const popover = screen.getByTestId('workspace-picker-popover');
+    fireEvent.click(popover.querySelector('[data-testid="workspace-picker-option-1"]')!);
+
+    const mismatch = screen.getByTestId('dock-sandbox-mismatch');
+    expect(mismatch).toHaveTextContent('feat/sandbox');
+    expect(apiClient.getFsTree).toHaveBeenLastCalledWith(
+      { root: '/repo', depth: 2 },
+      expect.anything(),
+    );
+
+    // Click Switch back
+    fireEvent.click(screen.getByTestId('dock-switch-back-worktree-btn'));
+    expect(screen.queryByTestId('dock-sandbox-mismatch')).not.toBeInTheDocument();
+    expect(apiClient.getFsTree).toHaveBeenLastCalledWith(
+      { root: '/repo-feat', depth: 2 },
+      expect.anything(),
+    );
+
+    // Session with missing worktree shows read-only empty state and does NOT fall back to main repo
+    const fsCallCountBeforeMissing = vi.mocked(apiClient.getFsTree).mock.calls.length;
+    rerender(
+      <I18nProvider defaultLocale="en">
+        <RightDock
+          activeSessionId="s-gone"
+          activeSession={{
+            ...sessionFeat,
+            cascadeId: 's-gone',
+            workspaceUri: 'file:///repo-gone',
+            worktreeId: 'wt-gone',
+            worktreePath: '/repo-gone',
+            worktreeStatus: 'missing',
+          }}
+          allowedRoots={['/repo']}
+          projects={projects}
+          channel="loopback"
+          permissionLevel="L2"
+          models={[]}
+        />
+      </I18nProvider>,
+    );
+
+    const missingCards = screen.getAllByTestId('dock-worktree-missing');
+    expect(missingCards[0]).toHaveTextContent('/repo-gone');
+    expect(vi.mocked(apiClient.getFsTree).mock.calls.length).toBe(fsCallCountBeforeMissing);
+  });
 });

@@ -34,11 +34,14 @@ import { useTheme } from './theme/ThemeProvider';
 import type {
   BackgroundTaskStatus,
   BackgroundTasksListResponse,
+  CollapsedNodesState,
   ComposerStateResponse,
   ContextDisplayLocation,
   CreateProjectRequest,
   CreateSessionRequest,
   CreateSessionResponse,
+  GitWorktreeMutationRequest,
+  GitWorktreesResponse,
   HealthInfo,
   ModelCatalogTree,
   ModelItem,
@@ -156,6 +159,7 @@ function buildOptimisticSession(
   projects: ProjectItem[],
   fallbackWorkspaceUri?: string | null,
   fallbackProjectId?: string | null,
+  fallbackWorktreePath?: string | null,
 ): SessionSummary {
   const nowIso = new Date().toISOString();
   const resolvedProjectId = created.projectId !== undefined ? created.projectId : (fallbackProjectId ?? null);
@@ -166,6 +170,8 @@ function buildOptimisticSession(
     created.workspaceUri ||
     fallbackWorkspaceUri ||
     (matchedProj?.rootPath ? `file://${matchedProj.rootPath}` : null);
+  const resolvedWorktreePath =
+    created.worktreePath !== undefined ? created.worktreePath : (fallbackWorktreePath ?? null);
   const title = typeof created.title === 'string' && created.title.trim() ? created.title.trim() : '';
 
   return {
@@ -186,6 +192,9 @@ function buildOptimisticSession(
     workspaces: resolvedWorkspaceUri ? [{ workspaceUri: resolvedWorkspaceUri }] : [],
     projectId: resolvedProjectId,
     projectName: matchedProj?.name ?? null,
+    worktreeId: created.worktreeId ?? null,
+    worktreePath: resolvedWorktreePath,
+    worktreeBranch: null,
   };
 }
 
@@ -479,6 +488,15 @@ export function App() {
   } | null>(null);
   const [defaultSessionPath, setDefaultSessionPath] = useState<string>('');
   const [selectedProjectFilter, setSelectedProjectFilter] = useState<string>('all');
+  const [orgRevision, setOrgRevision] = useState<number>(0);
+  const [collapsedNodes, setCollapsedNodes] = useState<CollapsedNodesState>({
+    projects: {},
+    worktrees: {},
+  });
+  const [requestedDockRoot, setRequestedDockRoot] = useState<{ root: string; nonce: number } | null>(
+    null,
+  );
+  const [dockWorkspaceRoot, setDockWorkspaceRoot] = useState<string>('');
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
@@ -907,6 +925,12 @@ export function App() {
       if (res.defaultSessionPath) {
         setDefaultSessionPath(res.defaultSessionPath);
       }
+      if (typeof res.revision === 'number') {
+        setOrgRevision(res.revision);
+      }
+      if (res.collapsedNodes) {
+        setCollapsedNodes(res.collapsedNodes);
+      }
       return res;
     } catch {
       return null;
@@ -1101,6 +1125,25 @@ export function App() {
         if (projectsRes.value.defaultSessionPath) {
           setDefaultSessionPath(projectsRes.value.defaultSessionPath);
         }
+        if (typeof projectsRes.value.revision === 'number') {
+          setOrgRevision(projectsRes.value.revision);
+        }
+        if (projectsRes.value.collapsedNodes) {
+          setCollapsedNodes(projectsRes.value.collapsedNodes);
+        }
+      }
+
+      if (typeof apiClient.getSessionOrg === 'function') {
+        void apiClient
+          .getSessionOrg({ includeArchived: false })
+          .then((org) => {
+            if (cancelled) return;
+            if (Array.isArray(org.projects)) setProjects(org.projects);
+            if (Array.isArray(org.groups)) setProjectGroups(org.groups);
+            if (typeof org.revision === 'number') setOrgRevision(org.revision);
+            if (org.collapsedNodes) setCollapsedNodes(org.collapsedNodes);
+          })
+          .catch(() => {});
       }
 
       if (composerRes.status === 'fulfilled') {
@@ -1577,6 +1620,26 @@ export function App() {
         }
         scheduleTopbarRefresh();
       },
+      onOrgUpdated: (evt) => {
+        if (isDraggingRef.current) {
+          pendingOrgPatchRef.current = true;
+          return;
+        }
+        if (typeof evt.revision === 'number') {
+          setOrgRevision(evt.revision);
+        }
+        if (evt.collapsedNodes) {
+          setCollapsedNodes(evt.collapsedNodes);
+        }
+        void refreshProjects();
+      },
+      onWorktreeUpdated: () => {
+        if (isDraggingRef.current) {
+          pendingOrgPatchRef.current = true;
+          return;
+        }
+        void refreshProjects();
+      },
     });
 
     return () => {
@@ -1779,7 +1842,12 @@ export function App() {
   );
 
   const handleCreateSession = useCallback(
-    async (opts?: { projectId?: string | null; workspaceUri?: string; standalone?: boolean }) => {
+    async (opts?: {
+      projectId?: string | null;
+      workspaceUri?: string;
+      worktreePath?: string;
+      standalone?: boolean;
+    }) => {
       setCreatingSession(true);
       setBannerError(null);
       try {
@@ -1790,8 +1858,13 @@ export function App() {
         if (opts?.standalone !== undefined) {
           payload.standalone = opts.standalone;
         }
+        if (opts?.worktreePath) {
+          payload.worktreePath = opts.worktreePath;
+        }
         if (opts?.workspaceUri) {
           payload.workspaceUri = opts.workspaceUri;
+        } else if (opts?.worktreePath) {
+          payload.workspaceUri = `file://${opts.worktreePath}`;
         } else if (opts?.projectId) {
           const matchedProject = projectsRef.current.find((p) => p.id === opts.projectId);
           if (matchedProject?.rootPath) {
@@ -1809,6 +1882,7 @@ export function App() {
           projectsRef.current,
           payload.workspaceUri,
           opts?.projectId,
+          opts?.worktreePath,
         );
         recentCreatedSessionsRef.current.set(created.cascadeId, {
           session: optimistic,
@@ -2346,6 +2420,92 @@ export function App() {
     [refreshProjects, t],
   );
 
+  const handleToggleNodeCollapsed = useCallback(
+    async (nodeType: 'group' | 'project' | 'worktree', id: string, collapsed: boolean) => {
+      if (nodeType === 'group') {
+        setProjectGroups((prev) => prev.map((g) => (g.id === id ? { ...g, collapsed } : g)));
+      } else {
+        setCollapsedNodes((prev) => {
+          const bucket = nodeType === 'project' ? 'projects' : 'worktrees';
+          const nextBucket = { ...prev[bucket] };
+          if (collapsed) {
+            nextBucket[id] = true;
+          } else {
+            delete nextBucket[id];
+          }
+          return { ...prev, [bucket]: nextBucket };
+        });
+      }
+      try {
+        if (typeof apiClient.setOrgNodeCollapsed === 'function') {
+          const res = await apiClient.setOrgNodeCollapsed({ nodeType, id, collapsed });
+          if (typeof res.revision === 'number') setOrgRevision(res.revision);
+          if (res.collapsedNodes) setCollapsedNodes(res.collapsedNodes);
+        } else if (nodeType === 'group') {
+          await apiClient.updateProjectGroup(id, { collapsed });
+        }
+        await refreshProjects();
+      } catch (err) {
+        setBannerError(formatErrorMessage(err, t('dockErr.requestFailed'), t));
+        await refreshProjects();
+      }
+    },
+    [refreshProjects, t],
+  );
+
+  const handleRefreshWorktrees = useCallback(async () => {
+    try {
+      if (typeof apiClient.getSessionOrg === 'function') {
+        const org = await apiClient.getSessionOrg({ refreshWorktrees: true });
+        if (Array.isArray(org.projects)) setProjects(org.projects);
+        if (Array.isArray(org.groups)) setProjectGroups(org.groups);
+        if (typeof org.revision === 'number') setOrgRevision(org.revision);
+        if (org.collapsedNodes) setCollapsedNodes(org.collapsedNodes);
+      } else {
+        await refreshProjects();
+      }
+    } catch {
+      await refreshProjects();
+    }
+  }, [refreshProjects]);
+
+  const handleMutateWorktree = useCallback(
+    async (req: GitWorktreeMutationRequest): Promise<GitWorktreesResponse | void> => {
+      setBannerError(null);
+      try {
+        const res = await apiClient.gitWorktree(req);
+        if (req.action === 'add') {
+          showSidebarToast(t('worktree.createdToast', { branch: req.branch || req.path || '' }));
+        } else if (req.action === 'remove') {
+          showSidebarToast(t('worktree.removedToast', { path: req.path || '' }));
+        } else if (req.action === 'prune') {
+          showSidebarToast(t('worktree.prunedToast'));
+        }
+        await Promise.all([handleRefreshWorktrees(), refreshSessions()]);
+        return res;
+      } catch (err) {
+        const msg = formatErrorMessage(err, t('dockErr.requestFailed'), t);
+        showSidebarToast(msg);
+        throw err;
+      }
+    },
+    [handleRefreshWorktrees, refreshSessions, showSidebarToast, t],
+  );
+
+  const handleOpenWorktreeTerminal = useCallback((worktreePath: string) => {
+    setRightbarOpen(true);
+    setDockTab('terminal');
+    setRequestedDockRoot((prev) => ({ root: worktreePath, nonce: (prev?.nonce ?? 0) + 1 }));
+    setDockWorkspaceRoot(worktreePath);
+  }, []);
+
+  const handleOpenWorktreeDiff = useCallback((worktreePath: string) => {
+    setRightbarOpen(true);
+    setDockTab('diff');
+    setRequestedDockRoot((prev) => ({ root: worktreePath, nonce: (prev?.nonce ?? 0) + 1 }));
+    setDockWorkspaceRoot(worktreePath);
+  }, []);
+
   const handleAuthorizeRoot = useCallback(
     async (root: string) => {
       await apiClient.authorizeWorkspaceRoot(root);
@@ -2774,6 +2934,9 @@ export function App() {
             onToggleIncludeInternal={handleToggleIncludeInternal}
             permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
             channel={webAccessStatus?.channel || 'loopback'}
+            orgRevision={orgRevision}
+            collapsedNodes={collapsedNodes}
+            activeWorkspaceRoot={dockWorkspaceRoot || undefined}
             groupOrder={groupOrder}
             projectOrder={projectOrder}
             sessionOrder={sessionOrder}
@@ -2789,6 +2952,11 @@ export function App() {
             onArchiveSession={handleArchiveSession}
             onRequestDeleteSession={handleRequestDeleteSession}
             onReorderOrg={handleReorderOrg}
+            onToggleNodeCollapsed={handleToggleNodeCollapsed}
+            onRefreshWorktrees={handleRefreshWorktrees}
+            onMutateWorktree={handleMutateWorktree}
+            onOpenWorktreeTerminal={handleOpenWorktreeTerminal}
+            onOpenWorktreeDiff={handleOpenWorktreeDiff}
             onOpenNewProjectModal={() => setNewProjectModalOpen(true)}
             onDraggingChange={handleDraggingChange}
             onCreateProject={handleCreateProject}
@@ -2996,7 +3164,10 @@ export function App() {
             activeSessionId={activeSessionId}
             activeSession={activeSession}
             allowedRoots={health?.allowedRoots}
+            projects={projects}
             defaultWorkspaceRoot={health?.defaultSessionPath || defaultSessionPath || undefined}
+            requestedRoot={requestedDockRoot}
+            onWorkspaceRootChange={setDockWorkspaceRoot}
             onAuthorizeRoot={handleAuthorizeRoot}
             activeTab={dockTab}
             onTabChange={setDockTab}

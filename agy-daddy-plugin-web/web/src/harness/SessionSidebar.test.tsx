@@ -957,4 +957,366 @@ describe('SessionSidebar v2 org: pinning, archive, permissions, keyboard/menu re
     fireEvent.click(screen.getByTestId('create-group-submit'));
     expect(onCreateGroup).toHaveBeenCalledWith('Infra', '⚡');
   });
+
+  it('requires confirmation modal when deleting a non-empty group, while deleting empty groups directly', () => {
+    const onDeleteGroup = vi.fn();
+    const groups: ProjectGroup[] = [
+      { id: 'grp-empty', name: 'EmptyGroup', sortOrder: 0, collapsed: false },
+      { id: 'grp-busy', name: 'BusyGroup', sortOrder: 1, collapsed: false },
+    ];
+    const projects: ProjectItem[] = [
+      { id: 'p-1', name: 'Alpha', rootPath: '/ws/a', groupId: 'grp-busy' },
+      { id: 'p-2', name: 'Beta', rootPath: '/ws/b', groupId: 'grp-busy' },
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={[]}
+        projects={projects}
+        projectGroups={groups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onDeleteGroup={onDeleteGroup}
+      />,
+    );
+
+    // Empty group deletes immediately without modal
+    fireEvent.click(screen.getByTestId('delete-group-grp-empty'));
+    expect(screen.queryByTestId('delete-group-modal')).not.toBeInTheDocument();
+    expect(onDeleteGroup).toHaveBeenCalledWith('grp-empty');
+
+    // Non-empty group opens modal showing project count 2
+    fireEvent.click(screen.getByTestId('delete-group-grp-busy'));
+    const modal = screen.getByTestId('delete-group-modal');
+    expect(modal).toHaveTextContent('BusyGroup');
+    expect(modal).toHaveTextContent('2');
+    expect(onDeleteGroup).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('delete-group-cancel'));
+    expect(screen.queryByTestId('delete-group-modal')).not.toBeInTheDocument();
+    expect(onDeleteGroup).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('delete-group-grp-busy'));
+    fireEvent.click(screen.getByTestId('delete-group-confirm'));
+    expect(onDeleteGroup).toHaveBeenCalledWith('grp-busy');
+  });
+
+  it('moves project across groups via unified ··· menu', () => {
+    const onUpdateProject = vi.fn();
+    const groups: ProjectGroup[] = [
+      { id: 'grp-1', name: 'Backend', sortOrder: 0, collapsed: false },
+      { id: 'grp-2', name: 'Frontend', sortOrder: 1, collapsed: false },
+    ];
+    const projects: ProjectItem[] = [
+      { id: 'proj-move', name: 'Gateway', rootPath: '/ws/gw', groupId: 'grp-1' },
+    ];
+
+    render(
+      <SessionSidebar
+        sessions={[]}
+        projects={projects}
+        projectGroups={groups}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onUpdateProject={onUpdateProject}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('project-actions-proj-move'));
+    fireEvent.click(screen.getByTestId('project-menu-move-proj-move-grp-2'));
+    expect(onUpdateProject).toHaveBeenCalledWith('proj-move', { groupId: 'grp-2' });
+
+    fireEvent.click(screen.getByTestId('project-actions-proj-move'));
+    fireEvent.click(screen.getByTestId('project-menu-move-proj-move-__ungrouped__'));
+    expect(onUpdateProject).toHaveBeenCalledWith('proj-move', { groupId: null });
+  });
+
+  it('persists project/worktree collapse anchored on orgRevision and restores after search clear', () => {
+    const onToggleNodeCollapsed = vi.fn();
+    const projects: ProjectItem[] = [
+      {
+        id: 'proj-wt',
+        name: 'Monorepo',
+        rootPath: '/repo',
+        groupId: null,
+        isMultiWorktree: true,
+        worktrees: [
+          {
+            worktreeId: 'wt-main',
+            path: '/repo',
+            uri: 'file:///repo',
+            displaySubpath: 'repo',
+            head: '1111111',
+            headShort: '1111111',
+            branch: 'main',
+            displayLabel: 'main',
+            isMain: true,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: false,
+            exists: true,
+            status: 'ready',
+            collapsed: false,
+            allowed: true,
+          },
+          {
+            worktreeId: 'wt-feat',
+            path: '/repo-feat',
+            uri: 'file:///repo-feat',
+            displaySubpath: 'repo-feat',
+            head: '2222222',
+            headShort: '2222222',
+            branch: 'feat/wt',
+            displayLabel: 'feat/wt',
+            isMain: false,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: false,
+            exists: true,
+            status: 'ready',
+            collapsed: true,
+            allowed: true,
+          },
+        ],
+      },
+    ];
+    const sessions: SessionSummary[] = [
+      makeSession({
+        cascadeId: 's-feat-1',
+        title: 'Build Worktree Match',
+        projectId: 'proj-wt',
+        worktreeId: 'wt-feat',
+        worktreePath: '/repo-feat',
+      }),
+    ];
+
+    const { rerender } = render(
+      <SessionSidebar
+        sessions={sessions}
+        projects={projects}
+        projectGroups={[]}
+        orgRevision={5}
+        collapsedNodes={{ projects: { 'proj-wt': true }, worktrees: { 'wt-feat': true } }}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onToggleNodeCollapsed={onToggleNodeCollapsed}
+      />,
+    );
+
+    // Initially persisted-collapsed project hides worktrees
+    expect(screen.queryByTestId('worktree-subgroup-wt-feat')).not.toBeInTheDocument();
+
+    // Searching temporarily expands matching project + worktree without calling onToggleNodeCollapsed
+    fireEvent.click(screen.getByTestId('sidebar-filter-toggle'));
+    fireEvent.change(screen.getByTestId('session-search-input'), { target: { value: 'Worktree Match' } });
+    expect(screen.getByTestId('worktree-subgroup-wt-feat')).toBeInTheDocument();
+    expect(screen.getByText('Build Worktree Match')).toBeInTheDocument();
+    expect(onToggleNodeCollapsed).not.toHaveBeenCalled();
+
+    // Clearing search restores persisted collapsed state
+    fireEvent.change(screen.getByTestId('session-search-input'), { target: { value: '' } });
+    expect(screen.queryByTestId('worktree-subgroup-wt-feat')).not.toBeInTheDocument();
+
+    // Toggling project triggers optimistic expand and persists via onToggleNodeCollapsed
+    fireEvent.click(screen.getByTestId('toggle-project-proj-wt'));
+    expect(onToggleNodeCollapsed).toHaveBeenCalledWith('project', 'proj-wt', false);
+    expect(screen.getByTestId('worktree-subgroup-wt-feat')).toBeInTheDocument();
+    expect(screen.queryByTestId('worktree-sessions-wt-feat')).not.toBeInTheDocument();
+
+    // Server catching up with newer orgRevision overrides optimistic state cleanly
+    rerender(
+      <SessionSidebar
+        sessions={sessions}
+        projects={projects}
+        projectGroups={[]}
+        orgRevision={6}
+        collapsedNodes={{ projects: {}, worktrees: { 'wt-feat': false } }}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        onToggleNodeCollapsed={onToggleNodeCollapsed}
+      />,
+    );
+    expect(screen.getByTestId('worktree-sessions-wt-feat')).toBeInTheDocument();
+  });
+
+  it('renders zero worktree redundancy for single repo, upgrades dynamically, and isolates nested worktrees & actions', () => {
+    const onCreateSession = vi.fn();
+    const onMutateWorktree = vi.fn().mockResolvedValue({ ok: true });
+    const onOpenWorktreeTerminal = vi.fn();
+    const onOpenWorktreeDiff = vi.fn();
+
+    const baseProject: ProjectItem = {
+      id: 'proj-dyn',
+      name: 'CoreRepo',
+      rootPath: '/ws/core',
+      groupId: null,
+      isMultiWorktree: false,
+      worktrees: [
+        {
+          worktreeId: 'wt-single',
+          path: '/ws/core',
+          uri: 'file:///ws/core',
+          displaySubpath: 'core',
+          head: 'aaaaaaa',
+          headShort: 'aaaaaaa',
+          branch: 'main',
+          displayLabel: 'main',
+          isMain: true,
+          bare: false,
+          detached: false,
+          locked: false,
+          prunable: false,
+          exists: true,
+          status: 'ready',
+          collapsed: false,
+          allowed: true,
+        },
+      ],
+    };
+
+    const sessions: SessionSummary[] = [
+      makeSession({
+        cascadeId: 'sess-main',
+        title: 'Main Session',
+        projectId: 'proj-dyn',
+        workspaceUri: 'file:///ws/core',
+      }),
+      makeSession({
+        cascadeId: 'sess-nested',
+        title: 'Nested Inner WT',
+        projectId: 'proj-dyn',
+        workspaceUri: 'file:///ws/core/.worktrees/wt-inner/packages/ui',
+      }),
+    ];
+
+    const { rerender } = render(
+      <SessionSidebar
+        sessions={sessions}
+        projects={[baseProject]}
+        projectGroups={[]}
+        onSelectSession={vi.fn()}
+        onCreateSession={onCreateSession}
+        onMutateWorktree={onMutateWorktree}
+        onOpenWorktreeTerminal={onOpenWorktreeTerminal}
+        onOpenWorktreeDiff={onOpenWorktreeDiff}
+      />,
+    );
+
+    // Single worktree => zero subgroup redundancy
+    expect(screen.queryByTestId('project-worktrees-proj-dyn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('project-sessions-proj-dyn')).toBeInTheDocument();
+
+    // Dynamic upgrade to multi-worktree with main, nested inner, detached+locked, missing, bare
+    const multiProject: ProjectItem = {
+      ...baseProject,
+      isMultiWorktree: true,
+      worktrees: [
+        baseProject.worktrees![0],
+        {
+          worktreeId: 'wt-inner',
+          path: '/ws/core/.worktrees/wt-inner',
+          uri: 'file:///ws/core/.worktrees/wt-inner',
+          displaySubpath: '.worktrees/wt-inner',
+          head: 'deadbeef1234',
+          headShort: 'deadbee',
+          branch: '',
+          displayLabel: 'detached @ deadbee',
+          isMain: false,
+          bare: false,
+          detached: true,
+          locked: true,
+          prunable: false,
+          exists: true,
+          status: 'locked',
+          collapsed: false,
+          allowed: true,
+        },
+        {
+          worktreeId: 'wt-gone',
+          path: '/ws/core-gone',
+          uri: 'file:///ws/core-gone',
+          displaySubpath: 'core-gone',
+          head: '0000000',
+          headShort: '0000000',
+          branch: 'feat/gone',
+          displayLabel: 'feat/gone',
+          isMain: false,
+          bare: false,
+          detached: false,
+          locked: false,
+          prunable: true,
+          exists: false,
+          status: 'missing',
+          collapsed: false,
+          allowed: true,
+        },
+      ],
+    };
+
+    rerender(
+      <SessionSidebar
+        sessions={sessions}
+        projects={[multiProject]}
+        projectGroups={[]}
+        permissionLevel="L2"
+        channel="loopback"
+        onSelectSession={vi.fn()}
+        onCreateSession={onCreateSession}
+        onMutateWorktree={onMutateWorktree}
+        onOpenWorktreeTerminal={onOpenWorktreeTerminal}
+        onOpenWorktreeDiff={onOpenWorktreeDiff}
+      />,
+    );
+
+    expect(screen.getByTestId('project-worktree-count-proj-dyn')).toHaveTextContent('3 wt');
+    expect(screen.getByTestId('worktree-main-badge-wt-single')).toBeInTheDocument();
+    expect(screen.getByTestId('worktree-locked-badge-wt-inner')).toBeInTheDocument();
+    expect(screen.getByTestId('worktree-missing-badge-wt-gone')).toBeInTheDocument();
+
+    // Longest prefix isolation: nested session belongs strictly to wt-inner, NOT wt-single
+    expect(within(screen.getByTestId('worktree-sessions-wt-inner')).getByText('Nested Inner WT')).toBeInTheDocument();
+    expect(within(screen.getByTestId('worktree-sessions-wt-single')).queryByText('Nested Inner WT')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('worktree-sessions-wt-single')).getByText('Main Session')).toBeInTheDocument();
+
+    // Worktree + creates session bound to exact worktreePath
+    fireEvent.click(screen.getByTestId('worktree-new-session-wt-inner'));
+    expect(onCreateSession).toHaveBeenCalledWith({
+      projectId: 'proj-dyn',
+      workspaceUri: 'file:///ws/core/.worktrees/wt-inner',
+      worktreePath: '/ws/core/.worktrees/wt-inner',
+    });
+
+    // Missing worktree disables + session creation
+    expect(screen.getByTestId('worktree-new-session-wt-gone')).toBeDisabled();
+
+    // Worktree ··· Open in Terminal & Diff
+    fireEvent.click(screen.getByTestId('worktree-actions-wt-inner'));
+    fireEvent.click(screen.getByTestId('worktree-open-terminal-wt-inner'));
+    expect(onOpenWorktreeTerminal).toHaveBeenCalledWith('/ws/core/.worktrees/wt-inner');
+
+    fireEvent.click(screen.getByTestId('worktree-actions-wt-inner'));
+    fireEvent.click(screen.getByTestId('worktree-open-diff-wt-inner'));
+    expect(onOpenWorktreeDiff).toHaveBeenCalledWith('/ws/core/.worktrees/wt-inner');
+
+    // Locked worktree disables remove action inside menu
+    fireEvent.click(screen.getByTestId('worktree-actions-wt-inner'));
+    expect(screen.getByTestId('worktree-remove-wt-inner')).toBeDisabled();
+
+    // Project ··· Create Worktree modal submits add mutation
+    fireEvent.click(screen.getByTestId('project-actions-proj-dyn'));
+    fireEvent.click(screen.getByTestId('new-worktree-proj-dyn'));
+    fireEvent.change(screen.getByTestId('create-worktree-branch-input'), {
+      target: { value: 'feat/new-wt' },
+    });
+    fireEvent.click(screen.getByTestId('create-worktree-submit'));
+    expect(onMutateWorktree).toHaveBeenCalledWith({
+      action: 'add',
+      root: '/ws/core',
+      path: '/ws/core-feat-new-wt',
+      branch: 'feat/new-wt',
+      createBranch: true,
+    });
+  });
 });

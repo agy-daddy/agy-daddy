@@ -7,11 +7,15 @@ import {
   type TranslateFn,
 } from '../i18n';
 import type {
+  CollapsedNodesState,
+  GitWorktreeMutationRequest,
+  GitWorktreesResponse,
   OrgReorderRequest,
   ProjectGroup,
   ProjectItem,
   SessionOrderMap,
   SessionSummary,
+  WorktreeDto,
   ZoneOrder,
 } from '../types';
 import {
@@ -25,6 +29,17 @@ import {
   type ReorderMenuAction,
 } from './useSidebarDragSort';
 import { EntityIcon, EntityIconPicker } from './EntityIcon';
+import {
+  CreateWorktreeModal,
+  DeleteGroupConfirmModal,
+  RemoveWorktreeConfirmModal,
+} from './SidebarWorktreeModals';
+import { WorktreeSubgroupItem } from './WorktreeSubgroupItem';
+import {
+  pickDefaultWorktreeForProject,
+  resolveSessionWorktree,
+  toClientCompareKey,
+} from './worktreeUtils';
 import styles from './SessionSidebar.module.css';
 
 export interface SessionSidebarProps {
@@ -34,6 +49,7 @@ export interface SessionSidebarProps {
   onCreateSession: (opts?: {
     projectId?: string | null;
     workspaceUri?: string;
+    worktreePath?: string;
     standalone?: boolean;
   }) => void;
   loading?: boolean;
@@ -50,6 +66,9 @@ export interface SessionSidebarProps {
   onToggleIncludeInternal?: (next: boolean) => void;
   permissionLevel?: 'L0' | 'L1' | 'L2' | string;
   channel?: string;
+  orgRevision?: number;
+  collapsedNodes?: CollapsedNodesState;
+  activeWorkspaceRoot?: string;
   groupOrder?: ZoneOrder;
   projectOrder?: Record<string, ZoneOrder>;
   sessionOrder?: SessionOrderMap;
@@ -65,6 +84,15 @@ export interface SessionSidebarProps {
   onArchiveSession?: (session: SessionSummary, archived: boolean) => Promise<void> | void;
   onRequestDeleteSession?: (session: SessionSummary) => void;
   onReorderOrg?: (req: OrgReorderRequest) => Promise<void> | void;
+  onToggleNodeCollapsed?: (
+    nodeType: 'group' | 'project' | 'worktree',
+    id: string,
+    collapsed: boolean,
+  ) => Promise<void> | void;
+  onRefreshWorktrees?: (project?: ProjectItem) => Promise<void> | void;
+  onMutateWorktree?: (req: GitWorktreeMutationRequest) => Promise<GitWorktreesResponse | void>;
+  onOpenWorktreeTerminal?: (worktreePath: string) => void;
+  onOpenWorktreeDiff?: (worktreePath: string) => void;
   onOpenNewProjectModal?: () => void;
   onDraggingChange?: (dragging: boolean) => void;
   onCreateProject?: (payload: {
@@ -739,6 +767,8 @@ const SessionSidebarRow = React.memo(function SessionSidebarRow({
 interface ProjectTreeItemProps {
   project: ProjectItem;
   sessions: SessionSummary[];
+  worktrees: WorktreeDto[];
+  worktreeSessionsMap: Map<string, SessionSummary[]>;
   totalSessionCount: number;
   runningCount?: number;
   unreadCount?: number;
@@ -758,11 +788,17 @@ interface ProjectTreeItemProps {
   isMenuOpen: boolean;
   isDragSource: boolean;
   isKeyboardReordering: boolean;
+  openActionWorktreeId: string | null;
+  activeWorktreeId: string | null;
+  isWorktreeExpanded: (wt: WorktreeDto) => boolean;
+  onToggleWorktreeExpanded: (wt: WorktreeDto) => void;
+  onToggleWorktreeMenu: (wtId: string) => void;
   onToggleMenu: (projectId: string) => void;
   onHeaderClick: (projectId: string) => void;
   onCreateSession: (opts?: {
     projectId?: string | null;
     workspaceUri?: string;
+    worktreePath?: string;
     standalone?: boolean;
   }) => void;
   onPinProject?: (project: ProjectItem, pinned: boolean) => Promise<void> | void;
@@ -777,6 +813,12 @@ interface ProjectTreeItemProps {
     },
   ) => Promise<void> | void;
   onDeleteProject?: (id: string) => Promise<void> | void;
+  onRefreshWorktrees?: (project?: ProjectItem) => Promise<void> | void;
+  onRequestCreateWorktree?: (project: ProjectItem) => void;
+  onRequestRemoveWorktree?: (project: ProjectItem, wt: WorktreeDto) => void;
+  onPruneWorktrees?: (project: ProjectItem) => void;
+  onOpenWorktreeTerminal?: (worktreePath: string) => void;
+  onOpenWorktreeDiff?: (worktreePath: string) => void;
   onReorderAction?: (
     targetType: DndTargetType,
     containerId: string,
@@ -802,6 +844,8 @@ interface ProjectTreeItemProps {
 const ProjectTreeItem = React.memo(function ProjectTreeItem({
   project,
   sessions,
+  worktrees,
+  worktreeSessionsMap,
   totalSessionCount,
   runningCount = 0,
   unreadCount = 0,
@@ -821,12 +865,23 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
   isMenuOpen,
   isDragSource,
   isKeyboardReordering,
+  openActionWorktreeId,
+  activeWorktreeId,
+  isWorktreeExpanded,
+  onToggleWorktreeExpanded,
+  onToggleWorktreeMenu,
   onToggleMenu,
   onHeaderClick,
   onCreateSession,
   onPinProject,
   onUpdateProject,
   onDeleteProject,
+  onRefreshWorktrees,
+  onRequestCreateWorktree,
+  onRequestRemoveWorktree,
+  onPruneWorktrees,
+  onOpenWorktreeTerminal,
+  onOpenWorktreeDiff,
   onReorderAction,
   onPointerDragStart,
   onHandleKeyDown,
@@ -837,17 +892,43 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
   const [showIconPicker, setShowIconPicker] = useState(false);
   const syncedFromApp = isSyncedAppProject(project);
   const isPinned = project.pinned === true;
+  const isMultiWorktree = Boolean(project.isMultiWorktree && worktrees.length > 0);
+  const defaultWorktree = isMultiWorktree ? pickDefaultWorktreeForProject(project) : null;
+  const canCreateDefaultSession =
+    !creating &&
+    !isL0 &&
+    (!isMultiWorktree ||
+      Boolean(
+        defaultWorktree &&
+          !defaultWorktree.bare &&
+          defaultWorktree.exists &&
+          !defaultWorktree.prunable &&
+          defaultWorktree.status !== 'missing',
+      ));
   const canMoveToGroup =
     (!project.implicit || syncedFromApp) && Boolean(onUpdateProject) && groups.length > 0;
+  const canMoveInMenu = Boolean(onUpdateProject) && (groups.length > 0 || Boolean(project.groupId));
   const canRename = (!project.implicit || syncedFromApp) && Boolean(onUpdateProject);
   const canEditIcon = Boolean(onUpdateProject);
   const workspaceUri = toWorkspaceUri(project.rootPath);
+  const hasPrunableWorktrees = worktrees.some((w) => w.prunable || w.status === 'missing');
 
   useEffect(() => {
     if (!isMenuOpen) {
       setShowIconPicker(false);
     }
   }, [isMenuOpen]);
+
+  const handleMoveProjectGroup = (nextGroupId: string | null) => {
+    if (!canMutateOrg || !onUpdateProject) return;
+    void onUpdateProject(project.id, {
+      groupId: nextGroupId,
+      ...(project.implicit || syncedFromApp
+        ? { workspaceUri, rootPath: project.rootPath }
+        : {}),
+    });
+    onToggleMenu(project.id);
+  };
 
   const handleSetProjectIcon = (nextIcon: string | null) => {
     if (!canMutateOrg || !onUpdateProject) return;
@@ -962,6 +1043,7 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
           <button
             type="button"
             className={styles.projectMainBtn}
+            data-testid={`toggle-project-${project.id}`}
             aria-expanded={isExpanded}
             title={project.rootPath || project.name}
             onClick={(e) => {
@@ -996,6 +1078,14 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                   title={t('sidebar.unreadBadge')}
                   aria-label={t('sidebar.unreadBadge')}
                 />
+              )}
+              {isMultiWorktree && (
+                <span
+                  className={styles.worktreeCountBadge}
+                  data-testid={`project-worktree-count-${project.id}`}
+                >
+                  {t('worktree.badgeCount', { count: worktrees.length })}
+                </span>
               )}
               {syncedFromApp && (
                 <span
@@ -1050,15 +1140,28 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
               type="button"
               className={styles.iconBtn}
               data-testid={`project-new-session-${project.id}`}
-              title={t('sidebar.newSessionInProject')}
+              title={
+                isL0
+                  ? t('sidebarOrg.l0ReadOnlyHint')
+                  : t('sidebar.newSessionInProject')
+              }
               aria-label={t('sidebar.newSessionInProject')}
-              disabled={creating}
+              disabled={!canCreateDefaultSession}
               onClick={(e) => {
                 e.stopPropagation();
-                onCreateSession({
-                  projectId: project.id,
-                  workspaceUri,
-                });
+                if (!canCreateDefaultSession) return;
+                if (defaultWorktree) {
+                  onCreateSession({
+                    projectId: project.id,
+                    workspaceUri: defaultWorktree.uri,
+                    worktreePath: defaultWorktree.path,
+                  });
+                } else {
+                  onCreateSession({
+                    projectId: project.id,
+                    workspaceUri,
+                  });
+                }
               }}
             >
               +
@@ -1151,29 +1254,37 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
           className={styles.projectMenuPopover}
           onClick={(e) => e.stopPropagation()}
           data-no-drag="1"
+          data-testid={`project-menu-${project.id}`}
         >
-          {onUpdateProject && groups.length > 0 && (
-            <label className={styles.assignField}>
+          {canMoveInMenu && (
+            <div className={styles.assignField} data-testid={`project-menu-move-${project.id}`}>
               <span className={styles.assignFieldLabel}>{t('sidebar.moveToGroup')}</span>
-              <select
-                className={styles.assignSelect}
-                disabled={!canMutateOrg}
-                value={project.groupId ?? ''}
-                onChange={(e) => {
-                  if (!canMutateOrg) return;
-                  const nextGroupId = e.target.value || null;
-                  void onUpdateProject(project.id, { groupId: nextGroupId });
-                  onToggleMenu(project.id);
-                }}
-              >
-                <option value="">{t('sidebar.ungroupedProjects')}</option>
+              <div className={styles.moveGroupMenuList}>
+                <button
+                  type="button"
+                  className={`${styles.moveGroupOptionBtn} ${!project.groupId ? styles.moveGroupOptionBtnActive : ''}`}
+                  disabled={!canMutateOrg}
+                  data-testid={`project-menu-move-${project.id}-__ungrouped__`}
+                  onClick={() => handleMoveProjectGroup(null)}
+                >
+                  <span>{t('sidebar.ungroupedProjects')}</span>
+                  {!project.groupId && <span aria-hidden="true">✓</span>}
+                </button>
                 {groups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
+                  <button
+                    key={g.id}
+                    type="button"
+                    className={`${styles.moveGroupOptionBtn} ${project.groupId === g.id ? styles.moveGroupOptionBtnActive : ''}`}
+                    disabled={!canMutateOrg}
+                    data-testid={`project-menu-move-${project.id}-${g.id}`}
+                    onClick={() => handleMoveProjectGroup(g.id)}
+                  >
+                    <span>{g.name}</span>
+                    {project.groupId === g.id && <span aria-hidden="true">✓</span>}
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
           )}
           {onReorderAction && canDragReorder && zoneTotal > 1 && (
             <div className={styles.popoverReorderRow}>
@@ -1272,6 +1383,51 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
                 {t('sidebar.renameProject')}
               </button>
             )}
+            {onRefreshWorktrees && project.rootPath && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                data-testid={`refresh-worktrees-${project.id}`}
+                onClick={() => {
+                  onToggleMenu(project.id);
+                  void onRefreshWorktrees(project);
+                }}
+              >
+                {t('worktree.refresh')}
+              </button>
+            )}
+            {onRequestCreateWorktree && project.rootPath && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                data-testid={`new-worktree-${project.id}`}
+                disabled={!canAdminWorkspace}
+                title={!canAdminWorkspace ? t('worktree.l2RequiredHint') : undefined}
+                onClick={() => {
+                  if (!canAdminWorkspace) return;
+                  onToggleMenu(project.id);
+                  onRequestCreateWorktree(project);
+                }}
+              >
+                {t('worktree.newWorktree')}
+              </button>
+            )}
+            {hasPrunableWorktrees && onPruneWorktrees && (
+              <button
+                type="button"
+                className={styles.popoverMiniBtn}
+                data-testid={`prune-worktrees-${project.id}`}
+                disabled={!canAdminWorkspace}
+                title={!canAdminWorkspace ? t('worktree.l2RequiredHint') : undefined}
+                onClick={() => {
+                  if (!canAdminWorkspace) return;
+                  onToggleMenu(project.id);
+                  onPruneWorktrees(project);
+                }}
+              >
+                {t('worktree.pruneWorktrees')}
+              </button>
+            )}
             {!project.implicit && onDeleteProject && (
               <button
                 type="button"
@@ -1300,7 +1456,39 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
         </div>
       )}
 
-      {isExpanded && (
+      {isExpanded && isMultiWorktree && (
+        <div
+          className={styles.worktreeSubgroupList}
+          data-testid={`project-worktrees-${project.id}`}
+        >
+          {worktrees.map((wt) => (
+            <WorktreeSubgroupItem
+              key={wt.worktreeId}
+              project={project}
+              worktree={wt}
+              sessions={worktreeSessionsMap.get(wt.worktreeId) ?? []}
+              isExpanded={isWorktreeExpanded(wt)}
+              isActiveWorktree={activeWorktreeId === wt.worktreeId}
+              isMenuOpen={openActionWorktreeId === wt.worktreeId}
+              creating={creating}
+              canMutateOrg={canMutateOrg}
+              canAdminWorkspace={canAdminWorkspace}
+              isL0={isL0}
+              t={t}
+              onToggleExpand={() => onToggleWorktreeExpanded(wt)}
+              onToggleMenu={onToggleWorktreeMenu}
+              onCreateSession={onCreateSession}
+              onOpenWorktreeTerminal={onOpenWorktreeTerminal}
+              onOpenWorktreeDiff={onOpenWorktreeDiff}
+              onRequestRemoveWorktree={onRequestRemoveWorktree}
+              onPruneWorktrees={onPruneWorktrees}
+              renderSessionRow={renderSessionRow}
+            />
+          ))}
+        </div>
+      )}
+
+      {isExpanded && !isMultiWorktree && (
         <div
           className={styles.projectSessions}
           data-testid={`project-sessions-${project.id}`}
@@ -1313,7 +1501,7 @@ const ProjectTreeItem = React.memo(function ProjectTreeItem({
               <button
                 type="button"
                 className={styles.emptyProjectNewBtn}
-                disabled={creating}
+                disabled={creating || isL0}
                 onClick={() =>
                   onCreateSession({
                     projectId: project.id,
@@ -1350,6 +1538,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   onToggleIncludeInternal,
   permissionLevel = 'L2',
   channel = 'loopback',
+  orgRevision,
+  collapsedNodes,
+  activeWorkspaceRoot,
   groupOrder,
   projectOrder,
   sessionOrder,
@@ -1365,6 +1556,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   onArchiveSession,
   onRequestDeleteSession,
   onReorderOrg,
+  onToggleNodeCollapsed,
+  onRefreshWorktrees,
+  onMutateWorktree,
+  onOpenWorktreeTerminal,
+  onOpenWorktreeDiff,
   onOpenNewProjectModal,
   onDraggingChange,
   onCreateProject,
@@ -1382,15 +1578,27 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   const [internalFilter, setInternalFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'unread'>('all');
   const [internalViewMode, setInternalViewMode] = useState<'active' | 'archived'>('active');
-  const [localGroupCollapsed, setLocalGroupCollapsed] = useState<Record<string, boolean>>({});
-  const [tempExpandedGroups, setTempExpandedGroups] = useState<Record<string, boolean>>({});
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  const [optimisticCollapse, setOptimisticCollapse] = useState<
+    Record<string, { collapsed: boolean; baseRevision: number }>
+  >({});
+  const [localCollapseFallback, setLocalCollapseFallback] = useState<Record<string, boolean>>({});
+  const [transientExpandedIds, setTransientExpandedIds] = useState<Set<string>>(() => new Set());
   const [quietProjectsExpanded, setQuietProjectsExpanded] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [openActionSessionId, setOpenActionSessionId] = useState<string | null>(null);
   const [openActionProjectId, setOpenActionProjectId] = useState<string | null>(null);
   const [openActionGroupId, setOpenActionGroupId] = useState<string | null>(null);
+  const [openActionWorktreeId, setOpenActionWorktreeId] = useState<string | null>(null);
+  const [deleteGroupConfirm, setDeleteGroupConfirm] = useState<{
+    group: ProjectGroup;
+    projectCount: number;
+  } | null>(null);
+  const [createWorktreeProject, setCreateWorktreeProject] = useState<ProjectItem | null>(null);
+  const [removeWorktreeTarget, setRemoveWorktreeTarget] = useState<{
+    project: ProjectItem;
+    worktree: WorktreeDto;
+  } | null>(null);
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
@@ -1784,7 +1992,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     return counts;
   }, [activeSessions]);
 
-  const { pinnedSessions, regularByProject, standaloneRegularSessions } = useMemo(() => {
+  const {
+    pinnedSessions,
+    regularByProject,
+    regularByContainer,
+    worktreeSessionsByProject,
+    standaloneRegularSessions,
+  } = useMemo(() => {
     const rawPinned: SessionSummary[] = [];
     const byProjectRaw = new Map<string, SessionSummary[]>();
     const standaloneRaw: SessionSummary[] = [];
@@ -1810,7 +2024,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     );
 
     const byProject = new Map<string, SessionSummary[]>();
+    const byContainer = new Map<string, SessionSummary[]>();
+    const wtMapByProject = new Map<string, Map<string, SessionSummary[]>>();
+
     for (const [pid, list] of byProjectRaw.entries()) {
+      const proj = projectById.get(pid);
       const containerOrder = sessionOrder?.[pid] as ZoneOrder | undefined;
       byProject.set(
         pid,
@@ -1823,6 +2041,40 @@ export const SessionSidebar = React.memo(function SessionSidebar({
           defaultNormalCompare: compareSessionsTimeDesc,
         }).normal,
       );
+
+      if (proj?.isMultiWorktree && Array.isArray(proj.worktrees) && proj.worktrees.length > 0) {
+        const fallbackWt = pickDefaultWorktreeForProject(proj) || proj.worktrees[0];
+        const rawPerWt = new Map<string, SessionSummary[]>();
+        for (const wt of proj.worktrees) {
+          rawPerWt.set(wt.worktreeId, []);
+        }
+        for (const s of list) {
+          const matchedWt = resolveSessionWorktree(s, proj.worktrees) || fallbackWt;
+          const bucket = rawPerWt.get(matchedWt.worktreeId) ?? [];
+          bucket.push(s);
+          rawPerWt.set(matchedWt.worktreeId, bucket);
+        }
+        const orderedPerWt = new Map<string, SessionSummary[]>();
+        for (const wt of proj.worktrees) {
+          const wtList = rawPerWt.get(wt.worktreeId) ?? [];
+          const wtOrder =
+            (sessionOrder?.[wt.worktreeId] as ZoneOrder | undefined) ??
+            (wt.isMain ? (sessionOrder?.[pid] as ZoneOrder | undefined) : undefined);
+          const ordered = partitionAndOrderItems({
+            items: wtList,
+            isPinned: () => false,
+            getId: (s) => s.cascadeId,
+            order: wtOrder,
+            defaultPinnedCompare: compareSessionsPinnedDefault,
+            defaultNormalCompare: compareSessionsTimeDesc,
+          }).normal;
+          orderedPerWt.set(wt.worktreeId, ordered);
+          byContainer.set(wt.worktreeId, ordered);
+        }
+        wtMapByProject.set(pid, orderedPerWt);
+      } else {
+        byContainer.set(pid, byProject.get(pid) ?? []);
+      }
     }
 
     const standalone = partitionAndOrderItems({
@@ -1837,6 +2089,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     return {
       pinnedSessions: pinned,
       regularByProject: byProject,
+      regularByContainer: byContainer,
+      worktreeSessionsByProject: wtMapByProject,
       standaloneRegularSessions: standalone,
     };
   }, [
@@ -1877,13 +2131,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       if (containerId === '__standalone__') {
         return standaloneRegularSessions.map((s) => s.cascadeId);
       }
-      return (regularByProject.get(containerId) ?? []).map((s) => s.cascadeId);
+      return (regularByContainer.get(containerId) ?? regularByProject.get(containerId) ?? []).map(
+        (s) => s.cascadeId,
+      );
     },
     [
       normalGroups,
       pinnedGroups,
       pinnedSessions,
       projectsByGroup,
+      regularByContainer,
       regularByProject,
       standaloneRegularSessions,
       ungroupedPartitioned,
@@ -1920,17 +2177,87 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     [canMutateOrg, getZoneIds, onReorderOrg],
   );
 
+  // Clear stale optimistic collapse overrides once server revision catches up
+  useEffect(() => {
+    if (orgRevision === undefined) return;
+    setOptimisticCollapse((prev) => {
+      let changed = false;
+      const next: typeof prev = {};
+      for (const [k, entry] of Object.entries(prev)) {
+        if (orgRevision > entry.baseRevision) {
+          changed = true;
+        } else {
+          next[k] = entry;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [orgRevision]);
+
+  const getPersistedCollapsed = useCallback(
+    (nodeType: 'group' | 'project' | 'worktree', id: string, serverCollapsed: boolean): boolean => {
+      const key = `${nodeType}:${id}`;
+      const opt = optimisticCollapse[key];
+      if (opt && (orgRevision === undefined || orgRevision <= opt.baseRevision)) {
+        return opt.collapsed;
+      }
+      const hasPersistHandler =
+        canMutateOrg &&
+        (Boolean(onToggleNodeCollapsed) ||
+          (nodeType === 'group' && Boolean(onToggleGroupCollapsed)));
+      if (!hasPersistHandler) {
+        return localCollapseFallback[key] ?? serverCollapsed;
+      }
+      return serverCollapsed;
+    },
+    [
+      canMutateOrg,
+      localCollapseFallback,
+      onToggleGroupCollapsed,
+      onToggleNodeCollapsed,
+      optimisticCollapse,
+      orgRevision,
+    ],
+  );
+
+  const setTransientExpanded = useCallback((keys: string[], expanded: boolean) => {
+    setTransientExpandedIds((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const key of keys) {
+        if (expanded && !next.has(key)) {
+          next.add(key);
+          changed = true;
+        } else if (!expanded && next.has(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
   const drag = useSidebarDragSort({
     disabled: !canDragReorder,
     scrollContainerRef: listContainerRef,
     getZoneIds,
     onCommitReorder: handleCommitReorder,
     onTempExpandGroup: (gid) => {
-      setTempExpandedGroups((prev) => ({ ...prev, [gid]: true }));
+      setTransientExpanded([`group:${gid}`], true);
     },
     onDraggingChange: (dragging) => {
       if (!dragging) {
-        setTempExpandedGroups({});
+        setTransientExpandedIds((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const k of next) {
+            if (k.startsWith('group:')) {
+              next.delete(k);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
       }
       onDraggingChange?.(dragging);
     },
@@ -1942,59 +2269,125 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     },
   });
 
+  // Temporarily reveal active session's project & worktree without overwriting persisted collapse state
   useEffect(() => {
     if (!activeSessionId) return;
     const active = activeSessions.find((s) => s.cascadeId === activeSessionId);
-    if (active?.projectId) {
-      setCollapsedProjects((prev) =>
-        prev[active.projectId!] ? { ...prev, [active.projectId!]: false } : prev,
-      );
+    if (!active?.projectId) return;
+    const keysToExpand = [`project:${active.projectId}`];
+    const proj = projectById.get(active.projectId);
+    if (proj?.isMultiWorktree && Array.isArray(proj.worktrees)) {
+      const matchedWt = resolveSessionWorktree(active, proj.worktrees);
+      if (matchedWt) {
+        keysToExpand.push(`worktree:${matchedWt.worktreeId}`);
+      }
     }
-  }, [activeSessionId, activeSessions]);
+    setTransientExpanded(keysToExpand, true);
+  }, [activeSessionId, activeSessions, projectById, setTransientExpanded]);
+
+  const toggleNodeCollapsed = useCallback(
+    (nodeType: 'group' | 'project' | 'worktree', id: string, currentServerCollapsed: boolean) => {
+      const key = `${nodeType}:${id}`;
+      const currentCollapsed = getPersistedCollapsed(nodeType, id, currentServerCollapsed);
+      const isTransientOpen = transientExpandedIds.has(key);
+      const effectiveCollapsed = isTransientOpen ? false : currentCollapsed;
+      const nextCollapsed = !effectiveCollapsed;
+
+      setTransientExpanded([key], false);
+
+      const hasPersistHandler =
+        canMutateOrg &&
+        (Boolean(onToggleNodeCollapsed) ||
+          (nodeType === 'group' && Boolean(onToggleGroupCollapsed)));
+
+      if (!hasPersistHandler) {
+        setLocalCollapseFallback((prev) => ({ ...prev, [key]: nextCollapsed }));
+        return;
+      }
+
+      if (orgRevision !== undefined) {
+        const baseRev = orgRevision;
+        setOptimisticCollapse((prev) => ({
+          ...prev,
+          [key]: { collapsed: nextCollapsed, baseRevision: baseRev },
+        }));
+      }
+
+      if (onToggleNodeCollapsed) {
+        void Promise.resolve(onToggleNodeCollapsed(nodeType, id, nextCollapsed)).catch(() => {
+          setOptimisticCollapse((prev) => {
+            const copy = { ...prev };
+            delete copy[key];
+            return copy;
+          });
+        });
+      } else if (nodeType === 'group' && onToggleGroupCollapsed) {
+        void Promise.resolve(onToggleGroupCollapsed(id, nextCollapsed)).catch(() => {
+          setOptimisticCollapse((prev) => {
+            const copy = { ...prev };
+            delete copy[key];
+            return copy;
+          });
+        });
+      }
+    },
+    [
+      canMutateOrg,
+      getPersistedCollapsed,
+      onToggleGroupCollapsed,
+      onToggleNodeCollapsed,
+      orgRevision,
+      setTransientExpanded,
+      transientExpandedIds,
+    ],
+  );
 
   const handleToggleGroup = (group: ProjectGroup) => {
-    setTempExpandedGroups((prev) => {
-      if (!prev[group.id]) return prev;
-      const copy = { ...prev };
-      delete copy[group.id];
-      return copy;
-    });
-    if (onToggleGroupCollapsed) {
-      void onToggleGroupCollapsed(group.id, !group.collapsed);
-    } else {
-      setLocalGroupCollapsed((prev) => ({
-        ...prev,
-        [group.id]: !(prev[group.id] ?? group.collapsed),
-      }));
-    }
+    toggleNodeCollapsed('group', group.id, Boolean(group.collapsed));
   };
 
-  const handleProjectHeaderClick = (projectId: string) => {
-    if (effectiveFilter !== 'all' && effectiveFilter !== projectId) {
-      handleFilterChange(projectId);
+  const handleProjectHeaderClick = (project: ProjectItem) => {
+    if (effectiveFilter !== 'all' && effectiveFilter !== project.id) {
+      handleFilterChange(project.id);
       return;
     }
-    setCollapsedProjects((prev) => ({
-      ...prev,
-      [projectId]: !prev[projectId],
-    }));
+    const serverCollapsed = Boolean(collapsedNodes?.projects?.[project.id] ?? project.collapsed);
+    toggleNodeCollapsed('project', project.id, serverCollapsed);
   };
+
+  const handleToggleWorktreeExpanded = useCallback(
+    (wt: WorktreeDto) => {
+      const serverCollapsed = Boolean(collapsedNodes?.worktrees?.[wt.worktreeId] ?? wt.collapsed);
+      toggleNodeCollapsed('worktree', wt.worktreeId, serverCollapsed);
+    },
+    [collapsedNodes?.worktrees, toggleNodeCollapsed],
+  );
 
   const handleToggleSessionMenu = useCallback((cascadeId: string) => {
     setOpenActionProjectId(null);
     setOpenActionGroupId(null);
+    setOpenActionWorktreeId(null);
     setOpenActionSessionId((prev) => (prev === cascadeId ? null : cascadeId));
   }, []);
 
   const handleToggleProjectMenu = useCallback((projectId: string) => {
     setOpenActionSessionId(null);
     setOpenActionGroupId(null);
+    setOpenActionWorktreeId(null);
     setOpenActionProjectId((prev) => (prev === projectId ? null : projectId));
+  }, []);
+
+  const handleToggleWorktreeMenu = useCallback((wtId: string) => {
+    setOpenActionSessionId(null);
+    setOpenActionProjectId(null);
+    setOpenActionGroupId(null);
+    setOpenActionWorktreeId((prev) => (prev === wtId ? null : wtId));
   }, []);
 
   const handleToggleGroupMenu = useCallback((groupId: string) => {
     setOpenActionSessionId(null);
     setOpenActionProjectId(null);
+    setOpenActionWorktreeId(null);
     setOpenActionGroupId((prev) => {
       const next = prev === groupId ? null : groupId;
       if (next !== groupId) {
@@ -2008,20 +2401,23 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     (cascadeId: string) => {
       const target = activeSessions.find((s) => s.cascadeId === cascadeId);
       if (target?.projectId) {
-        setCollapsedProjects((prev) =>
-          prev[target.projectId!] ? { ...prev, [target.projectId!]: false } : prev,
-        );
+        const keys: string[] = [`project:${target.projectId}`];
         const proj = projectById.get(target.projectId);
         if (proj?.groupId) {
           const grp = projectGroups.find((g) => g.id === proj.groupId);
-          if (grp?.collapsed) {
-            setTempExpandedGroups((prev) => ({ ...prev, [grp.id]: true }));
+          if (grp) {
+            keys.push(`group:${grp.id}`);
           }
         }
+        if (proj?.isMultiWorktree && Array.isArray(proj.worktrees)) {
+          const wt = resolveSessionWorktree(target, proj.worktrees);
+          if (wt) keys.push(`worktree:${wt.worktreeId}`);
+        }
+        setTransientExpanded(keys, true);
       }
       onSelectSession(cascadeId);
     },
-    [activeSessions, onSelectSession, projectById, projectGroups],
+    [activeSessions, onSelectSession, projectById, projectGroups, setTransientExpanded],
   );
 
   const renderSessionRow = (
@@ -2092,12 +2488,26 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         const q = deferredQuery.trim().toLowerCase();
         const matchesProjectMeta =
           proj.name.toLowerCase().includes(q) ||
-          (proj.rootPath || '').toLowerCase().includes(q);
+          (proj.rootPath || '').toLowerCase().includes(q) ||
+          Boolean(
+            proj.worktrees?.some(
+              (wt) =>
+                (wt.branch || '').toLowerCase().includes(q) ||
+                (wt.displayLabel || '').toLowerCase().includes(q) ||
+                (wt.displaySubpath || '').toLowerCase().includes(q) ||
+                (wt.path || '').toLowerCase().includes(q),
+            ),
+          );
         return matchesProjectMeta || (regularByProject.get(proj.id)?.length ?? 0) > 0;
       }
       return true;
     },
     [deferredQuery, effectiveFilter, isSearching, isSpecificProjectFilter, regularByProject, statusFilter],
+  );
+
+  const activeSession = useMemo(
+    () => activeSessions.find((s) => s.cascadeId === activeSessionId) ?? null,
+    [activeSessions, activeSessionId],
   );
 
   const renderProjectNode = (
@@ -2109,15 +2519,69 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   ) => {
     if (!shouldRenderProject(proj)) return null;
     const projSessions = regularByProject.get(proj.id) ?? [];
+    const projWorktrees = proj.isMultiWorktree && Array.isArray(proj.worktrees) ? proj.worktrees : [];
+    const wtMap = worktreeSessionsByProject.get(proj.id) ?? new Map<string, SessionSummary[]>();
     const activity = projectActivityById.get(proj.id);
     const totalSessionCount = Math.max(
       allSessionCountByProject.get(proj.id) ?? 0,
       typeof proj.sessionCount === 'number' ? proj.sessionCount : 0,
     );
+    const serverProjCollapsed = Boolean(collapsedNodes?.projects?.[proj.id] ?? proj.collapsed);
+    const persistedProjCollapsed = getPersistedCollapsed('project', proj.id, serverProjCollapsed);
     const isExpanded =
-      isSearching || isSpecificProjectFilter || statusFilter !== 'all'
+      isSearching ||
+      isSpecificProjectFilter ||
+      statusFilter !== 'all' ||
+      transientExpandedIds.has(`project:${proj.id}`)
         ? true
-        : !collapsedProjects[proj.id];
+        : !persistedProjCollapsed;
+
+    const isWorktreeExpandedFn = (wt: WorktreeDto): boolean => {
+      if (isSearching || isSpecificProjectFilter || statusFilter !== 'all') {
+        return true;
+      }
+      if (transientExpandedIds.has(`worktree:${wt.worktreeId}`)) {
+        return true;
+      }
+      const serverWtCollapsed = Boolean(
+        collapsedNodes?.worktrees?.[wt.worktreeId] ?? wt.collapsed,
+      );
+      return !getPersistedCollapsed('worktree', wt.worktreeId, serverWtCollapsed);
+    };
+
+    const q = deferredQuery.trim().toLowerCase();
+    const projHeaderMatched =
+      Boolean(q) &&
+      (proj.name.toLowerCase().includes(q) || (proj.rootPath || '').toLowerCase().includes(q));
+    const visibleWorktrees =
+      isSearching || statusFilter !== 'all'
+        ? projWorktrees.filter((wt) => {
+            const wtSessCount = (wtMap.get(wt.worktreeId) ?? []).length;
+            if (wtSessCount > 0) return true;
+            if (statusFilter !== 'all') return false;
+            if (projHeaderMatched) return true;
+            return (
+              (wt.branch || '').toLowerCase().includes(q) ||
+              (wt.displayLabel || '').toLowerCase().includes(q) ||
+              (wt.displaySubpath || '').toLowerCase().includes(q) ||
+              (wt.path || '').toLowerCase().includes(q)
+            );
+          })
+        : projWorktrees;
+
+    const activeWorktreeForProject = (() => {
+      if (projWorktrees.length === 0) return null;
+      if (activeSession?.projectId === proj.id) {
+        const matched = resolveSessionWorktree(activeSession, projWorktrees);
+        if (matched) return matched.worktreeId;
+      }
+      if (activeWorkspaceRoot) {
+        const rootKey = toClientCompareKey(activeWorkspaceRoot);
+        const byRoot = projWorktrees.find((wt) => toClientCompareKey(wt.path) === rootKey);
+        if (byRoot) return byRoot.worktreeId;
+      }
+      return null;
+    })();
 
     const isDragSource =
       drag.draggingItem?.targetType === 'project' && drag.draggingItem.id === proj.id;
@@ -2129,6 +2593,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         key={proj.id}
         project={proj}
         sessions={projSessions}
+        worktrees={visibleWorktrees}
+        worktreeSessionsMap={wtMap}
         totalSessionCount={totalSessionCount}
         runningCount={activity?.runningCount ?? 0}
         unreadCount={activity?.unreadCount ?? 0}
@@ -2148,12 +2614,39 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         isMenuOpen={openActionProjectId === proj.id}
         isDragSource={isDragSource}
         isKeyboardReordering={isKeyboardReordering}
+        openActionWorktreeId={openActionWorktreeId}
+        activeWorktreeId={activeWorktreeForProject}
+        isWorktreeExpanded={isWorktreeExpandedFn}
+        onToggleWorktreeExpanded={handleToggleWorktreeExpanded}
+        onToggleWorktreeMenu={handleToggleWorktreeMenu}
         onToggleMenu={handleToggleProjectMenu}
-        onHeaderClick={handleProjectHeaderClick}
+        onHeaderClick={() => handleProjectHeaderClick(proj)}
         onCreateSession={onCreateSession}
         onPinProject={onPinProject}
         onUpdateProject={onUpdateProject}
         onDeleteProject={onDeleteProject}
+        onRefreshWorktrees={onRefreshWorktrees}
+        onRequestCreateWorktree={
+          onMutateWorktree ? (targetProj) => setCreateWorktreeProject(targetProj) : undefined
+        }
+        onRequestRemoveWorktree={
+          onMutateWorktree
+            ? (targetProj, targetWt) =>
+                setRemoveWorktreeTarget({ project: targetProj, worktree: targetWt })
+            : undefined
+        }
+        onPruneWorktrees={
+          onMutateWorktree
+            ? (targetProj) => {
+                const root = targetProj.repoRootPath || targetProj.rootPath;
+                if (root) {
+                  void onMutateWorktree({ root, action: 'prune' });
+                }
+              }
+            : undefined
+        }
+        onOpenWorktreeTerminal={onOpenWorktreeTerminal}
+        onOpenWorktreeDiff={onOpenWorktreeDiff}
         onReorderAction={onReorderOrg ? handleReorderAction : undefined}
         onPointerDragStart={drag.startPointerCandidate}
         onHandleKeyDown={drag.handleHandleKeyDown}
@@ -2216,10 +2709,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     zoneIdx: number,
     zoneTotal: number,
   ) => {
-    const baseCollapsed = onToggleGroupCollapsed
-      ? group.collapsed
-      : (localGroupCollapsed[group.id] ?? group.collapsed);
-    const isTempExpanded = Boolean(tempExpandedGroups[group.id]);
+    const baseCollapsed = getPersistedCollapsed('group', group.id, Boolean(group.collapsed));
+    const isTempExpanded = transientExpandedIds.has(`group:${group.id}`);
     const isCollapsed = isTempExpanded ? false : baseCollapsed;
 
     const part = projectsByGroup.get(group.id) ?? { pinned: [], normal: [] };
@@ -2227,6 +2718,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const visibleNormal = part.normal.filter(shouldRenderProject);
     const allGroupProjects = [...part.pinned, ...part.normal];
     const visibleCount = visiblePinned.length + visibleNormal.length;
+
+    const handleRequestDeleteGroup = () => {
+      if (!canMutateOrg || !onDeleteGroup) return;
+      if (allGroupProjects.length > 0) {
+        setDeleteGroupConfirm({ group, projectCount: allGroupProjects.length });
+      } else {
+        void onDeleteGroup(group.id);
+      }
+    };
 
     if (isSpecificProjectFilter && visibleCount === 0) {
       return null;
@@ -2460,8 +2960,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     aria-label={t('sidebar.deleteGroup')}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (!canMutateOrg) return;
-                      void onDeleteGroup(group.id);
+                      handleRequestDeleteGroup();
                     }}
                   >
                     ×
@@ -2580,10 +3079,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                   type="button"
                   className={`${styles.popoverMiniBtn} ${styles.popoverDangerBtn}`}
                   disabled={!canMutateOrg}
+                  data-testid={`group-menu-delete-${group.id}`}
                   onClick={() => {
                     if (!canMutateOrg) return;
                     handleToggleGroupMenu(group.id);
-                    void onDeleteGroup(group.id);
+                    handleRequestDeleteGroup();
                   }}
                 >
                   {t('sidebar.deleteGroup')}
@@ -3300,6 +3800,58 @@ export const SessionSidebar = React.memo(function SessionSidebar({
       <div className={styles.srOnly} role="status" aria-live="polite" data-testid="dnd-aria-live">
         {drag.liveAnnouncement}
       </div>
+
+      {deleteGroupConfirm && onDeleteGroup && (
+        <DeleteGroupConfirmModal
+          group={deleteGroupConfirm.group}
+          projectCount={deleteGroupConfirm.projectCount}
+          t={t}
+          onCancel={() => setDeleteGroupConfirm(null)}
+          onConfirm={() => {
+            const gid = deleteGroupConfirm.group.id;
+            setDeleteGroupConfirm(null);
+            void onDeleteGroup(gid);
+          }}
+        />
+      )}
+
+      {createWorktreeProject && onMutateWorktree && (
+        <CreateWorktreeModal
+          project={createWorktreeProject}
+          t={t}
+          onCancel={() => setCreateWorktreeProject(null)}
+          onSubmit={async ({ root, path, branch, createBranch }) => {
+            await onMutateWorktree({
+              root,
+              action: 'add',
+              path,
+              branch: branch || undefined,
+              createBranch,
+            });
+            setCreateWorktreeProject(null);
+          }}
+        />
+      )}
+
+      {removeWorktreeTarget && onMutateWorktree && (
+        <RemoveWorktreeConfirmModal
+          project={removeWorktreeTarget.project}
+          worktree={removeWorktreeTarget.worktree}
+          t={t}
+          onCancel={() => setRemoveWorktreeTarget(null)}
+          onConfirm={async () => {
+            const root =
+              removeWorktreeTarget.project.repoRootPath ||
+              removeWorktreeTarget.project.rootPath;
+            await onMutateWorktree({
+              root,
+              action: 'remove',
+              path: removeWorktreeTarget.worktree.path,
+            });
+            setRemoveWorktreeTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 });

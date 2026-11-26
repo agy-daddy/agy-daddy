@@ -13,6 +13,8 @@ import type {
   BackgroundTasksListResponse,
   CancelRemoteJobResponse,
   CancelSessionResponse,
+  CollapseNodeRequest,
+  CollapseNodeResponse,
   ComposerStateResponse,
   CreateProjectRequest,
   CreateSessionRequest,
@@ -80,9 +82,11 @@ import type {
   SseDeltaPayload,
   SseHeartbeatPayload,
   SseHostEventPayload,
+  SseOrgUpdatedPayload,
   SseResyncPayload,
   SseStatePatchPayload,
   SseTaskUpdatedPayload,
+  SseWorktreeUpdatedPayload,
   StartRemoteJobRequest,
   StartRemoteJobResponse,
   StopBackgroundTaskResponse,
@@ -346,14 +350,35 @@ export function pinSession(cascadeId: string, pinned: boolean): Promise<PinSessi
   });
 }
 
+export interface GetSessionOrgOptions {
+  includeArchived?: boolean;
+  refreshWorktrees?: boolean;
+}
+
 export function getSessionOrg(
-  includeArchived = false,
+  optsOrIncludeArchived: boolean | GetSessionOrgOptions = false,
   signal?: AbortSignal,
 ): Promise<SessionOrgSnapshot> {
+  const opts =
+    typeof optsOrIncludeArchived === 'boolean'
+      ? { includeArchived: optsOrIncludeArchived }
+      : optsOrIncludeArchived || {};
   return apiRequest<SessionOrgSnapshot>(
-    `/api/v1/sessions/org${buildQuery({ includeArchived: includeArchived ? 1 : undefined })}`,
+    `/api/v1/sessions/org${buildQuery({
+      includeArchived: opts.includeArchived ? 1 : undefined,
+      refreshWorktrees: opts.refreshWorktrees ? 1 : undefined,
+    })}`,
     { signal },
   );
+}
+
+export function setOrgNodeCollapsed(
+  payload: CollapseNodeRequest,
+): Promise<CollapseNodeResponse> {
+  return apiRequest<CollapseNodeResponse>('/api/v1/sessions/org/collapse', {
+    method: 'POST',
+    body: payload,
+  });
 }
 
 export function toggleOrgPin(payload: ToggleOrgPinRequest): Promise<ToggleOrgPinResponse> {
@@ -958,6 +983,8 @@ export interface SessionStreamHandlers {
   onDelta?: (payload: SseDeltaPayload, lastEventId?: string) => void;
   onStatePatch?: (payload: SseStatePatchPayload, lastEventId?: string) => void;
   onHostEvent?: (payload: SseHostEventPayload, lastEventId?: string) => void;
+  onOrgUpdated?: (payload: SseOrgUpdatedPayload, lastEventId?: string) => void;
+  onWorktreeUpdated?: (payload: SseWorktreeUpdatedPayload, lastEventId?: string) => void;
   onTaskUpdated?: (payload: SseTaskUpdatedPayload, lastEventId?: string) => void;
   onProjectJob?: (payload: RemoteProvisionJob, lastEventId?: string) => void;
   onResync?: (payload: SseResyncPayload) => void;
@@ -1003,6 +1030,16 @@ export function subscribeSessionStream(
   es.addEventListener('host.event', (ev) => {
     const payload = parseSseJson<SseHostEventPayload>(ev);
     if (payload) handlers.onHostEvent?.(payload, (ev as MessageEvent).lastEventId);
+  });
+
+  es.addEventListener('org.updated', (ev) => {
+    const payload = parseSseJson<SseOrgUpdatedPayload>(ev);
+    if (payload) handlers.onOrgUpdated?.(payload, (ev as MessageEvent).lastEventId);
+  });
+
+  es.addEventListener('worktree.updated', (ev) => {
+    const payload = parseSseJson<SseWorktreeUpdatedPayload>(ev);
+    if (payload) handlers.onWorktreeUpdated?.(payload, (ev as MessageEvent).lastEventId);
   });
 
   es.addEventListener('task.updated', (ev) => {
@@ -1052,8 +1089,22 @@ export function exportSessionMarkdown(
   });
 }
 
-export function listTerminalSessions(signal?: AbortSignal): Promise<TerminalSessionsListResponse> {
-  return apiRequest<TerminalSessionsListResponse>('/api/v1/terminal/sessions', { signal });
+export interface ListTerminalSessionsOptions {
+  cwd?: string;
+}
+
+export function listTerminalSessions(
+  optsOrSignal?: ListTerminalSessionsOptions | AbortSignal,
+  signal?: AbortSignal,
+): Promise<TerminalSessionsListResponse> {
+  const resolvedSignal = isAbortSignalLike(optsOrSignal) ? optsOrSignal : signal;
+  const opts = isAbortSignalLike(optsOrSignal) ? undefined : optsOrSignal;
+  const qs = buildQuery({
+    cwd: opts?.cwd?.trim() || undefined,
+  });
+  return apiRequest<TerminalSessionsListResponse>(`/api/v1/terminal/sessions${qs}`, {
+    signal: resolvedSignal,
+  });
 }
 
 export function createTerminalSession(
@@ -1363,6 +1414,7 @@ export const apiClient = {
   createSession,
   pinSession,
   getSessionOrg,
+  setOrgNodeCollapsed,
   toggleOrgPin,
   mutateOrgGroup,
   reorderOrg,

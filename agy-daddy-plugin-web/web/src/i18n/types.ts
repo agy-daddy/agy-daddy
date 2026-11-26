@@ -946,6 +946,55 @@ export interface I18nMessages {
   'notifications.permissionDeniedHint': string;
   'notifications.permissionGrantedHint': string;
   'notifications.unsupportedHint': string;
+
+  'sidebarOrg.deleteGroupModalTitle': string;
+  'sidebarOrg.deleteGroupModalDesc': string;
+  'sidebarOrg.deleteGroupModalConfirm': string;
+
+  'worktree.badgeCount': string;
+  'worktree.mainTag': string;
+  'worktree.bareTag': string;
+  'worktree.detachedAt': string;
+  'worktree.lockedTag': string;
+  'worktree.missingTag': string;
+  'worktree.newSessionIn': string;
+  'worktree.openTerminal': string;
+  'worktree.openDiff': string;
+  'worktree.copyPath': string;
+  'worktree.copiedPath': string;
+  'worktree.refresh': string;
+  'worktree.newWorktree': string;
+  'worktree.removeWorktree': string;
+  'worktree.pruneWorktrees': string;
+  'worktree.lockedRemoveHint': string;
+  'worktree.runningRemoveHint': string;
+  'worktree.missingDisabledHint': string;
+  'worktree.bareDisabledHint': string;
+  'worktree.l2RequiredHint': string;
+  'worktree.noSessions': string;
+  'worktree.createModalTitle': string;
+  'worktree.createPathLabel': string;
+  'worktree.createPathPlaceholder': string;
+  'worktree.createBranchLabel': string;
+  'worktree.createBranchPlaceholder': string;
+  'worktree.createNewBranchCheck': string;
+  'worktree.createSubmit': string;
+  'worktree.removeModalTitle': string;
+  'worktree.removeModalDesc': string;
+  'worktree.removeModalConfirm': string;
+  'worktree.prunedToast': string;
+  'worktree.createdToast': string;
+  'worktree.removedToast': string;
+  'worktree.crossContainerForbidden': string;
+
+  'dock.sandboxMismatch': string;
+  'dock.switchBackWorktree': string;
+  'dock.worktreeMissingTitle': string;
+  'dock.worktreeMissingDesc': string;
+
+  'terminal.emptyWorktreeTitle': string;
+  'terminal.emptyWorktreeDesc': string;
+  'terminal.sandboxLabel': string;
 }
 
 export type I18nKey = keyof I18nMessages;

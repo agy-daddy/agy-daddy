@@ -345,6 +345,51 @@ describe('I18nProvider & formatSessionTitle', () => {
       'notifications.permissionDeniedHint',
       'notifications.permissionGrantedHint',
       'notifications.unsupportedHint',
+      'sidebarOrg.deleteGroupModalTitle',
+      'sidebarOrg.deleteGroupModalDesc',
+      'sidebarOrg.deleteGroupModalConfirm',
+      'worktree.badgeCount',
+      'worktree.mainTag',
+      'worktree.bareTag',
+      'worktree.detachedAt',
+      'worktree.lockedTag',
+      'worktree.missingTag',
+      'worktree.newSessionIn',
+      'worktree.openTerminal',
+      'worktree.openDiff',
+      'worktree.copyPath',
+      'worktree.copiedPath',
+      'worktree.refresh',
+      'worktree.newWorktree',
+      'worktree.removeWorktree',
+      'worktree.pruneWorktrees',
+      'worktree.lockedRemoveHint',
+      'worktree.runningRemoveHint',
+      'worktree.missingDisabledHint',
+      'worktree.bareDisabledHint',
+      'worktree.l2RequiredHint',
+      'worktree.noSessions',
+      'worktree.createModalTitle',
+      'worktree.createPathLabel',
+      'worktree.createPathPlaceholder',
+      'worktree.createBranchLabel',
+      'worktree.createBranchPlaceholder',
+      'worktree.createNewBranchCheck',
+      'worktree.createSubmit',
+      'worktree.removeModalTitle',
+      'worktree.removeModalDesc',
+      'worktree.removeModalConfirm',
+      'worktree.prunedToast',
+      'worktree.createdToast',
+      'worktree.removedToast',
+      'worktree.crossContainerForbidden',
+      'dock.sandboxMismatch',
+      'dock.switchBackWorktree',
+      'dock.worktreeMissingTitle',
+      'dock.worktreeMissingDesc',
+      'terminal.emptyWorktreeTitle',
+      'terminal.emptyWorktreeDesc',
+      'terminal.sandboxLabel',
     ];
 
     const ALL_LOCALES: Locale[] = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'fr', 'ru', 'it'];
@@ -353,7 +398,7 @@ describe('I18nProvider & formatSessionTitle', () => {
     for (const loc of ALL_LOCALES) {
       const t = createTranslator(loc);
       for (const k of REQUIRED_NEW_FEATURE_KEYS) {
-        const val = t(k, { count: 2, tier: 'L0', rate: 42, model: 'Neon', code: 0, reason: 'missing', max: 8, status: 'done' });
+        const val = t(k, { count: 2, tier: 'L0', rate: 42, model: 'Neon', code: 0, reason: 'missing', max: 8, status: 'done', name: 'Core', branch: 'feat/wt', sha: 'a1b2c3d', path: '/repo-wt' });
         expect(val, `${loc} missing ${k}`).toBeTruthy();
         expect(val, `${loc} leaked raw key ${k}`).not.toBe(k);
       }

@@ -504,6 +504,7 @@ export function App() {
   const [rightbarOpen, setRightbarOpen] = useState<boolean>(true);
   const [dockTab, setDockTab] = useState<RightDockTab>('files');
   const [dockRefreshKey, setDockRefreshKey] = useState<number>(0);
+  const [gitSummaryNonce, setGitSummaryNonce] = useState<number>(0);
   const [focusedDiffFile, setFocusedDiffFile] = useState<{ path: string; nonce: number } | null>(null);
   const [focusedFilePath, setFocusedFilePath] = useState<{ path: string; nonce: number } | null>(null);
   const [gitDiffSummary, setGitDiffSummary] = useState<{
@@ -1432,7 +1433,7 @@ export function App() {
     return () => {
       controller.abort();
     };
-  }, [activeWorkspaceRoot, activeSessionId, dockRefreshKey]);
+  }, [activeWorkspaceRoot, activeSessionId, dockRefreshKey, gitSummaryNonce]);
 
   const effectiveStatus: SessionRunStatus =
     sessionDetail?.status || activeSession?.status || 'CASCADE_RUN_STATUS_IDLE';
@@ -2626,6 +2627,7 @@ export function App() {
             models={models}
             activeModelId={selectedModelId}
             onInsertToComposer={handleInsertFromSideChat}
+            onGitMutated={() => setGitSummaryNonce((n) => n + 1)}
           />
         }
       />

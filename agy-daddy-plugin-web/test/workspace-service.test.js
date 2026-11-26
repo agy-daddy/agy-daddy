@@ -11,6 +11,7 @@ const { execFileSync } = require('node:child_process');
 const {
   createWorkspaceService,
   normalizeInputRoot,
+  resolveRealPath,
   isForbiddenSystemRoot
 } = require('../src/workspace-service');
 const {
@@ -700,5 +701,244 @@ test('C9: readArtifactRaw serves binary png/pdf/svg/webp/gif buffers and enforce
   } finally {
     cleanupDir(brainDir);
     cleanupDir(outsideDir);
+  }
+});
+
+test('C10: Git stage/unstage/all, commit, push, and worktree add/list/remove/prune with strict sandbox & flag-injection guards', async () => {
+  const allowedBase = makeTempDir('agy-git-c10-');
+  const outsideDir = makeTempDir('agy-git-outside-c10-');
+  try {
+    const repoDir = path.join(allowedBase, 'repo');
+    const bareRemoteDir = path.join(allowedBase, 'remote.git');
+    const nonGitDir = path.join(allowedBase, 'plain');
+    fs.mkdirSync(repoDir, { recursive: true });
+    fs.mkdirSync(bareRemoteDir, { recursive: true });
+    fs.mkdirSync(nonGitDir, { recursive: true });
+
+    execFileSync('git', ['init', '--bare', bareRemoteDir]);
+    execFileSync('git', ['init', '-b', 'main', repoDir]);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Test User']);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', repoDir, 'remote', 'add', 'origin', bareRemoteDir]);
+
+    fs.writeFileSync(path.join(repoDir, 'a.txt'), 'line1\n', 'utf8');
+    fs.writeFileSync(path.join(repoDir, 'b.txt'), 'init\n', 'utf8');
+
+    const svc = createWorkspaceService({ allowedRoots: [allowedBase] });
+
+    // Non-git dir rejects mutating git operations with 400 NOT_A_GIT_REPO
+    const nonGitStage = await svc.gitStage({ root: nonGitDir, paths: ['x.txt'] });
+    assert.equal(nonGitStage.ok, false);
+    assert.equal(nonGitStage.statusCode, 400);
+    assert.equal(nonGitStage.error, 'NOT_A_GIT_REPO');
+
+    // Unborn HEAD: stage single file and unstage before first commit
+    const stageA = await svc.gitStage({ root: repoDir, paths: ['a.txt'] });
+    assert.equal(stageA.ok, true);
+    assert.equal(stageA.staged, true);
+
+    let diff = await svc.getGitDiff({ root: repoDir });
+    const fileMap1 = Object.fromEntries(diff.files.map((f) => [f.path, f]));
+    assert.equal(fileMap1['a.txt'].staged, true);
+    assert.equal(fileMap1['b.txt'].staged, false);
+    assert.equal(fileMap1['b.txt'].unstaged, true);
+
+    const unstageUnborn = await svc.gitStage({ root: repoDir, paths: ['a.txt'], unstage: true });
+    assert.equal(unstageUnborn.ok, true);
+    assert.equal(unstageUnborn.staged, false);
+
+    // Stage all & initial commit
+    const stageAllRes = await svc.gitStage({ root: repoDir, all: true });
+    assert.equal(stageAllRes.ok, true);
+    assert.equal(stageAllRes.all, true);
+
+    const badMsg = await svc.gitCommit({ root: repoDir, message: '   ' });
+    assert.equal(badMsg.ok, false);
+    assert.equal(badMsg.statusCode, 400);
+    assert.equal(badMsg.error, 'INVALID_COMMIT_MESSAGE');
+
+    const commitRes = await svc.gitCommit({ root: repoDir, message: 'feat: initial commit' });
+    assert.equal(commitRes.ok, true);
+    assert.equal(commitRes.branch, 'main');
+    assert.match(commitRes.commitSha, /^[0-9a-f]{40}$/);
+
+    // Push to local bare remote
+    const badPushRemote = await svc.gitPush({ root: repoDir, remote: '--mirror' });
+    assert.equal(badPushRemote.ok, false);
+    assert.equal(badPushRemote.statusCode, 400);
+    assert.equal(badPushRemote.error, 'INVALID_GIT_REMOTE');
+
+    const badPushBranch = await svc.gitPush({ root: repoDir, branch: 'main..bad' });
+    assert.equal(badPushBranch.ok, false);
+    assert.equal(badPushBranch.statusCode, 400);
+    assert.equal(badPushBranch.error, 'INVALID_GIT_BRANCH');
+
+    const pushRes = await svc.gitPush({ root: repoDir, branch: 'main', setUpstream: true });
+    assert.equal(pushRes.ok, true);
+    assert.equal(pushRes.remote, 'origin');
+    assert.equal(pushRes.branch, 'main');
+
+    const remoteSha = execFileSync('git', ['--git-dir', bareRemoteDir, 'rev-parse', 'refs/heads/main'], {
+      encoding: 'utf8'
+    }).trim();
+    assert.equal(remoteSha, commitRes.commitSha);
+
+    // Modify after HEAD exists: verify stage + unstage against HEAD + traversal/flag guards
+    fs.writeFileSync(path.join(repoDir, 'a.txt'), 'line1\nline2\n', 'utf8');
+    await svc.gitStage({ root: repoDir, paths: ['a.txt'] });
+    diff = await svc.getGitDiff({ root: repoDir });
+    assert.equal(diff.files[0].staged, true);
+
+    await svc.gitStage({ root: repoDir, all: true, unstage: true });
+    diff = await svc.getGitDiff({ root: repoDir });
+    assert.equal(diff.files[0].staged, false);
+    assert.equal(diff.files[0].unstaged, true);
+
+    // Traversal & flag injection checks
+    const travStage = await svc.gitStage({ root: repoDir, paths: ['../../outside.txt'] });
+    assert.equal(travStage.ok, false);
+    assert.equal(travStage.statusCode, 403);
+    assert.equal(travStage.error, 'PATH_OUTSIDE_WORKSPACE');
+
+    const flagStage = await svc.gitStage({ root: repoDir, paths: ['--force'] });
+    assert.equal(flagStage.ok, false);
+    assert.equal(flagStage.statusCode, 400);
+    assert.equal(flagStage.error, 'INVALID_PATH');
+
+    const flagDiff = await svc.getGitDiff({ root: repoDir, path: '--output=/tmp/x' });
+    assert.equal(flagDiff.ok, false);
+    assert.equal(flagDiff.statusCode, 400);
+
+    // Worktrees: list, create inside allowedBase, block outside allowedBase & main worktree removal, remove & prune
+    const wtTarget = path.join(allowedBase, 'wt-feature');
+    const wtAdd = await svc.gitWorktree({
+      root: repoDir,
+      action: 'create',
+      path: '../wt-feature',
+      branch: 'feat/wt-test',
+      createBranch: true
+    });
+    assert.equal(wtAdd.ok, true);
+    assert.equal(wtAdd.worktrees.length, 2);
+    assert.equal(wtAdd.worktrees.some((w) => w.branch === 'feat/wt-test' && w.allowed === true), true);
+    assert.equal(wtAdd.worktrees.some((w) => w.branch === 'main' && w.isCurrent === true), true);
+
+    // Block creating worktree outside allowedRoots
+    const wtOutside = await svc.gitWorktree({
+      root: repoDir,
+      action: 'add',
+      path: path.join(outsideDir, 'escaped-wt'),
+      branch: 'feat/escape',
+      createBranch: true
+    });
+    assert.equal(wtOutside.ok, false);
+    assert.equal(wtOutside.statusCode, 403);
+    assert.equal(wtOutside.error, 'PATH_OUTSIDE_WORKSPACE');
+
+    // Block removing main worktree
+    const rmMain = await svc.gitWorktree({
+      root: repoDir,
+      action: 'remove',
+      path: repoDir
+    });
+    assert.equal(rmMain.ok, false);
+    assert.equal(rmMain.statusCode, 400);
+    assert.equal(rmMain.error, 'CANNOT_REMOVE_MAIN_WORKTREE');
+
+    // Remove secondary worktree & prune
+    const rmWt = await svc.gitWorktree({
+      root: repoDir,
+      action: 'remove',
+      path: wtTarget
+    });
+    assert.equal(rmWt.ok, true);
+    assert.equal(rmWt.worktrees.length, 1);
+
+    const pruned = await svc.gitWorktree({ root: repoDir, action: 'prune' });
+    assert.equal(pruned.ok, true);
+    assert.equal(pruned.action, 'prune');
+  } finally {
+    cleanupDir(allowedBase);
+    cleanupDir(outsideDir);
+  }
+});
+
+test('C11: resolveRealPath prefers fs.realpathSync.native (Windows 8.3 short-path parity) and falls back to fs.realpathSync', async () => {
+  const realContainer = makeTempDir('agy-ws-c11-longname-');
+  const aliasContainer = makeTempDir('agy-ws-c11-alias-');
+  const origRealpathSync = fs.realpathSync;
+  const origNative = fs.realpathSync.native;
+
+  try {
+    // 1. Direct unit checks: .native preferred; falls back cleanly when .native throws
+    const fakeShort = (p) => `SHORT:${p}`;
+    fakeShort.native = (p) => `LONG_NATIVE:${p}`;
+    fs.realpathSync = fakeShort;
+    assert.equal(resolveRealPath('/sample/path'), 'LONG_NATIVE:/sample/path');
+
+    const fakeFallback = (p) => `FALLBACK_JS:${p}`;
+    fakeFallback.native = () => {
+      const err = new Error('GetFinalPathNameByHandleW failed on RAM disk');
+      err.code = 'ENOSYS';
+      throw err;
+    };
+    fs.realpathSync = fakeFallback;
+    assert.equal(resolveRealPath('/sample/path'), 'FALLBACK_JS:/sample/path');
+
+    fs.realpathSync = origRealpathSync;
+    fs.realpathSync.native = origNative;
+
+    // 2. End-to-end worktree allowed check when JS realpathSync leaves short-name alias unexpanded
+    // while realpathSync.native & git worktree list --porcelain expand to canonical long path
+    if (process.platform !== 'win32') {
+      const shortAliasRoot = path.join(aliasContainer, 'RUNNER~1');
+      const actualWsBase = path.join(realContainer, 'runneradmin-workspace');
+      fs.mkdirSync(actualWsBase, { recursive: true });
+      fs.symlinkSync(actualWsBase, shortAliasRoot, 'dir');
+
+      const repoViaShort = path.join(shortAliasRoot, 'repo');
+      fs.mkdirSync(repoViaShort, { recursive: true });
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoViaShort, stdio: 'ignore' });
+      fs.writeFileSync(path.join(repoViaShort, 'init.txt'), 'ok\n', 'utf8');
+      execFileSync('git', ['add', 'init.txt'], { cwd: repoViaShort, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repoViaShort, stdio: 'ignore' });
+
+      // Simulate Windows Node JS realpathSync NOT expanding RUNNER~1 while .native DOES expand it
+      const winSimulatedRealpath = (p) => {
+        const s = String(p);
+        if (s.includes('RUNNER~1')) return path.resolve(s);
+        return origRealpathSync(p);
+      };
+      winSimulatedRealpath.native = (p) => origNative(p);
+      fs.realpathSync = winSimulatedRealpath;
+
+      const svc = createWorkspaceService({ allowedRoots: [shortAliasRoot] });
+      const wtAdd = await svc.gitWorktree({
+        root: repoViaShort,
+        action: 'create',
+        path: '../wt-83-check',
+        branch: 'feat/win-83',
+        createBranch: true
+      });
+      assert.equal(wtAdd.ok, true);
+      const createdWt = wtAdd.worktrees.find((w) => w.branch === 'feat/win-83');
+      assert.ok(createdWt);
+      assert.equal(createdWt.allowed, true);
+
+      const wtRemove = await svc.gitWorktree({
+        root: repoViaShort,
+        action: 'remove',
+        path: path.join(shortAliasRoot, 'wt-83-check')
+      });
+      assert.equal(wtRemove.ok, true);
+      assert.equal(wtRemove.worktrees.length, 1);
+    }
+  } finally {
+    fs.realpathSync = origRealpathSync;
+    fs.realpathSync.native = origNative;
+    cleanupDir(aliasContainer);
+    cleanupDir(realContainer);
   }
 });

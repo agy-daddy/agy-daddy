@@ -17,7 +17,9 @@ const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_RAW_ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
 const IGNORED_TREE_NAMES = new Set(['.git', 'node_modules']);
 const GIT_TIMEOUT_MS = 10_000;
+const GIT_PUSH_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
+const MAX_COMMIT_MESSAGE_CHARS = 8192;
 
 const MIME_BY_EXT = Object.freeze({
   '.md': 'text/markdown',
@@ -123,12 +125,29 @@ function findDeepestExistingAncestor(targetPath) {
   }
 }
 
+/**
+ * Canonicalizes an existing path on disk, preferring `fs.realpathSync.native`
+ * so Windows 8.3 short paths (e.g. `RUNNER~1`) expand to Win32 long paths
+ * matching `git.exe` output (`git worktree list --porcelain`), with fallback
+ * to `fs.realpathSync` when `.native` is unavailable or fails on virtual mounts.
+ */
+function resolveRealPath(targetPath) {
+  if (typeof fs.realpathSync.native === 'function') {
+    try {
+      return fs.realpathSync.native(targetPath);
+    } catch {
+      return fs.realpathSync(targetPath);
+    }
+  }
+  return fs.realpathSync(targetPath);
+}
+
 function resolveRealRoots(roots) {
   const resolved = [];
   for (const r of roots) {
     if (typeof r !== 'string' || !r || r.includes('\0')) continue;
     try {
-      resolved.push(fs.realpathSync(r));
+      resolved.push(resolveRealPath(r));
     } catch {
       // Ignore roots that do not exist yet
     }
@@ -162,7 +181,7 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
 
   if (lstat) {
     try {
-      const realTarget = fs.realpathSync(candidate);
+      const realTarget = resolveRealPath(candidate);
       if (!isInsideDir(realTarget, realBase)) return outsideError();
       if (allowedRealRoots && !allowedRealRoots.some((r) => isInsideDir(realTarget, r))) {
         return outsideError();
@@ -175,7 +194,7 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
           const rawLink = fs.readlinkSync(candidate);
           const resolvedLink = path.resolve(path.dirname(candidate), rawLink);
           if (!isInsideDir(resolvedLink, realBase)) return outsideError();
-          const linkAncestor = fs.realpathSync(findDeepestExistingAncestor(resolvedLink));
+          const linkAncestor = resolveRealPath(findDeepestExistingAncestor(resolvedLink));
           if (!isInsideDir(linkAncestor, realBase)) return outsideError();
         } catch {
           return outsideError();
@@ -190,11 +209,11 @@ function resolveWithinBase({ realBase, allowedRealRoots, relPath = '', mustExist
     }
   }
 
-  // Target does not exist: validate deepest existing ancestor via realpathSync.
+  // Target does not exist: validate deepest existing ancestor via resolveRealPath.
   let realAncestor;
   const ancestor = findDeepestExistingAncestor(candidate);
   try {
-    realAncestor = fs.realpathSync(ancestor);
+    realAncestor = resolveRealPath(ancestor);
   } catch {
     return outsideError();
   }
@@ -281,7 +300,7 @@ function buildTreeEntries({ dirPath, realRoot, remainingDepth, visitedRealDirs }
 
     if (ent.isSymbolicLink()) {
       try {
-        entryRealPath = fs.realpathSync(fullPath);
+        entryRealPath = resolveRealPath(fullPath);
         if (!isInsideDir(entryRealPath, realRoot)) continue;
         const st = fs.statSync(entryRealPath);
         isDir = st.isDirectory();
@@ -322,17 +341,113 @@ function buildTreeEntries({ dirPath, realRoot, remainingDepth, visitedRealDirs }
   return nodes;
 }
 
-async function runGit(cwd, args) {
+async function runGit(cwd, args, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-      timeout: GIT_TIMEOUT_MS,
+    const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], {
+      timeout: timeoutMs,
       maxBuffer: GIT_MAX_BUFFER,
-      encoding: 'utf8'
+      encoding: 'utf8',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     });
-    return { ok: true, stdout: stdout || '' };
+    return { ok: true, stdout: stdout || '', stderr: stderr || '' };
   } catch (err) {
-    return { ok: false, stdout: (err && err.stdout) || '', error: err };
+    return {
+      ok: false,
+      stdout: (err && err.stdout) || '',
+      stderr: (err && err.stderr) || '',
+      error: err
+    };
   }
+}
+
+function validateSafeGitArg(value, errorCode = 'INVALID_PATH') {
+  if (typeof value !== 'string') {
+    return { ok: false, statusCode: 400, error: errorCode };
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\0') || trimmed.startsWith('-')) {
+    return { ok: false, statusCode: 400, error: errorCode };
+  }
+  return { ok: true, value: trimmed };
+}
+
+function validateSafeRefToken(value, errorCode = 'INVALID_GIT_REF') {
+  const base = validateSafeGitArg(value, errorCode);
+  if (!base.ok) return base;
+  if (
+    /[\s~^:?*\[\\]/.test(base.value) ||
+    base.value.includes('..') ||
+    base.value.includes('@{') ||
+    base.value.endsWith('.lock') ||
+    base.value.endsWith('/')
+  ) {
+    return { ok: false, statusCode: 400, error: errorCode };
+  }
+  return base;
+}
+
+function isSameDir(dirA, dirB) {
+  return isInsideDir(dirA, dirB) && isInsideDir(dirB, dirA);
+}
+
+function parseWorktreePorcelain(stdout, realRoot, allowedRealRoots = null) {
+  const worktrees = [];
+  const blocks = String(stdout || '').split(/\r?\n\r?\n/);
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
+    if (lines.length === 0) continue;
+    const item = {
+      path: '',
+      head: '',
+      branch: '',
+      bare: false,
+      detached: false,
+      locked: false,
+      prunable: false,
+      isCurrent: false,
+      allowed: true
+    };
+    for (const line of lines) {
+      if (line.startsWith('worktree ')) {
+        item.path = line.slice('worktree '.length).trim();
+      } else if (line.startsWith('HEAD ')) {
+        item.head = line.slice('HEAD '.length).trim();
+      } else if (line.startsWith('branch ')) {
+        const ref = line.slice('branch '.length).trim();
+        item.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+      } else if (line === 'bare') {
+        item.bare = true;
+      } else if (line === 'detached') {
+        item.detached = true;
+      } else if (line === 'locked' || line.startsWith('locked ')) {
+        item.locked = true;
+      } else if (line === 'prunable' || line.startsWith('prunable ')) {
+        item.prunable = true;
+      }
+    }
+    if (item.path) {
+      let realWt = item.path;
+      try {
+        realWt = resolveRealPath(item.path);
+      } catch {
+        const resolvedCandidate = path.resolve(item.path);
+        try {
+          const anc = findDeepestExistingAncestor(resolvedCandidate);
+          const realAnc = resolveRealPath(anc);
+          realWt = path.join(realAnc, path.relative(anc, resolvedCandidate));
+        } catch {
+          realWt = resolvedCandidate;
+        }
+      }
+      item.path = realWt;
+      item.isCurrent = isSameDir(realWt, realRoot);
+      if (Array.isArray(allowedRealRoots) && allowedRealRoots.length > 0) {
+        item.allowed = allowedRealRoots.some((allowed) => isInsideDir(realWt, allowed));
+      }
+      worktrees.push(item);
+    }
+  }
+  return worktrees;
 }
 
 function mapPorcelainStatus(xy) {
@@ -375,7 +490,9 @@ function parseGitFiles(statusOut, numstatOut) {
         path: filePath,
         status: mapPorcelainStatus(xy),
         additions: stats.additions,
-        deletions: stats.deletions
+        deletions: stats.deletions,
+        staged: xy[0] !== ' ' && xy[0] !== '?',
+        unstaged: xy[1] !== ' '
       });
       seen.add(filePath);
     }
@@ -387,7 +504,9 @@ function parseGitFiles(statusOut, numstatOut) {
       path: filePath,
       status: 'modified',
       additions: stats.additions,
-      deletions: stats.deletions
+      deletions: stats.deletions,
+      staged: false,
+      unstaged: true
     });
   }
 
@@ -437,7 +556,7 @@ function createWorkspaceService({
         const ancestor = findDeepestExistingAncestor(normalizedRoot);
         let realAncestor;
         try {
-          realAncestor = fs.realpathSync(ancestor);
+          realAncestor = resolveRealPath(ancestor);
         } catch {
           return outsideError();
         }
@@ -455,17 +574,17 @@ function createWorkspaceService({
 
     let realRoot;
     try {
-      realRoot = fs.realpathSync(normalizedRoot);
+      realRoot = resolveRealPath(normalizedRoot);
     } catch (err) {
       if (rootLstat && rootLstat.isSymbolicLink() && err && err.code === 'ENOENT') {
         try {
-          const parentReal = fs.realpathSync(path.dirname(normalizedRoot));
+          const parentReal = resolveRealPath(path.dirname(normalizedRoot));
           if (!allowedRealRoots.some((allowed) => isInsideDir(parentReal, allowed))) {
             return outsideError();
           }
           const rawLink = fs.readlinkSync(normalizedRoot);
           const resolvedLink = path.resolve(parentReal, rawLink);
-          const linkAncestor = fs.realpathSync(findDeepestExistingAncestor(resolvedLink));
+          const linkAncestor = resolveRealPath(findDeepestExistingAncestor(resolvedLink));
           const realLinkTarget = path.join(
             linkAncestor,
             path.relative(findDeepestExistingAncestor(resolvedLink), resolvedLink)
@@ -507,6 +626,7 @@ function createWorkspaceService({
     return {
       ok: true,
       realRoot,
+      allowedRealRoots,
       realTarget: resolved.realTarget,
       exists: resolved.exists,
       lstat: resolved.lstat
@@ -599,7 +719,7 @@ function createWorkspaceService({
     // Re-verify parent containment after mkdirSync.
     let realParent;
     try {
-      realParent = fs.realpathSync(targetDir);
+      realParent = resolveRealPath(targetDir);
     } catch {
       return outsideError();
     }
@@ -633,6 +753,10 @@ function createWorkspaceService({
   }
 
   async function getGitDiff({ root, path: relPath } = {}) {
+    if (relPath !== undefined && relPath !== null && relPath !== '') {
+      const argCheck = validateSafeGitArg(relPath, 'INVALID_PATH');
+      if (!argCheck.ok) return argCheck;
+    }
     const resolved = resolveRootAndTarget({
       root,
       relPath: relPath == null ? '' : relPath,
@@ -691,6 +815,341 @@ function createWorkspaceService({
     };
   }
 
+  async function ensureGitRepoRoot(root) {
+    const resolved = resolveRootAndTarget({ root, relPath: '', mustExist: true });
+    if (!resolved.ok) return resolved;
+    const checkRepo = await runGit(resolved.realRoot, ['rev-parse', '--is-inside-work-tree']);
+    if (!checkRepo.ok || checkRepo.stdout.trim() !== 'true') {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: 'NOT_A_GIT_REPO',
+        realRoot: resolved.realRoot,
+        allowedRealRoots: resolved.allowedRealRoots
+      };
+    }
+    return {
+      ok: true,
+      realRoot: resolved.realRoot,
+      allowedRealRoots: resolved.allowedRealRoots
+    };
+  }
+
+  async function listWorktrees({ root } = {}) {
+    const resolved = resolveRootAndTarget({ root, relPath: '', mustExist: true });
+    if (!resolved.ok) return resolved;
+
+    const checkRepo = await runGit(resolved.realRoot, ['rev-parse', '--is-inside-work-tree']);
+    if (!checkRepo.ok || checkRepo.stdout.trim() !== 'true') {
+      return { ok: true, isGitRepo: false, worktrees: [] };
+    }
+
+    const wtRes = await runGit(resolved.realRoot, ['worktree', 'list', '--porcelain']);
+    if (!wtRes.ok) {
+      return {
+        ok: false,
+        statusCode: 500,
+        error: (wtRes.stderr || wtRes.stdout || 'GIT_WORKTREE_LIST_FAILED').trim()
+      };
+    }
+
+    return {
+      ok: true,
+      isGitRepo: true,
+      worktrees: parseWorktreePorcelain(wtRes.stdout, resolved.realRoot, resolved.allowedRealRoots)
+    };
+  }
+
+  async function gitStage({ root, paths, unstage = false, all = false } = {}) {
+    const repoCheck = await ensureGitRepoRoot(root);
+    if (!repoCheck.ok) return repoCheck;
+
+    const { realRoot, allowedRealRoots } = repoCheck;
+    let safeRelPaths = [];
+    let gitRes;
+
+    if (all === true) {
+      if (unstage) {
+        const hasHead = await runGit(realRoot, ['rev-parse', '--verify', 'HEAD']);
+        if (hasHead.ok) {
+          gitRes = await runGit(realRoot, ['reset', '-q', 'HEAD']);
+        } else {
+          gitRes = await runGit(realRoot, ['rm', '--cached', '-r', '-q', '--ignore-unmatch', '.']);
+        }
+      } else {
+        gitRes = await runGit(realRoot, ['add', '-A']);
+      }
+    } else {
+      if (!Array.isArray(paths) || paths.length === 0) {
+        return { ok: false, statusCode: 400, error: 'MISSING_STAGE_PATHS' };
+      }
+
+      for (const p of paths) {
+        const argCheck = validateSafeGitArg(p, 'INVALID_PATH');
+        if (!argCheck.ok) return argCheck;
+
+        const resolved = resolveWithinBase({
+          realBase: realRoot,
+          allowedRealRoots,
+          relPath: argCheck.value,
+          mustExist: false
+        });
+        if (!resolved.ok) return resolved;
+
+        const rel = toPosixRel(realRoot, resolved.realTarget);
+        safeRelPaths.push(rel || '.');
+      }
+
+      if (unstage) {
+        const hasHead = await runGit(realRoot, ['rev-parse', '--verify', 'HEAD']);
+        if (hasHead.ok) {
+          gitRes = await runGit(realRoot, ['reset', '-q', 'HEAD', '--', ...safeRelPaths]);
+        } else {
+          gitRes = await runGit(realRoot, ['rm', '--cached', '-r', '-q', '--ignore-unmatch', '--', ...safeRelPaths]);
+        }
+      } else {
+        gitRes = await runGit(realRoot, ['add', '--', ...safeRelPaths]);
+      }
+    }
+
+    if (!gitRes.ok) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: (gitRes.stderr || gitRes.stdout || 'GIT_STAGE_FAILED').trim()
+      };
+    }
+
+    return {
+      ok: true,
+      staged: !unstage,
+      ...(all === true ? { all: true } : {}),
+      paths: safeRelPaths
+    };
+  }
+
+  async function gitCommit({ root, message } = {}) {
+    const repoCheck = await ensureGitRepoRoot(root);
+    if (!repoCheck.ok) return repoCheck;
+
+    if (typeof message !== 'string' || message.includes('\0')) {
+      return { ok: false, statusCode: 400, error: 'INVALID_COMMIT_MESSAGE' };
+    }
+    const cleanMsg = message.trim();
+    if (!cleanMsg || cleanMsg.length > MAX_COMMIT_MESSAGE_CHARS) {
+      return { ok: false, statusCode: 400, error: 'INVALID_COMMIT_MESSAGE' };
+    }
+
+    const commitRes = await runGit(repoCheck.realRoot, ['commit', '-m', cleanMsg]);
+    if (!commitRes.ok) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: (commitRes.stderr || commitRes.stdout || 'GIT_COMMIT_FAILED').trim()
+      };
+    }
+
+    const [shaRes, branchRes] = await Promise.all([
+      runGit(repoCheck.realRoot, ['rev-parse', 'HEAD']),
+      runGit(repoCheck.realRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    ]);
+
+    return {
+      ok: true,
+      commitSha: shaRes.ok ? shaRes.stdout.trim() : '',
+      branch: branchRes.ok ? branchRes.stdout.trim() : '',
+      message: cleanMsg,
+      stdout: commitRes.stdout.trim()
+    };
+  }
+
+  async function gitPush({ root, remote, branch, setUpstream = false } = {}) {
+    const repoCheck = await ensureGitRepoRoot(root);
+    if (!repoCheck.ok) return repoCheck;
+
+    const args = ['push'];
+    let cleanRemote = '';
+    let cleanBranch = '';
+
+    if (remote !== undefined && remote !== null && remote !== '') {
+      const remoteCheck = validateSafeRefToken(remote, 'INVALID_GIT_REMOTE');
+      if (!remoteCheck.ok) return remoteCheck;
+      cleanRemote = remoteCheck.value;
+    }
+    if (branch !== undefined && branch !== null && branch !== '') {
+      const branchCheck = validateSafeRefToken(branch, 'INVALID_GIT_BRANCH');
+      if (!branchCheck.ok) return branchCheck;
+      cleanBranch = branchCheck.value;
+    }
+
+    if (setUpstream) {
+      args.push('-u');
+      if (!cleanRemote) cleanRemote = 'origin';
+      if (!cleanBranch) {
+        const branchRes = await runGit(repoCheck.realRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
+        const headBranch = branchRes.ok ? branchRes.stdout.trim() : '';
+        if (headBranch && headBranch !== 'HEAD') {
+          cleanBranch = headBranch;
+        }
+      }
+    }
+
+    if (cleanRemote) {
+      args.push(cleanRemote);
+    } else if (cleanBranch) {
+      cleanRemote = 'origin';
+      args.push(cleanRemote);
+    }
+    if (cleanBranch) {
+      args.push(cleanBranch);
+    }
+
+    const pushRes = await runGit(repoCheck.realRoot, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS });
+    if (!pushRes.ok) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: (pushRes.stderr || pushRes.stdout || 'GIT_PUSH_FAILED').trim()
+      };
+    }
+
+    return {
+      ok: true,
+      remote: cleanRemote,
+      branch: cleanBranch,
+      stdout: pushRes.stdout.trim(),
+      stderr: pushRes.stderr.trim()
+    };
+  }
+
+  function resolveWorktreePath(repoCheck, rawPath) {
+    const argCheck = validateSafeGitArg(rawPath, 'INVALID_WORKTREE_PATH');
+    if (!argCheck.ok) return argCheck;
+
+    const expanded = expandTilde(argCheck.value);
+    if (!expanded || expanded.includes('\0')) {
+      return { ok: false, statusCode: 400, error: 'INVALID_WORKTREE_PATH' };
+    }
+
+    const candidate = path.resolve(repoCheck.realRoot, expanded);
+    if (isForbiddenSystemRoot(candidate)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+
+    const ancestor = findDeepestExistingAncestor(candidate);
+    let realAncestor;
+    try {
+      realAncestor = resolveRealPath(ancestor);
+    } catch {
+      return outsideError();
+    }
+    if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realAncestor, allowed))) {
+      return outsideError();
+    }
+
+    const target = path.join(realAncestor, path.relative(ancestor, candidate));
+    if (isForbiddenSystemRoot(target)) {
+      return { ok: false, statusCode: 403, error: 'FORBIDDEN_SYSTEM_ROOT' };
+    }
+    if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(target, allowed))) {
+      return outsideError();
+    }
+    try {
+      if (fs.existsSync(target)) {
+        const realExisting = resolveRealPath(target);
+        if (!repoCheck.allowedRealRoots.some((allowed) => isInsideDir(realExisting, allowed))) {
+          return outsideError();
+        }
+        return { ok: true, targetPath: realExisting };
+      }
+    } catch {
+      return outsideError();
+    }
+    return { ok: true, targetPath: target };
+  }
+
+  async function gitWorktree({ root, action, path: wtPath, branch, createBranch = false } = {}) {
+    const rawAct = typeof action === 'string' ? action.trim().toLowerCase() : '';
+    const act = rawAct === 'create' ? 'add' : rawAct;
+
+    if (act === 'list') {
+      return listWorktrees({ root });
+    }
+
+    const repoCheck = await ensureGitRepoRoot(root);
+    if (!repoCheck.ok) return repoCheck;
+
+    if (act === 'prune') {
+      const pruneRes = await runGit(repoCheck.realRoot, ['worktree', 'prune']);
+      if (!pruneRes.ok) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: (pruneRes.stderr || pruneRes.stdout || 'GIT_WORKTREE_PRUNE_FAILED').trim()
+        };
+      }
+      const listed = await listWorktrees({ root: repoCheck.realRoot });
+      return listed.ok ? { ...listed, action: 'prune' } : listed;
+    }
+
+    if (act !== 'add' && act !== 'remove') {
+      return { ok: false, statusCode: 400, error: 'INVALID_WORKTREE_ACTION' };
+    }
+
+    const targetCheck = resolveWorktreePath(repoCheck, wtPath);
+    if (!targetCheck.ok) return targetCheck;
+
+    let cleanBranch = '';
+    if (branch !== undefined && branch !== null && branch !== '') {
+      const brCheck = validateSafeRefToken(branch, 'INVALID_GIT_BRANCH');
+      if (!brCheck.ok) return brCheck;
+      cleanBranch = brCheck.value;
+    }
+
+    let gitArgs;
+    if (act === 'add') {
+      gitArgs = ['worktree', 'add'];
+      if (createBranch) {
+        if (!cleanBranch) {
+          return { ok: false, statusCode: 400, error: 'MISSING_BRANCH_NAME' };
+        }
+        gitArgs.push('-b', cleanBranch);
+      }
+      gitArgs.push(targetCheck.targetPath);
+      if (!createBranch && cleanBranch) {
+        gitArgs.push(cleanBranch);
+      }
+    } else {
+      if (isSameDir(targetCheck.targetPath, repoCheck.realRoot)) {
+        return { ok: false, statusCode: 400, error: 'CANNOT_REMOVE_MAIN_WORKTREE' };
+      }
+      gitArgs = ['worktree', 'remove', targetCheck.targetPath];
+    }
+
+    const wtRes = await runGit(repoCheck.realRoot, gitArgs);
+    if (!wtRes.ok) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: (wtRes.stderr || wtRes.stdout || 'GIT_WORKTREE_FAILED').trim()
+      };
+    }
+
+    let resolvedTargetPath = targetCheck.targetPath;
+    try {
+      if (fs.existsSync(targetCheck.targetPath)) {
+        resolvedTargetPath = resolveRealPath(targetCheck.targetPath);
+      }
+    } catch {
+      // Keep lexical target path if removed
+    }
+
+    const listed = await listWorktrees({ root: repoCheck.realRoot });
+    return listed.ok
+      ? { ...listed, action: act, targetPath: resolvedTargetPath }
+      : listed;
+  }
+
   function validateSessionDir(sessionId) {
     if (
       typeof sessionId !== 'string' ||
@@ -708,7 +1167,7 @@ function createWorkspaceService({
 
     let realBrainDir;
     try {
-      realBrainDir = fs.realpathSync(brainDir);
+      realBrainDir = resolveRealPath(brainDir);
     } catch (err) {
       if (err && err.code === 'ENOENT') {
         return { ok: true, missingBrain: true, realSessionDir: null };
@@ -752,7 +1211,7 @@ function createWorkspaceService({
       let realItem;
       let stat;
       try {
-        realItem = fs.realpathSync(fullPath);
+        realItem = resolveRealPath(fullPath);
         if (!isInsideDir(realItem, session.realSessionDir)) continue;
         stat = fs.statSync(realItem);
       } catch {
@@ -871,6 +1330,11 @@ function createWorkspaceService({
     readFile,
     writeFile,
     getGitDiff,
+    listWorktrees,
+    gitStage,
+    gitCommit,
+    gitPush,
+    gitWorktree,
     listArtifacts,
     readArtifact,
     readArtifactRaw
@@ -880,5 +1344,6 @@ function createWorkspaceService({
 module.exports = {
   createWorkspaceService,
   normalizeInputRoot,
+  resolveRealPath,
   isForbiddenSystemRoot
 };

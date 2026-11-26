@@ -1615,6 +1615,65 @@ class WebServer {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/v1/git/worktrees') {
+        const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
+        const root = urlObj.searchParams.get('root') || '';
+        const result = await ws.listWorktrees({ root });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/git/stage') {
+        const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await ws.gitStage({
+          root: body.root,
+          paths: body.paths,
+          unstage: Boolean(body.unstage),
+          all: Boolean(body.all)
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/git/commit') {
+        const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await ws.gitCommit({
+          root: body.root,
+          message: body.message
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/git/push') {
+        const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await ws.gitPush({
+          root: body.root,
+          remote: body.remote,
+          branch: body.branch,
+          setUpstream: Boolean(body.setUpstream)
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/git/worktree') {
+        const ws = this._requireDep(this.workspaceService, 'WORKSPACE_SERVICE');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await ws.gitWorktree({
+          root: body.root,
+          action: body.action,
+          path: body.path,
+          branch: body.branch,
+          createBranch: Boolean(body.createBranch)
+        });
+        sendActionResult(res, result);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/v1/artifacts/previewers') {
         const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
         const result = await proxy.getArtifactPreviewers();

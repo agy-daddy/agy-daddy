@@ -33,6 +33,7 @@ export interface RightDockProps {
   models?: ModelItem[];
   activeModelId?: string | null;
   onInsertToComposer?: (text: string) => void;
+  onGitMutated?: () => void;
 }
 
 interface RootOption {
@@ -146,6 +147,7 @@ export function RightDock({
   models = [],
   activeModelId = null,
   onInsertToComposer,
+  onGitMutated,
 }: RightDockProps) {
   const { t } = useI18n();
   const [uncontrolledTab, setUncontrolledTab] = useState<RightDockTab>(defaultTab);
@@ -266,9 +268,11 @@ export function RightDock({
     : uncontrolledRoot;
 
   const [manualRefreshCount, setManualRefreshCount] = useState(0);
+  const [filesBumpCount, setFilesBumpCount] = useState(0);
   const [diffBumpCount, setDiffBumpCount] = useState(0);
 
   const combinedRefreshKey = `${refreshKey ?? ''}:${manualRefreshCount}`;
+  const filesRefreshKey = `${combinedRefreshKey}:${filesBumpCount}`;
   const diffRefreshKey = `${combinedRefreshKey}:${diffBumpCount}`;
 
   const handleSelectTab = (tab: RightDockTab) => {
@@ -467,7 +471,7 @@ export function RightDock({
         {currentTab === 'files' && (
           <FileTreePanel
             root={currentRoot}
-            refreshKey={combinedRefreshKey}
+            refreshKey={filesRefreshKey}
             onFileSaved={() => setDiffBumpCount((n) => n + 1)}
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedFilePath}
@@ -481,6 +485,14 @@ export function RightDock({
             onAuthorizeRoot={resolvedOnAuthorizeRoot}
             focusedFile={focusedDiffFile}
             onSelectionChange={handleDiffSelectionChange}
+            channel={channel}
+            permissionLevel={permissionLevel}
+            onInsertToComposer={onInsertToComposer}
+            onSelectWorkspaceRoot={handleSelectRoot}
+            onGitMutated={() => {
+              setFilesBumpCount((n) => n + 1);
+              onGitMutated?.();
+            }}
           />
         )}
         {currentTab === 'artifacts' && (

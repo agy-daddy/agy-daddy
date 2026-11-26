@@ -1502,7 +1502,6 @@ class WebServer {
             err.code = 'SESSION_DETAIL_TIMEOUT';
             reject(err);
           }, this.sessionDetailTimeoutMs);
-          timer.unref?.();
           Promise.resolve(adapter.getSessionDetail(id)).then(
             (val) => {
               if (settled) return;

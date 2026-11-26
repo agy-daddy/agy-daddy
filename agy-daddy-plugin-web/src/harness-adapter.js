@@ -53,7 +53,6 @@ function withTimeout(promise, timeoutMs, buildError) {
       settled = true;
       reject(typeof buildError === 'function' ? buildError() : createAdapterError('Operation timed out', 504, 'ETIMEDOUT'));
     }, limit);
-    timer.unref?.();
     Promise.resolve(promise).then(
       (val) => {
         if (settled) return;

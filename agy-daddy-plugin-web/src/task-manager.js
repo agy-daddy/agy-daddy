@@ -44,8 +44,7 @@ function normalizeProjectFilterInput(rawProject) {
 
 function delay(ms) {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
+    setTimeout(resolve, ms);
   });
 }
 
@@ -63,7 +62,6 @@ function withTimeout(promise, timeoutMs, message = 'Step scan timed out') {
       err.code = 'ETIMEDOUT';
       reject(err);
     }, limit);
-    timer.unref?.();
     Promise.resolve(promise).then(
       (val) => {
         if (settled) return;

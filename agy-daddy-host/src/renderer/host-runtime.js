@@ -589,6 +589,8 @@
       actionBusyId: null,
       manageError: '',
       manageToast: null,
+      hostRestartNotice: null,
+      proxyFallback: null,
       managePlugins: [],
       manageCatalog: [],
       marketStats: new Map(),          // pluginId -> { eligible, githubRepo, npmPackage, githubStars, downloads, githubDownloads, npmDownloads, fetchedAt }
@@ -3967,6 +3969,12 @@
       if (isPlainObject(data?.marketStats)) {
         ingestMarketStatsMap(data.marketStats);
       }
+      if (data && Object.prototype.hasOwnProperty.call(data, 'hostRestartNotice')) {
+        state.hostRestartNotice = isPlainObject(data.hostRestartNotice) ? { ...data.hostRestartNotice } : null;
+      }
+      if (data && Object.prototype.hasOwnProperty.call(data, 'proxyFallback')) {
+        state.proxyFallback = isPlainObject(data.proxyFallback) ? { ...data.proxyFallback } : null;
+      }
       if (Array.isArray(data?.plugins)) {
         state.managePlugins = data.plugins;
         for (const p of data.plugins) {
@@ -5667,6 +5675,120 @@
       body.appendChild(toast);
     }
 
+    function renderHostRestartBanner(body, hasBridge) {
+      const notice = state.hostRestartNotice;
+      if (!notice || !notice.required) return;
+
+      const box = doc.createElement('div');
+      box.id = 'agy-host-restart-banner';
+      box.className = 'ag-host-restart-box';
+      box.setAttribute('role', 'alert');
+      box.setAttribute('data-reason', notice.reason || 'launch_args');
+
+      const info = doc.createElement('div');
+      info.className = 'ag-host-restart-info';
+
+      const title = doc.createElement('div');
+      title.className = 'ag-host-restart-title';
+      title.textContent = '需要重启 Antigravity 生效';
+      info.appendChild(title);
+
+      const desc = doc.createElement('div');
+      desc.className = 'ag-host-restart-desc';
+      desc.textContent = notice.message || '涉及宿主启动参数的插件变更需要重启 Antigravity 才能生效，不重启将无法使用。';
+      info.appendChild(desc);
+
+      box.appendChild(info);
+
+      const actions = doc.createElement('div');
+      actions.className = 'ag-host-restart-actions';
+      const restartBtn = doc.createElement('button');
+      restartBtn.type = 'button';
+      restartBtn.id = 'agy-host-restart-btn';
+      restartBtn.className = 'ag-btn ag-btn-danger';
+      restartBtn.disabled = Boolean(state.manageBusyId) || !hasBridge;
+      const isBusy = state.manageBusyId === '__host_restart__';
+      if (isBusy) {
+        const sp = doc.createElement('span');
+        sp.className = 'ag-spinner';
+        restartBtn.appendChild(sp);
+      } else {
+        restartBtn.appendChild(createIconEl('refresh'));
+      }
+      const lbl = doc.createElement('span');
+      lbl.textContent = isBusy ? '重启中...' : '立即重启 Antigravity';
+      restartBtn.appendChild(lbl);
+      restartBtn.addEventListener('click', () => {
+        void runManageAction('__host_restart__', '正在重启 Antigravity 以使插件变更生效...', async () => {
+          const res = await hostBridgePost('/host/antigravity/relaunch', {});
+          if (state.disposed) return;
+          applyManagePayload(res);
+          if (res?.dryRun) {
+            state.hostRestartNotice = null;
+            state.manageToast = { tone: 'info', spinning: false, text: '测试模式已跳过 Antigravity 重启' };
+          } else if (res?.ok === false) {
+            state.manageToast = {
+              tone: 'warn',
+              spinning: false,
+              text: res?.message || res?.error || '自动重启未完成，请手动按 ⌘Q 退出并重开 Antigravity'
+            };
+          } else {
+            state.hostRestartNotice = null;
+            state.manageToast = { tone: 'info', spinning: false, text: '已触发重启 Antigravity，正在重新连接...' };
+          }
+        });
+      });
+      actions.appendChild(restartBtn);
+      box.appendChild(actions);
+      body.appendChild(box);
+    }
+
+    function togglePluginFromUi(pluginId, want) {
+      state.manageConfirmUninstallId = null;
+      state.managePendingNativeUninstall = null;
+      void runManageAction(pluginId, `正在${want ? '启用' : '停用'} ${pluginId}...`, async () => {
+        const res = await hostBridgePost('/host/plugins/toggle', { pluginId, enabled: want });
+        applyManagePayload(res);
+        if (want && (res?.activationError || res?.reload?.active === false)) {
+          state.manageToast = {
+            tone: 'warn',
+            spinning: false,
+            text: `已启用 ${pluginId}，但尚未激活：${res?.activationError || res?.reload?.error || '请查看下方诊断'}`
+          };
+        } else if (!want && res?.proxyFallback?.active) {
+          state.manageToast = {
+            tone: 'info',
+            spinning: false,
+            text: `已停用 ${pluginId}：本次已强制切换为 127.0.0.1:${res.proxyFallback.port} 直连直到重启，下次启动不再携带 --proxy-server= 参数`
+          };
+        } else if (res?.hostRestartRequired || res?.hostRestartNotice?.required) {
+          state.manageToast = {
+            tone: 'warn',
+            spinning: false,
+            text: res?.hostRestartNotice?.message || `已${want ? '启用' : '停用'} ${pluginId}，需要重启 Antigravity 生效，不重启将无法使用`
+          };
+        } else {
+          state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${pluginId}` };
+        }
+      });
+    }
+
+    function applyUninstallSuccessToast(pluginId, res) {
+      if (res?.hostRestartRequired || res?.hostRestartNotice?.required) {
+        state.manageToast = {
+          tone: 'warn',
+          spinning: false,
+          text: res?.hostRestartNotice?.message || `已卸载 ${pluginId}，需要重启 Antigravity 生效，不重启将无法使用`
+        };
+      } else {
+        state.manageToast = {
+          tone: 'info',
+          spinning: false,
+          text: `已卸载 ${pluginId}${res?.nativeCleanup?.removed ? '（已同步清理原生扩展）' : ''}`
+        };
+      }
+    }
+
     function filterPluginByQuery(plugin, queryLower) {
       if (!queryLower) return { matched: true, matchedFields: [] };
       const hay = `${plugin.id} ${plugin.displayName || ''} ${plugin.description || ''}`.toLowerCase();
@@ -6012,7 +6134,15 @@
           state.managePendingPerm = null;
           state.manageInstallSpec = '';
           applyManagePayload(res);
-          state.manageToast = { tone: 'info', spinning: false, text: `已安装并热加载 ${res.plugin?.id || spec}` };
+          if (res?.hostRestartRequired || res?.hostRestartNotice?.required) {
+            state.manageToast = {
+              tone: 'warn',
+              spinning: false,
+              text: res?.hostRestartNotice?.message || `已安装 ${res.plugin?.id || spec}，需要重启 Antigravity 生效，不重启将无法使用`
+            };
+          } else {
+            state.manageToast = { tone: 'info', spinning: false, text: `已安装并热加载 ${res.plugin?.id || spec}` };
+          }
         });
       };
     }
@@ -6266,6 +6396,14 @@
           offChip.className = 'ag-chip';
           offChip.textContent = '已停用';
           info.appendChild(offChip);
+          if (state.proxyFallback?.active && state.proxyFallback?.pluginId === p.id) {
+            const fbChip = doc.createElement('span');
+            fbChip.className = 'ag-chip';
+            fbChip.setAttribute('data-tone', 'warn');
+            fbChip.setAttribute('data-proxy-fallback', 'true');
+            fbChip.textContent = `${state.proxyFallback.port || 18766} 直连兜底中`;
+            info.appendChild(fbChip);
+          }
         } else if (issue) {
           const warnChip = doc.createElement('span');
           warnChip.className = 'ag-chip';
@@ -6390,22 +6528,7 @@
         toggleInput.setAttribute('data-plugin-toggle', p.id);
         toggleInput.setAttribute('aria-label', `启停 ${p.displayName || p.id}`);
         toggleInput.addEventListener('change', () => {
-          const want = Boolean(toggleInput.checked);
-          state.manageConfirmUninstallId = null;
-          state.managePendingNativeUninstall = null;
-          void runManageAction(p.id, `正在${want ? '启用' : '停用'} ${p.id}...`, async () => {
-            const res = await hostBridgePost('/host/plugins/toggle', { pluginId: p.id, enabled: want });
-            applyManagePayload(res);
-            if (want && (res?.activationError || res?.reload?.active === false)) {
-              state.manageToast = {
-                tone: 'warn',
-                spinning: false,
-                text: `已启用 ${p.id}，但尚未激活：${res?.activationError || res?.reload?.error || '请进入详情诊断'}`
-              };
-            } else {
-              state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
-            }
-          });
+          togglePluginFromUi(p.id, Boolean(toggleInput.checked));
         });
         toggleWrap.appendChild(toggleInput);
         actions.appendChild(toggleWrap);
@@ -6640,11 +6763,7 @@
               }
               applyManagePayload(res);
               state.selectedPluginId = null;
-              state.manageToast = {
-                tone: 'info',
-                spinning: false,
-                text: `已卸载 ${p.id}${res.nativeCleanup?.removed ? '（已同步清理原生扩展）' : ''}`
-              };
+              applyUninstallSuccessToast(p.id, res);
             });
           });
           rightCtrl.appendChild(unBtn);
@@ -6720,11 +6839,7 @@
             });
             applyManagePayload(res);
             state.selectedPluginId = null;
-            state.manageToast = {
-              tone: 'info',
-              spinning: false,
-              text: `已卸载 ${p.id}${res.nativeCleanup?.removed ? '（已删除原生扩展）' : ''}`
-            };
+            applyUninstallSuccessToast(p.id, res);
           });
         });
 
@@ -6762,7 +6877,9 @@
       if (issue?.isMissingPath) {
         enableDesc.textContent = '插件目录或软链目标已丢失，修复路径后即可自动激活';
       } else if (p.enabled === false) {
-        enableDesc.textContent = '当前已停用，开启后立即热加载';
+        enableDesc.textContent = state.proxyFallback?.active && state.proxyFallback?.pluginId === p.id
+          ? `当前已停用；本次会话已强制切换为 127.0.0.1:${state.proxyFallback.port} 直连兜底直到重启，下次启动不带 --proxy-server= 参数`
+          : '当前已停用，开启后立即热加载';
       } else if (issue) {
         enableDesc.textContent = issue.circuitOpen
           ? '已触发熔断保护，请查看下方诊断并点击「解除熔断并激活」'
@@ -6812,21 +6929,7 @@
       toggleInput.setAttribute('data-plugin-toggle', p.id);
       toggleInput.setAttribute('aria-label', `启停 ${p.displayName || p.id}`);
       toggleInput.addEventListener('change', () => {
-        const want = Boolean(toggleInput.checked);
-        state.manageConfirmUninstallId = null;
-        void runManageAction(p.id, `正在${want ? '启用' : '停用'} ${p.id}...`, async () => {
-          const res = await hostBridgePost('/host/plugins/toggle', { pluginId: p.id, enabled: want });
-          applyManagePayload(res);
-          if (want && (res?.activationError || res?.reload?.active === false)) {
-            state.manageToast = {
-              tone: 'warn',
-              spinning: false,
-              text: `已启用 ${p.id}，但尚未激活：${res?.activationError || res?.reload?.error || '请查看下方诊断'}`
-            };
-          } else {
-            state.manageToast = { tone: 'info', spinning: false, text: `已${want ? '启用' : '停用'} ${p.id}` };
-          }
-        });
+        togglePluginFromUi(p.id, Boolean(toggleInput.checked));
       });
       toggleWrap.appendChild(toggleInput);
       enableActions.appendChild(toggleWrap);
@@ -11839,6 +11942,7 @@
       clearElement(body);
 
       renderToastBanner(body);
+      renderHostRestartBanner(body, hasBridgeAvailable());
 
       if (state.activeSettingsTab === 'appearance') {
         renderAppearanceTab(body);

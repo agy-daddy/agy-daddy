@@ -37,6 +37,7 @@ function createLiveWatchdog(daemon, options = {}) {
   let initialized = false;
   let initialBarePid = null;
   let lastSeenCdpPort = null;
+  let lastObservedHostPid = null;
   const warnedBarePids = new Set();
   const relaunchAttemptedPids = new Set();
   const failedTargets = new Map();
@@ -192,6 +193,19 @@ function createLiveWatchdog(daemon, options = {}) {
       observe(hostProc, resolved || { port: null, targets: [] });
       updateHealth();
 
+      if (hostProc.running && hostProc.pid && hostProc.pid !== lastObservedHostPid) {
+        const hadPrevHost = lastObservedHostPid !== null;
+        lastObservedHostPid = hostProc.pid;
+        if (hadPrevHost) {
+          await daemon?.handleHostProcessLifecycleChange?.({
+            running: true,
+            pid: hostProc.pid,
+            command: hostProc.command,
+            freshAppStart: true
+          });
+        }
+      }
+
       const lastVersion = health?.history.lastInjectedVersion;
       const upgrade = hostProc.running && hostProc.pid && hostProc.hasDebugSwitch === false &&
         isNewerVersion(hostProc.version, lastVersion)
@@ -206,10 +220,12 @@ function createLiveWatchdog(daemon, options = {}) {
       if (!hostProc.running) {
         initialBarePid = null;
         lastSeenCdpPort = null;
+        lastObservedHostPid = null;
         if (daemon?.injector?.sessions?.size > 0) {
           await daemon.injector.disposeAll().catch(() => {});
           log('ℹ️ 检测到 Antigravity 已退出，已清理旧注入会话，等待重新启动...');
         }
+        await daemon?.handleHostProcessLifecycleChange?.({ running: false });
         return { action: 'idle' };
       }
 

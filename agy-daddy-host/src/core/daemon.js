@@ -38,7 +38,17 @@ const {
 const { createScopedNetFetch } = require('./plugin-worker');
 const { runDoctor, exportDiagnosticBundle, sanitizeHostHealth } = require('./doctor');
 const { inspectAntigravityHostProcess } = require('./cdp');
-const { isolateResidentEnv } = require('./lifecycle');
+const {
+  isolateResidentEnv,
+  findAntigravityApp,
+  planAntigravityRestart,
+  relaunchAntigravityWithCdp
+} = require('./lifecycle');
+const {
+  DirectProxyFallbackServer,
+  parseProxyPortFromCommand,
+  hasProxyServerArg
+} = require('./proxy-fallback');
 const { HostHealth } = require('./health-snapshot');
 const { MarketplaceStatsService } = require('./marketplace-stats');
 const { TrayManager } = require('./tray-manager');
@@ -64,6 +74,7 @@ const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
   '/host/plugins/install',
   '/host/plugins/uninstall',
   '/host/plugins/rollback',
+  '/host/antigravity/relaunch',
   '/host/reload',
   '/host/reload-all',
   '/host/anchors',
@@ -405,6 +416,10 @@ class AgyDaddyDaemon extends EventEmitter {
     this.injector.on?.('reinjected', ({ targetId }) => this.health.recordInjection({ targetId }));
     this._liveWorkers = new Set();  // tracks all forked plugin workers including in-flight init
     this._activatingInactivePromise = null;
+    this.sessionProxyFallback = null; // { server, pluginId, port, reason, since }
+    this.pendingHostRestart = null;   // { required: true, reason, pluginId, displayName, action, message, since }
+    this.lastHostLaunchUsedProxy = false;
+    this.lastHostLaunchProxyPort = null;
     this.crashWindowMs = Number(options.crashWindowMs) > 0 ? Number(options.crashWindowMs) : 60000;
     this.maxCrashes = Number(options.maxCrashes) > 0 ? Number(options.maxCrashes) : 3;
     this.trayManager = options.trayManager || new TrayManager({
@@ -1565,7 +1580,172 @@ class AgyDaddyDaemon extends EventEmitter {
     for (const cat of catalog) {
       cat.marketStats = marketStats[cat.id] || null;
     }
-    return { ok: true, plugins: items, catalog, marketStats };
+    return {
+      ok: true,
+      plugins: items,
+      catalog,
+      marketStats,
+      hostRestartNotice: this.getHostRestartNotice(),
+      proxyFallback: this.getSessionProxyFallbackStatus()
+    };
+  }
+
+  inspectCurrentHostProcess() {
+    try {
+      const fn = this.options.inspectHostProcess || inspectAntigravityHostProcess;
+      return fn(this.options) || { running: false, pid: null, hasDebugSwitch: false, command: '' };
+    } catch {
+      return { running: false, pid: null, hasDebugSwitch: false, command: '' };
+    }
+  }
+
+  readPluginManifestSafe(pluginId, record = null) {
+    const active = this.activePlugins.get(pluginId);
+    if (active?.manifest) return active.manifest;
+    const installPath = record?.installPath;
+    if (installPath && fs.existsSync(installPath)) {
+      try { return readManifestFromDir(installPath); } catch {}
+    }
+    return null;
+  }
+
+  pluginUsesHostLaunchArgs(pluginId, { manifest = null, record = null } = {}) {
+    const active = this.activePlugins.get(pluginId);
+    const rec = record || active?.record || readInstalledIndex(this.options).plugins?.[pluginId] || null;
+    const man = manifest || this.readPluginManifestSafe(pluginId, rec);
+    const manifestPerms = Array.isArray(man?.permissions) ? man.permissions : [];
+    const grantedPerms = Array.isArray(rec?.grantedPermissions) ? rec.grantedPermissions : [];
+    if (manifestPerms.includes('host:launch-args') || grantedPerms.includes('host:launch-args')) {
+      return true;
+    }
+    for (const hookName of ['hostLaunchArgs', 'hostLaunchEnv']) {
+      const entries = this.bus.hooks.get(hookName);
+      if (entries) {
+        for (const entry of entries) {
+          if (entry.pluginId === pluginId) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  async detectPluginProxyGatewayPort(pluginId) {
+    const proxyState = this.bus.getState('state:proxy.status@1');
+    if (proxyState && (proxyState.publisher === pluginId || pluginId === 'agy-daddy.proxy')) {
+      const val = proxyState.value;
+      if (val && val.listening && Number(val.gatewayPort) > 0) {
+        return Number(val.gatewayPort);
+      }
+      if (val && val.gatewayEnabled === false && !val.listening) {
+        return null;
+      }
+    }
+    const entries = this.bus.hooks.get('hostLaunchArgs');
+    if (entries) {
+      for (const entry of Array.from(entries)) {
+        if (entry.pluginId !== pluginId) continue;
+        try {
+          const out = await entry.fn({ appPath: '/Applications/Antigravity.app' });
+          if (Array.isArray(out)) {
+            const port = parseProxyPortFromCommand(out.join(' '));
+            if (port) return port;
+          }
+        } catch {}
+      }
+    }
+    const hostProc = this.inspectCurrentHostProcess();
+    if (hostProc.running && hasProxyServerArg(hostProc.command)) {
+      return parseProxyPortFromCommand(hostProc.command);
+    }
+    return null;
+  }
+
+  getSessionProxyFallbackStatus() {
+    if (!this.sessionProxyFallback || !this.sessionProxyFallback.server) {
+      return {
+        active: false,
+        pluginId: null,
+        port: null,
+        mode: null,
+        forcedDirect: false
+      };
+    }
+    const stats = this.sessionProxyFallback.server.getStats();
+    return {
+      active: Boolean(stats.listening),
+      pluginId: this.sessionProxyFallback.pluginId || null,
+      port: stats.port || this.sessionProxyFallback.port || null,
+      mode: 'direct',
+      forcedDirect: true,
+      reason: this.sessionProxyFallback.reason || 'plugin_disabled',
+      since: this.sessionProxyFallback.since || null,
+      stats
+    };
+  }
+
+  getHostRestartNotice() {
+    return this.pendingHostRestart ? { ...this.pendingHostRestart } : null;
+  }
+
+  clearPendingHostRestart(pluginId = null) {
+    if (!this.pendingHostRestart) return;
+    if (!pluginId || this.pendingHostRestart.pluginId === pluginId) {
+      this.pendingHostRestart = null;
+    }
+  }
+
+  async startSessionProxyFallback({ pluginId = 'agy-daddy.proxy', port = 18766, reason = 'plugin_disabled' } = {}) {
+    const listenPort = Number(port);
+    if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+      return null;
+    }
+    if (this.sessionProxyFallback?.server && this.sessionProxyFallback.port === listenPort) {
+      this.sessionProxyFallback.pluginId = pluginId;
+      this.sessionProxyFallback.reason = reason;
+      return this.getSessionProxyFallbackStatus();
+    }
+    await this.stopSessionProxyFallback();
+    const server = new DirectProxyFallbackServer({ host: '127.0.0.1', port: listenPort });
+    await server.start(listenPort);
+    this.sessionProxyFallback = {
+      server,
+      pluginId,
+      port: server.port || listenPort,
+      reason,
+      since: Date.now()
+    };
+    return this.getSessionProxyFallbackStatus();
+  }
+
+  async stopSessionProxyFallback() {
+    const current = this.sessionProxyFallback;
+    this.sessionProxyFallback = null;
+    if (current?.server) {
+      try {
+        await current.server.stop();
+      } catch {}
+    }
+  }
+
+  async handleHostProcessLifecycleChange({ running = false, command = '', freshAppStart = false } = {}) {
+    if (!running) {
+      await this.stopSessionProxyFallback();
+      this.clearPendingHostRestart();
+      return;
+    }
+    if (freshAppStart) {
+      const cmdHasProxy = hasProxyServerArg(command);
+      if (this.sessionProxyFallback && !cmdHasProxy) {
+        await this.stopSessionProxyFallback();
+      }
+      if (this.pendingHostRestart) {
+        const pid = this.pendingHostRestart.pluginId;
+        const isActive = this.activePlugins.has(pid);
+        if ((isActive && cmdHasProxy) || (!isActive && !cmdHasProxy)) {
+          this.clearPendingHostRestart();
+        }
+      }
+    }
   }
 
   registerDefaultHostRoutes() {
@@ -1596,25 +1776,96 @@ class AgyDaddyDaemon extends EventEmitter {
       const pluginId = String(body?.pluginId || '').trim();
       if (!pluginId) throw new Error('pluginId is required');
       const nextEnabled = body?.enabled !== false;
-      const updatedRec = nextEnabled
-        ? enablePlugin(pluginId, this.options)
-        : disablePlugin(pluginId, this.options);
+      const prevRec = readInstalledIndex(this.options).plugins?.[pluginId] || this.activePlugins.get(pluginId)?.record || null;
+      const manifest = this.readPluginManifestSafe(pluginId, prevRec);
+      const displayName = this.pickLocaleText(manifest?.displayName, pluginId);
+      const usesLaunchArgs = this.pluginUsesHostLaunchArgs(pluginId, { manifest, record: prevRec });
+
       if (!nextEnabled) {
+        const proxyPort = usesLaunchArgs ? await this.detectPluginProxyGatewayPort(pluginId) : null;
+        const updatedRec = disablePlugin(pluginId, this.options);
         this.clearPluginDiagnostic(pluginId);
         const reload = await this.reloadPlugin(pluginId);
+
+        const hostProc = this.inspectCurrentHostProcess();
+        const hostRunningWithoutProxy = Boolean(hostProc.running && hostProc.command && !hasProxyServerArg(hostProc.command));
+        if (proxyPort && !hostRunningWithoutProxy) {
+          await this.startSessionProxyFallback({
+            pluginId,
+            port: proxyPort,
+            reason: 'plugin_disabled'
+          });
+          this.clearPendingHostRestart(pluginId);
+        } else if (usesLaunchArgs && !proxyPort && hostProc.running && hasProxyServerArg(hostProc.command)) {
+          this.pendingHostRestart = {
+            required: true,
+            reason: 'launch_args_disable',
+            pluginId,
+            displayName,
+            action: 'disable',
+            message: `已停用「${displayName}」，需要重启 Antigravity 清理启动参数才能生效，不重启将无法使用。`,
+            since: Date.now()
+          };
+        } else {
+          this.clearPendingHostRestart(pluginId);
+        }
+
         await this.syncPluginMetaToSessions();
-        return { ok: true, plugin: updatedRec, reload, ...this.buildPluginManagePayload() };
+        const payload = this.buildPluginManagePayload();
+        return {
+          ok: true,
+          plugin: updatedRec,
+          reload,
+          hostRestartRequired: Boolean(this.pendingHostRestart?.required),
+          ...payload
+        };
       }
+
+      const fallbackActiveForPlugin = Boolean(
+        this.sessionProxyFallback &&
+        (!this.sessionProxyFallback.pluginId || this.sessionProxyFallback.pluginId === pluginId)
+      );
+      if (this.sessionProxyFallback) {
+        await this.stopSessionProxyFallback();
+      }
+
+      const updatedRec = enablePlugin(pluginId, this.options);
       const reload = await this.activatePluginById(pluginId, {
         resetCircuit: true,
         enableIfDisabled: false
       });
+
+      const activeManifest = this.readPluginManifestSafe(pluginId, updatedRec);
+      const activeUsesLaunchArgs = usesLaunchArgs || this.pluginUsesHostLaunchArgs(pluginId, {
+        manifest: activeManifest,
+        record: updatedRec
+      });
+      if (activeUsesLaunchArgs && reload?.active !== false) {
+        const hostProc = this.inspectCurrentHostProcess();
+        const hostHasProxy = Boolean(hostProc.running && hasProxyServerArg(hostProc.command));
+        if (fallbackActiveForPlugin || hostHasProxy) {
+          this.clearPendingHostRestart(pluginId);
+        } else if (hostProc.running || (this.injector?.sessions?.size || 0) > 0) {
+          this.pendingHostRestart = {
+            required: true,
+            reason: 'launch_args_enable',
+            pluginId,
+            displayName: this.pickLocaleText(activeManifest?.displayName, displayName),
+            action: 'enable',
+            message: `已启用「${this.pickLocaleText(activeManifest?.displayName, displayName)}」，需要重启 Antigravity 注入启动参数才能生效，不重启将无法使用。`,
+            since: Date.now()
+          };
+        }
+      }
+
+      const payload = this.buildPluginManagePayload();
       return {
         ok: true,
         plugin: updatedRec,
         reload,
         ...(reload?.ok === false && reload?.error ? { activationError: reload.error } : {}),
-        ...this.buildPluginManagePayload()
+        hostRestartRequired: Boolean(this.pendingHostRestart?.required),
+        ...payload
       };
     });
     this.bridge.registerHostRoute('/host/plugins/activate', async (body) => {
@@ -1711,13 +1962,42 @@ class AgyDaddyDaemon extends EventEmitter {
         }
         throw err;
       }
+      const usesLaunchArgs = this.pluginUsesHostLaunchArgs(res.plugin.id, {
+        manifest: res.manifest,
+        record: res.plugin
+      });
+      if (this.sessionProxyFallback && (this.sessionProxyFallback.pluginId === res.plugin.id || usesLaunchArgs)) {
+        await this.stopSessionProxyFallback();
+      }
       const reload = await this.reloadPlugin(res.plugin.id);
+      const displayName = this.pickLocaleText(res.manifest?.displayName, res.plugin.id);
+      if (res.isFirstInstall && usesLaunchArgs) {
+        const hostProc = this.inspectCurrentHostProcess();
+        const hostAlreadyHasProxy = Boolean(hostProc.running && hasProxyServerArg(hostProc.command));
+        if (!hostAlreadyHasProxy) {
+          this.pendingHostRestart = {
+            required: true,
+            reason: 'launch_args_first_install',
+            pluginId: res.plugin.id,
+            displayName,
+            action: 'install',
+            isFirstInstall: true,
+            message: `首次安装「${displayName}」需要重启 Antigravity 注入启动参数才能生效，不重启将无法使用。`,
+            since: Date.now()
+          };
+        } else {
+          this.clearPendingHostRestart(res.plugin.id);
+        }
+      }
+      const payload = this.buildPluginManagePayload();
       return {
         ok: true,
         plugin: res.plugin,
+        isFirstInstall: Boolean(res.isFirstInstall),
         nativeSync: res.nativeSync,
         reload,
-        ...this.buildPluginManagePayload()
+        hostRestartRequired: Boolean(this.pendingHostRestart?.required),
+        ...payload
       };
     });
     this.bridge.registerHostRoute('/host/plugins/uninstall', async (body) => {
@@ -1725,8 +2005,8 @@ class AgyDaddyDaemon extends EventEmitter {
       if (!pluginId) throw new Error('pluginId is required');
       const idx = readInstalledIndex(this.options);
       const rec = idx.plugins?.[pluginId];
+      let manifest = this.activePlugins.get(pluginId)?.manifest || null;
       if (rec) {
-        let manifest = this.activePlugins.get(pluginId)?.manifest || null;
         if (!manifest && rec.installPath && fs.existsSync(rec.installPath)) {
           try { manifest = readManifestFromDir(rec.installPath); } catch {}
         }
@@ -1746,13 +2026,91 @@ class AgyDaddyDaemon extends EventEmitter {
           };
         }
       }
+      const displayName = this.pickLocaleText(manifest?.displayName, pluginId);
+      const usesLaunchArgs = this.pluginUsesHostLaunchArgs(pluginId, { manifest, record: rec });
+      if (this.sessionProxyFallback && (!this.sessionProxyFallback.pluginId || this.sessionProxyFallback.pluginId === pluginId)) {
+        await this.stopSessionProxyFallback();
+      }
       await this.deactivatePlugin(pluginId);
       await this.injector.reloadPlugin(pluginId, null);
       const rmRes = uninstallPlugin(pluginId, {
         ...this.options,
         confirmNativeDelete: Boolean(body?.confirmNativeDelete)
       });
-      return { ...rmRes, ...this.buildPluginManagePayload() };
+      if (rmRes?.ok && usesLaunchArgs) {
+        this.pendingHostRestart = {
+          required: true,
+          reason: 'launch_args_uninstall',
+          pluginId,
+          displayName,
+          action: 'uninstall',
+          message: `已卸载「${displayName}」，需要重启 Antigravity 清理残留启动参数才能生效，不重启将无法使用。`,
+          since: Date.now()
+        };
+      }
+      const payload = this.buildPluginManagePayload();
+      return {
+        ...rmRes,
+        hostRestartRequired: Boolean(this.pendingHostRestart?.required),
+        ...payload
+      };
+    });
+    this.bridge.registerHostRoute('/host/antigravity/relaunch', async (body) => {
+      let res;
+      if (typeof this.options.onRelaunchAntigravity === 'function') {
+        res = await this.options.onRelaunchAntigravity(body || {});
+      } else {
+        const env = this.options.env || process.env;
+        const plan = planAntigravityRestart({
+          allowSelfTerminate: Boolean(body?.force),
+          env
+        });
+        if (!plan.ok) {
+          return {
+            ok: false,
+            relaunched: false,
+            ...plan,
+            ...this.buildPluginManagePayload()
+          };
+        }
+        const hostProc = this.inspectCurrentHostProcess();
+        const appPath = hostProc.appPath || findAntigravityApp({ platform: process.platform, env });
+        const spec = await this.collectHostLaunchSpec(appPath);
+        if (isTestMode() && typeof this.options.relaunchAntigravity !== 'function') {
+          await this.stopSessionProxyFallback();
+          this.clearPendingHostRestart();
+          return {
+            ok: true,
+            dryRun: true,
+            skipped: true,
+            mode: 'test',
+            args: spec.args,
+            env: spec.env,
+            ...this.buildPluginManagePayload()
+          };
+        }
+        const relaunchFn = this.options.relaunchAntigravity || relaunchAntigravityWithCdp;
+        res = await relaunchFn({
+          appPath,
+          proxyEnv: spec.env,
+          extraArgs: spec.args,
+          onlyIfBare: false,
+          allowSelfTerminate: Boolean(body?.force),
+          stateDir: this.stateDir,
+          env
+        });
+        if (res?.ok && Array.isArray(res.targets) && res.targets.length > 0 && !this.options.skipInject) {
+          await this.injectActiveTargets({ resetCircuitOnLaunch: true }).catch(() => {});
+        }
+      }
+      if (res?.ok) {
+        await this.stopSessionProxyFallback();
+        this.clearPendingHostRestart();
+      }
+      return {
+        ...(res && typeof res === 'object' ? res : { ok: Boolean(res) }),
+        ...this.buildPluginManagePayload()
+      };
     });
     this.bridge.registerHostRoute('/host/plugins/native/config', async (body) => {
       const pluginId = String(body?.pluginId || '').trim();
@@ -2302,6 +2660,9 @@ class AgyDaddyDaemon extends EventEmitter {
     const sorted = sortPluginsByDependency(loadable);
     const reloadedPlugins = [];
     for (const item of sorted) {
+      if (this.sessionProxyFallback && this.sessionProxyFallback.pluginId === item.manifest.id) {
+        await this.stopSessionProxyFallback();
+      }
       try {
         await this.activatePlugin(item.record);
         reloadedPlugins.push(item.manifest.id);
@@ -2424,6 +2785,8 @@ class AgyDaddyDaemon extends EventEmitter {
     for (const [k, v] of Object.entries(env)) {
       if (v !== undefined && v !== null) envArgs.push('--env', `${k}=${String(v)}`);
     }
+    this.lastHostLaunchUsedProxy = args.some((a) => String(a).startsWith('--proxy-server='));
+    this.lastHostLaunchProxyPort = parseProxyPortFromCommand(args.join(' '));
     return {
       args,
       env,
@@ -2478,6 +2841,21 @@ class AgyDaddyDaemon extends EventEmitter {
         ...actFailed.map((f) => ({ id: f.id, error: f.error }))
       ];
 
+      if (host?.running && hasProxyServerArg(host.command)) {
+        const runningProxyPort = parseProxyPortFromCommand(host.command);
+        const launchSpec = await this.collectHostLaunchSpec().catch(() => ({ args: [] }));
+        const hasActiveProxyHook = Array.isArray(launchSpec.args) && launchSpec.args.some((a) => String(a).startsWith('--proxy-server='));
+        if (runningProxyPort && !hasActiveProxyHook) {
+          try {
+            await this.startSessionProxyFallback({
+              pluginId: 'agy-daddy.proxy',
+              port: runningProxyPort,
+              reason: 'host_running_with_proxy_plugin_disabled'
+            });
+          } catch {}
+        }
+      }
+
       safeWriteJsonSync(path.join(this.stateDir, '.live-session.json'), {
         port: bridgeInfo.port,
         pid: process.pid,
@@ -2498,6 +2876,7 @@ class AgyDaddyDaemon extends EventEmitter {
     try {
       await this.injector.disposeAll();
     } catch {}
+    await this.stopSessionProxyFallback();
     for (const pluginId of Array.from(this.activePlugins.keys()).reverse()) {
       await this.deactivatePlugin(pluginId);
     }

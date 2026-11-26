@@ -2398,6 +2398,45 @@
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+.ag-host-restart-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.09);
+  border: 1px solid rgba(239, 68, 68, 0.34);
+}
+
+.ag-host-restart-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.ag-host-restart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ag-ring-danger, #ef4444);
+}
+
+.ag-host-restart-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ag-text-primary);
+}
+
+.ag-host-restart-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .ag-native-row-actions {
   display: inline-flex;
   align-items: center;

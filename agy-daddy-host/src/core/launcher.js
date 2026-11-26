@@ -221,6 +221,10 @@ function createLauncherController(options = {}) {
       const nextProc = inspectHostProcess() || hostProc;
       daemon.health?.observe?.(nextProc, relaunchRes.discovery || { port: relaunchRes.port, targets: relaunchRes.targets || [] });
     }
+    if (relaunchRes?.ok) {
+      await daemon.stopSessionProxyFallback?.();
+      daemon.clearPendingHostRestart?.();
+    }
     if (relaunchRes?.ok && Array.isArray(relaunchRes.targets) && relaunchRes.targets.length > 0 && !options.skipInject) {
       const injectRes = await daemon.injectActiveTargets({ resetCircuitOnLaunch: true });
       await syncTrayWithHealth();
@@ -246,6 +250,7 @@ function createLauncherController(options = {}) {
       stateDir,
       plugins: options.plugins,
       trayManager,
+      onRelaunchAntigravity: () => relaunchAntigravityWithCdpAction(),
       onRestartDaemon: () => restartDaemon(),
       onHostSettingsChange: () => {
         if (running) {

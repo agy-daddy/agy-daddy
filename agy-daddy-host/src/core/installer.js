@@ -445,7 +445,14 @@ async function installPlugin(spec, options = {}) {
 
     index.plugins[pluginId] = record;
     writeInstalledIndex(index, options);
-    return { ok: true, plugin: record, manifest, trustPolicy, nativeSync };
+    return {
+      ok: true,
+      plugin: record,
+      manifest,
+      trustPolicy,
+      nativeSync,
+      isFirstInstall: !prevRecord
+    };
   } finally {
     try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
   }

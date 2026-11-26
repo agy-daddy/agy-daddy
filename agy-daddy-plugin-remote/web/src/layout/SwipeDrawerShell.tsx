@@ -18,8 +18,18 @@ export interface SwipeDrawerShellProps {
 function isInHorizontalDeadZone(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(
-    target.closest('[data-hscroll="1"], pre, code, .xterm, input, textarea, select, [role="slider"]')
+    target.closest(
+      '[data-hscroll="1"], [data-drag-handle="1"], [data-drag-active="1"], pre, code, .xterm, input, textarea, select, [role="slider"]'
+    )
   );
+}
+
+function isDrawerDragSortActive(): boolean {
+  if (typeof document === 'undefined') return false;
+  const ds = document.documentElement.dataset;
+  if (ds.agyDragging === '1') return true;
+  const endedAt = Number(ds.agyDragEndedAt || 0);
+  return endedAt > 0 && Date.now() - endedAt < 120;
 }
 
 function isHintDismissed(): boolean {
@@ -164,6 +174,12 @@ export function SwipeDrawerShell({
 
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
+      if (isDrawerDragSortActive()) {
+        phase = 'IDLE';
+        targetSide = null;
+        clearDomVars();
+        return;
+      }
       const touch = e.touches[0];
       const { leftOpen: lOpen, rightOpen: rOpen } = stateRef.current;
       const vw = window.innerWidth || 390;
@@ -171,6 +187,7 @@ export function SwipeDrawerShell({
 
       if (lOpen) {
         if (inDeadZone && e.target instanceof Element) {
+          if (e.target.closest('[data-drag-handle="1"], [data-drag-active="1"]')) return;
           const scroller = e.target.closest('[data-hscroll="1"], pre, code, .xterm');
           if (scroller && scroller.scrollWidth > scroller.clientWidth) return;
         }
@@ -178,6 +195,7 @@ export function SwipeDrawerShell({
         initialOpen = true;
       } else if (rOpen) {
         if (inDeadZone && e.target instanceof Element) {
+          if (e.target.closest('[data-drag-handle="1"], [data-drag-active="1"]')) return;
           const scroller = e.target.closest('[data-hscroll="1"], pre, code, .xterm');
           if (scroller && scroller.scrollWidth > scroller.clientWidth) return;
         }
@@ -206,6 +224,12 @@ export function SwipeDrawerShell({
     };
 
     const onTouchMove = (e: TouchEvent) => {
+      if (isDrawerDragSortActive()) {
+        phase = 'IDLE';
+        targetSide = null;
+        clearDomVars();
+        return;
+      }
       if (phase === 'IDLE' || phase === 'ABORTED_VERTICAL' || !targetSide || e.touches.length !== 1) {
         return;
       }
@@ -286,7 +310,7 @@ export function SwipeDrawerShell({
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      if (phase !== 'DRAGGING' || !targetSide) {
+      if (isDrawerDragSortActive() || phase !== 'DRAGGING' || !targetSide) {
         phase = 'IDLE';
         targetSide = null;
         clearDomVars();

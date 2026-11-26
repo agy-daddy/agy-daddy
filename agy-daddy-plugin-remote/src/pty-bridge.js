@@ -483,6 +483,9 @@ class PtySession extends EventEmitter {
     this.decoder = new StringDecoder('utf8');
     this.alive = true;
     this.disposed = false;
+    this.exitCode = null;
+    this.signal = null;
+    this.endedAt = null;
     this._killTimer = null;
 
     this.child = spawn(pythonBin, ['-u', '-c', PYTHON_PTY_SCRIPT], {
@@ -517,6 +520,7 @@ class PtySession extends EventEmitter {
           ws.sendText(text);
         }
       }
+      this.emit('data', chunk);
     });
 
     this.child.on('error', (err) => {
@@ -526,6 +530,9 @@ class PtySession extends EventEmitter {
 
     this.child.on('exit', (code, signal) => {
       this.alive = false;
+      this.exitCode = code ?? null;
+      this.signal = signal ?? null;
+      this.endedAt = Date.now();
       if (this._killTimer) {
         clearTimeout(this._killTimer);
         this._killTimer = null;
@@ -691,10 +698,16 @@ function createPtyManager({
   defaultCwd = '',
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   maxSessions = DEFAULT_MAX_SESSIONS,
-  pythonBin = 'python3'
+  pythonBin = 'python3',
+  onTaskEvent = null
 } = {}) {
+  const RECENT_CLOSED_LIMIT = 12;
+  const DATA_EVENT_THROTTLE_MS = 1000;
   const sessions = new Map();
   const idleTimers = new Map();
+  const recentClosedSessions = [];
+  const dataThrottleTimers = new Map();
+  const lastDataEventAt = new Map();
   let disposed = false;
 
   const effectiveIdleMs = Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
@@ -762,6 +775,72 @@ function createPtyManager({
     idleTimers.set(session.sessionId, timer);
   }
 
+  function clearDataThrottle(sessionId) {
+    const timer = dataThrottleTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      dataThrottleTimers.delete(sessionId);
+    }
+    lastDataEventAt.delete(sessionId);
+  }
+
+  function emitTaskEvent(sessionId, status) {
+    if (typeof onTaskEvent !== 'function') return;
+    try {
+      onTaskEvent({ taskId: `pty:${sessionId}`, status });
+    } catch {}
+  }
+
+  function scheduleDataTaskEvent(session) {
+    if (disposed || typeof onTaskEvent !== 'function' || !session?.alive) return;
+    const sid = session.sessionId;
+    const now = Date.now();
+    const last = lastDataEventAt.get(sid) || 0;
+    const elapsed = now - last;
+    if (elapsed >= DATA_EVENT_THROTTLE_MS) {
+      lastDataEventAt.set(sid, now);
+      emitTaskEvent(sid, 'running');
+      return;
+    }
+    if (dataThrottleTimers.has(sid)) return;
+    const timer = setTimeout(() => {
+      dataThrottleTimers.delete(sid);
+      if (disposed || !sessions.has(sid)) return;
+      lastDataEventAt.set(sid, Date.now());
+      emitTaskEvent(sid, 'running');
+    }, Math.max(10, DATA_EVENT_THROTTLE_MS - elapsed));
+    if (typeof timer.unref === 'function') timer.unref();
+    dataThrottleTimers.set(sid, timer);
+  }
+
+  function recordClosedSession(session, statusOverride = null) {
+    if (!session || session._recordedClosed) return;
+    session._recordedClosed = true;
+    clearDataThrottle(session.sessionId);
+    const endedAt = session.endedAt || Date.now();
+    const exitCode = session.exitCode ?? null;
+    const signal = session.signal ?? null;
+    const status = statusOverride || (signal ? 'stopped' : (exitCode !== null && exitCode !== 0 ? 'failed' : 'completed'));
+    const entry = {
+      id: session.sessionId,
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+      createdAt: session.createdAt,
+      endedAt,
+      exitCode,
+      signal,
+      alive: false,
+      status,
+      logBuffer: session.getReplayBuffer()
+    };
+    const existingIdx = recentClosedSessions.findIndex((item) => item.id === entry.id);
+    if (existingIdx !== -1) recentClosedSessions.splice(existingIdx, 1);
+    recentClosedSessions.push(entry);
+    while (recentClosedSessions.length > RECENT_CLOSED_LIMIT) {
+      recentClosedSessions.shift();
+    }
+  }
+
   function listSessions() {
     return Array.from(sessions.values()).map((s) => ({
       sessionId: s.sessionId,
@@ -773,6 +852,45 @@ function createPtyManager({
       lastActivityAt: s.lastActivityAt,
       alive: s.alive
     }));
+  }
+
+  function listTaskRecords() {
+    const active = Array.from(sessions.values()).map((s) => ({
+      id: s.sessionId,
+      sessionId: s.sessionId,
+      cwd: s.cwd,
+      createdAt: s.createdAt,
+      endedAt: null,
+      exitCode: null,
+      signal: null,
+      alive: true,
+      status: 'running',
+      logBuffer: s.getReplayBuffer()
+    }));
+    const closed = recentClosedSessions.slice().reverse().map((r) => ({ ...r }));
+    return [...active, ...closed];
+  }
+
+  function getTaskRecord(ptyId) {
+    const cleanId = String(ptyId || '').trim();
+    if (!cleanId) return null;
+    const active = sessions.get(cleanId);
+    if (active) {
+      return {
+        id: active.sessionId,
+        sessionId: active.sessionId,
+        cwd: active.cwd,
+        createdAt: active.createdAt,
+        endedAt: null,
+        exitCode: null,
+        signal: null,
+        alive: true,
+        status: 'running',
+        logBuffer: active.getReplayBuffer()
+      };
+    }
+    const closed = recentClosedSessions.find((r) => r.id === cleanId || r.sessionId === cleanId);
+    return closed ? { ...closed } : null;
   }
 
   function getOrCreateSession({ sessionId, cwd, cols = 80, rows = 24 } = {}) {
@@ -811,11 +929,16 @@ function createPtyManager({
     sessions.set(session.sessionId, session);
     session.on('clientAttach', () => clearIdleTimer(session.sessionId));
     session.on('clientDetach', () => armIdleTimer(session));
+    session.on('data', () => scheduleDataTaskEvent(session));
     session.on('exit', () => {
       clearIdleTimer(session.sessionId);
       sessions.delete(session.sessionId);
+      recordClosedSession(session);
+      const finalStatus = session.signal ? 'stopped' : (session.exitCode !== null && session.exitCode !== 0 ? 'failed' : 'completed');
+      emitTaskEvent(session.sessionId, finalStatus);
     });
     armIdleTimer(session);
+    emitTaskEvent(session.sessionId, 'running');
 
     return { ok: true, session, created: true };
   }
@@ -828,6 +951,8 @@ function createPtyManager({
     }
     sessions.delete(id);
     session.dispose();
+    recordClosedSession(session, 'stopped');
+    emitTaskEvent(id, 'stopped');
     return { ok: true, closed: true };
   }
 
@@ -873,14 +998,22 @@ function createPtyManager({
       clearTimeout(timer);
     }
     idleTimers.clear();
+    for (const timer of dataThrottleTimers.values()) {
+      clearTimeout(timer);
+    }
+    dataThrottleTimers.clear();
+    lastDataEventAt.clear();
     for (const session of Array.from(sessions.values())) {
       session.dispose();
+      recordClosedSession(session, 'stopped');
     }
     sessions.clear();
   }
 
   return {
     listSessions,
+    listTaskRecords,
+    getTaskRecord,
     getOrCreateSession,
     closeSession,
     handleUpgrade,

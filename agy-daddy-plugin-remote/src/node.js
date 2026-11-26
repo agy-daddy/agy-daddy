@@ -25,6 +25,7 @@ const { detectCloudflaredBinary, getCloudflaredInstallHints, CloudflaredManager 
 const { MobileRemoteServer, stripPairingSecrets } = require('./pwa-server');
 const { createWebPushManager } = require('./web-push');
 const { createPtyManager } = require('./pty-bridge');
+const { createTaskManager } = require('./task-manager');
 const { createMobileWorkspaceService } = require('./mobile-workspace');
 const {
   createWorkspaceBrowser,
@@ -107,6 +108,197 @@ const ORCHESTRATOR_SETTING_KEY_MAP = Object.freeze({
   'opus5.5': 'orchestratorOpusThinking'
 });
 const MODEL_SORT_MODES = Object.freeze(['custom', 'name_asc', 'name_desc', 'provider', 'frequency']);
+
+const SUPPORTED_LOCALES = Object.freeze([
+  Object.freeze({ code: 'en', bcp47: 'en', nativeName: 'English', shortLabel: 'EN' }),
+  Object.freeze({ code: 'zh', bcp47: 'zh-CN', nativeName: '简体中文', shortLabel: '简中' }),
+  Object.freeze({ code: 'zh-TW', bcp47: 'zh-TW', nativeName: '繁體中文', shortLabel: '繁中' }),
+  Object.freeze({ code: 'ja', bcp47: 'ja', nativeName: '日本語', shortLabel: '日本語' }),
+  Object.freeze({ code: 'ko', bcp47: 'ko', nativeName: '한국어', shortLabel: '한국어' }),
+  Object.freeze({ code: 'es', bcp47: 'es', nativeName: 'Español', shortLabel: 'ES' }),
+  Object.freeze({ code: 'pt', bcp47: 'pt', nativeName: 'Português', shortLabel: 'PT' }),
+  Object.freeze({ code: 'fr', bcp47: 'fr', nativeName: 'Français', shortLabel: 'FR' }),
+  Object.freeze({ code: 'ru', bcp47: 'ru', nativeName: 'Русский', shortLabel: 'RU' }),
+  Object.freeze({ code: 'it', bcp47: 'it', nativeName: 'Italiano', shortLabel: 'IT' })
+]);
+const SUPPORTED_LOCALE_SET = new Set(SUPPORTED_LOCALES.map((l) => l.bcp47));
+
+const SAFE_MOBILE_COMMANDS = Object.freeze([
+  Object.freeze({ id: 'remote.status', minLevel: 'L0', title: { 'zh-CN': '查看远程通道状态', en: 'Check Remote Channel Status' } }),
+  Object.freeze({ id: 'remote.check-cloudflared', minLevel: 'L0', title: { 'zh-CN': '检测 cloudflared 安装状态', en: 'Check cloudflared Installation' } }),
+  Object.freeze({ id: 'context.rescan', minLevel: 'L1', title: { 'zh-CN': '重扫当前会话上下文', en: 'Rescan Context' } }),
+  Object.freeze({ id: 'quota.refresh', minLevel: 'L1', title: { 'zh-CN': '刷新模型配额', en: 'Refresh Quota' } })
+]);
+const SAFE_MOBILE_COMMAND_MAP = new Map(SAFE_MOBILE_COMMANDS.map((c) => [c.id, c]));
+
+const CONTEXT_GROUP_LABELS = Object.freeze({
+  user: 'User',
+  assistant: 'Assistant',
+  thinking: 'Thinking',
+  tools: 'Tools',
+  summaries: 'Summaries',
+  system: 'System',
+  history: 'History',
+  files: 'Files'
+});
+
+function unwrapStateEntry(entry) {
+  if (entry === null || entry === undefined) return null;
+  if (
+    isPlainObject(entry) &&
+    'value' in entry &&
+    (typeof entry.key === 'string' ||
+      typeof entry.version === 'number' ||
+      typeof entry.updatedAt === 'number' ||
+      Object.keys(entry).length <= 3)
+  ) {
+    return entry.value ?? null;
+  }
+  return entry;
+}
+
+function normalizeLocaleWhitelist(raw) {
+  if (raw === undefined || raw === null) return null;
+  const candidate = isPlainObject(raw) ? (raw.bcp47 ?? raw.locale ?? raw.lang ?? raw.code) : raw;
+  if (typeof candidate !== 'string') return null;
+  const clean = candidate.trim();
+  if (SUPPORTED_LOCALE_SET.has(clean)) {
+    return SUPPORTED_LOCALES.find((l) => l.bcp47 === clean) || null;
+  }
+  const lower = clean.replace(/_/g, '-').toLowerCase();
+  if (lower === 'zh' || lower === 'zh-cn') {
+    return SUPPORTED_LOCALES.find((l) => l.bcp47 === 'zh-CN') || null;
+  }
+  if (lower === 'zh-tw') {
+    return SUPPORTED_LOCALES.find((l) => l.bcp47 === 'zh-TW') || null;
+  }
+  return SUPPORTED_LOCALES.find((l) => l.bcp47.toLowerCase() === lower || l.code.toLowerCase() === lower) || null;
+}
+
+function localOptimizePrompt(rawText) {
+  const clean = String(rawText || '').trim();
+  if (!clean) {
+    return { ok: false, statusCode: 400, error: 'EMPTY_PROMPT', message: '先输入提示词草稿，再点击优化' };
+  }
+  if (/^\/\S*$/.test(clean)) {
+    return { ok: false, statusCode: 400, error: 'SLASH_ONLY', message: '当前仅包含斜杠命令，无需优化' };
+  }
+  if (clean.length < 6 || clean.includes('\n')) {
+    return {
+      ok: true,
+      original: clean,
+      optimizedText: clean,
+      text: clean,
+      source: 'local-fallback',
+      unchanged: true
+    };
+  }
+  const optimized = `Goal:\n${clean}\n\nRequirements:\n- Inspect relevant code before editing\n- Verify changes with tests or checks\n- Summarize files changed and verification results`;
+  return {
+    ok: true,
+    original: clean,
+    optimizedText: optimized,
+    text: optimized,
+    source: 'local-fallback',
+    unchanged: false
+  };
+}
+
+async function callServiceWithTimeout(host, serviceName, method, args = [], timeoutMs = 1500) {
+  if (!host?.services || typeof host.services.call !== 'function') {
+    return { ok: false, unavailable: true, error: 'SERVICE_UNAVAILABLE' };
+  }
+  let timer = null;
+  try {
+    const callPromise = host.services.call(serviceName, method, args, { optional: true, timeoutMs });
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, error: 'SERVICE_TIMEOUT' }), timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    return await Promise.race([callPromise, timeoutPromise]);
+  } catch (err) {
+    return { ok: false, error: err?.message || 'SERVICE_ERROR' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function normalizeContextGroups(rawGroups) {
+  if (Array.isArray(rawGroups)) {
+    const total = rawGroups.reduce((acc, g) => acc + Math.max(0, Number(g?.tokens || 0) || 0), 0);
+    return rawGroups.map((g, idx) => {
+      const tokens = Math.max(0, Number(g?.tokens ?? g?.high ?? 0) || 0);
+      return {
+        id: String(g?.id || g?.key || `group-${idx}`),
+        label: String(g?.label || CONTEXT_GROUP_LABELS[g?.id] || g?.id || `Group ${idx + 1}`),
+        tokens,
+        share: typeof g?.share === 'number' ? g.share : (total > 0 ? Number((tokens / total).toFixed(4)) : 0)
+      };
+    });
+  }
+  if (!isPlainObject(rawGroups)) return [];
+  const entries = Object.entries(rawGroups).map(([id, val]) => {
+    const tokens = isPlainObject(val)
+      ? Math.max(0, Number(val.tokens ?? val.high ?? val.low ?? 0) || 0)
+      : Math.max(0, Number(val || 0) || 0);
+    return { id, label: CONTEXT_GROUP_LABELS[id] || id, tokens };
+  });
+  const total = entries.reduce((acc, g) => acc + g.tokens, 0);
+  return entries.map((g) => ({
+    ...g,
+    share: total > 0 ? Number((g.tokens / total).toFixed(4)) : 0
+  }));
+}
+
+function normalizeContextAlerts(rawAlerts) {
+  if (!Array.isArray(rawAlerts)) return [];
+  return rawAlerts
+    .filter((a) => a && typeof a === 'object')
+    .map((a) => {
+      const rawLvl = String(a.level || 'info').toLowerCase();
+      const level = (rawLvl === 'danger' || rawLvl === 'critical' || rawLvl === 'error')
+        ? 'critical'
+        : (rawLvl === 'warn' || rawLvl === 'warning' ? 'warn' : 'info');
+      return {
+        level,
+        ...(a.code ? { code: String(a.code) } : {}),
+        message: String(a.message || '')
+      };
+    });
+}
+
+function normalizeUsageByModel(rawByModel) {
+  if (Array.isArray(rawByModel)) {
+    return rawByModel.map((m) => ({
+      model: String(m?.model || m?.id || 'unknown'),
+      label: String(m?.label || m?.model || m?.id || 'unknown'),
+      inputTokens: Number(m?.inputTokens || 0),
+      cachedTokens: Number(m?.cachedTokens ?? m?.cacheReadTokens ?? 0),
+      outputTokens: Number(m?.outputTokens || 0),
+      totalTokens: Number(m?.totalTokens ?? m?.tokens ?? 0),
+      costUsd: Number(m?.costUsd ?? m?.costUSD ?? 0)
+    }));
+  }
+  if (!isPlainObject(rawByModel)) return [];
+  return Object.entries(rawByModel).map(([model, stats]) => ({
+    model,
+    label: String(stats?.label || model),
+    inputTokens: Number(stats?.inputTokens || 0),
+    cachedTokens: Number(stats?.cachedTokens ?? stats?.cacheReadTokens ?? 0),
+    outputTokens: Number(stats?.outputTokens || 0),
+    totalTokens: Number(stats?.totalTokens ?? stats?.tokens ?? 0),
+    costUsd: Number(stats?.costUsd ?? stats?.costUSD ?? 0)
+  }));
+}
+
+function normalizeQuotaBucket(b) {
+  if (!isPlainObject(b)) return null;
+  const resetInHuman = b.resetInHuman || b.countdownText || undefined;
+  return {
+    ...b,
+    ...(resetInHuman ? { resetInHuman } : {})
+  };
+}
 
 function normalizeOrchestratorMasterKey(raw) {
   const s = String(raw || '').trim().toLowerCase();
@@ -1217,9 +1409,22 @@ async function activate(host) {
     brainDir
   });
 
+  let taskManager = null;
+
   const ptyManager = createPtyManager({
     allowedRoots: getEffectiveAllowedRoots,
-    idleTimeoutMs: isTestMode() ? 60000 : 600000
+    idleTimeoutMs: isTestMode() ? 60000 : 600000,
+    onTaskEvent: ({ taskId, status }) => {
+      if (!taskManager) return;
+      void taskManager.listTasks(config.permissionLevel).then((listRes) => {
+        const all = [...(listRes.running || []), ...(listRes.recent || [])];
+        const task = all.find((t) => t.id === taskId) || { id: taskId, taskId, kind: 'pty', status };
+        sseBroker.emit('task.updated', {
+          runningCount: listRes.runningCount ?? 0,
+          task
+        });
+      }).catch(() => {});
+    }
   });
 
   var sessionOrgStore = null;
@@ -1558,11 +1763,167 @@ async function activate(host) {
     }
   }
 
+  async function fetchContextPanel() {
+    const [snapRes, settingsRes] = await Promise.all([
+      callServiceWithTimeout(host, 'context', 'getSnapshot', [], 1500),
+      callServiceWithTimeout(host, 'context', 'getSettings', [], 800)
+    ]);
+    let data = snapRes?.ok && isPlainObject(snapRes.value) ? snapRes.value : null;
+    const settings = settingsRes?.ok && isPlainObject(settingsRes.value) ? settingsRes.value : null;
+    if (!data) {
+      const stateVal = unwrapStateEntry(host.state?.get?.('state:context.snapshot@1'));
+      if (isPlainObject(stateVal)) data = stateVal;
+    }
+    if (!data) {
+      const mobRes = await callServiceWithTimeout(host, 'context', 'getMobileSnapshot', [], 1500);
+      if (mobRes?.ok && isPlainObject(mobRes.value)) data = mobRes.value;
+    }
+    if (!data) {
+      return { available: false, reason: snapRes?.error || 'SERVICE_UNAVAILABLE' };
+    }
+    const rawLoc = data.displayLocation ?? settings?.displayLocation;
+    const displayLocation = rawLoc === 'composer' ? 'composer' : 'topbar';
+    const rawShowSpeed = data.showSpeed ?? settings?.showSpeed;
+    const showSpeed = typeof rawShowSpeed === 'boolean' ? rawShowSpeed : true;
+    const compactPolicy = String(data.compactPolicy || settings?.compactPolicy || 'remind');
+    const used = data.used ?? data.usedTokens ?? null;
+    const budget = data.budget ?? data.maxTokens ?? null;
+    const usageRatio = data.usageRatio ?? (
+      data.percent !== null && data.percent !== undefined
+        ? Number((Number(data.percent) / 100).toFixed(4))
+        : (used !== null && Number(budget) > 0 ? Number((Number(used) / Number(budget)).toFixed(4)) : null)
+    );
+    const speedVal = data.speed !== undefined ? data.speed : (data.tokPerSec ?? null);
+    const riskLevel = data.riskLevel ?? data.cacheCliffRisk ?? 'none';
+
+    return {
+      available: true,
+      data: {
+        ...data,
+        hasSession: Boolean(data.hasSession ?? data.hasActiveSession),
+        hasActiveSession: Boolean(data.hasActiveSession ?? data.hasSession),
+        sessionTitle: String(data.sessionTitle ?? data.title ?? ''),
+        modelLabel: data.modelLabel ?? data.model ?? null,
+        used,
+        usedTokens: data.usedTokens ?? used,
+        budget,
+        maxTokens: data.maxTokens ?? budget,
+        usageRatio,
+        riskLevel,
+        cacheCliffRisk: data.cacheCliffRisk ?? riskLevel,
+        displayLocation,
+        showSpeed,
+        compactPolicy,
+        inputTokens: Number(data.inputTokens ?? 0),
+        cachedTokens: Number(data.cachedTokens ?? 0),
+        uncachedInput: data.uncachedInput ?? null,
+        outputTokens: Number(data.outputTokens ?? 0),
+        cacheHitRate: data.cacheHitRate ?? null,
+        speed: speedVal,
+        groups: normalizeContextGroups(data.groups),
+        alerts: normalizeContextAlerts(data.alerts)
+      }
+    };
+  }
+
+  async function fetchUsagePanel() {
+    const sumRes = await callServiceWithTimeout(host, 'usage', 'getSummary', [], 1800);
+    let data = sumRes?.ok && isPlainObject(sumRes.value) ? sumRes.value : null;
+    if (!data) {
+      const stateVal = unwrapStateEntry(host.state?.get?.('state:usage.summary@1'));
+      if (isPlainObject(stateVal)) data = stateVal;
+    }
+    if (!data) {
+      const mobRes = await callServiceWithTimeout(host, 'usage', 'getMobileSnapshot', [], 1800);
+      if (mobRes?.ok && isPlainObject(mobRes.value)) data = mobRes.value;
+    }
+    if (!data) {
+      return { available: false, reason: sumRes?.error || 'SERVICE_UNAVAILABLE' };
+    }
+    const rawPeriods = isPlainObject(data.periods) ? data.periods : {};
+    const roiFromPeriod = rawPeriods.roi || rawPeriods.allTime?.roi || rawPeriods.month?.roi || rawPeriods.today?.roi || null;
+    const periods = {
+      ...(rawPeriods.today ? { today: rawPeriods.today } : {}),
+      ...(rawPeriods.month ? { month: rawPeriods.month } : {}),
+      ...(rawPeriods.year ? { year: rawPeriods.year } : {}),
+      ...(rawPeriods.allTime ? { allTime: rawPeriods.allTime } : {}),
+      ...(roiFromPeriod ? {
+        roi: {
+          ...roiFromPeriod,
+          savedUsd: roiFromPeriod.savedUsd ?? roiFromPeriod.effectiveSavedUsd ?? 0,
+          cacheHitRatio: roiFromPeriod.cacheHitRatio ?? null
+        }
+      } : {})
+    };
+    const byModel = normalizeUsageByModel(data.byModel);
+    const todayTokens = data.todayTokens ?? rawPeriods.today?.totalTokens ?? null;
+    const todayCostUsd = data.todayCostUsd ?? rawPeriods.today?.totalUsd ?? null;
+    const weekTokens = data.weekTokens ?? rawPeriods.month?.totalTokens ?? null;
+    const weekCostUsd = data.weekCostUsd ?? rawPeriods.month?.totalUsd ?? null;
+
+    return {
+      available: true,
+      data: {
+        ...data,
+        ...(todayTokens !== null ? { todayTokens } : {}),
+        ...(todayCostUsd !== null ? { todayCostUsd } : {}),
+        ...(weekTokens !== null ? { weekTokens } : {}),
+        ...(weekCostUsd !== null ? { weekCostUsd } : {}),
+        cacheReadTokens: Number(data.cacheReadTokens ?? 0),
+        periods,
+        byModel
+      }
+    };
+  }
+
+  async function fetchQuotaPanel() {
+    const qRes = await callServiceWithTimeout(host, 'quota', 'getSnapshot', [], 1800);
+    let data = qRes?.ok && isPlainObject(qRes.value) ? qRes.value : null;
+    if (!data) {
+      const stateVal = unwrapStateEntry(host.state?.get?.('state:quota.snapshot@1'));
+      if (isPlainObject(stateVal)) data = stateVal;
+    }
+    if (!data) {
+      const mobRes = await callServiceWithTimeout(host, 'quota', 'getMobileSnapshot', [], 1800);
+      if (mobRes?.ok && isPlainObject(mobRes.value)) data = mobRes.value;
+    }
+    if (!data) {
+      return { available: false, reason: qRes?.error || 'SERVICE_UNAVAILABLE' };
+    }
+    const rawPools = Array.isArray(data.pools) ? data.pools : [];
+    const pools = rawPools.map((p, idx) => ({
+      id: p?.id || `pool-${idx}`,
+      title: String(p?.title || p?.name || `Pool ${idx + 1}`),
+      ...(Array.isArray(p?.models) ? { models: p.models } : {}),
+      tightestFraction: typeof p?.tightestFraction === 'number' ? p.tightestFraction : null,
+      ...(p?.tightestPercentText ? { tightestPercentText: p.tightestPercentText } : {}),
+      fiveHourBucket: normalizeQuotaBucket(p?.fiveHourBucket),
+      weeklyBucket: normalizeQuotaBucket(p?.weeklyBucket)
+    }));
+    const ultraSubTier = data.ultraSubTier ?? null;
+    const planTier = String(data.planTier || (ultraSubTier ? 'ultra' : 'free'));
+    const quotaMultiplier = data.quotaMultiplier ?? null;
+
+    return {
+      available: true,
+      data: {
+        ...data,
+        planTier,
+        ultraSubTier,
+        quotaMultiplier,
+        tightestFraction: data.tightestFraction ?? null,
+        tightestPercentText: data.tightestPercentText ?? null,
+        pools
+      }
+    };
+  }
+
   async function collectAggregatedSnapshot() {
-    const [contextPanel, usagePanel, quotaPanel] = await Promise.all([
-      safeFetchPanel('context', 'getMobileSnapshot'),
-      safeFetchPanel('usage', 'getMobileSnapshot'),
-      safeFetchPanel('quota', 'getMobileSnapshot')
+    const [contextPanel, usagePanel, quotaPanel, taskListRes] = await Promise.all([
+      fetchContextPanel(),
+      fetchUsagePanel(),
+      fetchQuotaPanel(),
+      taskManager ? taskManager.listTasks(config.permissionLevel).catch(() => null) : Promise.resolve(null)
     ]);
 
     const panels = {
@@ -1584,6 +1945,7 @@ async function activate(host) {
       writeEnabled: config.allowRemoteWrite === true,
       channels: { ...config.channels },
       display: { ...config.remoteDisplay },
+      runningTasksCount: taskListRes?.runningCount ?? 0,
       panels,
       actions: Array.from(extraActions.values()).map((a) => ({
         id: a.id,
@@ -1641,7 +2003,10 @@ async function activate(host) {
     },
     async getTelemetry() {
       const snap = await collectAggregatedSnapshot();
-      return stripPairingSecrets({ panels: snap.panels });
+      return stripPairingSecrets({
+        panels: snap.panels,
+        runningTasksCount: snap.runningTasksCount ?? 0
+      });
     },
     async dispatchMessage(cascadeId, item) {
       return await callHarness('sendMessage', [cascadeId, item]);
@@ -1779,6 +2144,45 @@ async function activate(host) {
     return st;
   };
 
+  taskManager = createTaskManager({
+    ptyManager,
+    listSessions: (opts) => safeListSessions(opts),
+    getSessionSteps: async (cascadeId) => {
+      const detail = await callHarness('getSessionDetail', [cascadeId]);
+      return Array.isArray(detail?.events) ? detail.events : [];
+    },
+    cancelSession: (cascadeId) => callHarness('cancelSession', [cascadeId]),
+    approveStep: (cascadeId, seq, decision) => callHarness('approveStep', [cascadeId, seq, decision, {}]),
+    callRpc: (method, params) => host.rpc?.call?.(method, params)
+  });
+
+  async function dispatchCompactForSession(rawSessionId = '') {
+    let sessionId = String(rawSessionId || '').trim();
+    if (sessionId === 'null' || sessionId === 'undefined') sessionId = '';
+    if (!sessionId) {
+      const sessRes = await safeListSessions({ limit: 20 });
+      const list = Array.isArray(sessRes?.sessions) ? sessRes.sessions : [];
+      const active = list.find((s) => String(s?.status || '').toUpperCase().includes('RUNNING')) || list[0];
+      sessionId = String(active?.cascadeId || '').trim();
+    }
+    if (!sessionId) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: 'SESSION_REQUIRED',
+        message: '请先选择一个会话再执行 /compact'
+      };
+    }
+    await callHarness('sendMessage', [sessionId, { cascadeId: sessionId, text: '/compact', dispatchMode: 'queue' }]);
+    sseBroker.triggerPoll(sessionId);
+    return {
+      ok: true,
+      action: 'compact',
+      sessionId,
+      dispatched: true
+    };
+  }
+
   async function handleRemoteAction(body = {}) {
     if (config.allowRemoteWrite !== true) {
       return { ok: false, error: 'REMOTE_WRITE_DISABLED' };
@@ -1796,8 +2200,8 @@ async function activate(host) {
       return { ok: true, action: actionId, result: res.value };
     }
     if (actionId === 'compact') {
-      const res = await host.services.call('composer', 'triggerCompact', [], { optional: true });
-      return { ok: Boolean(res?.ok), action: 'compact', result: res };
+      const reqSessionId = body.sessionId || body.cascadeId || body.payload?.sessionId || body.payload?.cascadeId || '';
+      return await dispatchCompactForSession(reqSessionId);
     }
     return { ok: false, error: 'UNKNOWN_ACTION', action: actionId };
   }
@@ -1878,6 +2282,121 @@ async function activate(host) {
     };
   }
 
+  function buildCleanChannelEntries(reqCtx = {}) {
+    if (config.channels.tailscale && !isTestMode()) {
+      void refreshTailscaleServeUrl();
+    }
+    const urls = buildChannelUrls();
+    const req = reqCtx?.req;
+    const channel = reqCtx?.channel || 'loopback';
+    const isHttpsReq =
+      channel === 'cloudflare' ||
+      String(req?.headers?.['x-forwarded-proto'] || '').toLowerCase().includes('https') ||
+      Boolean(req?.socket?.encrypted) ||
+      String(req?.headers?.origin || '').startsWith('https://');
+    const specs = [
+      { key: 'lan', label: '局域网 (Wi-Fi)' },
+      { key: 'bonjour', label: 'Bonjour (.local)' },
+      { key: 'tailscale', label: 'Tailscale 私网' },
+      { key: 'cloudflare', label: 'Cloudflare Tunnel' },
+      { key: 'loopback', label: '本机回环 (127.0.0.1)' }
+    ];
+    const entries = [];
+    for (const sp of specs) {
+      if (!config.channels[sp.key]) continue;
+      if (sp.key === 'cloudflare') {
+        const cfBaseUrl = String(
+          cloudflared.getState().publicUrl ||
+          (config.tunnelMode === 'named' ? config.tunnelHostname : '') ||
+          ''
+        ).replace(/\/+$/, '');
+        const rawCf = urls.cloudflare || cfBaseUrl;
+        let origin = '';
+        let displayHost = channel === 'cloudflare' ? String(req?.headers?.host || '').trim() : '';
+        if (rawCf) {
+          try {
+            const u = new URL(rawCf);
+            origin = u.origin;
+            if (!displayHost) displayHost = u.host;
+          } catch {}
+        }
+        if (!origin && displayHost) {
+          origin = `https://${displayHost}`;
+        }
+        if (!origin) continue;
+        entries.push({
+          key: 'cloudflare',
+          label: sp.label,
+          origin,
+          protocol: 'https:',
+          displayHost: displayHost || origin.replace(/^https?:\/\//, ''),
+          probeUrl: `${origin}/api/ping`,
+          fallbackProbeUrl: `${origin}/api/ping-gif`,
+          isCurrent: channel === 'cloudflare',
+          requiresTicketRedirect: false
+        });
+        continue;
+      }
+      const rawUrl = urls[sp.key];
+      if (!rawUrl) continue;
+      try {
+        const u = new URL(rawUrl);
+        entries.push({
+          key: sp.key,
+          label: sp.label,
+          origin: u.origin,
+          protocol: u.protocol === 'https:' ? 'https:' : 'http:',
+          displayHost: u.host,
+          probeUrl: `${u.origin}/api/ping`,
+          fallbackProbeUrl: `${u.origin}/api/ping-gif`,
+          isCurrent: channel === sp.key,
+          requiresTicketRedirect: isHttpsReq && u.protocol === 'http:' && sp.key !== 'loopback'
+        });
+      } catch {}
+    }
+    const cfState = cloudflared.getState();
+    const tunnelState = cfState.error
+      ? 'error'
+      : (cfState.active ? (cfState.publicUrl || config.tunnelMode === 'named' ? 'running' : 'starting') : 'stopped');
+    const hostHdr = String(req?.headers?.host || '').trim();
+    const currentOrigin = hostHdr
+      ? `${isHttpsReq ? 'https' : 'http'}://${hostHdr}`
+      : (entries.find((e) => e.isCurrent)?.origin || server?.getLocalUrl() || '');
+    return {
+      ok: true,
+      currentChannel: channel,
+      currentOrigin,
+      tunnelMode: config.tunnelMode,
+      tunnelState,
+      entries
+    };
+  }
+
+  let telemetryDebounceTimer = null;
+  function broadcastTelemetryNow() {
+    return collectAggregatedSnapshot().then((snap) => {
+      const payload = stripPairingSecrets({
+        panels: snap.panels,
+        runningTasksCount: snap.runningTasksCount ?? 0
+      });
+      sseBroker.emitTelemetryPatch(payload);
+      return snap;
+    }).catch(() => null);
+  }
+
+  function scheduleTelemetryBroadcast() {
+    if (telemetryDebounceTimer) {
+      clearTimeout(telemetryDebounceTimer);
+    }
+    telemetryDebounceTimer = setTimeout(() => {
+      telemetryDebounceTimer = null;
+      void broadcastTelemetryNow();
+    }, 120);
+    if (typeof telemetryDebounceTimer.unref === 'function') {
+      telemetryDebounceTimer.unref();
+    }
+  }
+
   const v1Handlers = {
     async getBootstrap({ channel, permissionLevel }) {
       const [snap, sessionsRes, modelsRes] = await Promise.all([
@@ -1936,7 +2455,8 @@ async function activate(host) {
         defaultSessionPath: sessionsRes.defaultSessionPath,
         vapidPublicKey: webPush.getPublicKey(),
         voiceSupported: false,
-        telemetry: { panels: snap.panels, channel }
+        runningTasksCount: snap.runningTasksCount ?? 0,
+        telemetry: { panels: snap.panels, runningTasksCount: snap.runningTasksCount ?? 0, channel }
       };
     },
     async listSessions(opts) {
@@ -2241,44 +2761,263 @@ async function activate(host) {
       return res;
     },
     async getComposerPresets() {
-      const [quickRes, freqRes] = await Promise.all([
+      const [quickRes, freqRes, settingsRes] = await Promise.all([
         host.services.call('composer-node', 'listQuickPrompts', [], { optional: true }).catch(() => null),
-        host.services.call('composer-node', 'listFrequentPrompts', [], { optional: true }).catch(() => null)
+        host.services.call('composer-node', 'listFrequentPrompts', [], { optional: true }).catch(() => null),
+        host.services.call('composer-node', 'getSettings', [], { optional: true }).catch(() => null)
       ]);
-      const quickList = quickRes?.ok && quickRes.value
+      const stateSnap = unwrapStateEntry(host.state?.get?.('state:composer.settings@1'));
+      const rawSettings = (settingsRes?.ok && isPlainObject(settingsRes.value))
+        ? settingsRes.value
+        : (isPlainObject(stateSnap?.settings) ? stateSnap.settings : {});
+      const available = Boolean(quickRes?.ok || freqRes?.ok || settingsRes?.ok || stateSnap?.available);
+      const settings = {
+        showQuickBar: rawSettings.showQuickBar !== false,
+        ghostSuggest: rawSettings.ghostSuggest !== false,
+        showPromptOptimizer: rawSettings.showPromptOptimizer !== false,
+        ...(Number.isFinite(Number(rawSettings.autoCompactThresholdTokens))
+          ? { autoCompactThresholdTokens: Number(rawSettings.autoCompactThresholdTokens) }
+          : {})
+      };
+      const quickSource = quickRes?.ok && quickRes.value
+        ? quickRes.value
+        : (isPlainObject(stateSnap) ? stateSnap : null);
+      const quickList = quickSource
         ? [
-            ...(Array.isArray(quickRes.value.builtins) ? quickRes.value.builtins.filter((b) => b && b.enabled !== false) : []),
-            ...(Array.isArray(quickRes.value.custom) ? quickRes.value.custom : [])
+            ...(Array.isArray(quickSource.builtins) ? quickSource.builtins.filter((b) => b && b.enabled !== false) : []),
+            ...(Array.isArray(quickSource.custom) ? quickSource.custom : [])
           ]
             .map((it, idx) => sanitizePresetItem(it, 'quick', idx))
             .filter((it) => Boolean(it) && !isRedundantPlanPreset(it))
+            .map((it) => ({ ...it, text: it.prompt }))
         : [];
       const freqRaw = freqRes?.ok && freqRes.value
         ? (Array.isArray(freqRes.value.presets) ? freqRes.value.presets : (Array.isArray(freqRes.value.items) ? freqRes.value.items : []))
         : [];
       const freqList = freqRaw
         .map((it, idx) => sanitizePresetItem(it, 'frequent', idx))
-        .filter((it) => Boolean(it) && !isRedundantPlanPreset(it));
+        .filter((it) => Boolean(it) && !isRedundantPlanPreset(it))
+        .map((it) => ({ ...it, text: it.prompt }));
       return {
         ok: true,
+        available,
+        settings,
         presets: [...quickList, ...freqList],
         quickPrompts: quickList,
         frequentPrompts: freqList
       };
     },
     async optimizePrompt(text, opts = {}) {
-      const res = await host.services.call('composer-node', 'optimizePrompt', [text, opts], { optional: true, timeoutMs: 50000 });
+      const clean = String(text || '').trim();
+      if (!clean) {
+        return { ok: false, statusCode: 400, error: 'EMPTY_PROMPT', message: '先输入提示词草稿，再点击优化' };
+      }
+      const res = await host.services.call('composer-node', 'optimizePrompt', [text, opts], { optional: true, timeoutMs: 50000 }).catch(() => null);
       if (!res?.ok) {
-        return { ok: false, statusCode: 503, error: res?.error || 'COMPOSER_UNAVAILABLE' };
+        return localOptimizePrompt(text);
       }
       const val = res.value || {};
-      if (val.ok === false) return val;
+      if (val.ok === false) {
+        if (val.error === 'SLASH_ONLY' || val.error === 'EMPTY_PROMPT') {
+          return { ...val, statusCode: 400 };
+        }
+        return localOptimizePrompt(text);
+      }
+      const outText = val.optimized || val.optimizedText || val.text || text;
       return {
         ...val,
         ok: true,
-        optimizedText: val.optimized || val.optimizedText || val.text || text,
-        text: val.optimized || val.optimizedText || val.text || text
+        source: val.source === 'local-fallback' ? 'local-fallback' : 'plugin',
+        optimizedText: outText,
+        text: outText
       };
+    },
+    async compactSession(id) {
+      const cleanId = String(id || '').trim();
+      if (!cleanId || cleanId === 'null' || cleanId === 'undefined') {
+        return { ok: false, statusCode: 400, error: 'SESSION_REQUIRED', message: '请先选择一个会话再执行 /compact' };
+      }
+      return await dispatchCompactForSession(cleanId);
+    },
+    async listTasks({ permissionLevel }) {
+      return await taskManager.listTasks(permissionLevel);
+    },
+    async getTaskDetail(taskId, { permissionLevel }) {
+      return await taskManager.getTaskDetail(taskId, permissionLevel);
+    },
+    async stopTask(taskId, { permissionLevel }) {
+      return await taskManager.stopTask(taskId, permissionLevel);
+    },
+    async getChannels({ req, channel }) {
+      return buildCleanChannelEntries({ req, channel });
+    },
+    async getLocale() {
+      let entry = null;
+      const hostLocale = unwrapStateEntry(host.state?.get?.('state:host.locale@1'));
+      entry = normalizeLocaleWhitelist(hostLocale);
+      if (!entry) {
+        const zhCnState = unwrapStateEntry(host.state?.get?.('state:zh-cn.lang@1'));
+        entry = normalizeLocaleWhitelist(zhCnState);
+      }
+      if (!entry) {
+        const cfgRes = await callServiceWithTimeout(host, 'zh-cn', 'getConfig', [], 800);
+        if (cfgRes?.ok) {
+          entry = normalizeLocaleWhitelist(cfgRes.value);
+        }
+      }
+      return {
+        ok: true,
+        locale: (entry || SUPPORTED_LOCALES[0]).bcp47,
+        supportedLocales: SUPPORTED_LOCALES.map((l) => ({ ...l }))
+      };
+    },
+    async setLocale(body = {}, { permissionLevel } = {}) {
+      const raw = body?.locale ?? body?.lang;
+      const entry = normalizeLocaleWhitelist(raw);
+      if (!entry || !SUPPORTED_LOCALE_SET.has(entry.bcp47)) {
+        return { ok: false, statusCode: 400, error: 'INVALID_LOCALE' };
+      }
+      if (!isPermissionAtLeast(permissionLevel, 'L1')) {
+        return {
+          ok: true,
+          locale: entry.bcp47,
+          syncedToHost: false,
+          localOnly: true
+        };
+      }
+      const stateVal = { bcp47: entry.bcp47, locale: entry.bcp47, lang: entry.code };
+      host.state?.set?.('state:host.locale@1', stateVal);
+      await callServiceWithTimeout(host, 'zh-cn', 'setLang', [entry.code], 800);
+      sseBroker.emit('state.patch', {
+        key: 'state:host.locale@1',
+        value: stateVal
+      });
+      return {
+        ok: true,
+        locale: entry.bcp47,
+        syncedToHost: true,
+        localOnly: false
+      };
+    },
+    async getDiagnostics() {
+      const [sessionsRes, snap] = await Promise.all([
+        safeListSessions({ limit: 1 }),
+        collectAggregatedSnapshot()
+      ]);
+      const hasWebHarness = Boolean(host.services?.has?.('web-harness'));
+      const ctxOk = Boolean(snap.panels?.context?.available);
+      const usageOk = Boolean(snap.panels?.usage?.available);
+      const quotaOk = Boolean(snap.panels?.quota?.available);
+      const cfState = cloudflared.getState();
+      const roots = getEffectiveAllowedRoots();
+      const readableRoots = roots.filter((r) => isExistingDirectory(r));
+
+      const checks = [
+        {
+          id: 'rpc',
+          label: 'Antigravity RPC',
+          status: sessionsRes.rpcConnected ? 'ok' : 'fail',
+          detail: sessionsRes.rpcConnected ? 'Connected' : 'RPC unreachable'
+        },
+        {
+          id: 'harness',
+          label: 'Session Harness',
+          status: hasWebHarness ? 'ok' : (sessionsRes.rpcConnected ? 'warn' : 'fail'),
+          detail: hasWebHarness ? 'web-harness online' : 'Using standalone RPC adapter'
+        },
+        {
+          id: 'telemetry_services',
+          label: 'Telemetry Services',
+          status: (ctxOk && usageOk && quotaOk) ? 'ok' : ((ctxOk || usageOk || quotaOk) ? 'warn' : 'fail'),
+          detail: `context:${ctxOk ? 'ok' : 'off'} usage:${usageOk ? 'ok' : 'off'} quota:${quotaOk ? 'ok' : 'off'}`
+        },
+        {
+          id: 'channels_tunnel',
+          label: 'Channels & Tunnel',
+          status: tunnelConfigError || cfState.error ? 'fail' : (config.channels.cloudflare && !cfState.active ? 'warn' : 'ok'),
+          detail: tunnelConfigError || cfState.error || (cfState.publicUrl ? `Tunnel active (${cfState.mode})` : 'Local/LAN channels active')
+        },
+        {
+          id: 'workspace_roots',
+          label: 'Workspace Roots',
+          status: readableRoots.length > 0 ? 'ok' : 'warn',
+          detail: `${readableRoots.length}/${roots.length} readable root(s)`
+        },
+        {
+          id: 'push_sse',
+          label: 'SSE & Web Push',
+          status: sseBroker ? 'ok' : 'warn',
+          detail: webPush?.getPublicKey?.() ? 'SSE + VAPID Push ready' : 'SSE ready'
+        }
+      ];
+      const summary = {
+        okCount: checks.filter((c) => c.status === 'ok').length,
+        warnCount: checks.filter((c) => c.status === 'warn').length,
+        failCount: checks.filter((c) => c.status === 'fail').length
+      };
+      return {
+        ok: true,
+        mode: 'readonly-safe',
+        hostControlAvailable: false,
+        checkedAt: Date.now(),
+        summary,
+        checks
+      };
+    },
+    async listCommands({ permissionLevel }) {
+      return {
+        ok: true,
+        commands: SAFE_MOBILE_COMMANDS.map((c) => ({
+          id: c.id,
+          minLevel: c.minLevel,
+          title: c.title,
+          allowed: isPermissionAtLeast(permissionLevel, c.minLevel)
+        }))
+      };
+    },
+    async runCommand(body = {}, { permissionLevel } = {}) {
+      const commandId = String(body?.commandId || body?.id || '').trim();
+      const spec = SAFE_MOBILE_COMMAND_MAP.get(commandId);
+      if (!spec) {
+        return { ok: false, statusCode: 403, error: 'COMMAND_FORBIDDEN_ON_MOBILE', commandId };
+      }
+      if (!isPermissionAtLeast(permissionLevel, spec.minLevel)) {
+        return {
+          ok: false,
+          statusCode: 403,
+          error: 'PERMISSION_DENIED',
+          required: spec.minLevel,
+          current: permissionLevel
+        };
+      }
+      if (commandId === 'remote.status') {
+        const st = buildStatus();
+        return { ok: true, commandId, result: st };
+      }
+      if (commandId === 'remote.check-cloudflared') {
+        const bin = detectCloudflaredBinary();
+        return {
+          ok: true,
+          commandId,
+          result: {
+            ok: true,
+            found: Boolean(bin.found),
+            path: bin.path,
+            tunnelState: cloudflared.getState()
+          }
+        };
+      }
+      if (commandId === 'context.rescan') {
+        const res = await callServiceWithTimeout(host, 'context', 'rescan', [body?.payload || {}], 3000);
+        await broadcastTelemetryNow();
+        return { ok: true, commandId, result: res?.ok ? res.value : { ok: false, error: res?.error || 'CONTEXT_UNAVAILABLE' } };
+      }
+      if (commandId === 'quota.refresh') {
+        const res = await callServiceWithTimeout(host, 'quota', 'refresh', [body?.payload || {}], 3000);
+        await broadcastTelemetryNow();
+        return { ok: true, commandId, result: res?.ok ? res.value : { ok: false, error: res?.error || 'QUOTA_UNAVAILABLE' } };
+      }
+      return { ok: false, statusCode: 403, error: 'COMMAND_FORBIDDEN_ON_MOBILE', commandId };
     }
   };
 
@@ -2301,6 +3040,7 @@ async function activate(host) {
     v1Handlers,
     sseBroker,
     ptyManager,
+    taskManager,
     webPush,
     mobileWorkspace,
     workspaceBrowser,
@@ -2710,6 +3450,29 @@ async function activate(host) {
       }
     }).catch(() => {});
   });
+  const stopContextStateSub = host.state?.subscribe?.('state:context.snapshot@1', () => {
+    scheduleTelemetryBroadcast();
+  });
+  const stopUsageStateSub = host.state?.subscribe?.('state:usage.summary@1', () => {
+    scheduleTelemetryBroadcast();
+  });
+  const stopQuotaStateSub = host.state?.subscribe?.('state:quota.snapshot@1', () => {
+    scheduleTelemetryBroadcast();
+  });
+  const stopComposerStateSub = host.state?.subscribe?.('state:composer.settings@1', (rawVal) => {
+    sseBroker.emit('state.patch', {
+      key: 'state:composer.settings@1',
+      value: unwrapStateEntry(rawVal)
+    });
+    scheduleTelemetryBroadcast();
+  });
+  const stopLocaleStateSub = host.state?.subscribe?.('state:host.locale@1', (rawVal) => {
+    sseBroker.emit('state.patch', {
+      key: 'state:host.locale@1',
+      value: unwrapStateEntry(rawVal)
+    });
+    scheduleTelemetryBroadcast();
+  });
   const stopOrgStateSub = host.state?.subscribe?.('state:session.org@1', (val, meta) => {
     if (meta?.publisher === 'agy-daddy.remote') return;
     sessionOrgStore.syncFromExternalSignal(val);
@@ -2807,6 +3570,17 @@ async function activate(host) {
   disposers.push(
     stopSettingsSub,
     stopWebStateSub,
+    stopContextStateSub,
+    stopUsageStateSub,
+    stopQuotaStateSub,
+    stopComposerStateSub,
+    stopLocaleStateSub,
+    () => {
+      if (telemetryDebounceTimer) {
+        clearTimeout(telemetryDebounceTimer);
+        telemetryDebounceTimer = null;
+      }
+    },
     stopOrgStateSub,
     () => { sessionOrgStore.dispose(); },
     () => { remoteProvisioner.dispose(); },

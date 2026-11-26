@@ -263,7 +263,11 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     assert.ok(listToggle);
     listToggle.checked = false;
     listToggle.dispatchEvent({ type: 'change', target: listToggle });
-    await waitFor(() => !daemon.activePlugins.has('agy-daddy.proxy') && daemon.getSessionProxyFallbackStatus().active);
+    await waitFor(() => (
+      !daemon.activePlugins.has('agy-daddy.proxy')
+      && daemon.getSessionProxyFallbackStatus().active
+      && Boolean(shadow.querySelector('[data-proxy-fallback="true"]'))
+    ));
 
     // UI 不应要求强制重启横幅，而应展示直连兜底提示与芯片
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
@@ -290,7 +294,11 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const reEnableToggle = shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]');
     reEnableToggle.checked = true;
     reEnableToggle.dispatchEvent({ type: 'change', target: reEnableToggle });
-    await waitFor(() => daemon.activePlugins.has('agy-daddy.proxy'));
+    await waitFor(() => (
+      daemon.activePlugins.has('agy-daddy.proxy')
+      && !daemon.getSessionProxyFallbackStatus().active
+      && !shadow.querySelector('[data-proxy-fallback="true"]')
+    ));
     assert.equal(daemon.getSessionProxyFallbackStatus().active, false);
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
 

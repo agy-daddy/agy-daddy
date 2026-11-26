@@ -160,9 +160,28 @@ function makeAllElevenEvents(): SessionEvent[] {
 }
 
 describe('SessionStream & SessionEventCard', () => {
-  it('renders empty and loading states', () => {
+  it('renders skeleton loading, error retry, and empty states', () => {
+    const onRetry = vi.fn();
     const { rerender } = render(<SessionStream events={[]} loading={true} />);
-    expect(screen.getByTestId('session-stream-loading')).toHaveTextContent(/Loading session timeline/i);
+    const loadingEl = screen.getByTestId('session-stream-loading');
+    expect(loadingEl).toHaveAttribute('role', 'status');
+    expect(loadingEl).toHaveAttribute('aria-busy', 'true');
+    expect(loadingEl).toHaveTextContent(/Loading session timeline/i);
+
+    rerender(
+      <SessionStream
+        events={[]}
+        loading={false}
+        error="Timed out loading session timeline"
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByTestId('session-stream-error')).toHaveTextContent(
+      'Timed out loading session timeline',
+    );
+    expect(screen.queryByTestId('session-stream-empty')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('session-stream-retry-btn'));
+    expect(onRetry).toHaveBeenCalledTimes(1);
 
     rerender(
       <SessionStream

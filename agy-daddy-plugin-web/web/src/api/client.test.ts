@@ -8,6 +8,7 @@ import {
   deleteSession,
   getAppBasePrefix,
   getRemotePreflight,
+  getSessionDetail,
   getSessionOrg,
   listBackgroundTasks,
   listGithubRepos,
@@ -368,5 +369,33 @@ describe('apiRequest Cloudflare write confirmation gate', () => {
         configurable: true,
       });
     }
+  });
+
+  it('aborts getSessionDetail on timeout with SESSION_DETAIL_TIMEOUT and builds /api/v1/tasks filter query', async () => {
+    fetchMock.mockImplementationOnce(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+    );
+
+    await expect(getSessionDetail('sess-slow', undefined, 20)).rejects.toMatchObject({
+      code: 'SESSION_DETAIL_TIMEOUT',
+      status: 504,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ok: true, runningCount: 0, totalRunningCount: 2, running: [], recent: [], serverTime: 1 }),
+        { status: 200 },
+      ),
+    );
+    await listBackgroundTasks({ sessionId: 'sess-1', project: '/work/repo' });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/tasks?sessionId=sess-1&project=%2Fwork%2Frepo',
+      expect.any(Object),
+    );
   });
 });

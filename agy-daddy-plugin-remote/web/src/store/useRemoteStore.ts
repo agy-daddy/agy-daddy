@@ -2385,8 +2385,9 @@ export class RemoteStoreController {
   }
 
   private handleTaskUpdated(payload: Record<string, unknown>): void {
-    if (typeof payload.runningCount === 'number' && Number.isFinite(payload.runningCount)) {
-      this.setState({ runningTasksCount: payload.runningCount });
+    const count = payload.totalRunningCount ?? payload.runningCount;
+    if (typeof count === 'number' && Number.isFinite(count)) {
+      this.setState({ runningTasksCount: count });
     }
   }
 

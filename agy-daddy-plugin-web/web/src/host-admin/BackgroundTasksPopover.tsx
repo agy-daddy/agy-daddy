@@ -1,19 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
 import { useI18n } from '../i18n';
 import type {
   BackgroundTaskDetailDto,
   BackgroundTaskDto,
+  BackgroundTasksFilterProject,
+  BackgroundTasksFilterSession,
   BackgroundTasksListResponse,
   StopBackgroundTaskResponse,
 } from '../types';
 import styles from './BackgroundTasksPopover.module.css';
+
+export interface BackgroundTasksFilterState {
+  project: string;
+  sessionId: string;
+}
 
 export interface BackgroundTasksPopoverProps {
   tasksData?: BackgroundTasksListResponse | null;
   loading?: boolean;
   channel?: string;
   permissionLevel?: string;
+  activeSessionId?: string | null;
+  activeSessionTitle?: string | null;
+  activeProjectPath?: string | null;
+  activeProjectName?: string | null;
+  filterProject?: string;
+  filterSessionId?: string;
+  onFiltersChange?: (next: BackgroundTasksFilterState) => void;
   onRefresh?: () => void;
   onStopTask?: (taskId: string) => Promise<StopBackgroundTaskResponse | void>;
   onSelectSession?: (sessionId: string) => void;
@@ -42,11 +56,34 @@ function getLiveDurationMs(task: BackgroundTaskDto, nowMs: number): number | nul
   return task.durationMs;
 }
 
+function normalizeFilterPath(raw?: string | null): string {
+  if (!raw) return '';
+  return raw
+    .trim()
+    .replace(/^file:\/\//i, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function extractPathBasename(raw: string): string {
+  const cleaned = raw.replace(/^file:\/\//i, '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = cleaned.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : cleaned;
+}
+
 export function BackgroundTasksPopover({
   tasksData,
   loading = false,
   channel = 'loopback',
   permissionLevel = 'L0',
+  activeSessionId = null,
+  activeSessionTitle = null,
+  activeProjectPath = null,
+  activeProjectName = null,
+  filterProject,
+  filterSessionId,
+  onFiltersChange,
   onRefresh,
   onStopTask,
   onSelectSession,
@@ -64,10 +101,185 @@ export function BackgroundTasksPopover({
   const [stoppingIds, setStoppingIds] = useState<Record<string, boolean>>({});
   const [neutralNotice, setNeutralNotice] = useState<string | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [internalProject, setInternalProject] = useState<string>('');
+  const [internalSessionId, setInternalSessionId] = useState<string>('');
   const logBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const currentProject = filterProject !== undefined ? filterProject : internalProject;
+  const currentSessionId = filterSessionId !== undefined ? filterSessionId : internalSessionId;
+  const hasActiveFilter = Boolean(currentProject || currentSessionId);
 
   const runningList = tasksData?.running || [];
   const recentList = tasksData?.recent || [];
+
+  const normalizedActiveProject = normalizeFilterPath(activeProjectPath);
+
+  const projectOptions = useMemo<BackgroundTasksFilterProject[]>(() => {
+    const base: BackgroundTasksFilterProject[] = tasksData?.filters?.projects
+      ? tasksData.filters.projects.map((p) => ({ ...p }))
+      : (() => {
+          const map = new Map<string, BackgroundTasksFilterProject>();
+          for (const task of [...runningList, ...recentList]) {
+            const pPath = task.projectPath || '';
+            const key = normalizeFilterPath(pPath);
+            if (!key) continue;
+            const existing = map.get(key);
+            if (existing) {
+              existing.count += 1;
+            } else {
+              map.set(key, {
+                key,
+                name: task.projectName || extractPathBasename(pPath),
+                path: pPath,
+                count: 1,
+              });
+            }
+          }
+          return Array.from(map.values());
+        })();
+
+    if (
+      normalizedActiveProject &&
+      activeProjectPath &&
+      !base.some((p) => normalizeFilterPath(p.key || p.path) === normalizedActiveProject)
+    ) {
+      base.unshift({
+        key: normalizedActiveProject,
+        name: activeProjectName || extractPathBasename(activeProjectPath),
+        path: activeProjectPath,
+        count: 0,
+      });
+    }
+    return base;
+  }, [
+    tasksData?.filters?.projects,
+    runningList,
+    recentList,
+    normalizedActiveProject,
+    activeProjectPath,
+    activeProjectName,
+  ]);
+
+  const allSessionOptions = useMemo<BackgroundTasksFilterSession[]>(() => {
+    const base: BackgroundTasksFilterSession[] = tasksData?.filters?.sessions
+      ? tasksData.filters.sessions.map((s) => ({ ...s }))
+      : (() => {
+          const map = new Map<string, BackgroundTasksFilterSession>();
+          for (const task of [...runningList, ...recentList]) {
+            if (!task.sessionId) continue;
+            const existing = map.get(task.sessionId);
+            if (existing) {
+              existing.count += 1;
+            } else {
+              map.set(task.sessionId, {
+                id: task.sessionId,
+                title: task.sessionTitle || task.title || task.sessionId,
+                projectPath: task.projectPath ?? null,
+                count: 1,
+              });
+            }
+          }
+          return Array.from(map.values());
+        })();
+
+    if (activeSessionId && !base.some((s) => s.id === activeSessionId)) {
+      base.unshift({
+        id: activeSessionId,
+        title: activeSessionTitle || activeSessionId,
+        projectPath: activeProjectPath || null,
+        count: 0,
+      });
+    }
+    return base;
+  }, [
+    tasksData?.filters?.sessions,
+    runningList,
+    recentList,
+    activeSessionId,
+    activeSessionTitle,
+    activeProjectPath,
+  ]);
+
+  const normalizedCurrentProject = normalizeFilterPath(currentProject);
+
+  const visibleSessionOptions = useMemo(() => {
+    if (!normalizedCurrentProject) return allSessionOptions;
+    return allSessionOptions.filter(
+      (s) =>
+        s.id === currentSessionId ||
+        normalizeFilterPath(s.projectPath) === normalizedCurrentProject,
+    );
+  }, [allSessionOptions, normalizedCurrentProject, currentSessionId]);
+
+  const commitFilters = useCallback(
+    (next: BackgroundTasksFilterState) => {
+      if (filterProject === undefined) setInternalProject(next.project);
+      if (filterSessionId === undefined) setInternalSessionId(next.sessionId);
+      onFiltersChange?.(next);
+    },
+    [filterProject, filterSessionId, onFiltersChange],
+  );
+
+  const handleProjectSelect = (nextProject: string) => {
+    const nextNorm = normalizeFilterPath(nextProject);
+    let nextSessionId = currentSessionId;
+    if (nextNorm && nextSessionId) {
+      const matchedSess = allSessionOptions.find((s) => s.id === nextSessionId);
+      if (matchedSess && normalizeFilterPath(matchedSess.projectPath) !== nextNorm) {
+        nextSessionId = '';
+      }
+    }
+    commitFilters({ project: nextProject, sessionId: nextSessionId });
+  };
+
+  const handleSessionSelect = (nextSessionId: string) => {
+    commitFilters({ project: currentProject, sessionId: nextSessionId });
+  };
+
+  const handleToggleCurrentProject = () => {
+    if (!activeProjectPath) return;
+    const isSame = normalizedCurrentProject === normalizedActiveProject;
+    handleProjectSelect(isSame ? '' : (normalizedActiveProject || activeProjectPath));
+  };
+
+  const handleToggleCurrentSession = () => {
+    if (!activeSessionId) return;
+    if (currentSessionId === activeSessionId) {
+      commitFilters({ project: currentProject, sessionId: '' });
+      return;
+    }
+    let nextProject = currentProject;
+    if (normalizedCurrentProject && normalizedActiveProject && normalizedCurrentProject !== normalizedActiveProject) {
+      nextProject = '';
+    }
+    commitFilters({ project: nextProject, sessionId: activeSessionId });
+  };
+
+  const handleClearFilters = () => {
+    commitFilters({ project: '', sessionId: '' });
+  };
+
+  const displayedRunning = useMemo(() => {
+    if (onFiltersChange || !hasActiveFilter) return runningList;
+    return runningList.filter((task) => {
+      if (currentSessionId && task.sessionId !== currentSessionId) return false;
+      if (normalizedCurrentProject && normalizeFilterPath(task.projectPath) !== normalizedCurrentProject) {
+        return false;
+      }
+      return true;
+    });
+  }, [onFiltersChange, hasActiveFilter, runningList, currentSessionId, normalizedCurrentProject]);
+
+  const displayedRecent = useMemo(() => {
+    if (onFiltersChange || !hasActiveFilter) return recentList;
+    return recentList.filter((task) => {
+      if (currentSessionId && task.sessionId !== currentSessionId) return false;
+      if (normalizedCurrentProject && normalizeFilterPath(task.projectPath) !== normalizedCurrentProject) {
+        return false;
+      }
+      return true;
+    });
+  }, [onFiltersChange, hasActiveFilter, recentList, currentSessionId, normalizedCurrentProject]);
 
   useEffect(() => {
     if (runningList.length === 0 && !selectedTaskId) return;
@@ -183,6 +395,11 @@ export function BackgroundTasksPopover({
             <span className={styles.duration}>
               {formatDurationMs(getLiveDurationMs(task, nowMs))}
             </span>
+            {task.projectName && (
+              <span className={styles.projectHint} title={task.projectPath || task.projectName}>
+                {task.projectName}
+              </span>
+            )}
             {task.sessionTitle && (
               <span className={styles.sessionHint} title={task.sessionTitle}>
                 {task.sessionTitle}
@@ -315,6 +532,81 @@ export function BackgroundTasksPopover({
         </div>
       )}
 
+      {!selectedTaskId && (
+        <div className={styles.filterBar} data-testid="tasks-filter-bar">
+          <div className={styles.filterSelectRow}>
+            <select
+              className={styles.filterSelect}
+              value={currentProject}
+              onChange={(ev) => handleProjectSelect(ev.target.value)}
+              aria-label={t('tasks.filterProjectAria')}
+              data-testid="tasks-filter-project-select"
+            >
+              <option value="">{t('tasks.filterAllProjects')}</option>
+              {projectOptions.map((proj) => (
+                <option key={proj.key} value={proj.key}>
+                  {proj.count > 0 ? `${proj.name} (${proj.count})` : proj.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.filterSelect}
+              value={currentSessionId}
+              onChange={(ev) => handleSessionSelect(ev.target.value)}
+              aria-label={t('tasks.filterSessionAria')}
+              data-testid="tasks-filter-session-select"
+            >
+              <option value="">{t('tasks.filterAllSessions')}</option>
+              {visibleSessionOptions.map((sess) => (
+                <option key={sess.id} value={sess.id}>
+                  {sess.count > 0 ? `${sess.title} (${sess.count})` : sess.title}
+                </option>
+              ))}
+            </select>
+          </div>
+          {(activeProjectPath || activeSessionId || hasActiveFilter) && (
+            <div className={styles.filterChipRow}>
+              {activeProjectPath && (
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${
+                    normalizedCurrentProject === normalizedActiveProject ? styles.filterChipActive : ''
+                  }`}
+                  onClick={handleToggleCurrentProject}
+                  aria-pressed={normalizedCurrentProject === normalizedActiveProject}
+                  data-testid="tasks-filter-current-project"
+                >
+                  {t('tasks.filterCurrentProject')}
+                </button>
+              )}
+              {activeSessionId && (
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${
+                    currentSessionId === activeSessionId ? styles.filterChipActive : ''
+                  }`}
+                  onClick={handleToggleCurrentSession}
+                  aria-pressed={currentSessionId === activeSessionId}
+                  data-testid="tasks-filter-current-session"
+                >
+                  {t('tasks.filterCurrentSession')}
+                </button>
+              )}
+              {hasActiveFilter && (
+                <button
+                  type="button"
+                  className={styles.filterClearBtn}
+                  onClick={handleClearFilters}
+                  data-testid="tasks-filter-clear"
+                >
+                  {t('tasks.filterClear')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className={styles.body}>
         {selectedTaskId ? (
           detailLoading && !detail ? (
@@ -417,26 +709,38 @@ export function BackgroundTasksPopover({
               </pre>
             </div>
           ) : null
-        ) : runningList.length === 0 && recentList.length === 0 ? (
+        ) : displayedRunning.length === 0 && displayedRecent.length === 0 ? (
           <div className={styles.empty} data-testid="tasks-empty">
-            {t('tasks.empty')}
+            <p className={styles.emptyText}>
+              {hasActiveFilter ? t('tasks.filterEmpty') : t('tasks.empty')}
+            </p>
+            {hasActiveFilter && (
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={handleClearFilters}
+                data-testid="tasks-empty-clear-btn"
+              >
+                {t('tasks.filterClear')}
+              </button>
+            )}
           </div>
         ) : (
           <div className={styles.listWrap}>
-            {runningList.length > 0 && (
+            {displayedRunning.length > 0 && (
               <div className={styles.section}>
                 <div className={styles.sectionTitle}>
-                  {t('tasks.runningSection', { count: runningList.length })}
+                  {t('tasks.runningSection', { count: displayedRunning.length })}
                 </div>
-                {runningList.map(renderTaskRow)}
+                {displayedRunning.map(renderTaskRow)}
               </div>
             )}
-            {recentList.length > 0 && (
+            {displayedRecent.length > 0 && (
               <div className={styles.section}>
                 <div className={styles.sectionTitle}>
-                  {t('tasks.recentSection', { count: recentList.length })}
+                  {t('tasks.recentSection', { count: displayedRecent.length })}
                 </div>
-                {recentList.map(renderTaskRow)}
+                {displayedRecent.map(renderTaskRow)}
               </div>
             )}
           </div>

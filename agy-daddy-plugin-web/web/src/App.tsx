@@ -419,6 +419,9 @@ function formatErrorMessage(err: unknown, fallback: string, t: TranslateFn): str
     if (err.code === 'CONFIRMATION_CANCELLED') {
       return t('errors.confirmationCancelled');
     }
+    if (err.code === 'SESSION_DETAIL_TIMEOUT' || err.status === 504) {
+      return t('errors.sessionDetailTimeout');
+    }
     return `${fallback}: ${err.message || err.code}`;
   }
   if (err instanceof Error && err.message) {
@@ -523,6 +526,12 @@ export function App() {
   const [adminSelectedPluginId, setAdminSelectedPluginId] = useState<string | null>(null);
   const [tasksData, setTasksData] = useState<BackgroundTasksListResponse | null>(null);
   const [tasksLoading, setTasksLoading] = useState<boolean>(false);
+  const [taskFilters, setTaskFilters] = useState<{ project: string; sessionId: string }>({
+    project: '',
+    sessionId: '',
+  });
+  const taskFiltersRef = useRef<{ project: string; sessionId: string }>(taskFilters);
+  taskFiltersRef.current = taskFilters;
   const [composerDraftPatch, setComposerDraftPatch] = useState<{ text: string; nonce: number } | null>(null);
   const [contextLocationOverride, setContextLocationOverride] = useState<ContextDisplayLocation | null>(null);
   const [contextShowSpeedOverride, setContextShowSpeedOverride] = useState<boolean | null>(null);
@@ -593,6 +602,7 @@ export function App() {
   const optimisticEventsRef = useRef<
     Map<string, { sessionId: string; event: SessionEvent<UserEventPayload> }>
   >(new Map());
+  const detailAbortControllerRef = useRef<AbortController | null>(null);
   const eventsSessionIdRef = useRef<string | null>(null);
 
   const syncOptimisticRefForSession = useCallback((sessionId: string, nextEvents: SessionEvent[]) => {
@@ -702,18 +712,42 @@ export function App() {
     }
   }, []);
 
-  const refreshTasks = useCallback(async () => {
-    if (typeof apiClient.listBackgroundTasks !== 'function') return;
-    setTasksLoading(true);
-    try {
-      const res = await apiClient.listBackgroundTasks();
-      setTasksData(res);
-    } catch {
-      // Background tasks panel soft-degrades cleanly when unavailable
-    } finally {
-      setTasksLoading(false);
-    }
-  }, []);
+  const refreshTasks = useCallback(
+    async (overrideFilters?: { project?: string; sessionId?: string }) => {
+      if (typeof apiClient.listBackgroundTasks !== 'function') return;
+      const active = overrideFilters
+        ? {
+            project: overrideFilters.project ?? '',
+            sessionId: overrideFilters.sessionId ?? '',
+          }
+        : taskFiltersRef.current;
+      setTasksLoading(true);
+      try {
+        const hasAny = Boolean(active.project || active.sessionId);
+        const res = hasAny
+          ? await apiClient.listBackgroundTasks({
+              project: active.project || undefined,
+              sessionId: active.sessionId || undefined,
+            })
+          : await apiClient.listBackgroundTasks();
+        setTasksData(res);
+      } catch {
+        // Background tasks panel soft-degrades cleanly when unavailable
+      } finally {
+        setTasksLoading(false);
+      }
+    },
+    [],
+  );
+
+  const handleTaskFiltersChange = useCallback(
+    (next: { project: string; sessionId: string }) => {
+      taskFiltersRef.current = next;
+      setTaskFilters(next);
+      void refreshTasks(next);
+    },
+    [refreshTasks],
+  );
 
   const handleStopTask = useCallback(
     async (taskId: string): Promise<StopBackgroundTaskResponse | void> => {
@@ -825,12 +859,15 @@ export function App() {
 
   const loadSessionDetail = useCallback(
     async (sessionId: string) => {
+      detailAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      detailAbortControllerRef.current = controller;
       const detailSeqAtStart = optimisticSeqRef.current;
       setDetailLoading(true);
       setDetailError(null);
       try {
-        const res = await apiClient.getSessionDetail(sessionId);
-        if (activeSessionIdRef.current !== sessionId) return;
+        const res = await apiClient.getSessionDetail(sessionId, controller.signal);
+        if (controller.signal.aborted || activeSessionIdRef.current !== sessionId) return;
         setSessionDetail(res.session);
         const prevWasSameSession = eventsSessionIdRef.current === sessionId;
         eventsSessionIdRef.current = sessionId;
@@ -850,10 +887,14 @@ export function App() {
         prevRunningRef.current = isRunningStatus(res.session.status);
         markActiveSessionAsRead(sessionId, res.session.numTotalSteps);
       } catch (err) {
-        if (activeSessionIdRef.current !== sessionId) return;
+        if (controller.signal.aborted || activeSessionIdRef.current !== sessionId) return;
+        if (err instanceof Error && err.name === 'AbortError') return;
         setDetailError(formatErrorMessage(err, t('errors.sessionDetailFailed'), t));
       } finally {
-        if (activeSessionIdRef.current === sessionId) {
+        if (detailAbortControllerRef.current === controller) {
+          detailAbortControllerRef.current = null;
+        }
+        if (!controller.signal.aborted && activeSessionIdRef.current === sessionId) {
           setDetailLoading(false);
         }
       }
@@ -1022,6 +1063,9 @@ export function App() {
     setThinkingExpandOverride(null);
     setScrollToSeqState({ seq: 0, nonce: 0 });
     if (!activeSessionId) {
+      detailAbortControllerRef.current?.abort();
+      detailAbortControllerRef.current = null;
+      setDetailLoading(false);
       setSessionDetail(null);
       eventsSessionIdRef.current = null;
       setEvents([]);
@@ -1029,7 +1073,17 @@ export function App() {
       prevRunningRef.current = false;
       return;
     }
+    if (eventsSessionIdRef.current !== activeSessionId) {
+      eventsSessionIdRef.current = activeSessionId;
+      setSessionDetail(null);
+      setEvents([]);
+      setDetailError(null);
+    }
     void loadSessionDetail(activeSessionId);
+    return () => {
+      detailAbortControllerRef.current?.abort();
+      detailAbortControllerRef.current = null;
+    };
   }, [activeSessionId, loadSessionDetail]);
 
   // Live SSE subscription per active session
@@ -1067,6 +1121,7 @@ export function App() {
         if (Array.isArray(delta.events) && delta.events.length > 0) {
           const prevWasSameSession = eventsSessionIdRef.current === activeSessionId;
           eventsSessionIdRef.current = activeSessionId;
+          setDetailError(null);
           setEvents((prev) => {
             const next = mergeEventsBySeq(prevWasSameSession ? prev : [], delta.events);
             syncOptimisticRefForSession(activeSessionId, next);
@@ -2391,6 +2446,10 @@ export function App() {
               contextDisplayLocation={effectiveContextDisplayLocation}
               tasksData={tasksData}
               tasksLoading={tasksLoading}
+              activeProjectPath={activeWorkspaceRoot || null}
+              activeProjectName={workspaceChip || null}
+              taskFilters={taskFilters}
+              onTaskFiltersChange={handleTaskFiltersChange}
               onRefreshTasks={() => void refreshTasks()}
               onStopTask={handleStopTask}
               onSelectTaskSession={(sid) => handleSelectSession(sid)}
@@ -2503,6 +2562,7 @@ export function App() {
                 emptyDescription={
                   activeSessionId ? t('session.emptyDescNoSteps') : t('session.emptyDescNoSession')
                 }
+                onRetry={activeSessionId ? () => void loadSessionDetail(activeSessionId) : undefined}
                 onInspectFile={handleInspectFile}
                 onReviewDiff={handleReviewDiff}
                 scrollContainerRef={streamScrollRef}

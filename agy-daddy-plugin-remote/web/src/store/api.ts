@@ -621,7 +621,15 @@ export const api = {
   listPtySessions: () =>
     requestJson<{ ok: boolean; sessions: PtySessionInfo[] }>('/api/v1/pty/sessions'),
 
-  listTasks: () => requestJson<BackgroundTasksListResponse>('/api/v1/tasks'),
+  listTasks: (params?: { sessionId?: string | null; project?: string | null }) => {
+    const qs = new URLSearchParams();
+    if (params?.sessionId?.trim()) qs.set('sessionId', params.sessionId.trim());
+    if (params?.project?.trim()) qs.set('project', params.project.trim());
+    const suffix = qs.toString();
+    return requestJson<BackgroundTasksListResponse>(
+      suffix ? `/api/v1/tasks?${suffix}` : '/api/v1/tasks'
+    );
+  },
 
   getTaskDetail: (taskId: string) =>
     requestJson<{ ok: boolean; task: BackgroundTaskDetailDto }>(

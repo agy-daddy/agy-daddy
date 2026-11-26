@@ -558,8 +558,52 @@ export function authorizeWorkspaceRoot(root: string): Promise<AuthorizeWorkspace
   });
 }
 
-export function getSessionDetail(sessionId: string, signal?: AbortSignal): Promise<SessionDetailResponse> {
-  return apiRequest<SessionDetailResponse>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { signal });
+export const SESSION_DETAIL_TIMEOUT_MS = 18_000;
+
+export async function getSessionDetail(
+  sessionId: string,
+  signal?: AbortSignal,
+  timeoutMs: number = SESSION_DETAIL_TIMEOUT_MS,
+): Promise<SessionDetailResponse> {
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const onExternalAbort = () => {
+    controller.abort(signal?.reason);
+  };
+
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  const timer =
+    timeoutMs > 0 && Number.isFinite(timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs)
+      : null;
+
+  try {
+    return await apiRequest<SessionDetailResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
+      { signal: controller.signal },
+    );
+  } catch (err) {
+    if (timedOut && !signal?.aborted) {
+      throw new ApiError('SESSION_DETAIL_TIMEOUT', 504, 'SESSION_DETAIL_TIMEOUT');
+    }
+    throw err;
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+    signal?.removeEventListener('abort', onExternalAbort);
+  }
 }
 
 export function sendMessage(sessionId: string, req: SendMessageRequest): Promise<SendMessageResponse> {
@@ -1224,8 +1268,33 @@ export function cancelSideChat(requestId: string): Promise<SideChatCancelRespons
   });
 }
 
-export function listBackgroundTasks(signal?: AbortSignal): Promise<BackgroundTasksListResponse> {
-  return apiRequest<BackgroundTasksListResponse>('/api/v1/tasks', { signal });
+export interface ListBackgroundTasksParams {
+  sessionId?: string | null;
+  project?: string | null;
+}
+
+function isAbortSignalLike(value: unknown): value is AbortSignal {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    typeof (value as AbortSignal).addEventListener === 'function'
+  );
+}
+
+export function listBackgroundTasks(
+  paramsOrSignal?: ListBackgroundTasksParams | AbortSignal,
+  signal?: AbortSignal,
+): Promise<BackgroundTasksListResponse> {
+  const resolvedSignal = isAbortSignalLike(paramsOrSignal) ? paramsOrSignal : signal;
+  const params = isAbortSignalLike(paramsOrSignal) ? undefined : paramsOrSignal;
+  const qs = buildQuery({
+    sessionId: params?.sessionId?.trim() || undefined,
+    project: params?.project?.trim() || undefined,
+  });
+  return apiRequest<BackgroundTasksListResponse>(`/api/v1/tasks${qs}`, {
+    signal: resolvedSignal,
+  });
 }
 
 export function getBackgroundTaskDetail(

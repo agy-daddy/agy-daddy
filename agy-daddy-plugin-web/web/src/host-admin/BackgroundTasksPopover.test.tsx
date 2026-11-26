@@ -124,4 +124,106 @@ describe('BackgroundTasksPopover', () => {
 
     expect(screen.getByTestId('task-stop-btn-cmd:sess-1:step-2')).toBeDisabled();
   });
+
+  it('supports project/session filters, linked convergence, quick chips, and clear empty state', () => {
+    const onFiltersChange = vi.fn();
+    const filteredResponse: BackgroundTasksListResponse = {
+      ok: true,
+      runningCount: 1,
+      totalRunningCount: 3,
+      serverTime: Date.now(),
+      running: [
+        {
+          ...SAMPLE_TASKS.running[0],
+          projectPath: '/work/alpha',
+          projectName: 'Alpha',
+          sessionTitle: 'Alpha Session',
+        },
+      ],
+      recent: [
+        {
+          ...SAMPLE_TASKS.recent[0],
+          taskId: 'cmd:sess-2:step-1',
+          sessionId: 'sess-2',
+          sessionTitle: 'Beta Session',
+          projectPath: '/work/beta',
+          projectName: 'Beta',
+        },
+      ],
+      filters: {
+        projects: [
+          { key: '/work/alpha', name: 'Alpha', path: '/work/alpha', count: 1 },
+          { key: '/work/beta', name: 'Beta', path: '/work/beta', count: 1 },
+        ],
+        sessions: [
+          { id: 'sess-1', title: 'Alpha Session', projectPath: '/work/alpha', count: 1 },
+          { id: 'sess-2', title: 'Beta Session', projectPath: '/work/beta', count: 1 },
+        ],
+      },
+    };
+
+    const { rerender } = render(
+      <I18nProvider defaultLocale="en">
+        <BackgroundTasksPopover
+          tasksData={filteredResponse}
+          activeSessionId="sess-1"
+          activeSessionTitle="Alpha Session"
+          activeProjectPath="/work/alpha"
+          activeProjectName="Alpha"
+          filterProject=""
+          filterSessionId=""
+          onFiltersChange={onFiltersChange}
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId('tasks-filter-current-project'));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ project: '/work/alpha', sessionId: '' });
+
+    // Re-render with project=/work/alpha selected: session options converge to Alpha Session only
+    rerender(
+      <I18nProvider defaultLocale="en">
+        <BackgroundTasksPopover
+          tasksData={filteredResponse}
+          activeSessionId="sess-1"
+          activeSessionTitle="Alpha Session"
+          activeProjectPath="/work/alpha"
+          activeProjectName="Alpha"
+          filterProject="/work/alpha"
+          filterSessionId=""
+          onFiltersChange={onFiltersChange}
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    const sessionSelect = screen.getByTestId('tasks-filter-session-select');
+    expect(sessionSelect).toHaveTextContent('Alpha Session');
+    expect(sessionSelect).not.toHaveTextContent('Beta Session');
+
+    fireEvent.click(screen.getByTestId('tasks-filter-current-session'));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ project: '/work/alpha', sessionId: 'sess-1' });
+
+    // Empty filtered state exposes Clear filters action
+    rerender(
+      <I18nProvider defaultLocale="en">
+        <BackgroundTasksPopover
+          tasksData={{ ...filteredResponse, runningCount: 0, running: [], recent: [] }}
+          activeSessionId="sess-1"
+          activeProjectPath="/work/alpha"
+          filterProject="/work/alpha"
+          filterSessionId="sess-1"
+          onFiltersChange={onFiltersChange}
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByTestId('tasks-empty')).toHaveTextContent(
+      'No background tasks match the current filters.',
+    );
+    fireEvent.click(screen.getByTestId('tasks-empty-clear-btn'));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ project: '', sessionId: '' });
+  });
 });

@@ -40,6 +40,10 @@ export interface TopbarCapsulesProps {
   contextDisplayLocation?: ContextDisplayLocation;
   tasksData?: BackgroundTasksListResponse | null;
   tasksLoading?: boolean;
+  activeProjectPath?: string | null;
+  activeProjectName?: string | null;
+  taskFilters?: { project: string; sessionId: string };
+  onTaskFiltersChange?: (next: { project: string; sessionId: string }) => void;
   onRefreshTasks?: () => void;
   onStopTask?: (taskId: string) => Promise<StopBackgroundTaskResponse | void>;
   onSelectTaskSession?: (sessionId: string) => void;
@@ -337,6 +341,10 @@ export function TopbarCapsules({
   contextDisplayLocation,
   tasksData,
   tasksLoading = false,
+  activeProjectPath,
+  activeProjectName,
+  taskFilters,
+  onTaskFiltersChange,
   onRefreshTasks,
   onStopTask,
   onSelectTaskSession,
@@ -456,6 +464,7 @@ export function TopbarCapsules({
   const conn = getConnectionMeta(connectionStatus, t);
   const hasConnectionAlert = connectionStatus !== 'connected' || !rpcConnected;
   const runningTasksCount =
+    tasksData?.totalRunningCount ??
     tasksData?.runningCount ??
     (tasksData?.running ? tasksData.running.length : 0);
 
@@ -675,6 +684,13 @@ export function TopbarCapsules({
               loading={tasksLoading}
               channel={webAccessStatus?.channel || 'loopback'}
               permissionLevel={webAccessStatus?.permissionLevel || 'L2'}
+              activeSessionId={activeSessionId}
+              activeSessionTitle={sessionTitle}
+              activeProjectPath={activeProjectPath}
+              activeProjectName={activeProjectName}
+              filterProject={taskFilters?.project}
+              filterSessionId={taskFilters?.sessionId}
+              onFiltersChange={onTaskFiltersChange}
               onRefresh={onRefreshTasks}
               onStopTask={onStopTask}
               onSelectSession={onSelectTaskSession}

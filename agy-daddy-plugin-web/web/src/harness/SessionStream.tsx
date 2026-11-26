@@ -22,6 +22,7 @@ export interface SessionStreamProps {
   error?: string | null;
   emptyTitle?: string;
   emptyDescription?: string;
+  onRetry?: () => void;
   onInspectFile?: (filePath: string) => void;
   onReviewDiff?: (filePath?: string) => void;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
@@ -65,6 +66,7 @@ export const SessionStream = React.memo(function SessionStream({
   error = null,
   emptyTitle,
   emptyDescription,
+  onRetry,
   onInspectFile,
   onReviewDiff,
   scrollContainerRef,
@@ -371,7 +373,17 @@ export const SessionStream = React.memo(function SessionStream({
       >
         {error && (
           <div className={styles.errorBanner} role="alert" data-testid="session-stream-error">
-            {error}
+            <span className={styles.errorText}>{error}</span>
+            {onRetry && (
+              <button
+                type="button"
+                className={styles.retryBtn}
+                onClick={onRetry}
+                data-testid="session-stream-retry-btn"
+              >
+                {t('common.retry')}
+              </button>
+            )}
           </div>
         )}
 
@@ -392,11 +404,34 @@ export const SessionStream = React.memo(function SessionStream({
         )}
 
         {loading && events.length === 0 ? (
-          <div className={styles.stateCard} data-testid="session-stream-loading">
-            <h3 className={styles.stateTitle}>{t('stream.loadingTitle')}</h3>
-            <p className={styles.stateDesc}>{t('stream.loadingDesc')}</p>
+          <div
+            className={styles.skeletonWrap}
+            role="status"
+            aria-busy="true"
+            aria-label={t('stream.loadingTitle')}
+            data-testid="session-stream-loading"
+          >
+            <span className={styles.srOnly}>{t('stream.loadingTitle')}</span>
+            <div className={styles.skeletonUserRow} aria-hidden="true">
+              <div className={styles.skeletonUserBubble}>
+                <div className={`${styles.skeletonBar} ${styles.skeletonLineShort}`} />
+              </div>
+            </div>
+            <div className={styles.skeletonAssistantBlock} aria-hidden="true">
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineBadge}`} />
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineFull}`} />
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineLong}`} />
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineMedium}`} />
+            </div>
+            <div className={styles.skeletonToolRow} aria-hidden="true">
+              <div className={`${styles.skeletonBar} ${styles.skeletonToolChip}`} />
+            </div>
+            <div className={styles.skeletonAssistantBlock} aria-hidden="true">
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineLong}`} />
+              <div className={`${styles.skeletonBar} ${styles.skeletonLineMedium}`} />
+            </div>
           </div>
-        ) : events.length === 0 || (visibleEvents.length === 0 && !loading) ? (
+        ) : error && events.length === 0 ? null : events.length === 0 || (visibleEvents.length === 0 && !loading) ? (
           <div className={styles.stateCard} data-testid="session-stream-empty">
             <h3 className={styles.stateTitle}>{resolvedEmptyTitle}</h3>
             <p className={styles.stateDesc}>{resolvedEmptyDesc}</p>

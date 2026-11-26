@@ -25,7 +25,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-zh-cn",
       "localRepo": "agy-daddy-plugin-zh-cn",
-      "manifestSha512": "sha512-b/GDaWvShJ7RbzV4uzOHgmU2jKqLZ0+XLBPGBIvLiQ5N0rOqfX8CU6btdmjyVDQJdwsdSXYEYJO2i6uQBGOH5Q=="
+      "manifestSha512": "sha512-V6mKd44CaH3O08BqsgxDi0suDtO20fWdg3aLFM26FvmX+cecRrSYMlTvZlT1AU/yTxLmnq/Z3mZGBAGqG5T0Zw=="
     },
     {
       "id": "agy-daddy.cli",
@@ -73,7 +73,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-chat-nav",
       "localRepo": "agy-daddy-plugin-chat-nav",
-      "manifestSha512": "sha512-iB9f5RvQ7G0LbuvoT5bx6P2kpmhgZ9Pttm5zYTE+BbXIYMKRTIn4uZuOphngWOdsZCZPRpT8nnhqI+yA+K9uhQ=="
+      "manifestSha512": "sha512-vqbzG4KOQFqLGwc2e6bGaImdyGbblOHdPZ31v7pMYbTfuH6BrHSkdn8L771g2IRcGlc/HNzjlI1BeITNco3Ysw=="
     },
     {
       "id": "agy-daddy.quota",

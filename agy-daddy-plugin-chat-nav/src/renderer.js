@@ -1,12 +1,19 @@
 'use strict';
 
 const { CHAT_NAV_STYLES } = require('./styles');
+const { createCodeBlockEnhancer } = require('./code-block-enhancer');
+const { isEditableElement, createOutlineRail } = require('./outline-rail');
 
 const DEFAULT_SETTINGS = Object.freeze({
   showFloatDock: true,
   keepThinkingExpanded: false,
   enableInlineFileEditor: true,
   enableCmdClickLinks: true,
+  enableCodeBlockSticky: true,
+  enableCodeBlockFold: true,
+  codeFoldMinLines: 48,
+  showOutlineRail: true,
+  enableTurnShortcuts: true,
   searchRegexMode: false,
   searchCaseSensitive: false,
   exportSaveBehavior: 'dialog',
@@ -41,6 +48,12 @@ function normalizeRendererSettings(raw = {}) {
     ...DEFAULT_SETTINGS,
     ...(raw && typeof raw === 'object' ? raw : {})
   };
+  const minLines = Number(merged.codeFoldMinLines);
+  merged.codeFoldMinLines = Number.isFinite(minLines) && minLines >= 12 ? Math.min(500, Math.round(minLines)) : 48;
+  merged.enableCodeBlockSticky = merged.enableCodeBlockSticky !== false;
+  merged.enableCodeBlockFold = merged.enableCodeBlockFold !== false;
+  merged.showOutlineRail = merged.showOutlineRail !== false;
+  merged.enableTurnShortcuts = merged.enableTurnShortcuts !== false;
   merged.exportSaveBehavior = merged.exportSaveBehavior === 'direct' ? 'direct' : 'dialog';
   merged.exportSaveDir = typeof merged.exportSaveDir === 'string' ? merged.exportSaveDir.trim() : '';
   merged.exportFormats = normalizeExportFormats(merged.exportFormats);
@@ -173,6 +186,8 @@ async function mount(ctx, options = {}) {
   let editorTextareaEl = null;
   let activeEditorPath = '';
   let activeConvIndex = 0;
+  let codeBlockEnhancer = null;
+  let outlineRail = null;
 
   function clearNodes(list) {
     while (list.length > 0) {
@@ -684,18 +699,21 @@ async function mount(ctx, options = {}) {
   }
 
   function syncDockDialogLayering() {
-    if (!dockEl) return false;
     const open = hasOpenDialog();
-    dockEl.setAttribute?.('data-under-dialog', open ? 'true' : 'false');
-    if (open && exportMenuOpen) {
-      setExportMenuOpen(false);
+    if (dockEl) {
+      dockEl.setAttribute?.('data-under-dialog', open ? 'true' : 'false');
+      if (open && exportMenuOpen) {
+        setExportMenuOpen(false);
+      }
     }
+    outlineRail?.syncPosition?.();
     return open;
   }
 
   function syncDockPosition() {
-    if (!dockEl) return false;
     syncDockDialogLayering();
+    outlineRail?.syncPosition?.();
+    if (!dockEl) return false;
     const areaEl = findChatAreaElement();
     if (dockResizeObserver && areaEl && observedAreaEl !== areaEl) {
       if (observedAreaEl) {
@@ -723,7 +741,7 @@ async function mount(ctx, options = {}) {
   }
 
   function scheduleSyncDockPosition() {
-    if (!dockEl || dockRafId !== null) return;
+    if ((!dockEl && !outlineRail) || dockRafId !== null) return;
     const raf = (win && typeof win.requestAnimationFrame === 'function')
       ? win.requestAnimationFrame.bind(win)
       : (typeof globalThis.requestAnimationFrame === 'function' ? globalThis.requestAnimationFrame : null);
@@ -1301,11 +1319,13 @@ async function mount(ctx, options = {}) {
         }
         lastTurnNav = { top: target, ts: now };
         scrollViewportTo(vp, target);
+        outlineRail?.syncActiveTurnFromScroll?.();
         return true;
       }
     }
     const cur = Number(vp.scrollTop || 0);
     vp.scrollTop = Math.max(0, cur + delta * 360);
+    outlineRail?.syncActiveTurnFromScroll?.();
     return true;
   }
 
@@ -1588,6 +1608,17 @@ async function mount(ctx, options = {}) {
 
   const stopViewportObserver = ctx.anchors.observe('chat.scrollViewport', () => {
     scheduleSyncDockPosition();
+    codeBlockEnhancer?.scheduleRefresh?.();
+    outlineRail?.refresh?.();
+  });
+
+  const stopMessageListObserver = ctx.anchors.observe('chat.messageList', () => {
+    codeBlockEnhancer?.scheduleRefresh?.();
+    outlineRail?.refresh?.();
+  });
+
+  const stopSendBtnObserver = ctx.anchors.observe('composer.sendButton', () => {
+    codeBlockEnhancer?.scheduleRefresh?.();
   });
 
   const stopComposerObserver = ctx.anchors.observe('composer.root', () => {
@@ -1606,6 +1637,17 @@ async function mount(ctx, options = {}) {
     setSearchOpen(false, { silent: true, reason: 'external-close' });
   });
 
+  const stopNavCmdSub = ctx.events?.on?.('chat-nav:command@1', (payload) => {
+    const cmd = payload?.command;
+    if (cmd === 'scroll-top') scrollTop();
+    else if (cmd === 'scroll-bottom') scrollBottom();
+    else if (cmd === 'expand-thinking') expandThinking();
+    else if (cmd === 'turn-prev') stepTurn(-1);
+    else if (cmd === 'turn-next') stepTurn(1);
+    else if (cmd === 'toggle-outline') outlineRail?.setPopoverOpen?.(!outlineRail.isPopoverOpen());
+    else if (cmd === 'collapse-long-code') codeBlockEnhancer?.toggleAllLongBlocks?.();
+  });
+
   const stopContextSub = ctx.state?.subscribe?.('state:context.snapshot@1', (snap) => {
     latestContextCascadeId = snap?.cascadeId ? String(snap.cascadeId) : null;
   });
@@ -1619,6 +1661,23 @@ async function mount(ctx, options = {}) {
       e.preventDefault?.();
       e.stopPropagation?.();
       return;
+    }
+    if (e.key === 'Escape' && outlineRail?.isPopoverOpen?.()) {
+      outlineRail.setPopoverOpen(false);
+      e.preventDefault?.();
+      return;
+    }
+    if (settings.enableTurnShortcuts && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+      const isUp = e.key === 'ArrowUp' || e.code === 'ArrowUp';
+      const isDown = e.key === 'ArrowDown' || e.code === 'ArrowDown';
+      if (isUp || isDown) {
+        if (!hasOpenDialog() && !isEditableElement(e.target, doc)) {
+          if (stepTurn(isUp ? -1 : 1)) {
+            e.preventDefault?.();
+          }
+        }
+        return;
+      }
     }
     // 按住 ⌘（无其他修饰键）浮现左侧 1~9 序号角标
     if ((e.key === 'Meta' || (e.metaKey && !e.key)) && !e.shiftKey && !e.ctrlKey && !e.altKey) {
@@ -1713,6 +1772,29 @@ async function mount(ctx, options = {}) {
 
   ensureDock();
 
+  outlineRail = createOutlineRail({
+    doc,
+    win,
+    anchors: ctx.anchors,
+    findChatAreaElement,
+    hasOpenDialog,
+    scrollViewportTo,
+    getSettings: () => settings
+  });
+
+  codeBlockEnhancer = createCodeBlockEnhancer({
+    doc,
+    win,
+    anchors: ctx.anchors,
+    hostDom: ctx.hostDom,
+    copyText: copyTextToClipboard,
+    showToast: showDockToast,
+    getSettings: () => settings,
+    onDomMutated: () => {
+      outlineRail?.refresh?.();
+    }
+  });
+
   const stopSvc = ctx.services.provide('chat-nav', {
     scrollTop,
     scrollBottom,
@@ -1739,6 +1821,13 @@ async function mount(ctx, options = {}) {
     exportAllConversations,
     setExportMenuOpen,
     getConfiguredExportFormats,
+    refreshCodeBlocks: () => codeBlockEnhancer?.refresh?.() ?? 0,
+    toggleAllLongCodeBlocks: (forceState) => codeBlockEnhancer?.toggleAllLongBlocks?.(forceState) ?? 0,
+    setCodeBlockCollapsed: (preEl, collapsed) => codeBlockEnhancer?.setBlockCollapsed?.(preEl, collapsed) ?? false,
+    refreshOutlineRail: () => outlineRail?.refresh?.() ?? [],
+    setOutlineOpen: (open) => outlineRail?.setPopoverOpen?.(open) ?? false,
+    setOutlineFilter: (mode) => outlineRail?.setFilterMode?.(mode),
+    getOutlineItems: () => outlineRail?.getOutlineItems?.() ?? [],
     getSettings: () => ({ ...settings }),
     registerNavButton(def) {
       if (!def?.id) throw new Error('registerNavButton requires id');
@@ -1754,6 +1843,8 @@ async function mount(ctx, options = {}) {
   const stopSettingsChange = ctx.settings?.onChange?.((nextValues) => {
     settings = normalizeRendererSettings(nextValues || {});
     ensureDock();
+    codeBlockEnhancer?.refresh?.();
+    outlineRail?.refresh?.();
     updateExportButtonMeta();
     if (exportMenuOpen) {
       if (getConfiguredExportFormats().length <= 1) {
@@ -1783,10 +1874,13 @@ async function mount(ctx, options = {}) {
     stopStyles,
     stopThinkingGuard,
     stopViewportObserver,
+    stopMessageListObserver,
+    stopSendBtnObserver,
     stopComposerObserver,
     stopFileHeaderObserver,
     stopDialogObserver,
     stopSearchCloseSub,
+    stopNavCmdSub,
     stopContextSub,
     () => doc?.removeEventListener?.('click', onDocClick),
     () => doc?.removeEventListener?.('keydown', onKeyDown, true),
@@ -1796,6 +1890,8 @@ async function mount(ctx, options = {}) {
     hideConvBadges,
     () => closeInlineEditor(false),
     clearHighlights,
+    () => { codeBlockEnhancer?.dispose?.(); codeBlockEnhancer = null; },
+    () => { outlineRail?.dispose?.(); outlineRail = null; },
     teardownDock,
     () => { if (editorControlEl?.remove) editorControlEl.remove(); editorControlEl = null; },
     () => { customButtons.clear(); }

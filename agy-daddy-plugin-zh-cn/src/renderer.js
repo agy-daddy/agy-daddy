@@ -10,6 +10,17 @@ const {
   parseCustomRules,
   translateText
 } = require('./dictionary');
+const {
+  THINKING_TRANSLATION_MODES,
+  THINKING_TARGET_LANG_FOLLOW,
+  DEFAULT_THINKING_API_MODEL,
+  normalizeThinkingTranslationMode,
+  normalizeThinkingDisplayMode,
+  normalizeThinkingTargetLang
+} = require('./cot-utils');
+const {
+  createCotOverlayController
+} = require('./cot-overlay');
 
 let disposers = [];
 
@@ -591,11 +602,26 @@ function mergeManagedSettings(raw = {}, base = {}) {
       : (base.translateConversationTitles !== undefined ? Boolean(base.translateConversationTitles) : true),
     enableRemoteThinkingTranslation: raw.enableRemoteThinkingTranslation !== undefined
       ? Boolean(raw.enableRemoteThinkingTranslation)
-      : Boolean(base.enableRemoteThinkingTranslation)
+      : Boolean(base.enableRemoteThinkingTranslation),
+    thinkingTranslationMode: raw.thinkingTranslationMode !== undefined
+      ? normalizeThinkingTranslationMode(raw.thinkingTranslationMode, false)
+      : normalizeThinkingTranslationMode(base.thinkingTranslationMode, false),
+    thinkingTargetLang: raw.thinkingTargetLang !== undefined
+      ? normalizeThinkingTargetLang(raw.thinkingTargetLang, normalizeLang)
+      : normalizeThinkingTargetLang(base.thinkingTargetLang || THINKING_TARGET_LANG_FOLLOW, normalizeLang),
+    thinkingDisplayMode: raw.thinkingDisplayMode !== undefined
+      ? normalizeThinkingDisplayMode(raw.thinkingDisplayMode)
+      : normalizeThinkingDisplayMode(base.thinkingDisplayMode),
+    thinkingAntigravityModel: raw.thinkingAntigravityModel !== undefined
+      ? String(raw.thinkingAntigravityModel || '').trim()
+      : String(base.thinkingAntigravityModel || '').trim(),
+    thinkingApiModel: typeof raw.thinkingApiModel === 'string' && raw.thinkingApiModel.trim()
+      ? raw.thinkingApiModel.trim()
+      : (base.thinkingApiModel || DEFAULT_THINKING_API_MODEL)
   };
 }
 
-async function mount(ctx) {
+async function mount(ctx, options = {}) {
   dispose();
 
   let cfg = mergeManagedSettings(ctx.settings.get(), {
@@ -605,6 +631,11 @@ async function mount(ctx) {
     translateThinking: true,
     translateConversationTitles: true,
     enableRemoteThinkingTranslation: false,
+    thinkingTranslationMode: THINKING_TRANSLATION_MODES.OFF,
+    thinkingTargetLang: THINKING_TARGET_LANG_FOLLOW,
+    thinkingDisplayMode: 'bilingual',
+    thinkingAntigravityModel: '',
+    thinkingApiModel: DEFAULT_THINKING_API_MODEL,
     customRules: [],
     titles: {}
   });
@@ -613,6 +644,13 @@ async function mount(ctx) {
     || ctx.anchors.query('topbar.rightCluster')?.ownerDocument
     || globalThis.document;
   const translator = createDomTranslator({ doc: docRef });
+  const cotOverlay = createCotOverlayController({
+    ctx,
+    doc: docRef,
+    getConfig: () => cfg,
+    onOpenFile: options.onOpenFile,
+    trailingDebounceMs: options.cotDebounceMs
+  });
   let thinkingEventsHandled = 0;
   let disposed = false;
   let isApplying = false;
@@ -716,25 +754,43 @@ async function mount(ctx) {
 
   function flushPendingMutations() {
     flushTimer = null;
-    if (disposed || (cfg.lang === 'en' && cfg.brandTitle !== BRAND_TITLE_MODES.HIDDEN) || pendingNodes.size === 0) {
+    const cotEnabled = cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF;
+    if (disposed || (cfg.lang === 'en' && cfg.brandTitle !== BRAND_TITLE_MODES.HIDDEN && !cotEnabled) || pendingNodes.size === 0) {
       pendingNodes.clear();
       return;
     }
     const nodes = Array.from(pendingNodes);
     pendingNodes.clear();
-    runWithMutationGuard(() => {
-      const applyOpts = buildApplyOptions();
-      if (nodes.length > 60) {
-        translator.applyTranslations(applyOpts);
-        return;
-      }
-      const nodeSet = new Set(nodes);
+    let touchedThinking = false;
+    if (cfg.lang !== 'en' || cfg.brandTitle === BRAND_TITLE_MODES.HIDDEN) {
+      runWithMutationGuard(() => {
+        const applyOpts = buildApplyOptions();
+        if (nodes.length > 60) {
+          translator.applyTranslations(applyOpts);
+          touchedThinking = true;
+          return;
+        }
+        const nodeSet = new Set(nodes);
+        for (const node of nodes) {
+          if (!node || hasAncestorInSet(node, nodeSet)) continue;
+          if (node.isConnected === false) continue;
+          if (!touchedThinking && isThinkingNode(node.parentElement || node)) {
+            touchedThinking = true;
+          }
+          translator.applyTranslations(applyOpts, node);
+        }
+      });
+    } else {
       for (const node of nodes) {
-        if (!node || hasAncestorInSet(node, nodeSet)) continue;
-        if (node.isConnected === false) continue;
-        translator.applyTranslations(applyOpts, node);
+        if (node && isThinkingNode(node.parentElement || node)) {
+          touchedThinking = true;
+          break;
+        }
       }
-    });
+    }
+    if (touchedThinking && cotEnabled) {
+      cotOverlay.scheduleScan(30);
+    }
   }
 
   function syncDom() {
@@ -748,6 +804,11 @@ async function mount(ctx) {
         translator.applyTranslations(buildApplyOptions());
       }
     });
+    if (cfg.thinkingTranslationMode === THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.clearAll();
+    } else {
+      cotOverlay.scanNow();
+    }
     const meta = getLanguageMeta(cfg.lang);
     try {
       const langPayload = { lang: cfg.lang, bcp47: meta.bcp47, shortLabel: meta.shortLabel };
@@ -771,6 +832,15 @@ async function mount(ctx) {
     if (cfg.lang !== 'en' && cfg.translateThinking !== false) {
       runWithMutationGuard(() => translator.applyTranslations(buildApplyOptions()));
     }
+    if (cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.scheduleScan(20);
+    }
+  });
+
+  const stopThinkingAnchor = ctx.anchors.observe('chat.thinkingTrigger', () => {
+    if (cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.scheduleScan(30);
+    }
   });
 
   const stopAnchor = ctx.anchors.observe('sidebar.conversationRows', () => {
@@ -787,7 +857,8 @@ async function mount(ctx) {
   const observeRoot = docRef?.documentElement || docRef?.body || null;
   if (MutationObserverCtor && observeRoot) {
     domObserver = new MutationObserverCtor((records) => {
-      if (disposed || isApplying || (cfg.lang === 'en' && cfg.brandTitle !== BRAND_TITLE_MODES.HIDDEN) || !Array.isArray(records)) return;
+      const cotEnabled = cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF;
+      if (disposed || isApplying || (cfg.lang === 'en' && cfg.brandTitle !== BRAND_TITLE_MODES.HIDDEN && !cotEnabled) || !Array.isArray(records)) return;
       let queued = false;
       for (const rec of records) {
         if (!rec) continue;
@@ -811,7 +882,7 @@ async function mount(ctx) {
         subtree: true,
         characterData: true,
         attributes: true,
-        attributeFilter: ['aria-label', 'title', 'placeholder', 'aria-placeholder', 'data-placeholder']
+        attributeFilter: ['aria-label', 'title', 'placeholder', 'aria-placeholder', 'data-placeholder', 'aria-expanded', 'data-state', 'hidden']
       });
     } catch {
       domObserver = null;
@@ -849,14 +920,18 @@ async function mount(ctx) {
         domObserver = null;
       }
     },
+    () => cotOverlay.dispose(),
     stopSettingsSub,
     stopThinkingSub,
+    stopThinkingAnchor,
     stopAnchor,
     () => translator.restoreAll()
   );
 
   return {
-    getThinkingEventsHandled: () => thinkingEventsHandled
+    getThinkingEventsHandled: () => thinkingEventsHandled,
+    getActiveCotPanelCount: () => cotOverlay.getActivePanelCount(),
+    scanCotNow: () => cotOverlay.scanNow()
   };
 }
 

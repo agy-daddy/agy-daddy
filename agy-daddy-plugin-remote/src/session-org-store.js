@@ -280,6 +280,70 @@ function stripOrchestratorKeyword(raw) {
     .trim();
 }
 
+const THINKING_NUM_TO_LEVEL = Object.freeze({
+  1: 'low',
+  2: 'medium',
+  3: 'high',
+  100: 'xhigh'
+});
+
+function normalizeThinkingLevelValue(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return THINKING_NUM_TO_LEVEL[raw] || null;
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+  if (/^\d+$/.test(str)) {
+    return THINKING_NUM_TO_LEVEL[Number(str)] || null;
+  }
+  const lower = str.toLowerCase().replace(/^thinking_level_/, '').replace(/\s+/g, ' ');
+  if (lower === 'no thinking' || lower === 'none' || lower === 'standard') return null;
+  if (lower === 'min' || lower === 'minimal') return 'minimal';
+  if (lower === 'low' || lower === 'fast') return 'low';
+  if (lower === 'med' || lower === 'medium' || lower === 'balanced') return 'medium';
+  if (lower === 'high') return 'high';
+  if (lower === 'xhigh' || lower === 'x-high' || lower === 'extra high' || lower === 'extra_high') return 'xhigh';
+  if (lower === 'max' || lower === 'ultra') return 'max';
+  if (lower === 'thinking' || lower === 'think' || lower === 'extended thinking') return 'thinking';
+  return lower;
+}
+
+function normalizeSupportedThinkingLevels(rawLevels) {
+  if (!Array.isArray(rawLevels)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const entry of rawLevels) {
+    const rawVal = (entry && typeof entry === 'object')
+      ? (entry.thinkingSuffix ?? entry.thinkingLevel ?? entry.level ?? entry.id ?? '')
+      : entry;
+    const norm = normalizeThinkingLevelValue(rawVal);
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
+function resolveOrchestratorFamilyId(modelId = '', master = '') {
+  const cleanId = String(modelId || '').trim();
+  const orchMatch = cleanId.match(/^gemini-pro-orchestrator-(.+)$/i);
+  if (orchMatch && orchMatch[1]) {
+    const suffix = orchMatch[1].trim().toLowerCase();
+    return suffix.startsWith('gemini-') ? suffix : `gemini-4-${suffix}`;
+  }
+  if (/^gemini-pro-orchestrator$/i.test(cleanId)) {
+    return 'gemini-4-carbon';
+  }
+  const cleanMaster = String(master || '').trim().toLowerCase();
+  if (!cleanMaster) return '';
+  if (cleanMaster.includes('opus')) return 'claude-opus-5-5';
+  if (cleanMaster.startsWith('gemini')) return slugifyKey(cleanMaster);
+  if (['carbon', 'argon', 'neon'].includes(cleanMaster)) return `gemini-4-${cleanMaster}`;
+  return slugifyKey(cleanMaster);
+}
+
 /**
  * Parses Antigravity model display label & ID into structured family,
  * thinking tier, and orchestrator metadata for 2-level model pickers.
@@ -298,9 +362,7 @@ function parseModelMetadata(item = {}) {
     || (tagTitle && /\borchestrator\b|编排/i.test(tagTitle))
   );
 
-  let thinkingLevel = typeof item.thinkingLevel === 'string' && item.thinkingLevel.trim()
-    ? item.thinkingLevel.trim().toLowerCase()
-    : null;
+  let thinkingLevel = normalizeThinkingLevelValue(item.thinkingLevel);
   let thinkingLabel = typeof item.thinkingLabel === 'string' && item.thinkingLabel.trim()
     ? item.thinkingLabel.trim()
     : null;
@@ -380,13 +442,31 @@ function parseModelMetadata(item = {}) {
   };
 }
 
+function dedupeThinkingLevels(levels) {
+  const out = [];
+  const seen = new Set();
+  for (const lvl of levels) {
+    const norm = normalizeThinkingLevelValue(lvl);
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
 function buildModelGroups(models = [], rawHostGroups = []) {
   if (!Array.isArray(models) || models.length === 0) return [];
 
   // Map modelId -> host group index/name if host provided groupedModels or agentModelSorts
   const hostOrderMap = new Map();
   let orderCounter = 0;
-  for (const g of (Array.isArray(rawHostGroups) ? rawHostGroups : [])) {
+  const hostGroupEntries = Array.isArray(rawHostGroups)
+    ? rawHostGroups
+    : (isPlainObject(rawHostGroups)
+      ? Object.entries(rawHostGroups).map(([groupId, g]) => ({ groupId, ...(isPlainObject(g) ? g : {}) }))
+      : []);
+  for (const g of hostGroupEntries) {
     if (!isPlainObject(g)) continue;
     const nestedGroups = Array.isArray(g.groups) ? g.groups : [g];
     for (const sub of nestedGroups) {
@@ -439,23 +519,50 @@ function buildModelGroups(models = [], rawHostGroups = []) {
   if (orchestratorModels.length > 0) {
     const sorted = sortVariants(orchestratorModels);
     const defaultItem = sorted.find((m) => m.isDefault) || sorted.find((m) => !m.disabled) || sorted[0];
+    const variantsByMaster = new Map();
+    for (const m of sorted) {
+      const mKey = m.orchestratorMaster ? slugifyKey(m.orchestratorMaster) : '';
+      if (!mKey) continue;
+      if (!variantsByMaster.has(mKey)) variantsByMaster.set(mKey, []);
+      if (m.thinkingLevel) variantsByMaster.get(mKey).push(m.thinkingLevel);
+    }
+
+    const orchVariants = sorted.map((m) => {
+      const mKey = m.orchestratorMaster ? slugifyKey(m.orchestratorMaster) : '';
+      const masterDerived = mKey ? dedupeThinkingLevels(variantsByMaster.get(mKey) || []) : [];
+      const explicitLevels = Array.isArray(m.supportedThinkingLevels) ? [...m.supportedThinkingLevels] : null;
+      const supportedThinkingLevels = explicitLevels && explicitLevels.length > 0
+        ? explicitLevels
+        : (masterDerived.length > 0
+          ? masterDerived
+          : (m.thinkingLevel ? [m.thinkingLevel] : []));
+      return {
+        modelId: m.id,
+        label: m.orchestratorVariant || m.thinkingLabel || m.label,
+        thinkingLevel: m.thinkingLevel || null,
+        supportedThinkingLevels,
+        orchestratorVariant: m.orchestratorVariant || null,
+        orchestratorMaster: m.orchestratorMaster || null,
+        tagTitle: m.tagTitle || null,
+        disabled: Boolean(m.disabled)
+      };
+    });
+
+    const orchGroupLevels = dedupeThinkingLevels([
+      ...orchVariants.flatMap((v) => v.supportedThinkingLevels || []),
+      ...sorted.map((m) => m.thinkingLevel).filter(Boolean)
+    ]);
+
     groups.push({
       id: 'orchestrator',
       label: 'Orchestrator',
       kind: 'orchestrator',
       isOrchestrator: true,
-      hasThinkingTiers: sorted.some((m) => Boolean(m.thinkingLevel)),
+      hasThinkingTiers: sorted.some((m) => Boolean(m.thinkingLevel)) || orchGroupLevels.length > 0,
+      supportedThinkingLevels: orchGroupLevels,
       defaultModelId: defaultItem.id,
       modelIds: sorted.map((m) => m.id),
-      variants: sorted.map((m) => ({
-        modelId: m.id,
-        label: m.orchestratorVariant || m.thinkingLabel || m.label,
-        thinkingLevel: m.thinkingLevel || null,
-        orchestratorVariant: m.orchestratorVariant || null,
-        orchestratorMaster: m.orchestratorMaster || null,
-        tagTitle: m.tagTitle || null,
-        disabled: Boolean(m.disabled)
-      }))
+      variants: orchVariants
     });
   }
 
@@ -467,19 +574,28 @@ function buildModelGroups(models = [], rawHostGroups = []) {
   for (const bucket of orderedBuckets) {
     const sorted = sortVariants(bucket.models);
     const defaultItem = sorted.find((m) => m.isDefault) || sorted.find((m) => !m.disabled) || sorted[0];
-    const hasTiers = sorted.length > 1 || sorted.some((m) => Boolean(m.thinkingLevel));
+    const explicitLevels = dedupeThinkingLevels(
+      sorted.flatMap((m) => (Array.isArray(m.supportedThinkingLevels) ? m.supportedThinkingLevels : []))
+    );
+    const derivedLevels = dedupeThinkingLevels(sorted.map((m) => m.thinkingLevel).filter(Boolean));
+    const groupSupportedLevels = explicitLevels.length > 0 ? explicitLevels : derivedLevels;
+    const hasTiers = sorted.length > 1 || sorted.some((m) => Boolean(m.thinkingLevel)) || groupSupportedLevels.length > 0;
     groups.push({
       id: bucket.id,
       label: bucket.label,
       kind: sorted.length > 1 ? 'thinking_family' : 'single',
       isOrchestrator: false,
       hasThinkingTiers: hasTiers,
+      supportedThinkingLevels: groupSupportedLevels,
       defaultModelId: defaultItem.id,
       modelIds: sorted.map((m) => m.id),
       variants: sorted.map((m) => ({
         modelId: m.id,
         label: m.thinkingLabel || (sorted.length > 1 ? 'Standard' : m.label),
         thinkingLevel: m.thinkingLevel || null,
+        supportedThinkingLevels: (Array.isArray(m.supportedThinkingLevels) && m.supportedThinkingLevels.length > 0)
+          ? [...m.supportedThinkingLevels]
+          : [...groupSupportedLevels],
         orchestratorVariant: null,
         tagTitle: m.tagTitle || null,
         disabled: Boolean(m.disabled)
@@ -495,9 +611,82 @@ function buildModelGroups(models = [], rawHostGroups = []) {
  * MODEL_PLACEHOLDER_* IDs that carry human labels, without over-deduplicating
  * distinct thinking tiers or orchestrator variants.
  */
-function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroups = [] } = {}) {
+function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroups = [], modelTree = null } = {}) {
   const rawDefault = typeof defaultModelId === 'string' ? defaultModelId.trim() : '';
   const byId = new Map();
+
+  // Index explicit supportedThinkingLevels from rawGroups (groupedModels / web-harness groups) and modelTree
+  const groupMetaByFamilyId = new Map();
+  const groupMetaByNameSlug = new Map();
+  const variantMetaByModelId = new Map();
+  const treeLeafByRequestedId = new Map();
+  const treeLeafByModelId = new Map();
+  const treeOrchByFamilyId = new Map();
+
+  const registerGroupMeta = (familyIdRaw, gObj) => {
+    if (!isPlainObject(gObj)) return;
+    const levels = normalizeSupportedThinkingLevels(gObj.supportedThinkingLevels);
+    const displayName = typeof gObj.displayName === 'string' && gObj.displayName.trim()
+      ? gObj.displayName.trim()
+      : (typeof gObj.label === 'string' && gObj.label.trim() ? gObj.label.trim() : '');
+    const familyId = String(familyIdRaw || gObj.groupId || gObj.id || '').trim();
+    if (!levels) return;
+    const entry = { familyId, displayName, supportedThinkingLevels: levels };
+    if (familyId) {
+      groupMetaByFamilyId.set(familyId.toLowerCase(), entry);
+      groupMetaByNameSlug.set(slugifyKey(familyId), entry);
+      for (const sfx of levels) {
+        variantMetaByModelId.set(`${familyId.toLowerCase()}-${sfx}`, { ...entry, thinkingLevel: sfx });
+      }
+    }
+    if (displayName) {
+      groupMetaByNameSlug.set(slugifyKey(displayName), entry);
+    }
+  };
+
+  if (isPlainObject(rawGroups)) {
+    for (const [fid, g] of Object.entries(rawGroups)) {
+      registerGroupMeta(fid, g);
+    }
+  } else if (Array.isArray(rawGroups)) {
+    for (const g of rawGroups) {
+      if (!isPlainObject(g)) continue;
+      registerGroupMeta(g.groupId || g.familyId || g.id, g);
+      if (Array.isArray(g.groups)) {
+        for (const sub of g.groups) {
+          registerGroupMeta(sub?.groupId || sub?.familyId || sub?.id, sub);
+        }
+      }
+    }
+  }
+
+  if (isPlainObject(modelTree) && Array.isArray(modelTree.nodes)) {
+    const visitTreeNodes = (nodes) => {
+      for (const node of nodes) {
+        if (!isPlainObject(node)) continue;
+        if (node.kind === 'leaf') {
+          const levels = normalizeSupportedThinkingLevels(node.supportedThinkingLevels);
+          const defaultSuffix = normalizeThinkingLevelValue(node.defaultThinkingSuffix ?? node.thinkingLevel);
+          const sel = isPlainObject(node.selection) ? node.selection : {};
+          const reqId = typeof sel.requestedModel === 'string' ? sel.requestedModel.trim() : '';
+          const stableId = typeof sel.modelId === 'string' ? sel.modelId.trim() : '';
+          const plannerFamilyId = typeof sel.plannerFamilyId === 'string' ? sel.plannerFamilyId.trim() : '';
+          const leafInfo = {
+            supportedThinkingLevels: levels,
+            defaultThinkingSuffix: defaultSuffix,
+            plannerFamilyId,
+            label: typeof node.label === 'string' ? node.label.trim() : ''
+          };
+          if (reqId) treeLeafByRequestedId.set(reqId, leafInfo);
+          if (stableId) treeLeafByModelId.set(stableId.toLowerCase(), leafInfo);
+          if (plannerFamilyId) treeOrchByFamilyId.set(plannerFamilyId.toLowerCase(), leafInfo);
+        } else if (Array.isArray(node.children)) {
+          visitTreeNodes(node.children);
+        }
+      }
+    };
+    visitTreeNodes(modelTree.nodes);
+  }
 
   for (const item of (Array.isArray(models) ? models : [])) {
     if (typeof item === 'string') {
@@ -508,6 +697,7 @@ function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroup
         byId.set(id, {
           id,
           model: id,
+          modelId: null,
           label: id,
           name: id,
           displayName: id,
@@ -515,14 +705,16 @@ function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroup
           quotaInfo: null,
           maxTokens: null,
           supportsImages: false,
-          ...meta
+          ...meta,
+          supportedThinkingLevels: null
         });
       }
       continue;
     }
     if (!isPlainObject(item)) continue;
-    const id = String(item.id || item.model || item.modelId || item.modelOrAlias?.model || '').trim();
+    const id = String(item.id || item.model || item.modelOrAlias?.model || item.modelId || '').trim();
     if (!id) continue;
+    const stableModelId = typeof item.modelId === 'string' && item.modelId.trim() ? item.modelId.trim() : null;
     const label = String(item.label || item.shortName || item.displayName || item.name || '').trim();
     const displayName = String(item.displayName || item.name || item.label || item.shortName || '').trim();
     if (!label && !displayName) continue;
@@ -530,19 +722,59 @@ function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroup
     if (PLACEHOLDER_MODEL_RE.test(id) && (!label || PLACEHOLDER_MODEL_RE.test(label))) continue;
 
     const existing = byId.get(id);
-    const mergedRaw = existing ? { ...existing, ...item, id, label: label || existing.label, displayName: displayName || existing.displayName } : { ...item, id, label, displayName };
+    const mergedRaw = existing
+      ? {
+          ...existing,
+          ...item,
+          id,
+          modelId: stableModelId || existing.modelId || null,
+          label: label || existing.label,
+          displayName: displayName || existing.displayName
+        }
+      : { ...item, id, modelId: stableModelId, label, displayName };
     const meta = parseModelMetadata(mergedRaw);
+
+    const lowerStable = (mergedRaw.modelId || '').toLowerCase();
+    const variantMeta = lowerStable ? variantMetaByModelId.get(lowerStable) : null;
+    const treeLeaf = treeLeafByRequestedId.get(id)
+      || (lowerStable ? treeLeafByModelId.get(lowerStable) : null)
+      || (meta.isOrchestrator
+        ? treeOrchByFamilyId.get(resolveOrchestratorFamilyId(mergedRaw.modelId || id, meta.orchestratorMaster))
+        : null);
+    const orchFamilyId = meta.isOrchestrator
+      ? resolveOrchestratorFamilyId(mergedRaw.modelId || id, meta.orchestratorMaster)
+      : '';
+    const familyGroupMeta = variantMeta
+      || (orchFamilyId ? groupMetaByFamilyId.get(orchFamilyId.toLowerCase()) : null)
+      || (meta.isOrchestrator ? null : groupMetaByNameSlug.get(slugifyKey(meta.family)));
+
+    const explicitLevels = normalizeSupportedThinkingLevels(mergedRaw.supportedThinkingLevels)
+      || (treeLeaf?.supportedThinkingLevels ? [...treeLeaf.supportedThinkingLevels] : null)
+      || (familyGroupMeta?.supportedThinkingLevels ? [...familyGroupMeta.supportedThinkingLevels] : null);
+
+    const resolvedThinkingLevel = meta.thinkingLevel
+      || variantMeta?.thinkingLevel
+      || (meta.isOrchestrator ? treeLeaf?.defaultThinkingSuffix : null)
+      || null;
+    const resolvedThinkingLabel = meta.thinkingLabel
+      || (resolvedThinkingLevel ? (THINKING_LABEL_MAP[resolvedThinkingLevel] || resolvedThinkingLevel) : null);
+    const resolvedFamily = (!meta.isOrchestrator && familyGroupMeta?.displayName)
+      ? familyGroupMeta.displayName
+      : meta.family;
+
     byId.set(id, {
       ...mergedRaw,
       id,
       model: id,
+      modelId: mergedRaw.modelId || null,
       label: mergedRaw.label || mergedRaw.displayName,
       name: mergedRaw.displayName || mergedRaw.label,
       displayName: mergedRaw.displayName || mergedRaw.label,
       shortName: meta.shortName,
-      family: meta.family,
-      thinkingLevel: meta.thinkingLevel,
-      thinkingLabel: meta.thinkingLabel,
+      family: resolvedFamily,
+      thinkingLevel: resolvedThinkingLevel,
+      thinkingLabel: resolvedThinkingLabel,
+      supportedThinkingLevels: explicitLevels,
       isOrchestrator: meta.isOrchestrator,
       orchestratorVariant: meta.orchestratorVariant,
       orchestratorMaster: meta.orchestratorMaster,
@@ -591,11 +823,22 @@ function sanitizeModelCatalogResult({ models = [], defaultModelId = '', rawGroup
 
   const modelGroups = buildModelGroups(enrichedModels, rawGroups);
   const groupIdByModel = new Map();
+  const groupLevelsByModel = new Map();
   for (const g of modelGroups) {
-    for (const mid of g.modelIds) groupIdByModel.set(mid, g.id);
+    for (const mid of g.modelIds) {
+      groupIdByModel.set(mid, g.id);
+    }
+    for (const v of (g.variants || [])) {
+      if (v.modelId && Array.isArray(v.supportedThinkingLevels)) {
+        groupLevelsByModel.set(v.modelId, [...v.supportedThinkingLevels]);
+      }
+    }
   }
   for (const m of enrichedModels) {
     m.groupId = groupIdByModel.get(m.id) || null;
+    if (!Array.isArray(m.supportedThinkingLevels)) {
+      m.supportedThinkingLevels = groupLevelsByModel.get(m.id) || [];
+    }
   }
 
   return {

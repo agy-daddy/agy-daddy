@@ -127,6 +127,8 @@ async function mount(ctx) {
   let copyHintTimer = null;
   let pcWebCopyHintTimer = null;
   let pcWebOpenHintTimer = null;
+  let refreshSeq = 0;
+  let syncingPcWeb = false;
 
   const stopStyles = ctx.styles.inject(REMOTE_PANEL_CSS, {
     scope: 'shadow',
@@ -134,11 +136,13 @@ async function mount(ctx) {
   });
 
   async function refreshStatus(withPairing = false) {
+    const seq = ++refreshSeq;
     try {
       const [st, pair] = await Promise.all([
         ctx.bridge.post('/status', {}),
         withPairing ? ctx.bridge.post('/pairing', {}).catch(() => null) : Promise.resolve(latestPairing)
       ]);
+      if (seq !== refreshSeq) return st || latestStatus;
       if (st) latestStatus = st;
       if (pair) latestPairing = pair;
       renderUnit();
@@ -166,13 +170,30 @@ async function mount(ctx) {
     const primaryLabel = formatPrimaryChannelLabel(latestStatus, latestPairing);
     const permLevel = resolvePermissionLevel(latestStatus);
     const isWritable = permLevel !== 'L0' || Boolean(latestStatus?.allowRemoteWrite);
-    const pcWeb = latestPairing?.pcWeb || latestStatus?.pcWeb || null;
+    const statusPcWeb = latestStatus?.pcWeb || null;
+    const pairingPcWeb = latestPairing?.pcWeb || null;
+    const isPairingPcWebFresh = Boolean(
+      pairingPcWeb &&
+      (!statusPcWeb || (
+        Boolean(pairingPcWeb.running) === Boolean(statusPcWeb.running) &&
+        String(pairingPcWeb.primaryChannel || '') === String(statusPcWeb.primaryChannel || '') &&
+        String(pairingPcWeb.url || '') === String(statusPcWeb.url || '')
+      ))
+    );
+    const pcWeb = isPairingPcWebFresh ? pairingPcWeb : (statusPcWeb || pairingPcWeb);
     const pcWebRunning = Boolean(pcWeb?.running);
     const pcWebUrl = pcWebRunning ? String(pcWeb.pairingUrl || pcWeb.url || '') : '';
     const pcWebChannel = pcWeb?.primaryChannel && Object.prototype.hasOwnProperty.call(CHANNEL_LABELS, pcWeb.primaryChannel)
       ? pcWeb.primaryChannel
       : (pcWebRunning && pcWebUrl ? 'loopback' : 'offline');
     const pcWebChannelLabel = CHANNEL_LABELS[pcWebChannel] || '本地';
+    const needsChannelSync = Boolean(
+      pcWebRunning &&
+      pcWebUrl &&
+      primaryKey !== 'loopback' &&
+      primaryKey !== 'offline' &&
+      pcWebChannel === 'loopback'
+    );
 
     function formatPcWebCloudflareHint(cfState) {
       if (!cfState || typeof cfState !== 'object') return '';
@@ -203,7 +224,7 @@ async function mount(ctx) {
       panelNode.textContent = [
         `通道: ${primaryLabel}`,
         `权限: ${PERMISSION_BADGE_LABELS[permLevel] || permLevel}`,
-        `地址: ${latestPairing?.primaryUrl || latestStatus.primaryUrl || latestStatus.url || '(无)'}`,
+        `地址: ${(latestStatus.primaryUrl && latestPairing?.primaryUrl && latestStatus.primaryUrl !== latestPairing.primaryUrl) ? latestStatus.primaryUrl : (latestPairing?.primaryUrl || latestStatus.primaryUrl || latestStatus.url || '(无)')}`,
         `PC Web: ${pcWebRunning && pcWebUrl ? pcWebUrl : '未启动'}`
       ].join('\n');
       return;
@@ -270,7 +291,9 @@ async function mount(ctx) {
       pairCard.appendChild(qrBox);
     }
 
-    const urlStr = latestPairing?.primaryUrl || latestStatus.primaryUrl || latestStatus.url || '';
+    const urlStr = (latestStatus.primaryUrl && latestPairing?.primaryUrl && latestStatus.primaryUrl !== latestPairing.primaryUrl)
+      ? latestStatus.primaryUrl
+      : (latestPairing?.primaryUrl || latestStatus.primaryUrl || latestStatus.url || '');
     const urlRow = buildEl(docRef, 'div', 'ag-url-row');
     const urlInput = buildEl(docRef, 'input', 'settings-input');
     urlInput.type = 'text';
@@ -282,7 +305,8 @@ async function mount(ctx) {
     copyBtn.type = 'button';
     copyBtn.setAttribute('data-remote-copy-url', 'true');
     copyBtn.addEventListener('click', () => {
-      try { globalThis.navigator?.clipboard?.writeText?.(urlStr); } catch {}
+      const nav = globalThis.navigator || docRef?.defaultView?.navigator;
+      try { nav?.clipboard?.writeText?.(urlInput.value || urlStr); } catch {}
       copyBtn.textContent = '已复制';
       clearTimeout(copyHintTimer);
       copyHintTimer = setTimeout(() => { copyBtn.textContent = '复制链接'; }, 1500);
@@ -332,17 +356,18 @@ async function mount(ctx) {
       openPcWebBtn.type = 'button';
       openPcWebBtn.setAttribute('data-remote-pcweb-open', 'true');
       openPcWebBtn.addEventListener('click', () => {
+        const targetUrl = pcWebUrlInput.value || pcWebUrl;
         void ctx.bridge.post('/open-pc-web', {})
           .then((res) => {
             if (!res?.ok) {
-              globalThis.open?.(pcWebUrl, '_blank', 'noopener,noreferrer');
+              globalThis.open?.(targetUrl, '_blank', 'noopener,noreferrer');
             }
             openPcWebBtn.textContent = '已打开';
             clearTimeout(pcWebOpenHintTimer);
             pcWebOpenHintTimer = setTimeout(() => { openPcWebBtn.textContent = '浏览器打开'; }, 1500);
           })
           .catch(() => {
-            try { globalThis.open?.(pcWebUrl, '_blank', 'noopener,noreferrer'); } catch {}
+            try { globalThis.open?.(targetUrl, '_blank', 'noopener,noreferrer'); } catch {}
             openPcWebBtn.textContent = '已打开';
             clearTimeout(pcWebOpenHintTimer);
             pcWebOpenHintTimer = setTimeout(() => { openPcWebBtn.textContent = '浏览器打开'; }, 1500);
@@ -353,7 +378,8 @@ async function mount(ctx) {
       copyPcWebBtn.type = 'button';
       copyPcWebBtn.setAttribute('data-remote-pcweb-copy', 'true');
       copyPcWebBtn.addEventListener('click', () => {
-        try { globalThis.navigator?.clipboard?.writeText?.(pcWebUrl); } catch {}
+        const nav = globalThis.navigator || docRef?.defaultView?.navigator;
+        try { nav?.clipboard?.writeText?.(pcWebUrlInput.value || pcWebUrl); } catch {}
         copyPcWebBtn.textContent = '已复制';
         clearTimeout(pcWebCopyHintTimer);
         pcWebCopyHintTimer = setTimeout(() => { copyPcWebBtn.textContent = '复制链接'; }, 1500);
@@ -361,7 +387,60 @@ async function mount(ctx) {
 
       pcWebActions.appendChild(openPcWebBtn);
       pcWebActions.appendChild(copyPcWebBtn);
+
+      if (needsChannelSync) {
+        const syncChannelsBtn = buildEl(
+          docRef,
+          'button',
+          'ag-btn',
+          syncingPcWeb ? '同步中...' : '同步远程通道'
+        );
+        syncChannelsBtn.type = 'button';
+        syncChannelsBtn.disabled = syncingPcWeb;
+        syncChannelsBtn.setAttribute('data-remote-pcweb-sync', 'true');
+        syncChannelsBtn.addEventListener('click', () => {
+          if (syncingPcWeb) return;
+          syncingPcWeb = true;
+          syncChannelsBtn.disabled = true;
+          syncChannelsBtn.textContent = '同步中...';
+          void ctx.bridge.post('/sync-pc-web-channels', {})
+            .then((res) => {
+              syncingPcWeb = false;
+              if (res?.ok) {
+                if (res.status) latestStatus = res.status;
+                if (res.pairing) latestPairing = res.pairing;
+                renderUnit();
+                renderPanel();
+                if (!res.pairing) {
+                  return refreshStatus(true);
+                }
+                return null;
+              }
+              syncChannelsBtn.disabled = false;
+              syncChannelsBtn.textContent = '同步远程通道';
+              return refreshStatus(true);
+            })
+            .catch(() => {
+              syncingPcWeb = false;
+              syncChannelsBtn.disabled = false;
+              syncChannelsBtn.textContent = '同步远程通道';
+            });
+        });
+        pcWebActions.appendChild(syncChannelsBtn);
+      }
+
       pcWebCard.appendChild(pcWebActions);
+
+      if (needsChannelSync) {
+        const syncHintEl = buildEl(
+          docRef,
+          'div',
+          'ag-remote-pcweb-hint',
+          `当前远程访问已启用「${primaryLabel}」，但 PC Web 工作台仍使用本地回环链接。点击「同步远程通道」即可同步通道并生成非回环链接。`
+        );
+        syncHintEl.setAttribute('data-remote-pcweb-sync-hint', 'true');
+        pcWebCard.appendChild(syncHintEl);
+      }
 
       const cfHintText = formatPcWebCloudflareHint(pcWeb?.cloudflareState);
       if (cfHintText) {
@@ -426,10 +505,34 @@ async function mount(ctx) {
   });
 
   const stopStateSub = ctx.state.subscribe('state:remote.status@1', (st) => {
-    if (st) {
-      latestStatus = st;
-      renderUnit();
-      renderPanel();
+    if (!st) return;
+    const prevPrimaryUrl = latestStatus?.primaryUrl || latestPairing?.primaryUrl || '';
+    const nextPrimaryUrl = st.primaryUrl || '';
+    const prevPcWeb = latestStatus?.pcWeb || latestPairing?.pcWeb || null;
+    const nextPcWeb = st.pcWeb || null;
+    const pcWebChanged = Boolean(prevPcWeb?.running) !== Boolean(nextPcWeb?.running)
+      || String(prevPcWeb?.primaryChannel || '') !== String(nextPcWeb?.primaryChannel || '')
+      || String(prevPcWeb?.url || '') !== String(nextPcWeb?.url || '');
+    const primaryChanged = nextPrimaryUrl !== prevPrimaryUrl
+      || String(latestStatus?.primaryChannel || '') !== String(st.primaryChannel || '');
+    latestStatus = st;
+    if (primaryChanged && latestPairing && latestPairing.primaryUrl !== nextPrimaryUrl) {
+      latestPairing = {
+        ...latestPairing,
+        primaryChannel: st.primaryChannel,
+        primaryUrl: nextPrimaryUrl
+      };
+    }
+    if (pcWebChanged && latestPairing?.pcWeb) {
+      latestPairing = {
+        ...latestPairing,
+        pcWeb: null
+      };
+    }
+    renderUnit();
+    renderPanel();
+    if (primaryChanged || pcWebChanged) {
+      void refreshStatus(true);
     }
   });
 

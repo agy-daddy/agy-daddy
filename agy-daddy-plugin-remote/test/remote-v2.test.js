@@ -1377,3 +1377,153 @@ test('remote-v2: getSessionDetail seeds the delta cursor so the first SSE poll r
     await harness.cleanup();
   }
 });
+
+test('HUB-296: standaloneRpcAdapter & getBootstrap preserve object-map groupedModels and web-harness tree supportedThinkingLevels without padding', async () => {
+  const rpcFixtures = {
+    GetUserStatus: () => ({
+      userStatus: {
+        cascadeModelConfigData: {
+          defaultOverrideModelConfig: { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M533' } },
+          clientModelConfigs: [
+            { label: 'Gemini 4 Neon (Medium)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M533' }, modelId: 'gemini-4-neon-medium' },
+            { label: 'Gemini 4 Neon (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' }, modelId: 'gemini-4-neon-high' },
+            { label: 'Claude Opus 5.5 (Low)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M400' }, modelId: 'claude-opus-5-5-low' },
+            { label: 'Claude Opus 5.5 (Medium)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M401' }, modelId: 'claude-opus-5-5-medium' },
+            { label: 'Claude Opus 5.5 (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M402' }, modelId: 'claude-opus-5-5-high' },
+            { label: 'Orchestrator (Neon)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M537' }, modelId: 'gemini-pro-orchestrator-neon' },
+            { label: 'GPT-OSS 120B', modelOrAlias: { model: 'MODEL_GPT_OSS_SINGLE' }, modelId: 'gpt-oss-120b' }
+          ],
+          groupedModels: {
+            'gemini-4-neon': {
+              displayName: 'Gemini 4 Neon',
+              supportedThinkingLevels: [
+                { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+                { thinkingSuffix: 'high', thinkingDisplayName: 'High' }
+              ]
+            },
+            'claude-opus-5-5': {
+              displayName: 'Claude Opus 5.5',
+              supportedThinkingLevels: [
+                { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+                { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+                { thinkingSuffix: 'high', thinkingDisplayName: 'High' }
+              ]
+            },
+            'gpt-oss-120b': {
+              displayName: 'GPT-OSS 120B',
+              supportedThinkingLevels: []
+            }
+          }
+        }
+      }
+    }),
+    GetAvailableModels: () => ({
+      response: {
+        defaultAgentModelId: 'MODEL_PLACEHOLDER_M533',
+        models: {
+          'gemini-4-neon-medium': { model: 'MODEL_PLACEHOLDER_M533', displayName: 'Gemini 4 Neon (Medium)', thinkingLevel: 2 },
+          'gemini-4-neon-high': { model: 'MODEL_PLACEHOLDER_M532', displayName: 'Gemini 4 Neon (High)', thinkingLevel: 3 },
+          'claude-opus-5-5-low': { model: 'MODEL_PLACEHOLDER_M400', displayName: 'Claude Opus 5.5 (Low)', thinkingLevel: 1 },
+          'claude-opus-5-5-medium': { model: 'MODEL_PLACEHOLDER_M401', displayName: 'Claude Opus 5.5 (Medium)', thinkingLevel: 2 },
+          'claude-opus-5-5-high': { model: 'MODEL_PLACEHOLDER_M402', displayName: 'Claude Opus 5.5 (High)', thinkingLevel: 3 },
+          'gemini-pro-orchestrator-neon': { model: 'MODEL_PLACEHOLDER_M537', displayName: 'Orchestrator (Neon)', thinkingLevel: 3 },
+          'gpt-oss-120b': { model: 'MODEL_GPT_OSS_SINGLE', displayName: 'GPT-OSS 120B' }
+        },
+        groupedModels: {
+          'gemini-4-neon': {
+            displayName: 'Gemini 4 Neon',
+            supportedThinkingLevels: [
+              { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+              { thinkingSuffix: 'high', thinkingDisplayName: 'High' }
+            ]
+          }
+        }
+      }
+    })
+  };
+
+  // Part A: standaloneRpcAdapter (without web-harness) preserves object-map groupedModels
+  const standaloneHarness = createMockHostHarness({
+    onRpc(method) {
+      if (rpcFixtures[method]) return rpcFixtures[method]();
+      if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+      return { ok: true };
+    }
+  });
+  try {
+    const { port: bridgePort } = await standaloneHarness.bridge.start(0);
+    standaloneHarness.rendererHost.configure({ bridgePort, hostToken: standaloneHarness.bridge.hostToken });
+    await standaloneHarness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const remoteSvc = standaloneHarness.bus.getServiceProxy('remote');
+    const st = await remoteSvc.getStatus();
+    const token = await remoteSvc.getPairingToken();
+    const boot = await httpRequest(`${st.url}/api/v1/bootstrap`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(boot.status, 200);
+
+    const neonMed = boot.json.models.find((m) => m.id === 'MODEL_PLACEHOLDER_M533');
+    assert.deepEqual(neonMed.supportedThinkingLevels, ['medium', 'high']);
+
+    const neonGroup = boot.json.modelGroups.find((g) => g.label === 'Gemini 4 Neon');
+    assert.deepEqual(neonGroup.supportedThinkingLevels, ['medium', 'high']);
+
+    const opusGroup = boot.json.modelGroups.find((g) => g.label === 'Claude Opus 5.5');
+    assert.deepEqual(opusGroup.supportedThinkingLevels, ['low', 'medium', 'high']);
+
+    const singleGpt = boot.json.models.find((m) => m.id === 'MODEL_GPT_OSS_SINGLE');
+    assert.deepEqual(singleGpt.supportedThinkingLevels, []);
+
+    const orchGroup = boot.json.modelGroups.find((g) => g.id === 'orchestrator');
+    const orchNeon = orchGroup.variants.find((v) => v.modelId === 'MODEL_PLACEHOLDER_M537');
+    assert.deepEqual(orchNeon.supportedThinkingLevels, ['medium', 'high']);
+
+    await standaloneHarness.unloadPlugin('agy-daddy.remote');
+    standaloneHarness.assertCleanDispose('agy-daddy.remote');
+  } finally {
+    await standaloneHarness.cleanup();
+  }
+
+  // Part B: with web-harness loaded, getBootstrap also preserves modelTree + exact supportedThinkingLevels
+  const webHarness = createMockHostHarness({
+    onRpc(method) {
+      if (rpcFixtures[method]) return rpcFixtures[method]();
+      if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+      return { ok: true };
+    }
+  });
+  try {
+    const { port: bridgePort } = await webHarness.bridge.start(0);
+    webHarness.rendererHost.configure({ bridgePort, hostToken: webHarness.bridge.hostToken });
+    const webPluginDir = path.resolve(PLUGIN_ROOT, '..', 'agy-daddy-plugin-web');
+    await webHarness.loadAndRunPlugin(webPluginDir, { trustLevel: 'T0' });
+    await webHarness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const remoteSvc = webHarness.bus.getServiceProxy('remote');
+    const st = await remoteSvc.getStatus();
+    const token = await remoteSvc.getPairingToken();
+    const boot = await httpRequest(`${st.url}/api/v1/bootstrap`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(boot.status, 200);
+    assert.ok(boot.json.modelTree && Array.isArray(boot.json.modelTree.nodes));
+
+    const orchTreeNode = boot.json.modelTree.nodes.find((n) => n.key === 'orch');
+    const neonOrchLeaf = orchTreeNode.children.find((c) => c.key === 'orch/gemini-4-neon');
+    assert.deepEqual(neonOrchLeaf.supportedThinkingLevels, ['medium', 'high']);
+    const opusOrchLeaf = orchTreeNode.children.find((c) => c.key === 'orch/claude-opus-5-5');
+    assert.deepEqual(opusOrchLeaf.supportedThinkingLevels, ['low', 'medium', 'high']);
+
+    const orchGroup = boot.json.modelGroups.find((g) => g.id === 'orchestrator');
+    const orchNeonVariant = orchGroup.variants.find((v) => v.modelId === 'MODEL_PLACEHOLDER_M537');
+    assert.deepEqual(orchNeonVariant.supportedThinkingLevels, ['medium', 'high']);
+
+    await webHarness.unloadPlugin('agy-daddy.remote');
+    await webHarness.unloadPlugin('agy-daddy.web');
+    webHarness.assertCleanDispose('agy-daddy.remote');
+    webHarness.assertCleanDispose('agy-daddy.web');
+  } finally {
+    await webHarness.cleanup();
+  }
+});

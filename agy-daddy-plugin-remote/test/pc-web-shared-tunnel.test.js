@@ -315,3 +315,188 @@ test('Remote plugin: getSharedAuthBundle, authEpoch rotation, Cloudflare-priorit
     await harness.cleanup();
   }
 });
+
+test('HUB-296: Named Tunnel fallback, Bonjour/LAN/legacy_standalone pcWeb selection, /sync-pc-web-channels, and renderer live refresh/copy', async () => {
+  const os = require('node:os');
+  const { isLanIp } = require('../src/tunnel-security');
+  const harness = createMockHostHarness();
+  const copiedTexts = [];
+  harness.mockDoc.defaultView = {
+    navigator: {
+      clipboard: {
+        writeText(text) {
+          copiedTexts.push(String(text));
+          return Promise.resolve();
+        }
+      }
+    }
+  };
+
+  try {
+    const { port: bridgePort } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort, hostToken: harness.bridge.hostToken });
+
+    // Load real web + remote plugins
+    const webPluginDir = path.resolve(PLUGIN_ROOT, '..', 'agy-daddy-plugin-web');
+    const loadedWeb = await harness.loadAndRunPlugin(webPluginDir, { trustLevel: 'T0' });
+    const loadedRemote = await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+    const remoteSvc = harness.bus.getServiceProxy('remote');
+    const webSvc = harness.bus.getServiceProxy('web-harness');
+
+    const shadow = harness.mockDoc.getElementById('agy-daddy-host').shadowRoot;
+    const bodyEl = shadow.querySelector('[data-agy-slot="popover:agy-daddy.remote:remote-panel"]');
+    shadow.querySelector('[data-unit-id="remote"]').click();
+
+    // Initially both remote & web are loopback-only -> no sync button yet
+    assert.ok(await waitUntil(() => bodyEl.querySelector('[data-remote-pcweb-status]')?.getAttribute('data-remote-pcweb-status') === 'running'));
+    assert.equal(bodyEl.querySelector('[data-remote-pcweb-channel]')?.getAttribute('data-remote-pcweb-channel'), 'loopback');
+    assert.equal(bodyEl.querySelector('[data-remote-pcweb-sync="true"]'), null);
+    const initialPcWebVal = bodyEl.querySelector('[data-remote-pcweb-url-input="true"]')?.value || '';
+    assert.match(initialPcWebVal, /^http:\/\/127\.0\.0\.1:\d+\/\?token=/);
+
+    // Enable bonjour on remote ONLY while web remains loopback-only
+    await harness.updatePluginSettings('agy-daddy.remote', { bonjour: true });
+    assert.ok(await waitUntil(() => bodyEl.querySelector('[data-remote-pcweb-sync="true"]') !== null));
+    assert.ok(bodyEl.querySelector('[data-remote-pcweb-sync-hint="true"]'));
+
+    // Remote HTTP server must NOT expose /sync-pc-web-channels
+    const remoteSt1 = await remoteSvc.getStatus();
+    const remoteToken = await remoteSvc.getPairingToken();
+    const remoteSyncAttempt = await httpRequest(`${remoteSt1.url}/sync-pc-web-channels`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${remoteToken}` },
+      body: {}
+    });
+    assert.equal(remoteSyncAttempt.status, 404);
+
+    // Click "同步远程通道" button in renderer -> invokes bridge /sync-pc-web-channels and updates input + copy immediately
+    bodyEl.querySelector('[data-remote-pcweb-sync="true"]').click();
+    const expectedBonjourPrefix = `http://${os.hostname().replace(/\.local$/i, '')}.local:`;
+    assert.ok(await waitUntil(() => {
+      const val = bodyEl.querySelector('[data-remote-pcweb-url-input="true"]')?.value || '';
+      return val.startsWith(expectedBonjourPrefix) && bodyEl.querySelector('[data-remote-pcweb-sync="true"]') === null;
+    }));
+    const syncedInputVal = bodyEl.querySelector('[data-remote-pcweb-url-input="true"]')?.value || '';
+    assert.equal(bodyEl.querySelector('[data-remote-pcweb-channel]')?.getAttribute('data-remote-pcweb-channel'), 'bonjour');
+
+    bodyEl.querySelector('[data-remote-pcweb-copy="true"]').click();
+    assert.equal(copiedTexts[copiedTexts.length - 1], syncedInputVal);
+    assert.equal(syncedInputVal.includes('127.0.0.1'), false);
+
+    // Also verify web-harness status reflects non-loopback pairingUrl
+    const webStAfterSync = await webSvc.getStatus();
+    assert.equal(webStAfterSync.primaryChannel, 'bonjour');
+    assert.equal(webStAfterSync.pairingUrl, syncedInputVal);
+
+    // Verify Named Tunnel mode: when cfState.publicUrl is empty in named mode, getTunnelPublicOrigin falls back to tunnelHostname
+    const validNamedPayload = Buffer.from(JSON.stringify({ a: 'acc1', t: 'tun1', s: 'sec1' })).toString('base64');
+    await harness.updatePluginSettings('agy-daddy.remote', {
+      cloudflare: true,
+      tunnelMode: 'named',
+      tunnelToken: validNamedPayload,
+      tunnelHostname: 'https://named-ag.example.com'
+    });
+    const namedStart = await remoteSvc.startTunnel({ mode: 'named', dryRun: true });
+    assert.equal(namedStart.ok, true);
+    const namedBundle = await remoteSvc.getSharedAuthBundle();
+    assert.equal(namedBundle.tunnelPublicOrigin, 'https://named-ag.example.com');
+
+    // Verify state:remote.status@1 update triggers refresh and never keeps stale loopback pcWeb cache in renderer
+    await harness.updatePluginSettings('agy-daddy.web', { cloudflare: true });
+    assert.ok(await waitUntil(() => {
+      const val = bodyEl.querySelector('[data-remote-pcweb-url-input="true"]')?.value || '';
+      return val.startsWith('https://named-ag.example.com/pc/?token=');
+    }));
+    bodyEl.querySelector('[data-remote-pcweb-copy="true"]').click();
+    assert.match(copiedTexts[copiedTexts.length - 1], /^https:\/\/named-ag\.example\.com\/pc\/\?token=/);
+
+    // Unload web and verify legacy_standalone + LAN selection in remote normalizePcWebInfo via mock web-harness
+    await harness.unloadPlugin('agy-daddy.web');
+    assert.ok(loadedWeb);
+    assert.ok(loadedRemote);
+
+    let mockCustomWeb = {
+      ok: true,
+      running: true,
+      host: '127.0.0.1',
+      port: 18767,
+      tunnelHostname: 'https://legacy-pc.example.com',
+      cloudflareState: { mode: 'legacy_standalone', publicOrigin: 'https://legacy-pc.example.com' },
+      channels: { loopback: true, cloudflare: true },
+      urls: {
+        loopback: 'http://127.0.0.1:18767',
+        cloudflare: 'https://legacy-pc.example.com'
+      },
+      authUrls: {
+        loopback: 'http://127.0.0.1:18767/?token=tok_leg',
+        cloudflare: 'https://legacy-pc.example.com/?token=tok_leg'
+      }
+    };
+    harness.bus.provideService('agy-daddy.web', 'web-harness', {
+      getStatus: () => mockCustomWeb
+    }, { realm: 'node' });
+
+    const legacySt = await remoteSvc.getPcWebStatus();
+    assert.equal(legacySt.running, true);
+    assert.equal(legacySt.primaryChannel, 'cloudflare');
+    assert.equal(legacySt.pairingUrl, 'https://legacy-pc.example.com/?token=tok_leg');
+    const legacyOpen = await remoteSvc.openPcWeb();
+    assert.equal(legacyOpen.ok, true);
+    assert.equal(legacyOpen.url, 'https://legacy-pc.example.com/?token=tok_leg');
+
+    // If a local LAN IP exists on this host, verify LAN pcWeb selection works cleanly
+    const lanIp = Object.values(os.networkInterfaces())
+      .flat()
+      .find((i) => i && !i.internal && i.family === 'IPv4' && isLanIp(i.address))?.address;
+    if (lanIp) {
+      mockCustomWeb = {
+        ok: true,
+        running: true,
+        host: '0.0.0.0',
+        port: 18767,
+        channels: { loopback: true, lan: true },
+        urls: { loopback: 'http://127.0.0.1:18767', lan: `http://${lanIp}:18767` },
+        authUrls: { loopback: 'http://127.0.0.1:18767/?token=tok_lan', lan: `http://${lanIp}:18767/?token=tok_lan` }
+      };
+      const lanSt = await remoteSvc.getPcWebStatus();
+      assert.equal(lanSt.primaryChannel, 'lan');
+      assert.equal(lanSt.pairingUrl, `http://${lanIp}:18767/?token=tok_lan`);
+    }
+
+    await harness.unloadPlugin('agy-daddy.remote');
+    harness.assertCleanDispose('agy-daddy.remote');
+
+    // Verify Tailscale IPv6 & *.ts.net normalization in isAllowedPcWebUrl / normalizePcWebInfo
+    const { isAllowedPcWebUrl, normalizePcWebInfo, normalizeIpOrHost } = require('../src/node');
+    assert.equal(normalizeIpOrHost('FD7A:115C:A1E0:0:0:0:0:1%utun4'), 'fd7a:115c:a1e0::1');
+    const tsAllowCtx = {
+      localTailscaleIps: new Set([normalizeIpOrHost('fd7a:115c:a1e0:0:0:0:0:1%utun4')]),
+      tailscaleHttpsOrigin: 'https://MY-MAC.TAIL1234.TS.NET'
+    };
+    assert.equal(
+      isAllowedPcWebUrl('http://[fd7a:115c:a1e0::1]:18767/?token=t', tsAllowCtx),
+      true
+    );
+    assert.equal(
+      isAllowedPcWebUrl('https://my-mac.tail1234.ts.net:18767/?token=t', tsAllowCtx),
+      true
+    );
+    assert.equal(
+      isAllowedPcWebUrl('https://attacker.ts.net/?token=t', tsAllowCtx),
+      false
+    );
+    const tsV6Info = normalizePcWebInfo({
+      ok: true,
+      running: true,
+      host: '0.0.0.0',
+      port: 18767,
+      channels: { loopback: true, tailscale: true },
+      urls: { loopback: 'http://127.0.0.1:18767', tailscale: 'http://[fd7a:115c:a1e0:0:0:0:0:1]:18767' },
+      authUrls: { loopback: 'http://127.0.0.1:18767/?token=tok_ts', tailscale: 'http://[fd7a:115c:a1e0:0:0:0:0:1]:18767/?token=tok_ts' }
+    }, tsAllowCtx);
+    assert.equal(tsV6Info.primaryChannel, 'tailscale');
+    assert.equal(tsV6Info.pairingUrl, 'http://[fd7a:115c:a1e0:0:0:0:0:1]:18767/?token=tok_ts');
+  } finally {
+    await harness.cleanup();
+  }
+});

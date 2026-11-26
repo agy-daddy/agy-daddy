@@ -1,0 +1,144 @@
+.fabWrap {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.fabRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.pillBtn {
+  position: relative;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 11px;
+  border-radius: var(--ag-r-pill);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-surface-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--ag-fg);
+  box-shadow: var(--ag-highlight-top), var(--ag-shadow-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: transform 120ms var(--ag-ease-out), background-color 140ms var(--ag-ease-out);
+}
+
+.pillBtn:active {
+  transform: scale(0.96);
+}
+
+.sheetBody {
+  padding: 12px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-subcard);
+  color: var(--ag-fg);
+  font-size: 16px;
+}
+
+.searchInputInvalid {
+  border-color: var(--ag-danger);
+}
+
+.toggleBtn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-subcard);
+  color: var(--ag-secondary);
+  font-size: 12.5px;
+  font-weight: 650;
+  font-family: var(--ag-font-mono);
+  flex-shrink: 0;
+}
+
+.toggleBtnActive {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  border-color: transparent;
+}
+
+.matchBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.matchCount {
+  font-size: 12px;
+  color: var(--ag-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.grid4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.navBtn {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-subcard);
+  color: var(--ag-fg);
+  font-size: 12px;
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.navBtn:hover:not(:disabled) {
+  background: var(--ag-control);
+}
+
+.navBtnActive {
+  border-color: var(--ag-accent-border);
+  background: var(--ag-accent-soft);
+  color: var(--ag-accent);
+}

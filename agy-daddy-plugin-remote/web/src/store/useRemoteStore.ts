@@ -1,11 +1,30 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import {
+  createTranslator,
+  LOCALE_STORAGE_KEY,
+  normalizeLocale,
+  type I18nKey,
+  type I18nParams
+} from '../i18n';
+import {
+  COLOR_THEME_STORAGE_KEY,
+  DRAWER_SPEED_STORAGE_KEY,
+  normalizeColorTheme,
+  normalizeDrawerSpeed
+} from '../theme/ThemeProvider';
 import type {
+  ActiveSheetId,
   AppearanceMode,
   BootstrapResponse,
+  ChannelEntryDto,
   ChatMode,
+  ColorThemeId,
   ComposerPreset,
+  ComposerQuickPrompt,
+  ComposerSettingsDto,
   ConfirmPromptState,
   DispatchMode,
+  DrawerSpeedId,
   HostProject,
   ImageAttachment,
   ModelPickerGroup,
@@ -25,9 +44,10 @@ import type {
   SessionGroup,
   SessionPins,
   SessionSummary,
+  SupportedLocale,
   TelemetryPanels
 } from '../types';
-import { api, configureApiClient } from './api';
+import { api, configureApiClient, getApiBaseOrigin, setApiBaseOrigin } from './api';
 import {
   flushDraftSave,
   flushSnapshotSave,
@@ -60,7 +80,12 @@ import {
   unsubscribeWebPush
 } from './push';
 import { RemoteSseClient, type SseStatus } from './sse';
-import { clearSavedToken, extractTokenAndScrubUrl, saveToken } from './token';
+import {
+  clearSavedToken,
+  extractTokenAndScrubUrl,
+  saveToken,
+  scrubSwitchTicketFromUrl
+} from './token';
 
 export {
   applyModelPreferences,
@@ -87,9 +112,11 @@ export interface RemoteState {
   ready: boolean;
   authError: string;
   online: boolean;
+  rpcConnected: boolean;
   sseStatus: SseStatus;
   bootstrap: BootstrapResponse | null;
   channel: string;
+  apiBaseOrigin: string;
   permissionLevel: PermissionLevel;
   permissionInfo: PermissionInfo | null;
   models: NormalizedModel[];
@@ -107,7 +134,11 @@ export interface RemoteState {
   events: SessionEvent[];
   loadingSession: boolean;
   telemetry: TelemetryPanels;
+  runningTasksCount: number;
   presets: ComposerPreset[];
+  quickPrompts: ComposerQuickPrompt[];
+  frequentPrompts: string[];
+  composerSettings: ComposerSettingsDto;
   selectedModelId: string;
   chatMode: ChatMode;
   dispatchMode: DispatchMode;
@@ -116,6 +147,9 @@ export interface RemoteState {
   queue: QueuedMessage[];
   changedFilesCount: number;
   appearance: AppearanceMode;
+  colorTheme: ColorThemeId;
+  drawerSpeed: DrawerSpeedId;
+  locale: SupportedLocale;
   soundAlert: boolean;
   vibrateAlert: boolean;
   pushSubscribed: boolean;
@@ -124,6 +158,11 @@ export interface RemoteState {
   rightOpen: boolean;
   rightTab: RightTabId;
   contextExpanded: boolean;
+  activeSheet: ActiveSheetId;
+  telemetryTab: 'context' | 'usage' | 'quota';
+  hideSystemEvents: boolean;
+  thinkingExpandVersion: number;
+  thinkingExpandTarget: boolean | null;
   confirmPrompt: ConfirmPromptState | null;
   toast: string;
   inspectTargetFile: string;
@@ -466,7 +505,11 @@ export function sanitizePresets(raw: unknown): ComposerPreset[] {
   return out;
 }
 
-function buildDefaultPermissionInfo(level: PermissionLevel): PermissionInfo {
+function buildDefaultPermissionInfo(
+  level: PermissionLevel,
+  locale: SupportedLocale = 'zh-CN'
+): PermissionInfo {
+  const tr = createTranslator(locale);
   return {
     level,
     canRead: true,
@@ -474,9 +517,9 @@ function buildDefaultPermissionInfo(level: PermissionLevel): PermissionInfo {
     canWriteFsGitPty: level === 'L2',
     hostOnlyElevation: true,
     levels: [
-      { level: 'L0', label: 'L0 只读', description: '仅查看对话、文件、Diff 与监控指标' },
-      { level: 'L1', label: 'L1 对话审批', description: '可发消息、插队、审批命令与回答提问' },
-      { level: 'L2', label: 'L2 完整操作', description: '含文件写入、Git 提交推送与 PTY 终端（仅主机端开启）' }
+      { level: 'L0', label: tr('perm.L0.label'), description: tr('perm.L0.desc') },
+      { level: 'L1', label: tr('perm.L1.label'), description: tr('perm.L1.desc') },
+      { level: 'L2', label: tr('perm.L2.label'), description: tr('perm.L2.desc') }
     ]
   };
 }
@@ -490,12 +533,28 @@ export class RemoteStoreController {
   private prevAttentionIds = new Set<string>();
   private initialized = false;
   private pendingUserModelId = '';
+
+  private t(key: I18nKey, params?: I18nParams): string {
+    return createTranslator(this.state.locale)(key, params);
+  }
   private optimisticSeq = 0;
+  private pendingSwitchTicket = '';
 
   constructor() {
     const urlInit = extractTokenAndScrubUrl();
+    this.pendingSwitchTicket = urlInit.switchTicket;
     const appearance = readAppearance();
     applyAppearance(appearance);
+    let colorTheme: ColorThemeId = 'monochrome';
+    let drawerSpeed: DrawerSpeedId = 'normal';
+    let locale: SupportedLocale = 'zh-CN';
+    try {
+      colorTheme =
+        normalizeColorTheme(window.localStorage?.getItem(COLOR_THEME_STORAGE_KEY)) || 'monochrome';
+      drawerSpeed =
+        normalizeDrawerSpeed(window.localStorage?.getItem(DRAWER_SPEED_STORAGE_KEY)) || 'normal';
+      locale = normalizeLocale(window.localStorage?.getItem(LOCALE_STORAGE_KEY)) || 'zh-CN';
+    } catch {}
     const cachedPins = normalizePins(readJsonPref<SessionPins>(PINS_CACHE_KEY, EMPTY_PINS));
     const cachedGroups = readJsonPref<SessionGroup[]>(GROUPS_CACHE_KEY, []);
     const cachedOrchThinking = sanitizeOrchestratorThinkingMap(
@@ -509,11 +568,13 @@ export class RemoteStoreController {
       ready: false,
       authError: '',
       online: typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
+      rpcConnected: true,
       sseStatus: 'disconnected',
       bootstrap: null,
       channel: 'loopback',
+      apiBaseOrigin: getApiBaseOrigin(),
       permissionLevel: 'L0',
-      permissionInfo: buildDefaultPermissionInfo('L0'),
+      permissionInfo: buildDefaultPermissionInfo('L0', locale),
       models: [],
       modelGroups: [],
       modelPickerOpen: false,
@@ -529,7 +590,11 @@ export class RemoteStoreController {
       events: [],
       loadingSession: false,
       telemetry: {},
+      runningTasksCount: 0,
       presets: [],
+      quickPrompts: [],
+      frequentPrompts: [],
+      composerSettings: { showQuickBar: true, ghostSuggest: true, showPromptOptimizer: true },
       selectedModelId: '',
       chatMode: 'chat',
       dispatchMode: 'queue',
@@ -538,6 +603,9 @@ export class RemoteStoreController {
       queue: [],
       changedFilesCount: 0,
       appearance,
+      colorTheme,
+      drawerSpeed,
+      locale,
       soundAlert: readBoolPref(SOUND_KEY, true),
       vibrateAlert: readBoolPref(VIBRATE_KEY, true),
       pushSubscribed: false,
@@ -546,6 +614,11 @@ export class RemoteStoreController {
       rightOpen: false,
       rightTab: 'diff',
       contextExpanded: false,
+      activeSheet: null,
+      telemetryTab: 'context',
+      hideSystemEvents: false,
+      thinkingExpandVersion: 0,
+      thinkingExpandTarget: null,
       confirmPrompt: null,
       toast: '',
       inspectTargetFile: ''
@@ -582,7 +655,7 @@ export class RemoteStoreController {
     return new Promise((resolve) => {
       this.setState({
         confirmPrompt: {
-          title: '高危操作二次确认',
+          title: this.t('store.l2ConfirmTitle'),
           hint,
           resolve: (confirmed: boolean) => {
             this.setState({ confirmPrompt: null });
@@ -597,15 +670,35 @@ export class RemoteStoreController {
     if (this.initialized) return;
     this.initialized = true;
 
-    if (!this.state.token) {
-      const refreshed = extractTokenAndScrubUrl();
-      if (refreshed.token) {
-        this.setState({
-          token: refreshed.token,
-          activeSessionId: this.state.activeSessionId || refreshed.sessionId,
-          enteredFromLanding: refreshed.enteredFromLanding
-        });
+    const refreshed = extractTokenAndScrubUrl();
+    const switchTicket = this.pendingSwitchTicket || refreshed.switchTicket;
+    if (switchTicket) {
+      this.pendingSwitchTicket = '';
+      try {
+        const redeemed = await api.redeemSwitchTicket(switchTicket);
+        if (redeemed?.authToken) {
+          saveToken(redeemed.authToken);
+          this.setState({
+            token: redeemed.authToken,
+            activeSessionId: redeemed.sessionId || this.state.activeSessionId || refreshed.sessionId,
+            composerText: redeemed.draftText || this.state.composerText,
+            enteredFromLanding: true
+          });
+          if (redeemed.sessionId && redeemed.draftText) {
+            saveDraft(redeemed.sessionId, redeemed.draftText).catch(() => {});
+          }
+        }
+      } catch {
+        this.showToast(this.t('store.ticketExpired'));
+      } finally {
+        scrubSwitchTicketFromUrl();
       }
+    } else if (!this.state.token && refreshed.token) {
+      this.setState({
+        token: refreshed.token,
+        activeSessionId: this.state.activeSessionId || refreshed.sessionId,
+        enteredFromLanding: refreshed.enteredFromLanding
+      });
     }
 
     if (typeof window !== 'undefined') {
@@ -635,7 +728,9 @@ export class RemoteStoreController {
       onSessionDelta: (payload) => this.handleSessionDelta(payload),
       onAttentionUpdate: (payload) => this.handleAttentionUpdate(payload),
       onTelemetryPatch: (payload) => this.handleTelemetryPatch(payload),
-      onQueueUpdate: (payload) => this.handleQueueUpdate(payload)
+      onQueueUpdate: (payload) => this.handleQueueUpdate(payload),
+      onStatePatch: (payload) => this.handleStatePatch(payload),
+      onTaskUpdated: (payload) => this.handleTaskUpdated(payload)
     });
 
     const [cachedSessions, cachedQueue, cachedDraft] = await Promise.all([
@@ -759,7 +854,7 @@ export class RemoteStoreController {
       const permissionLevel: PermissionLevel =
         boot.permissionLevel || (boot.writeEnabled ? 'L1' : 'L0');
       const permissionInfo: PermissionInfo =
-        boot.permissionInfo || buildDefaultPermissionInfo(permissionLevel);
+        boot.permissionInfo || buildDefaultPermissionInfo(permissionLevel, this.state.locale);
 
       const bootPins = boot.pins ? normalizePins(boot.pins) : this.state.pins;
       const bootGroups = Array.isArray(boot.groups) ? boot.groups : this.state.groups;
@@ -772,6 +867,8 @@ export class RemoteStoreController {
         orchestratorThinking,
         modelPreferences,
         channel: boot.channel || 'loopback',
+        rpcConnected: boot.rpcConnected !== false,
+        runningTasksCount: Number(boot.runningTasksCount ?? boot.telemetry?.runningTasksCount ?? 0),
         permissionLevel,
         permissionInfo,
         selectedModelId,
@@ -812,6 +909,44 @@ export class RemoteStoreController {
             ...(Array.isArray(presetsRes.frequentPrompts) ? presetsRes.frequentPrompts : [])
           ])
         : [];
+      const quickPrompts: ComposerQuickPrompt[] = Array.isArray(presetsRes?.quickPrompts)
+        ? presetsRes.quickPrompts
+            .map((item, idx) => {
+              const r = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+              const tpl = String(r.template ?? r.prompt ?? r.text ?? '').trim();
+              const lbl = String(r.label ?? r.title ?? tpl).trim();
+              if (!tpl || !lbl) return null;
+              return {
+                id: String(r.id || `qp-${idx}`),
+                label: lbl,
+                template: tpl,
+                category: typeof r.category === 'string' ? r.category : undefined
+              } as ComposerQuickPrompt;
+            })
+            .filter((x): x is ComposerQuickPrompt => Boolean(x))
+        : [];
+      const frequentPrompts: string[] = Array.isArray(presetsRes?.frequentPrompts)
+        ? presetsRes.frequentPrompts
+            .map((item) => {
+              if (typeof item === 'string') return item.trim();
+              if (item && typeof item === 'object') {
+                const r = item as Record<string, unknown>;
+                return String(r.template ?? r.prompt ?? r.text ?? r.label ?? '').trim();
+              }
+              return '';
+            })
+            .filter(Boolean)
+        : [];
+      const composerSettings: ComposerSettingsDto = presetsRes?.settings
+        ? {
+            showQuickBar: presetsRes.settings.showQuickBar !== false,
+            ghostSuggest: presetsRes.settings.ghostSuggest !== false,
+            showPromptOptimizer: presetsRes.settings.showPromptOptimizer !== false,
+            ...(presetsRes.settings.autoCompactThresholdTokens !== undefined
+              ? { autoCompactThresholdTokens: presetsRes.settings.autoCompactThresholdTokens }
+              : {})
+          }
+        : this.state.composerSettings;
 
       const targetId =
         (this.state.activeSessionId &&
@@ -826,6 +961,10 @@ export class RemoteStoreController {
         projects: pinnedOrg.projects,
         pins: resolvedPins,
         presets,
+        quickPrompts,
+        frequentPrompts,
+        composerSettings,
+        rpcConnected: sessRes.rpcConnected !== false && boot.rpcConnected !== false,
         activeSessionId: targetId
       });
 
@@ -834,7 +973,7 @@ export class RemoteStoreController {
         this.syncSessionQueue(targetId);
       }
 
-      this.sse?.connect(this.state.token, targetId || '');
+      this.sse?.connect(this.state.token, targetId || '', this.state.apiBaseOrigin);
       this.refreshDiffBadge();
       if (!initialTelemetry?.context) {
         api
@@ -847,10 +986,14 @@ export class RemoteStoreController {
     } catch (err) {
       const e = err as { status?: number; message?: string };
       if (e.status === 401 || e.status === 403) {
-        this.setState({ authError: '访问令牌无效或通道未授权', ready: true });
+        this.setState({ authError: this.t('store.authInvalid'), ready: true });
       } else {
         this.setState({ ready: true });
-        this.showToast(`连接失败: ${e.message || '网络不可达'}`);
+        this.showToast(
+          this.t('store.connectFailed', {
+            msg: e.message || this.t('store.networkUnreachable')
+          })
+        );
       }
     }
   }
@@ -928,7 +1071,7 @@ export class RemoteStoreController {
       } catch (err) {
         const code = (err as { code?: string })?.code;
         if (code === 'PERMISSION_DENIED') {
-          this.showToast('当前为 L0 只读模式，置顶已暂存本地');
+          this.showToast(this.t('store.l0PinLocal'));
         }
       }
     }
@@ -962,11 +1105,11 @@ export class RemoteStoreController {
             pins: syncedPins
           });
           writeJsonPref(GROUPS_CACHE_KEY, syncedOrg.groups);
-          this.showToast(`已创建分组「${clean}」`);
+          this.showToast(this.t('store.groupCreated', { name: clean }));
           return;
         }
       } catch (err) {
-        this.showToast(`创建分组失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupCreateFailed', { msg: (err as Error).message }));
         return;
       }
     }
@@ -984,7 +1127,7 @@ export class RemoteStoreController {
     const nextGroups = [...this.state.groups, localGroup];
     this.setState({ groups: nextGroups });
     writeJsonPref(GROUPS_CACHE_KEY, nextGroups);
-    this.showToast(`已在本地创建分组「${clean}」`);
+    this.showToast(this.t('store.groupCreatedLocal', { name: clean }));
   }
 
   public async deleteGroup(groupId: string): Promise<void> {
@@ -1002,7 +1145,7 @@ export class RemoteStoreController {
         }
       } catch (err) {
         this.setState({ groups: prevGroups });
-        this.showToast(`删除分组失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupDeleteFailed', { msg: (err as Error).message }));
       }
     }
   }
@@ -1039,7 +1182,7 @@ export class RemoteStoreController {
           return;
         }
       } catch (err) {
-        this.showToast(`分组调整失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
         return;
       }
     }
@@ -1129,6 +1272,26 @@ export class RemoteStoreController {
       (q) => q.sessionId !== sessionId || (q.source === 'local' && !this.state.online)
     );
     const next = [...others, ...normalizedServer];
+    const unchanged =
+      next.length === this.state.queue.length &&
+      next.every((item, idx) => {
+        const cur = this.state.queue[idx];
+        return (
+          cur &&
+          cur.id === item.id &&
+          cur.queueId === item.queueId &&
+          cur.status === item.status &&
+          cur.dispatchMode === item.dispatchMode &&
+          cur.text === item.text &&
+          cur.source === item.source
+        );
+      });
+    if (unchanged) {
+      if (eventsOverride) {
+        this.setState({ events: eventsOverride });
+      }
+      return;
+    }
     this.setState(eventsOverride ? { queue: next, events: eventsOverride } : { queue: next });
     saveQueue(next).catch(() => {});
   }
@@ -1141,7 +1304,7 @@ export class RemoteStoreController {
         await this.selectSession(res.cascadeId);
       }
     } catch (err) {
-      this.showToast(`新建会话失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.newSessionFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1332,9 +1495,46 @@ export class RemoteStoreController {
         }
       };
     }
-    this.setState({
-      telemetry: merged
-    });
+    const patch: Partial<RemoteState> = { telemetry: merged };
+    if (typeof payload.runningTasksCount === 'number' && Number.isFinite(payload.runningTasksCount)) {
+      patch.runningTasksCount = payload.runningTasksCount;
+    }
+    this.setState(patch);
+  }
+
+  private handleStatePatch(payload: Record<string, unknown>): void {
+    const key = typeof payload.key === 'string' ? payload.key : '';
+    const val = payload.value as Record<string, unknown> | undefined;
+    if (key === 'state:host.locale@1' && val) {
+      const nextLocale = normalizeLocale(val.bcp47 || val.locale || val.lang);
+      if (nextLocale) {
+        try {
+          window.localStorage?.setItem(LOCALE_STORAGE_KEY, nextLocale);
+        } catch {}
+        if (typeof document !== 'undefined') document.documentElement.lang = nextLocale;
+        this.setState({ locale: nextLocale });
+      }
+    } else if (key === 'state:composer.settings@1' && val) {
+      const raw = (val.settings && typeof val.settings === 'object'
+        ? val.settings
+        : val) as Record<string, unknown>;
+      this.setState({
+        composerSettings: {
+          showQuickBar: raw.showQuickBar !== false,
+          ghostSuggest: raw.ghostSuggest !== false,
+          showPromptOptimizer: raw.showPromptOptimizer !== false,
+          ...(Number.isFinite(Number(raw.autoCompactThresholdTokens))
+            ? { autoCompactThresholdTokens: Number(raw.autoCompactThresholdTokens) }
+            : {})
+        }
+      });
+    }
+  }
+
+  private handleTaskUpdated(payload: Record<string, unknown>): void {
+    if (typeof payload.runningCount === 'number' && Number.isFinite(payload.runningCount)) {
+      this.setState({ runningTasksCount: payload.runningCount });
+    }
   }
 
   private handleQueueUpdate(payload: Record<string, unknown>): void {
@@ -1364,7 +1564,7 @@ export class RemoteStoreController {
           ? {
               ...q,
               status: 'failed' as const,
-              error: typeof payload.error === 'string' ? payload.error : '发送失败'
+              error: typeof payload.error === 'string' ? payload.error : this.t('store.sendFailed')
             }
           : q
       );
@@ -1389,7 +1589,7 @@ export class RemoteStoreController {
     const next = prev ? `${prev}\n\n${snippet}\n` : `${snippet}\n`;
     this.setComposerText(next);
     this.setState({ rightOpen: false });
-    this.showToast('已回注到输入框');
+    this.showToast(this.t('store.injectedToComposer'));
   }
 
   public addComposerImage(img: ImageAttachment): void {
@@ -1443,7 +1643,10 @@ export class RemoteStoreController {
     this.pendingUserModelId = modelId;
 
     const chosen = this.state.models.find((m) => m.id === modelId);
-    const displayLabel = `编排 · ${masterKey} · ${thinkingLevel}`;
+    const displayLabel = this.t('store.orchestratorSelected', {
+      master: masterKey,
+      tier: thinkingLevel
+    });
     const nextTelemetry: TelemetryPanels =
       this.state.telemetry.context?.available && this.state.telemetry.context.data
         ? {
@@ -1481,10 +1684,6 @@ export class RemoteStoreController {
     }
   }
 
-  public setModelPickerOpen(open: boolean): void {
-    this.setState({ modelPickerOpen: open });
-  }
-
   public setChatMode(chatMode: ChatMode): void {
     this.setState({ chatMode });
   }
@@ -1513,7 +1712,7 @@ export class RemoteStoreController {
       this.sse?.connect(this.state.token, sessionId);
     }
     if (!sessionId) {
-      this.showToast('请先创建或选择会话');
+      this.showToast(this.t('store.selectSessionFirst'));
       return;
     }
 
@@ -1544,7 +1743,7 @@ export class RemoteStoreController {
         saveDraft(sessionId, ''),
         initialActiveId !== sessionId ? saveDraft(initialActiveId, '') : Promise.resolve()
       ]);
-      this.showToast('离线草稿已入队，恢复后自动发送');
+      this.showToast(this.t('store.queuedOffline'));
       return;
     }
 
@@ -1620,7 +1819,7 @@ export class RemoteStoreController {
             await saveQueue(nextQ);
           }
         }
-        this.showToast('已加入发送队列，可在消息上点「立即插队」');
+        this.showToast(this.t('store.queuedWhileRunning'));
         return;
       }
 
@@ -1642,7 +1841,7 @@ export class RemoteStoreController {
       if (canRestoreComposer && text) {
         saveDraft(sessionId, text).catch(() => {});
       }
-      this.showToast(`发送失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.sendFailedMsg', { msg: (err as Error).message }));
     }
   }
 
@@ -1667,7 +1866,7 @@ export class RemoteStoreController {
           this.setState({ queue: remaining });
           await saveQueue(remaining);
         }
-        this.showToast('已立即插队发送');
+        this.showToast(this.t('store.steered'));
         if (this.state.sseStatus !== 'connected') {
           void this.loadSessionDetail(target.sessionId);
         }
@@ -1685,7 +1884,7 @@ export class RemoteStoreController {
       const remaining = this.state.queue.filter((q) => q.id !== target.id);
       this.setState({ queue: remaining });
       await saveQueue(remaining);
-      this.showToast('已立即插队发送');
+      this.showToast(this.t('store.steered'));
       if (this.state.sseStatus !== 'connected') {
         void this.loadSessionDetail(target.sessionId);
       }
@@ -1697,7 +1896,7 @@ export class RemoteStoreController {
       );
       this.setState({ queue: failed });
       await saveQueue(failed);
-      this.showToast(`插队失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.steerFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1711,14 +1910,14 @@ export class RemoteStoreController {
       this.setChatMode('plan');
     }
     await this.removeQueuedMessage(target.id);
-    this.showToast('已移回输入框编辑');
+    this.showToast(this.t('store.movedToEditor'));
   }
 
   public async retryQueuedMessage(id: string): Promise<void> {
     const target = this.state.queue.find((q) => q.id === id || q.queueId === id);
     if (!target) return;
     if (!this.state.online) {
-      this.showToast('当前离线，恢复网络后将自动重试');
+      this.showToast(this.t('store.offlineRetryLater'));
       return;
     }
     this.setState({
@@ -1752,7 +1951,7 @@ export class RemoteStoreController {
       );
       this.setState({ queue: failed });
       await saveQueue(failed);
-      this.showToast(`重试失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.retryFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1822,9 +2021,9 @@ export class RemoteStoreController {
     if (!this.state.activeSessionId) return;
     try {
       await api.cancelSession(this.state.activeSessionId);
-      this.showToast('已发送中断请求');
+      this.showToast(this.t('store.cancelSent'));
     } catch (err) {
-      this.showToast(`中断失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.cancelFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1834,7 +2033,7 @@ export class RemoteStoreController {
       await api.approveStep(this.state.activeSessionId, seq, decision);
       await this.loadSessionDetail(this.state.activeSessionId);
     } catch (err) {
-      this.showToast(`审批失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.approveFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1844,31 +2043,71 @@ export class RemoteStoreController {
       await api.answerStep(this.state.activeSessionId, seq, answers);
       await this.loadSessionDetail(this.state.activeSessionId);
     } catch (err) {
-      this.showToast(`提交回答失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.answerFailed', { msg: (err as Error).message }));
     }
   }
 
-  public async optimizeComposerPrompt(): Promise<void> {
+  public async optimizeComposerPrompt(): Promise<string | null> {
     const text = this.state.composerText.trim();
-    if (!text) return;
+    if (!text) return null;
     try {
       const res = await api.optimizePrompt(text);
       const next = res.optimizedText || res.text || text;
       this.setComposerText(next);
-      this.showToast('已优化提示词');
+      this.showToast(
+        res.unchanged ? this.t('store.promptClearEnough') : this.t('store.promptOptimized')
+      );
+      return next;
     } catch (err) {
-      this.showToast(`优化失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.optimizeFailed', { msg: (err as Error).message }));
+      return null;
     }
   }
 
-  public cycleAppearance(): void {
-    const order: AppearanceMode[] = ['auto', 'light', 'dark'];
-    const next = order[(order.indexOf(this.state.appearance) + 1) % order.length];
+  public setAppearance(next: AppearanceMode): void {
     applyAppearance(next);
     try {
       window.localStorage?.setItem(APPEARANCE_KEY, next);
     } catch {}
     this.setState({ appearance: next });
+  }
+
+  public cycleAppearance(): void {
+    const order: AppearanceMode[] = ['auto', 'light', 'dark'];
+    const next = order[(order.indexOf(this.state.appearance) + 1) % order.length];
+    this.setAppearance(next);
+  }
+
+  public setColorTheme(next: ColorThemeId): void {
+    try {
+      window.localStorage?.setItem(COLOR_THEME_STORAGE_KEY, next);
+    } catch {}
+    this.setState({ colorTheme: next });
+  }
+
+  public setDrawerSpeed(next: DrawerSpeedId): void {
+    try {
+      window.localStorage?.setItem(DRAWER_SPEED_STORAGE_KEY, next);
+    } catch {}
+    this.setState({ drawerSpeed: next });
+  }
+
+  public async setLocale(next: SupportedLocale): Promise<void> {
+    try {
+      window.localStorage?.setItem(LOCALE_STORAGE_KEY, next);
+    } catch {}
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = next;
+    }
+    this.setState({ locale: next });
+    if (this.state.token && this.state.online) {
+      try {
+        const res = await api.setLocale(next);
+        if (res?.localOnly) {
+          this.showToast(this.t('store.localeLocalOnly'));
+        }
+      } catch {}
+    }
   }
 
   public toggleSoundAlert(): void {
@@ -1893,24 +2132,24 @@ export class RemoteStoreController {
       if (this.state.pushSubscribed) {
         await unsubscribeWebPush();
         this.setState({ pushSubscribed: false, pushBusy: false });
-        this.showToast('已关闭锁屏推送');
+        this.showToast(this.t('store.pushDisabled'));
       } else {
-        await subscribeWebPush(this.state.bootstrap?.vapidPublicKey);
+        await subscribeWebPush(this.state.bootstrap?.vapidPublicKey, this.state.locale);
         this.setState({ pushSubscribed: true, pushBusy: false });
-        this.showToast('已开启锁屏推送');
+        this.showToast(this.t('store.pushEnabled'));
       }
     } catch (err) {
       this.setState({ pushBusy: false });
-      this.showToast((err as Error).message || '推送设置失败');
+      this.showToast((err as Error).message || this.t('store.pushFailed'));
     }
   }
 
   public async sendTestPush(): Promise<void> {
     try {
       await api.testPush();
-      this.showToast('已触发测试推送');
+      this.showToast(this.t('store.testPushSent'));
     } catch (err) {
-      this.showToast(`测试推送失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.testPushFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1939,9 +2178,112 @@ export class RemoteStoreController {
     });
   }
 
+  public openRightDrawerDiffForFile(filePath: string): void {
+    this.setState({
+      inspectTargetFile: filePath,
+      rightOpen: true,
+      leftOpen: false,
+      rightTab: 'diff'
+    });
+  }
+
+  public setModelPickerOpen(open: boolean): void {
+    this.setState({
+      modelPickerOpen: open,
+      activeSheet: open ? 'modelPicker' : this.state.activeSheet === 'modelPicker' ? null : this.state.activeSheet
+    });
+  }
+
+  public setActiveSheet(sheet: ActiveSheetId, telemetryTab?: 'context' | 'usage' | 'quota'): void {
+    this.setState({
+      activeSheet: sheet,
+      contextExpanded: sheet === 'telemetry',
+      modelPickerOpen: sheet === 'modelPicker',
+      ...(telemetryTab ? { telemetryTab } : {})
+    });
+  }
+
+  public setTelemetryTab(tab: 'context' | 'usage' | 'quota'): void {
+    this.setState({ telemetryTab: tab });
+  }
+
   public toggleContextPanel(force?: boolean): void {
     const next = typeof force === 'boolean' ? force : !this.state.contextExpanded;
-    this.setState({ contextExpanded: next });
+    this.setState({
+      contextExpanded: next,
+      activeSheet: next ? 'telemetry' : this.state.activeSheet === 'telemetry' ? null : this.state.activeSheet
+    });
+  }
+
+  public setHideSystemEvents(hide: boolean): void {
+    this.setState({ hideSystemEvents: hide });
+  }
+
+  public setThinkingExpandAll(expand: boolean): void {
+    this.setState({
+      thinkingExpandVersion: this.state.thinkingExpandVersion + 1,
+      thinkingExpandTarget: expand
+    });
+  }
+
+  public setRunningTasksCount(runningTasksCount: number): void {
+    this.setState({ runningTasksCount: Math.max(0, Number(runningTasksCount) || 0) });
+  }
+
+  public reconnectSse(): void {
+    this.sse?.reconnect();
+    if (this.state.token) {
+      void this.connectAndSync();
+    }
+  }
+
+  public async compactActiveSession(): Promise<boolean> {
+    if (!this.state.activeSessionId) {
+      this.showToast(this.t('store.selectSessionAction'));
+      return false;
+    }
+    try {
+      await api.compactSession(this.state.activeSessionId);
+      this.showToast(this.t('store.compactSent'));
+      return true;
+    } catch (err) {
+      this.showToast(this.t('store.compactFailed', { msg: (err as Error).message }));
+      return false;
+    }
+  }
+
+  public async switchApiChannelInPage(entry: ChannelEntryDto): Promise<void> {
+    setApiBaseOrigin(entry.origin);
+    this.setState({
+      channel: entry.key,
+      apiBaseOrigin: entry.origin
+    });
+    this.sse?.setBaseOrigin(entry.origin);
+    this.sse?.reconnect();
+    this.showToast(this.t('channels.switchedToast', { label: entry.label }));
+    try {
+      const boot = await api.bootstrap();
+      const nextTelemetry = boot.telemetry?.panels || boot.panels || this.state.telemetry;
+      this.setState({
+        bootstrap: { ...boot, models: this.state.models.length > 0 ? this.state.models : normalizeModelCatalog(boot.models, boot.modelGroups) },
+        channel: boot.channel || entry.key,
+        telemetry: nextTelemetry,
+        runningTasksCount: Number(boot.runningTasksCount ?? this.state.runningTasksCount ?? 0),
+        rpcConnected: boot.rpcConnected !== false
+      });
+    } catch {}
+  }
+
+  public async switchChannelWithTicket(entry: ChannelEntryDto): Promise<void> {
+    const res = await api.createSwitchTicket({
+      targetChannel: entry.key,
+      sessionId: this.state.activeSessionId || null,
+      draftText: this.state.composerText || ''
+    });
+    const nextUrl = `${entry.origin.replace(/\/+$/, '')}/?enter=1&switch_ticket=${encodeURIComponent(res.ticket)}`;
+    if (typeof window !== 'undefined') {
+      window.location.assign(nextUrl);
+    }
   }
 }
 

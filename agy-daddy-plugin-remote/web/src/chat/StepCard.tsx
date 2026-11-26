@@ -1,14 +1,19 @@
 import { memo } from 'preact/compat';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
+import { type TranslateFn, useI18n } from '../i18n';
 import type { PermissionLevel, SessionEvent, SessionEventStatus } from '../types';
 import {
   extractPlannerText,
   extractUserText,
   formatBasename,
   isToolEvent,
-  KIND_LABELS,
   summarizeToolEvent
 } from './chatFilter';
+import {
+  extractCodeActionDiffLines,
+  extractCodeActionDiffStats,
+  extractCodeActionTargetFile
+} from './codeActionUtils';
 import { Markdown } from './Markdown';
 import styles from './StepCard.module.css';
 
@@ -16,8 +21,15 @@ export interface StepCardProps {
   event: SessionEvent;
   permissionLevel?: PermissionLevel;
   onInspectFile?: (filePath: string) => void;
+  onViewDiffFile?: (filePath: string) => void;
   onApprove?: (seq: number, decision: 'allow' | 'deny') => Promise<void> | void;
   onAnswer?: (seq: number, answers: unknown) => Promise<void> | void;
+  thinkingExpandVersion?: number;
+  thinkingExpandTarget?: boolean | null;
+  searchQuery?: string;
+  searchRegex?: boolean;
+  searchCaseSensitive?: boolean;
+  isCurrentMatch?: boolean;
 }
 
 const TERMINAL_STATUSES = new Set<SessionEventStatus>(['done', 'error', 'canceled']);
@@ -51,18 +63,7 @@ function formatJson(v: unknown): string {
   }
 }
 
-function extractNum(
-  stats: Record<string, unknown> | null | undefined,
-  keys: string[]
-): number | null {
-  if (!stats) return null;
-  for (const k of keys) {
-    if (typeof stats[k] === 'number' && Number.isFinite(stats[k])) return stats[k] as number;
-  }
-  return null;
-}
-
-function normalizeQuestions(p: Record<string, unknown>): NormalizedQuestion[] {
+function normalizeQuestions(p: Record<string, unknown>, t: TranslateFn): NormalizedQuestion[] {
   const reqInt =
     p.requestedInteraction && typeof p.requestedInteraction === 'object'
       ? (p.requestedInteraction as Record<string, unknown>)
@@ -97,14 +98,14 @@ function normalizeQuestions(p: Record<string, unknown>): NormalizedQuestion[] {
         return { id: opt, label: opt };
       }
       const o = (opt && typeof opt === 'object' ? opt : {}) as Record<string, unknown>;
-      const label = String(o.label || o.text || o.id || `选项 ${oIdx + 1}`);
+      const label = String(o.label || o.text || o.id || t('step.optionFallback', { index: oIdx + 1 }));
       const id = String(o.id || o.label || o.text || oIdx);
       const description = typeof o.description === 'string' ? o.description : undefined;
       return { id, label, description };
     });
     return {
       header: typeof obj.header === 'string' && obj.header ? obj.header : undefined,
-      question: String(obj.question || obj.prompt || obj.text || `问题 ${qIdx + 1}`),
+      question: String(obj.question || obj.prompt || obj.text || t('step.questionFallback', { index: qIdx + 1 })),
       isMultiSelect: Boolean(obj.isMultiSelect || obj.multiSelect),
       options
     };
@@ -206,7 +207,7 @@ function parseCompletedAnswers(
   });
 }
 
-function getPendingSummaryLines(ev: SessionEvent): {
+function getPendingSummaryLines(ev: SessionEvent, t: TranslateFn): {
   command?: string;
   filePath?: string;
   cwd?: string;
@@ -251,7 +252,7 @@ function getPendingSummaryLines(ev: SessionEvent): {
   const description =
     (typeof spec?.description === 'string' && spec.description) ||
     (typeof p.description === 'string' && p.description) ||
-    (!command && !filePath ? ev.title || summarizeToolEvent(ev) : undefined);
+    (!command && !filePath ? ev.title || summarizeToolEvent(ev, t) : undefined);
 
   return { command, filePath, cwd, description };
 }
@@ -268,14 +269,41 @@ function StepCardInner({
   event,
   permissionLevel = 'L1',
   onInspectFile,
+  onViewDiffFile,
   onApprove,
-  onAnswer
+  onAnswer,
+  thinkingExpandVersion = 0,
+  thinkingExpandTarget = null,
+  searchQuery,
+  searchRegex = false,
+  searchCaseSensitive = false,
+  isCurrentMatch = false
 }: StepCardProps) {
+  const { t } = useI18n();
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
+  const [diffExpanded, setDiffExpanded] = useState(false);
+  const [copiedTurn, setCopiedTurn] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<Record<number, string[]>>({});
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (thinkingExpandVersion > 0 && thinkingExpandTarget !== null) {
+      setThinkingOpen(thinkingExpandTarget);
+    }
+  }, [thinkingExpandVersion, thinkingExpandTarget]);
+
+  const handleCopyText = (text: string) => {
+    if (!text) return;
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopiedTurn(true);
+        setTimeout(() => setCopiedTurn(false), 1500);
+      })
+      .catch(() => {});
+  };
 
   const p = event.payload || {};
   const isUser = event.kind === 'user';
@@ -310,7 +338,11 @@ function StepCardInner({
               </pre>
             )}
             <div className={styles.metaRow}>
-              {typeof p.cwd === 'string' && p.cwd && <span className="ag-chip">cwd: {p.cwd}</span>}
+              {typeof p.cwd === 'string' && p.cwd && (
+                <span className="ag-chip ag-chip-ellipsis" title={`cwd: ${p.cwd}`}>
+                  cwd: {p.cwd}
+                </span>
+              )}
               {hasExit && (
                 <span className="ag-chip" data-tone={p.exitCode === 0 ? 'ok' : 'danger'}>
                   exit {String(p.exitCode)}
@@ -342,14 +374,18 @@ function StepCardInner({
                     {filePath}
                   </button>
                 ) : (
-                  <span className="ag-chip">{filePath}</span>
+                  <span className="ag-chip ag-chip-ellipsis" title={filePath}>
+                    {filePath}
+                  </span>
                 ))}
               {hasRange && (
                 <span className="ag-chip">
                   L{String(p.startLine)}-{String(p.endLine)}
                 </span>
               )}
-              {typeof p.numLines === 'number' && <span className="ag-chip">{p.numLines} 行</span>}
+              {typeof p.numLines === 'number' && (
+                <span className="ag-chip">{t('chat.linesCount', { count: p.numLines })}</span>
+              )}
             </div>
             {typeof p.content === 'string' && p.content && (
               <pre className={styles.codeBlock} data-hscroll="1">
@@ -362,14 +398,21 @@ function StepCardInner({
 
       case 'code_action': {
         const spec = (p.actionSpec as Record<string, unknown> | undefined) || null;
-        const targetFile = typeof spec?.targetFile === 'string' ? spec.targetFile : '';
-        const diffStats = (p.diffStats as Record<string, unknown> | undefined) || null;
-        const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-        const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+        const targetFile = extractCodeActionTargetFile(p, event.title);
+        const { additions, deletions } = extractCodeActionDiffStats(p);
+        const diffLines = extractCodeActionDiffLines(p, 80);
+        const visibleLines = diffExpanded ? diffLines : diffLines.slice(0, 16);
+        const openDiff = onViewDiffFile || onInspectFile;
         return (
           <>
             {typeof spec?.description === 'string' && spec.description && (
-              <Markdown text={spec.description} />
+              <Markdown
+                text={spec.description}
+                highlightQuery={searchQuery}
+                highlightRegex={searchRegex}
+                highlightCaseSensitive={searchCaseSensitive}
+                isCurrentMatch={isCurrentMatch}
+              />
             )}
             <div className={styles.metaRow}>
               {targetFile &&
@@ -394,11 +437,58 @@ function StepCardInner({
                   -{deletions}
                 </span>
               )}
+              {targetFile && openDiff && (
+                <button
+                  type="button"
+                  className={styles.viewDiffBtn}
+                  onClick={() => openDiff(targetFile)}
+                  data-testid={`code-action-diff-${event.seq}`}
+                >
+                  {t('chat.viewInDiff')} ↗
+                </button>
+              )}
             </div>
-            {spec && !spec.description && (
-              <pre className={styles.codeBlock} data-hscroll="1">
-                {formatJson(spec)}
-              </pre>
+            {visibleLines.length > 0 ? (
+              <div className={styles.diffPreviewWrap} data-testid={`code-action-lines-${event.seq}`}>
+                {visibleLines.map((line, i) => (
+                  <div
+                    key={i}
+                    className={[
+                      styles.diffLine,
+                      line.kind === 'add'
+                        ? styles.diffLineAdd
+                        : line.kind === 'del'
+                          ? styles.diffLineDel
+                          : line.kind === 'hunk'
+                            ? styles.diffLineHunk
+                            : styles.diffLineCtx
+                    ].join(' ')}
+                  >
+                    <span className={styles.diffSign}>
+                      {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}
+                    </span>
+                    <span>{line.text}</span>
+                  </div>
+                ))}
+                {diffLines.length > 16 && (
+                  <button
+                    type="button"
+                    className={styles.diffExpandBtn}
+                    onClick={() => setDiffExpanded((v) => !v)}
+                  >
+                    {diffExpanded
+                      ? t('chat.collapsePreview')
+                      : t('chat.expandLines', { count: diffLines.length - 16 })}
+                  </button>
+                )}
+              </div>
+            ) : (
+              spec &&
+              !spec.description && (
+                <pre className={styles.codeBlock} data-hscroll="1">
+                  {formatJson(spec)}
+                </pre>
+              )
             )}
           </>
         );
@@ -410,16 +500,20 @@ function StepCardInner({
           <>
             <div className={styles.metaRow}>
               {typeof p.query === 'string' && p.query && (
-                <span className="ag-chip">检索: {p.query}</span>
+                <span className="ag-chip ag-chip-ellipsis" title={p.query}>
+                  {t('chat.searchQuery')}: {p.query}
+                </span>
               )}
-              {docs.length > 0 && <span className="ag-chip">{docs.length} 条来源</span>}
+              {docs.length > 0 && (
+                <span className="ag-chip">{t('chat.sourcesCount', { count: docs.length })}</span>
+              )}
             </div>
             {typeof p.summary === 'string' && p.summary && <Markdown text={p.summary} />}
             {docs.length > 0 && (
               <div className={styles.subList}>
                 {docs.slice(0, 6).map((d, idx) => {
                   const doc = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>;
-                  const title = String(doc.title || doc.url || `结果 ${idx + 1}`);
+                  const title = String(doc.title || doc.url || t('chat.resultIndex', { index: idx + 1 }));
                   const url = typeof doc.url === 'string' ? doc.url : '';
                   return (
                     <div key={idx} className={styles.subItem}>
@@ -450,10 +544,14 @@ function StepCardInner({
             )}
             <div className={styles.metaRow}>
               {p.includedStepIndexEnd != null && (
-                <span className="ag-chip">至步骤 #{String(p.includedStepIndexEnd)}</span>
+                <span className="ag-chip">
+                  {t('chat.toStep', { seq: String(p.includedStepIndexEnd) })}
+                </span>
               )}
               {typeof p.totalSubagentCount === 'number' && p.totalSubagentCount > 0 && (
-                <span className="ag-chip">{p.totalSubagentCount} 子代理</span>
+                <span className="ag-chip">
+                  {t('chat.subagentsCount', { count: p.totalSubagentCount })}
+                </span>
               )}
             </div>
           </>
@@ -486,21 +584,20 @@ function StepCardInner({
 
   // Standalone non-pending tool call: compact collapsed-by-default disclosure row
   if (isStandaloneTool) {
-    const summary = summarizeToolEvent(event);
+    const summary = summarizeToolEvent(event, t);
     const hasExit = event.kind === 'command' && typeof p.exitCode === 'number';
-    const diffStats =
+    const { additions, deletions } =
       event.kind === 'code_action'
-        ? ((p.diffStats as Record<string, unknown> | undefined) || null)
-        : null;
-    const additions = extractNum(diffStats, ['additions', 'linesAdded', 'added']);
-    const deletions = extractNum(diffStats, ['deletions', 'linesRemoved', 'removed']);
+        ? extractCodeActionDiffStats(p)
+        : { additions: null, deletions: null };
     const inspectPath =
       event.kind === 'file_view' && typeof p.absolutePathUri === 'string'
         ? p.absolutePathUri
-        : event.kind === 'code_action' &&
-            typeof (p.actionSpec as { targetFile?: unknown } | undefined)?.targetFile === 'string'
-          ? String((p.actionSpec as { targetFile: string }).targetFile)
+        : event.kind === 'code_action'
+          ? extractCodeActionTargetFile(p, event.title)
           : '';
+    const chipClickHandler =
+      event.kind === 'code_action' && onViewDiffFile ? onViewDiffFile : onInspectFile;
 
     return (
       <article
@@ -531,22 +628,22 @@ function StepCardInner({
                 aria-hidden="true"
               />
             )}
-            <span className={styles.kind}>{KIND_LABELS[event.kind] || event.kind}</span>
+            <span className={styles.kind}>{t(`kind.${event.kind}`)}</span>
             <span className={styles.toolSummaryText}>{summary}</span>
           </button>
 
           <div className={styles.toolRowRight}>
-            {inspectPath && onInspectFile && (
+            {inspectPath && chipClickHandler && (
               <button
                 type="button"
                 className={styles.fileChipBtn}
                 title={inspectPath}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onInspectFile(inspectPath);
+                  chipClickHandler(inspectPath);
                 }}
               >
-                {formatBasename(inspectPath)}
+                <span className={styles.fileChipText}>{formatBasename(inspectPath)}</span>
               </button>
             )}
             {hasExit && (
@@ -567,7 +664,7 @@ function StepCardInner({
             <button
               type="button"
               className={styles.chevronBtn}
-              aria-label={toolOpen ? '收起' : '展开'}
+              aria-label={toolOpen ? t('chat.collapse') : t('chat.expand')}
               onClick={() => setToolOpen((prev) => !prev)}
             >
               <span className={[styles.chevron, toolOpen ? styles.chevronOpen : ''].join(' ')}>
@@ -584,7 +681,7 @@ function StepCardInner({
 
   // Pending authorization card (command / code_action / file_view / tool_generic / etc.)
   if (isPending && !isUser && event.kind !== 'ask_question') {
-    const info = getPendingSummaryLines(event);
+    const info = getPendingSummaryLines(event, t);
     return (
       <article
         className={`${styles.card} ${styles.cardPending}`}
@@ -595,10 +692,14 @@ function StepCardInner({
         <header className={styles.header}>
           <div className={styles.headerLeft}>
             <span className={styles.pendingDot} aria-hidden="true" />
-            <span className={styles.kindPending}>待审批 · {KIND_LABELS[event.kind] || event.kind}</span>
+            <span className={styles.kindPending}>
+              {t('pending.approvalBadge')} · {t(`kind.${event.kind}`)}
+            </span>
             <span className={styles.seq}>#{event.seq}</span>
           </div>
-          <span className={`${styles.status} ${styles.statusPending}`}>等待确认</span>
+          <span className={`${styles.status} ${styles.statusPending}`}>
+            {t('step.awaitingConfirm')}
+          </span>
         </header>
 
         <div className={styles.approvalBody} data-testid={`inline-approval-${event.seq}`}>
@@ -619,9 +720,15 @@ function StepCardInner({
                   {info.filePath}
                 </button>
               ) : (
-                <span className="ag-chip">{info.filePath}</span>
+                <span className="ag-chip ag-chip-ellipsis" title={info.filePath}>
+                  {info.filePath}
+                </span>
               ))}
-            {info.cwd && <span className="ag-chip">cwd: {info.cwd}</span>}
+            {info.cwd && (
+              <span className="ag-chip ag-chip-ellipsis" title={`cwd: ${info.cwd}`}>
+                cwd: {info.cwd}
+              </span>
+            )}
           </div>
 
           {onApprove && (
@@ -633,7 +740,7 @@ function StepCardInner({
                 onClick={() => handleDecision('deny')}
                 data-testid={`inline-deny-${event.seq}`}
               >
-                拒绝 Deny
+                {t('step.denyLabel')}
               </button>
               <button
                 type="button"
@@ -642,16 +749,12 @@ function StepCardInner({
                 onClick={() => handleDecision('allow')}
                 data-testid={`inline-allow-${event.seq}`}
               >
-                {busy ? '处理中...' : '允许 Allow'}
+                {busy ? t('step.processing') : t('step.allowLabel')}
               </button>
             </div>
           )}
 
-          {isReadOnly && (
-            <div className={styles.roNote}>
-              当前为 L0 只读模式，无法远程审批；请在桌面端处理或切换至 L1/L2
-            </div>
-          )}
+          {isReadOnly && <div className={styles.roNote}>{t('step.readOnlyApproveHint')}</div>}
         </div>
       </article>
     );
@@ -659,7 +762,7 @@ function StepCardInner({
 
   // Ask question card (interactive when pending, clean answer summary when done)
   if (event.kind === 'ask_question') {
-    const questions = normalizeQuestions(p);
+    const questions = normalizeQuestions(p, t);
     const completedAnswers = !isPending ? parseCompletedAnswers(p, questions) : [];
 
     const toggleOption = (qIdx: number, optId: string, isMulti: boolean) => {
@@ -711,12 +814,12 @@ function StepCardInner({
           <div className={styles.headerLeft}>
             {isPending && <span className={styles.pendingDot} aria-hidden="true" />}
             <span className={isPending ? styles.kindPending : styles.kind}>
-              {isPending ? '需要回答' : '已回答'}
+              {isPending ? t('step.needAnswer') : t('step.answered')}
             </span>
             <span className={styles.seq}>#{event.seq}</span>
           </div>
           <span className={`${styles.status} ${isPending ? styles.statusPending : ''}`}>
-            {isPending ? '等待回复' : '已完成'}
+            {isPending ? t('step.awaitingReply') : t('step.completed')}
           </span>
         </header>
 
@@ -730,7 +833,9 @@ function StepCardInner({
               <div key={idx} className={styles.qCard}>
                 <div className={styles.qHead}>
                   {q.header && <span className={styles.qHeaderTag}>{q.header}</span>}
-                  {q.isMultiSelect && isPending && <span className={styles.qMultiTag}>可多选</span>}
+                  {q.isMultiSelect && isPending && (
+                    <span className={styles.qMultiTag}>{t('step.multiSelect')}</span>
+                  )}
                 </div>
                 <div className={styles.qText}>{q.question}</div>
 
@@ -769,7 +874,7 @@ function StepCardInner({
                       type="text"
                       className={styles.qInput}
                       disabled={isReadOnly || busy}
-                      placeholder="或输入自定义回答..."
+                      placeholder={t('step.customAnswerPlaceholder')}
                       value={customVal}
                       onInput={(e) =>
                         setCustomInputs((prev) => ({
@@ -782,7 +887,7 @@ function StepCardInner({
                 ) : (
                   <div className={styles.answeredRow}>
                     {doneAns?.skipped ? (
-                      <span className="ag-chip">已跳过</span>
+                      <span className="ag-chip">{t('step.skipped')}</span>
                     ) : doneAns && doneAns.answers.length > 0 ? (
                       doneAns.answers.map((ans, aIdx) => (
                         <span key={aIdx} className={styles.answeredChip}>
@@ -798,7 +903,7 @@ function StepCardInner({
                         ))}
                       </div>
                     ) : (
-                      <span className={styles.mutedNote}>已提交</span>
+                      <span className={styles.mutedNote}>{t('step.submitted')}</span>
                     )}
                   </div>
                 )}
@@ -814,14 +919,12 @@ function StepCardInner({
               onClick={submitInlineAnswers}
               data-testid={`inline-answer-submit-${event.seq}`}
             >
-              {busy ? '提交中...' : '提交回答'}
+              {busy ? t('step.submitting') : t('step.submitAnswer')}
             </button>
           )}
 
           {isPending && isReadOnly && (
-            <div className={styles.roNote}>
-              当前为 L0 只读模式，请在桌面端或升级 L1 后提交回答
-            </div>
+            <div className={styles.roNote}>{t('step.readOnlyAnswerHint')}</div>
           )}
         </div>
       </article>
@@ -837,74 +940,165 @@ function StepCardInner({
         ? styles.statusError
         : '';
 
+  if (isUser) {
+    const userText = extractUserText(p);
+    return (
+      <article
+        className={[
+          styles.userRow,
+          isOptimistic ? styles.userRowOptimistic : '',
+          isCurrentMatch ? styles.currentMatchOutline : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        data-testid={`step-card-${event.seq}`}
+        data-kind={event.kind}
+        data-status={event.status}
+        data-optimistic={isOptimistic ? 'true' : undefined}
+        data-current-match={isCurrentMatch ? '1' : undefined}
+      >
+        <div className={styles.userBubble}>
+          <Markdown
+            text={userText || t('chat.emptyMessage')}
+            highlightQuery={searchQuery}
+            highlightRegex={searchRegex}
+            highlightCaseSensitive={searchCaseSensitive}
+            isCurrentMatch={isCurrentMatch}
+          />
+        </div>
+        {(isOptimistic || isError || Boolean(userText)) && (
+          <div className={styles.userFooter}>
+            {isOptimistic && (
+              <span className={`${styles.status} ${styles.statusOptimistic}`}>
+                {t('chat.sending')}
+              </span>
+            )}
+            {isError && (
+              <span className={`${styles.status} ${styles.statusError}`}>
+                {t('chat.sendError')}
+              </span>
+            )}
+            {userText && (
+              <button
+                type="button"
+                className={styles.copyStepBtn}
+                onClick={() => handleCopyText(userText)}
+                aria-label={t('chat.copyMessage')}
+              >
+                {copiedTurn ? `✓ ${t('common.copied')}` : t('common.copy')}
+              </button>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  if (event.kind === 'thinking_and_text') {
+    const thinking = typeof p.thinking === 'string' ? p.thinking : '';
+    const text = extractPlannerText(p);
+    const duration = formatDurationBadge(p.thinkingDuration);
+    const isThinkingLive = isRunning && !text;
+
+    return (
+      <article
+        className={[
+          styles.editorialAssistant,
+          isError ? styles.editorialAssistantError : '',
+          isCurrentMatch ? styles.currentMatchOutline : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        data-testid={`step-card-${event.seq}`}
+        data-kind={event.kind}
+        data-status={event.status}
+        data-current-match={isCurrentMatch ? '1' : undefined}
+      >
+        {thinking && (
+          <div
+            className={[styles.thinkingBox, isThinkingLive ? styles.thinkingBoxLive : '']
+              .filter(Boolean)
+              .join(' ')}
+          >
+            <button
+              type="button"
+              className={styles.thinkingToggle}
+              aria-expanded={thinkingOpen}
+              onClick={() => setThinkingOpen((prev) => !prev)}
+              data-testid={`thinking-toggle-${event.seq}`}
+            >
+              <span className={styles.thinkingLeft}>
+                {isThinkingLive ? (
+                  <span className={styles.pulseDot} aria-hidden="true" />
+                ) : (
+                  <span
+                    className={[styles.chevron, thinkingOpen ? styles.chevronOpen : ''].join(' ')}
+                  >
+                    ▸
+                  </span>
+                )}
+                <span>{isThinkingLive ? t('chat.thinkingLive') : t('chat.thinking')}</span>
+                {duration && <span className={styles.thinkingDur}>{duration}</span>}
+              </span>
+              <span className={styles.thinkingAction}>
+                {thinkingOpen ? t('chat.collapse') : t('chat.expand')}
+              </span>
+            </button>
+            {thinkingOpen && (
+              <pre className={styles.thinkingBody} data-testid={`thinking-body-${event.seq}`}>
+                {thinking}
+              </pre>
+            )}
+          </div>
+        )}
+        {text ? (
+          <Markdown
+            text={text}
+            streaming={isRunning}
+            highlightQuery={searchQuery}
+            highlightRegex={searchRegex}
+            highlightCaseSensitive={searchCaseSensitive}
+            isCurrentMatch={isCurrentMatch}
+          />
+        ) : (
+          isRunning &&
+          !thinking && (
+            <div className={styles.streamingPlaceholder}>
+              <span className={styles.pulseDot} aria-hidden="true" />
+              <span>{t('chat.generatingReply')}</span>
+            </div>
+          )
+        )}
+        {(isRunning || isError || Boolean(text)) && (
+          <div className={styles.assistantMetaRow}>
+            {(isRunning || isError) && (
+              <span className={`${styles.status} ${statusCls}`}>
+                {isGenerating
+                  ? t('chat.generating')
+                  : event.status === 'running'
+                    ? t('chat.running')
+                    : t('chat.error')}
+              </span>
+            )}
+            {text && !isRunning && (
+              <button
+                type="button"
+                className={styles.copyStepBtn}
+                onClick={() => handleCopyText(text)}
+                aria-label={t('chat.copyReply')}
+                data-testid={`step-copy-${event.seq}`}
+              >
+                {copiedTurn ? `✓ ${t('common.copied')}` : t('common.copy')}
+              </button>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  }
+
   const renderStandardBody = () => {
     switch (event.kind) {
-      case 'user': {
-        const text = extractUserText(p);
-        return <Markdown text={text || '(空消息)'} />;
-      }
-
-      case 'thinking_and_text': {
-        const thinking = typeof p.thinking === 'string' ? p.thinking : '';
-        const text = extractPlannerText(p);
-        const duration = formatDurationBadge(p.thinkingDuration);
-        const isThinkingLive = isRunning && !text;
-
-        return (
-          <>
-            {thinking && (
-              <div
-                className={[styles.thinkingBox, isThinkingLive ? styles.thinkingBoxLive : '']
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <button
-                  type="button"
-                  className={styles.thinkingToggle}
-                  aria-expanded={thinkingOpen}
-                  onClick={() => setThinkingOpen((prev) => !prev)}
-                  data-testid={`thinking-toggle-${event.seq}`}
-                >
-                  <span className={styles.thinkingLeft}>
-                    {isThinkingLive ? (
-                      <span className={styles.pulseDot} aria-hidden="true" />
-                    ) : (
-                      <span
-                        className={[
-                          styles.chevron,
-                          thinkingOpen ? styles.chevronOpen : ''
-                        ].join(' ')}
-                      >
-                        ▸
-                      </span>
-                    )}
-                    <span>{isThinkingLive ? '正在思考' : '思考过程'}</span>
-                    {duration && <span className={styles.thinkingDur}>{duration}</span>}
-                  </span>
-                  <span className={styles.thinkingAction}>{thinkingOpen ? '收起' : '展开'}</span>
-                </button>
-                {thinkingOpen && (
-                  <pre className={styles.thinkingBody} data-testid={`thinking-body-${event.seq}`}>
-                    {thinking}
-                  </pre>
-                )}
-              </div>
-            )}
-            {text ? (
-              <Markdown text={text} streaming={isRunning} />
-            ) : (
-              isRunning &&
-              !thinking && (
-                <div className={styles.streamingPlaceholder}>
-                  <span className={styles.pulseDot} aria-hidden="true" />
-                  <span>正在生成回复...</span>
-                </div>
-              )
-            )}
-          </>
-        );
-      }
-
       case 'system': {
         return (
           <>
@@ -913,7 +1107,15 @@ function StepCardInner({
                 <span className="ag-chip">{p.eventType}</span>
               </div>
             )}
-            {typeof p.message === 'string' && p.message && <Markdown text={p.message} />}
+            {typeof p.message === 'string' && p.message && (
+              <Markdown
+                text={p.message}
+                highlightQuery={searchQuery}
+                highlightRegex={searchRegex}
+                highlightCaseSensitive={searchCaseSensitive}
+                isCurrentMatch={isCurrentMatch}
+              />
+            )}
           </>
         );
       }
@@ -921,7 +1123,7 @@ function StepCardInner({
       case 'error': {
         return (
           <pre className={styles.codeBlock} data-hscroll="1">
-            {formatJson(p.error ?? p) || '未知错误'}
+            {formatJson(p.error ?? p) || t('chat.unknownError')}
           </pre>
         );
       }
@@ -939,44 +1141,33 @@ function StepCardInner({
     <article
       className={[
         styles.card,
-        isUser ? styles.cardUser : '',
-        isOptimistic ? styles.cardOptimistic : '',
         isGenerating ? styles.cardGenerating : '',
-        isError ? styles.cardError : ''
+        isError ? styles.cardError : '',
+        isCurrentMatch ? styles.currentMatchOutline : ''
       ]
         .filter(Boolean)
         .join(' ')}
       data-testid={`step-card-${event.seq}`}
       data-kind={event.kind}
       data-status={event.status}
-      data-optimistic={isOptimistic ? 'true' : undefined}
+      data-current-match={isCurrentMatch ? '1' : undefined}
     >
       <header className={styles.header}>
         <div className={styles.headerLeft}>
-          <span
-            className={[
-              styles.kind,
-              isUser ? styles.kindUser : '',
-              isError ? styles.kindError : ''
-            ]
-              .filter(Boolean)
-              .join(' ')}
-          >
-            {KIND_LABELS[event.kind] || event.kind}
+          <span className={[styles.kind, isError ? styles.kindError : ''].filter(Boolean).join(' ')}>
+            {t(`kind.${event.kind}`)}
           </span>
           {!isOptimistic && <span className={styles.seq}>#{event.seq}</span>}
-          {event.title && event.kind !== 'thinking_and_text' && event.kind !== 'user' && (
-            <span className={styles.title}>{event.title}</span>
-          )}
+          {event.title && <span className={styles.title}>{event.title}</span>}
         </div>
-        {isOptimistic ? (
-          <span className={`${styles.status} ${styles.statusOptimistic}`}>发送中…</span>
-        ) : (
-          (isRunning || isError) && (
-            <span className={`${styles.status} ${statusCls}`}>
-              {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
-            </span>
-          )
+        {(isRunning || isError) && (
+          <span className={`${styles.status} ${statusCls}`}>
+            {isGenerating
+              ? t('chat.generating')
+              : event.status === 'running'
+                ? t('chat.running')
+                : t('chat.error')}
+          </span>
         )}
       </header>
       <div className={styles.body}>{renderStandardBody()}</div>
@@ -988,13 +1179,19 @@ export const StepCard = memo(StepCardInner, (prev, next) => {
   if (
     prev.permissionLevel !== next.permissionLevel ||
     prev.onInspectFile !== next.onInspectFile ||
+    prev.onViewDiffFile !== next.onViewDiffFile ||
     prev.onApprove !== next.onApprove ||
-    prev.onAnswer !== next.onAnswer
+    prev.onAnswer !== next.onAnswer ||
+    prev.thinkingExpandVersion !== next.thinkingExpandVersion ||
+    prev.thinkingExpandTarget !== next.thinkingExpandTarget ||
+    prev.searchQuery !== next.searchQuery ||
+    prev.searchRegex !== next.searchRegex ||
+    prev.searchCaseSensitive !== next.searchCaseSensitive ||
+    prev.isCurrentMatch !== next.isCurrentMatch
   ) {
     return false;
   }
   if (prev.event === next.event) return true;
-  // Never block re-renders for active/streaming or pending interactive events
   if (!TERMINAL_STATUSES.has(next.event.status)) return false;
   return (
     prev.event.seq === next.event.seq &&

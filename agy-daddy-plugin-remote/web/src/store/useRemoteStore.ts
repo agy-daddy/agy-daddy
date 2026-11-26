@@ -1988,6 +1988,7 @@ export class RemoteStoreController {
       projects: this.state.projects,
       pins: this.state.pins
     };
+    const targetProject = prevState.projects.find((p) => p.id === projectId);
     this.setState({
       projects: prevState.projects.filter((p) => p.id !== projectId),
       pins: {
@@ -2000,7 +2001,9 @@ export class RemoteStoreController {
       if (typeof res.revision === 'number') {
         this.setState({ orgRevision: res.revision });
       }
-      this.showToast(this.t('store.projectRemovedToast'));
+      this.showToast(
+        this.t('store.projectRemovedToast', { name: targetProject?.name || projectId })
+      );
       void this.refreshSessionsAndOrg(this.includeArchivedSynced);
     } catch (err) {
       this.setState(prevState);

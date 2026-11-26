@@ -90,6 +90,79 @@
       "group": { "zh-CN": "按需文本翻译", "en": "On-Demand Translation" },
       "label": { "zh-CN": "允许远程翻译思考片段", "en": "Enable remote thinking translation" },
       "description": { "zh-CN": "默认关闭；开启后仅在触发时将选中内容发送至 translate.googleapis.com（按当前语言目标翻译）", "en": "Default OFF; sends selected snippet to translate.googleapis.com for the active target language only on trigger" }
+    },
+    {
+      "key": "thinkingTranslationMode",
+      "type": "enum",
+      "default": "off",
+      "group": { "zh-CN": "思考转译", "en": "Thinking Translation (CoT)" },
+      "options": [
+        { "value": "off", "label": "关闭（保持原生思维链原文）" },
+        { "value": "free", "label": "免配置机翻（开箱即用 · Google Translate）" },
+        { "value": "custom_api", "label": "自定义 AI 模型流式转译（OpenAI 兼容 / Ollama）" }
+      ],
+      "label": { "zh-CN": "思考转译模式", "en": "Thinking translation mode" },
+      "description": {
+        "zh-CN": "默认关闭以保持原生思维链零干扰。开启「免配置机翻」会将已展开的思考文本（自动脱敏保护 file:// 路径）发送至 translate.googleapis.com 进行译文对照；开启「自定义 AI 模型流式转译」会将思考文本发送至下方配置的 OpenAI 兼容端点（支持本地 Ollama / LM Studio）进行流式转译",
+        "en": "Default OFF to keep native CoT streaming untouched. 'free' sends expanded thinking text (with file:// URIs preserved) to translate.googleapis.com; 'custom_api' streams translation via the configured OpenAI-compatible endpoint (including local Ollama / LM Studio)."
+      }
+    },
+    {
+      "key": "thinkingDisplayMode",
+      "type": "enum",
+      "default": "bilingual",
+      "visibleWhen": { "key": "thinkingTranslationMode", "notEquals": "off" },
+      "group": { "zh-CN": "思考转译", "en": "Thinking Translation (CoT)" },
+      "options": [
+        { "value": "bilingual", "label": "中英双语上下对照（保留原文 + 译文）" },
+        { "value": "translated", "label": "沉浸式纯译文（隐藏原文）" }
+      ],
+      "label": { "zh-CN": "思考排版模式", "en": "Thinking layout mode" },
+      "description": {
+        "zh-CN": "切换「中英双语上下对照」或「沉浸式纯译文」；支持在思考面板右上角一键快速切换",
+        "en": "Switch between bilingual stacked view and immersive translation-only view"
+      }
+    },
+    {
+      "key": "thinkingApiBaseUrl",
+      "type": "string",
+      "default": "http://127.0.0.1:11434/v1",
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": { "zh-CN": "思考转译", "en": "Thinking Translation (CoT)" },
+      "placeholder": { "zh-CN": "http://127.0.0.1:11434/v1 或 https://api.openai.com/v1", "en": "http://127.0.0.1:11434/v1 or https://api.openai.com/v1" },
+      "label": { "zh-CN": "自定义 API Base URL", "en": "Custom API Base URL" },
+      "description": {
+        "zh-CN": "OpenAI 兼容格式端点地址（支持本地免密 Ollama http://127.0.0.1:11434/v1、LM Studio http://127.0.0.1:1234/v1 或云端服务）",
+        "en": "OpenAI-compatible endpoint base URL (supports passwordless local Ollama/LM Studio or cloud APIs)"
+      }
+    },
+    {
+      "key": "thinkingApiKey",
+      "type": "string",
+      "default": "",
+      "secret": true,
+      "writeOnly": true,
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": { "zh-CN": "思考转译", "en": "Thinking Translation (CoT)" },
+      "placeholder": { "zh-CN": "本地 Ollama / LM Studio 可留空；云端 API 填入 Key", "en": "Leave blank for local Ollama/LM Studio; enter API key for cloud endpoints" },
+      "label": { "zh-CN": "API Key（可选 · 仅写保密）", "en": "API Key (Optional, Write-Only)" },
+      "description": {
+        "zh-CN": "仅写保存，保存后不再向界面回显明文；调用本地免密端点时无需填写",
+        "en": "Write-only secret (never echoed back); optional for passwordless local endpoints"
+      }
+    },
+    {
+      "key": "thinkingApiModel",
+      "type": "string",
+      "default": "qwen2.5:7b",
+      "visibleWhen": { "key": "thinkingTranslationMode", "equals": "custom_api" },
+      "group": { "zh-CN": "思考转译", "en": "Thinking Translation (CoT)" },
+      "placeholder": { "zh-CN": "qwen2.5:7b / gpt-4o-mini / deepseek-chat", "en": "qwen2.5:7b / gpt-4o-mini / deepseek-chat" },
+      "label": { "zh-CN": "转译模型名称", "en": "Translation Model" },
+      "description": {
+        "zh-CN": "发送至自定义 OpenAI 兼容端点的 model 字段",
+        "en": "Model identifier sent to the custom OpenAI-compatible chat completions endpoint"
+      }
     }
   ],
   "actions": [
@@ -107,6 +180,22 @@
         "ru": "Переключить язык / English",
         "it": "Cambia lingua corrente / English",
         "en": "Toggle Active Language / English"
+      }
+    },
+    {
+      "id": "toggle-thinking-display",
+      "command": "zh-cn.toggle-thinking-display",
+      "label": {
+        "zh-CN": "切换思考双语对照 / 沉浸纯译文",
+        "en": "Toggle Thinking Bilingual / Translated-Only"
+      }
+    },
+    {
+      "id": "test-thinking-api",
+      "command": "zh-cn.test-thinking-api",
+      "label": {
+        "zh-CN": "测试思考转译 API 连通性",
+        "en": "Test Thinking API Connectivity"
       }
     }
   ]

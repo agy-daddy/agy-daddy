@@ -1,22 +1,29 @@
 # @agy-daddy/plugin-zh-cn
 
-Agy-Daddy 官方 Layer 1 本地化插件：可逆 10 语言客户端界面与零 Token 词典/正则翻译。
+Agy-Daddy 官方 Layer 1 本地化插件：可逆 10 语言客户端界面、零 Token 词典/正则翻译，以及思维链（CoT）双模流式转译与双语对照。
 
 - **npm 包名**：`@agy-daddy/plugin-zh-cn`
 - **Layer 层级**：Layer 1（核心增强层）
-- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`net:outbound:translate.googleapis.com` 权限）
-- **适用场景**：多语言用户交互界面本地化、思考内容翻译及侧边栏标题翻译。
+- **信任等级**：官方 `T0`（声明 `dom:read`、`dom:write`、`bridge:route`、`process:spawn`、`net:outbound:*` 权限）
+- **开源协议**：MIT（完全独立净室实现，无 GPL 代码）
+- **适用场景**：多语言用户交互界面本地化、侧边栏标题翻译、思维链（CoT）双模流式转译、双语上下对照与源码行号定位跳转。
 
 ---
 
 ## 核心功能与安全默认值
 
 - **10 语言可逆本地化**：支持简体中文 (`zh`)、繁體中文 (`zh-TW`)、日本語 (`ja`)、한국어 (`ko`)、Español (`es`)、Português (`pt`)、Français (`fr`)、Русский (`ru`)、Italiano (`it`) 与 English 原文 (`en`)。
-- **无痕还原与零内存泄漏**：基于 `WeakMap` 记录被重写节点的原文，语言切换即时生效，切回英文或卸载插件时无痕还原 DOM。
-- **零 Token 消耗翻译**：全量界面词典与正则规则匹配，无需调用外部大模型 API。
-- **安全默认值**：
-  - `enableRemoteThinkingTranslation: false`：远程思考翻译（`translate.googleapis.com`）默认关闭，保护用户数据隐私，仅在用户明确勾选后启用；
-  - `englishLabels: false`：默认全量本地化，可自由开启保留英文核心术语。
+- **无痕还原与零内存泄漏**：基于 `WeakMap` 记录被重写节点的原文，语言切换或切换双语/纯译文模式即时生效，切回英文或卸载插件时无痕还原 DOM。
+- **思维链（CoT）双模转译与双语对照**：
+  - **免配置机器翻译 (`free`)**：开箱即用，自动保护 `file://` 路径占位符后按段落增量翻译并实时展示；
+  - **自定义 AI 模型流式转译 (`custom_api`)**：支持配置任意 OpenAI 兼容端点（含本地免密 Ollama `http://127.0.0.1:11434/v1`、LM Studio 等），SSE 流式实时转译思考内容；
+  - **双语排版快速切换**：支持「中英双语上下对照 (`bilingual`)」与「沉浸式纯译文 (`translated`)」面板内及设置中心一键切换；
+  - **源码定位跳转**：自动识别思考译文中的 `file://` 路径与 `#L` 行号，点击直接触发宿主文件跳转定位。
+- **安全默认值与外发数据透明披露**：
+  - `thinkingTranslationMode: "off"`：默认关闭，不干扰原生思维链流式输出，也不向任何外部服务发送思考内容；
+  - 开启 `free` 模式时，仅在思考块展开后将思考文本（`file://` 路径经占位符保护）发送至 `translate.googleapis.com` 获取译文；
+  - 开启 `custom_api` 模式时，仅将展开后的思考文本发送至用户配置的 `thinkingApiBaseUrl`（可为本地 `127.0.0.1` 端点），`thinkingApiKey` 采用仅写保密存储（`writeOnly`），不向前端回显明文；
+  - `enableRemoteThinkingTranslation: false` & `englishLabels: false`：保持既有隐私默认策略。
 
 ---
 
@@ -33,7 +40,7 @@ agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 ```
 
 ### 3. 宿主设置中心与交互
-安装后自动激活（`onStartup`）。可在 Agy-Daddy 设置中心「客户端多语言」面板中切换语言并精细调节显示偏好，或通过命令面板执行 `zh-cn.toggle-lang` / `zh-cn.set-lang` 快速切换界面显示语言，即切即生效，无需重启客户端。
+安装后自动激活（`onStartup`）。可在 Agy-Daddy 设置中心「客户端多语言」面板中切换语言、调节「思考转译」模式与排版方式，或通过命令面板执行 `zh-cn.toggle-lang` / `zh-cn.set-lang` / `zh-cn.toggle-thinking-display` / `zh-cn.test-thinking-api` 快速操作，即切即生效无需重启。
 
 ---
 
@@ -48,7 +55,12 @@ agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 | `englishLabels` | `boolean` | `false` | 模型与权限选项保留英文：在任意界面语言下保留模型名称与权限档位原始英文术语 |
 | `translateThinking` | `boolean` | `true` | 翻译思考过程：开启后自动翻译思考耗时标签与展开后的思考块内容；关闭后思考区保持原文 |
 | `translateConversationTitles` | `boolean` | `true` | 翻译会话标题：开启后翻译侧边栏会话标题（保留用户手动重命名的自定义标题）；关闭后会话标题保持原文 |
-| `enableRemoteThinkingTranslation` | `boolean` | `false` | 允许远程翻译思考片段：默认关闭；开启后仅在触发时将选中内容发送至 translate.googleapis.com（按当前语言目标翻译） |
+| `enableRemoteThinkingTranslation` | `boolean` | `false` | 允许远程翻译思考片段：默认关闭；开启后仅在触发时将选中内容发送至 `translate.googleapis.com`（按当前语言目标翻译） |
+| `thinkingTranslationMode` | `enum` | `"off"` | 思考转译模式：`off`（关闭）/ `free`（免配置机翻，发送至 `translate.googleapis.com`）/ `custom_api`（自定义 OpenAI 兼容端点流式转译） |
+| `thinkingDisplayMode` | `enum` | `"bilingual"` | 思考排版模式：`bilingual`（中英双语上下对照）/ `translated`（沉浸式纯译文） |
+| `thinkingApiBaseUrl` | `string` | `"http://127.0.0.1:11434/v1"` | 自定义 API Base URL：支持本地 Ollama / LM Studio 免密端点或云端 OpenAI 兼容服务 |
+| `thinkingApiKey` | `string` | `""` | API Key（可选，仅写保密）：本地免密端点可留空 |
+| `thinkingApiModel` | `string` | `"qwen2.5:7b"` | 转译模型名称：发送至自定义 OpenAI 兼容端点的 `model` 字段 |
 
 ---
 
@@ -56,23 +68,27 @@ agy-daddy plugin install npm:@agy-daddy/plugin-zh-cn
 
 严格依据 `agy-plugin.json` 声明：
 
-- **Permissions**：`dom:read`、`dom:write`、`net:outbound:translate.googleapis.com`
+- **Permissions**：`dom:read`、`dom:write`、`bridge:route`、`process:spawn`、`net:outbound:*`
 - **Requires Anchors**：
   - `sidebar.conversationRows`：侧边栏会话行锚点（用于会话标题本地化翻译）
 - **Services (provides)**：
   - `zh-cn`（版本 `1.0.0`，realm: `node`）
 - **States (provides)**：
-  - `state:zh-cn.lang@1`：当前生效的语言状态广播
+  - `state:zh-cn.lang@1`：当前生效的语言与思考转译状态广播
 - **Commands (contributes)**：
   - `zh-cn.toggle-lang`：切换当前语言 / English 原文
   - `zh-cn.set-lang`：切换界面显示语言
+  - `zh-cn.toggle-thinking-display`：切换思考转译双语对照 / 沉浸纯译文
+  - `zh-cn.test-thinking-api`：测试思考转译 API 连通性
 
 ---
 
 ## 使用示例与本地测试
 
 ### 使用示例
-在 Agy-Daddy 设置中心选择「繁體中文」或「日本語」，整界面文案将在毫秒级完成无缝切换；若需临时对比英文原词，执行快捷命令 `zh-cn.toggle-lang` 即可在当前语言与 English 之间一键往返。
+1. 在设置中心「思考转译」中选择「免配置机翻」或「自定义 AI 模型流式转译（Ollama / OpenAI 兼容）」，展开任意对话的思考块即可实时看到流式译文；
+2. 点击面板右上角「切换纯译文 / 切换双语对照」按钮在沉浸式纯译文与中英双语上下对照间即时切换；
+3. 点击译文中的 `file:///.../path.ts#L42` 代码位置链接，直接触发宿主编辑器定位到对应文件与行号。
 
 ### 本地测试
 在插件目录下执行自动化单元测试：

@@ -9,6 +9,15 @@ const {
   parseCustomRules,
   translateText
 } = require('./dictionary');
+const {
+  THINKING_TRANSLATION_MODES,
+  DEFAULT_THINKING_API_MODEL,
+  normalizeThinkingTranslationMode,
+  normalizeThinkingDisplayMode
+} = require('./cot-utils');
+const {
+  createCotOverlayController
+} = require('./cot-overlay');
 
 let disposers = [];
 
@@ -339,11 +348,20 @@ function mergeManagedSettings(raw = {}, base = {}) {
       : (base.translateConversationTitles !== undefined ? Boolean(base.translateConversationTitles) : true),
     enableRemoteThinkingTranslation: raw.enableRemoteThinkingTranslation !== undefined
       ? Boolean(raw.enableRemoteThinkingTranslation)
-      : Boolean(base.enableRemoteThinkingTranslation)
+      : Boolean(base.enableRemoteThinkingTranslation),
+    thinkingTranslationMode: raw.thinkingTranslationMode !== undefined
+      ? normalizeThinkingTranslationMode(raw.thinkingTranslationMode, false)
+      : normalizeThinkingTranslationMode(base.thinkingTranslationMode, false),
+    thinkingDisplayMode: raw.thinkingDisplayMode !== undefined
+      ? normalizeThinkingDisplayMode(raw.thinkingDisplayMode)
+      : normalizeThinkingDisplayMode(base.thinkingDisplayMode),
+    thinkingApiModel: typeof raw.thinkingApiModel === 'string' && raw.thinkingApiModel.trim()
+      ? raw.thinkingApiModel.trim()
+      : (base.thinkingApiModel || DEFAULT_THINKING_API_MODEL)
   };
 }
 
-async function mount(ctx) {
+async function mount(ctx, options = {}) {
   dispose();
 
   let cfg = mergeManagedSettings(ctx.settings.get(), {
@@ -353,6 +371,9 @@ async function mount(ctx) {
     translateThinking: true,
     translateConversationTitles: true,
     enableRemoteThinkingTranslation: false,
+    thinkingTranslationMode: THINKING_TRANSLATION_MODES.OFF,
+    thinkingDisplayMode: 'bilingual',
+    thinkingApiModel: DEFAULT_THINKING_API_MODEL,
     customRules: [],
     titles: {}
   });
@@ -361,6 +382,13 @@ async function mount(ctx) {
     || ctx.anchors.query('topbar.rightCluster')?.ownerDocument
     || globalThis.document;
   const translator = createDomTranslator({ doc: docRef });
+  const cotOverlay = createCotOverlayController({
+    ctx,
+    doc: docRef,
+    getConfig: () => cfg,
+    onOpenFile: options.onOpenFile,
+    trailingDebounceMs: options.cotDebounceMs
+  });
   let thinkingEventsHandled = 0;
   let disposed = false;
   let isApplying = false;
@@ -401,18 +429,26 @@ async function mount(ctx) {
     }
     const nodes = Array.from(pendingNodes);
     pendingNodes.clear();
+    let touchedThinking = false;
     runWithMutationGuard(() => {
       if (nodes.length > 60) {
         translator.applyTranslations(cfg);
+        touchedThinking = true;
         return;
       }
       const nodeSet = new Set(nodes);
       for (const node of nodes) {
         if (!node || hasAncestorInSet(node, nodeSet)) continue;
         if (node.isConnected === false) continue;
+        if (!touchedThinking && isThinkingNode(node.parentElement || node)) {
+          touchedThinking = true;
+        }
         translator.applyTranslations(cfg, node);
       }
     });
+    if (touchedThinking && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.scheduleScan(30);
+    }
   }
 
   function syncDom() {
@@ -423,6 +459,11 @@ async function mount(ctx) {
         translator.applyTranslations(cfg);
       }
     });
+    if (cfg.lang === 'en' || cfg.thinkingTranslationMode === THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.clearAll();
+    } else {
+      cotOverlay.scanNow();
+    }
     const meta = getLanguageMeta(cfg.lang);
     try {
       const langPayload = { lang: cfg.lang, bcp47: meta.bcp47, shortLabel: meta.shortLabel };
@@ -441,6 +482,15 @@ async function mount(ctx) {
     thinkingEventsHandled++;
     if (cfg.lang !== 'en' && cfg.translateThinking !== false) {
       runWithMutationGuard(() => translator.applyTranslations(cfg));
+    }
+    if (cfg.lang !== 'en' && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.scheduleScan(20);
+    }
+  });
+
+  const stopThinkingAnchor = ctx.anchors.observe('chat.thinkingTrigger', () => {
+    if (cfg.lang !== 'en' && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+      cotOverlay.scheduleScan(30);
     }
   });
 
@@ -482,7 +532,7 @@ async function mount(ctx) {
         subtree: true,
         characterData: true,
         attributes: true,
-        attributeFilter: ['aria-label', 'title', 'placeholder']
+        attributeFilter: ['aria-label', 'title', 'placeholder', 'aria-expanded', 'data-state', 'hidden']
       });
     } catch {
       domObserver = null;
@@ -504,14 +554,18 @@ async function mount(ctx) {
         domObserver = null;
       }
     },
+    () => cotOverlay.dispose(),
     stopSettingsSub,
     stopThinkingSub,
+    stopThinkingAnchor,
     stopAnchor,
     () => translator.restoreAll()
   );
 
   return {
-    getThinkingEventsHandled: () => thinkingEventsHandled
+    getThinkingEventsHandled: () => thinkingEventsHandled,
+    getActiveCotPanelCount: () => cotOverlay.getActivePanelCount(),
+    scanCotNow: () => cotOverlay.scanNow()
   };
 }
 

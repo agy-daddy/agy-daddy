@@ -11,21 +11,43 @@ const {
   parseCustomRules,
   translateText
 } = require('./dictionary');
+const {
+  THINKING_TRANSLATION_MODES,
+  THINKING_DISPLAY_MODES,
+  DEFAULT_THINKING_API_BASE_URL,
+  DEFAULT_THINKING_API_MODEL,
+  normalizeThinkingTranslationMode,
+  normalizeThinkingDisplayMode
+} = require('./cot-utils');
+const {
+  openFileInHost,
+  createCotTranslationManager
+} = require('./cot-service');
 
 let disposers = [];
 
 function normalizeManagedSettings(raw = {}) {
+  const enableRemote = Boolean(raw.enableRemoteThinkingTranslation);
   return {
     lang: normalizeLang(raw.lang, DEFAULT_LANG),
     brandTitle: normalizeBrandTitleMode(raw.brandTitle || BRAND_TITLE_MODES.ENGLISH),
     englishLabels: Boolean(raw.englishLabels),
     translateThinking: raw.translateThinking !== false,
     translateConversationTitles: raw.translateConversationTitles !== false,
-    enableRemoteThinkingTranslation: Boolean(raw.enableRemoteThinkingTranslation)
+    enableRemoteThinkingTranslation: enableRemote,
+    thinkingTranslationMode: normalizeThinkingTranslationMode(raw.thinkingTranslationMode, false),
+    thinkingDisplayMode: normalizeThinkingDisplayMode(raw.thinkingDisplayMode),
+    thinkingApiBaseUrl: typeof raw.thinkingApiBaseUrl === 'string' && raw.thinkingApiBaseUrl.trim()
+      ? raw.thinkingApiBaseUrl.trim()
+      : DEFAULT_THINKING_API_BASE_URL,
+    thinkingApiKey: typeof raw.thinkingApiKey === 'string' ? raw.thinkingApiKey : '',
+    thinkingApiModel: typeof raw.thinkingApiModel === 'string' && raw.thinkingApiModel.trim()
+      ? raw.thinkingApiModel.trim()
+      : DEFAULT_THINKING_API_MODEL
   };
 }
 
-async function activate(host) {
+async function activate(host, options = {}) {
   let config = normalizeManagedSettings(host.settings.get());
   let lastNonEnLang = config.lang !== 'en' ? config.lang : DEFAULT_LANG;
   let syncingSettings = false;
@@ -33,6 +55,13 @@ async function activate(host) {
   let translationCache = host.storage.readJson('zh-translation-cache.json', {}).data || {};
   let customTitles = host.storage.readJson('custom-conversation-titles.json', {}).data || {};
   let customRulesRaw = [];
+
+  const cotManager = createCotTranslationManager({
+    getConfig: () => config,
+    getLanguageMeta,
+    fetch: (url, init) => host.net.fetch(url, init),
+    storage: host.storage
+  });
 
   function publishLangState() {
     if (config.lang !== 'en') {
@@ -48,7 +77,12 @@ async function activate(host) {
       englishLabels: config.englishLabels,
       translateThinking: config.translateThinking,
       translateConversationTitles: config.translateConversationTitles,
-      enableRemoteThinkingTranslation: config.enableRemoteThinkingTranslation
+      enableRemoteThinkingTranslation: config.enableRemoteThinkingTranslation,
+      thinkingTranslationMode: config.thinkingTranslationMode,
+      thinkingDisplayMode: config.thinkingDisplayMode,
+      thinkingApiBaseUrl: config.thinkingApiBaseUrl,
+      thinkingApiModel: config.thinkingApiModel,
+      hasThinkingApiKey: Boolean(config.thinkingApiKey)
     });
   }
 
@@ -67,6 +101,21 @@ async function activate(host) {
     if (patch.enableRemoteThinkingTranslation !== undefined) {
       managedPatch.enableRemoteThinkingTranslation = Boolean(patch.enableRemoteThinkingTranslation);
     }
+    if (patch.thinkingTranslationMode !== undefined) {
+      managedPatch.thinkingTranslationMode = normalizeThinkingTranslationMode(patch.thinkingTranslationMode, false);
+    }
+    if (patch.thinkingDisplayMode !== undefined) {
+      managedPatch.thinkingDisplayMode = normalizeThinkingDisplayMode(patch.thinkingDisplayMode);
+    }
+    if (patch.thinkingApiBaseUrl !== undefined) {
+      managedPatch.thinkingApiBaseUrl = String(patch.thinkingApiBaseUrl || '').trim() || DEFAULT_THINKING_API_BASE_URL;
+    }
+    if (patch.thinkingApiKey !== undefined) {
+      managedPatch.thinkingApiKey = String(patch.thinkingApiKey || '');
+    }
+    if (patch.thinkingApiModel !== undefined) {
+      managedPatch.thinkingApiModel = String(patch.thinkingApiModel || '').trim() || DEFAULT_THINKING_API_MODEL;
+    }
 
     config = normalizeManagedSettings({ ...config, ...managedPatch });
     publishLangState();
@@ -79,7 +128,8 @@ async function activate(host) {
         syncingSettings = false;
       }
     }
-    return { ...config };
+    const { thinkingApiKey: _redactedKey, ...safePublicConfig } = config;
+    return { ...safePublicConfig, hasThinkingApiKey: Boolean(config.thinkingApiKey) };
   }
 
   const stopSettingsSub = host.settings.onChange((nextValues) => {
@@ -108,8 +158,10 @@ async function activate(host) {
     },
     getConfig() {
       const activeDictLang = config.lang === 'en' ? lastNonEnLang : config.lang;
+      const { thinkingApiKey: _redactedKey, ...safeConfig } = config;
       return {
-        ...config,
+        ...safeConfig,
+        hasThinkingApiKey: Boolean(config.thinkingApiKey),
         lastNonEnLang,
         supportedLanguages: SUPPORTED_LANGUAGES.map((l) => l.code),
         customRules: customRulesRaw,
@@ -170,7 +222,11 @@ async function activate(host) {
         return { ok: true, text: translationCache[raw], source: 'cache', lang: 'zh' };
       }
 
-      const allowRemote = Boolean(config.enableRemoteThinkingTranslation || options.optInRemote === true);
+      const allowRemote = Boolean(
+        config.enableRemoteThinkingTranslation
+        || options.optInRemote === true
+        || (options.kind === 'thinking' && config.thinkingTranslationMode === THINKING_TRANSLATION_MODES.FREE)
+      );
       if (!allowRemote) {
         return {
           ok: false,
@@ -210,10 +266,42 @@ async function activate(host) {
       }
       const res = await serviceMethods.translateSnippet(rawTitle, options);
       return { ...res, cascadeId: cid, title: res.text };
+    },
+    async startCotTranslation(params = {}) {
+      return await cotManager.startOrGetJob(params);
+    },
+    async pollCotTranslation(params = {}) {
+      return await cotManager.pollJob(params);
+    },
+    cancelCotTranslation(jobId) {
+      return cotManager.cancelJob(jobId);
+    },
+    async testCotEndpoint(override = {}) {
+      return await cotManager.testCustomEndpoint(override);
+    },
+    async openFileTarget(target = {}) {
+      return await openFileInHost(target, { openFileImpl: options.openFileImpl });
     }
   };
 
   const stopSvc = host.services.provide('zh-cn', serviceMethods, { realm: 'node', version: '1.0.0' });
+
+  const stopCotTranslateRoute = await host.bridge.registerRoute('/cot/translate', async (body) => {
+    return await cotManager.startOrGetJob(body || {});
+  }, { timeoutMs: 30000 });
+  const stopCotPollRoute = await host.bridge.registerRoute('/cot/poll', async (body) => {
+    return await cotManager.pollJob(body || {});
+  }, { timeoutMs: 15000 });
+  const stopCotCancelRoute = await host.bridge.registerRoute('/cot/cancel', async (body) => {
+    return cotManager.cancelJob(body?.jobId);
+  });
+  const stopCotOpenFileRoute = await host.bridge.registerRoute('/cot/open-file', async (body) => {
+    return await openFileInHost(body || {}, { openFileImpl: options.openFileImpl });
+  });
+  const stopCotTestApiRoute = await host.bridge.registerRoute('/cot/test-api', async (body) => {
+    return await cotManager.testCustomEndpoint(body || {});
+  }, { timeoutMs: 15000 });
+
   const stopToggleCmd = host.commands.register('zh-cn.toggle-lang', async () => {
     const nextLang = config.lang === 'en' ? lastNonEnLang : 'en';
     const updated = await applyConfigPatch({ lang: nextLang }, true);
@@ -236,14 +324,44 @@ async function activate(host) {
       message: `已切换至 ${meta.nativeName}`
     };
   });
+  const stopToggleDisplayCmd = host.commands.register('zh-cn.toggle-thinking-display', async () => {
+    const nextMode = config.thinkingDisplayMode === THINKING_DISPLAY_MODES.TRANSLATED
+      ? THINKING_DISPLAY_MODES.BILINGUAL
+      : THINKING_DISPLAY_MODES.TRANSLATED;
+    const updated = await applyConfigPatch({ thinkingDisplayMode: nextMode }, true);
+    return {
+      ok: true,
+      thinkingDisplayMode: updated.thinkingDisplayMode,
+      message: updated.thinkingDisplayMode === THINKING_DISPLAY_MODES.TRANSLATED
+        ? '已切换为沉浸式纯译文'
+        : '已切换为中英双语上下对照'
+    };
+  });
+  const stopTestApiCmd = host.commands.register('zh-cn.test-thinking-api', async (arg = {}) => {
+    const res = await cotManager.testCustomEndpoint(arg && typeof arg === 'object' ? arg : {});
+    return {
+      ...res,
+      message: res.ok
+        ? `连接成功 (${res.model}, ${res.latencyMs}ms)`
+        : `连接失败: ${res.error}`
+    };
+  });
 
   publishLangState();
 
   disposers.push(
+    () => cotManager.dispose(),
     stopSettingsSub,
     stopSvc,
+    stopCotTranslateRoute,
+    stopCotPollRoute,
+    stopCotCancelRoute,
+    stopCotOpenFileRoute,
+    stopCotTestApiRoute,
     stopToggleCmd,
-    stopSetLangCmd
+    stopSetLangCmd,
+    stopToggleDisplayCmd,
+    stopTestApiCmd
   );
 }
 

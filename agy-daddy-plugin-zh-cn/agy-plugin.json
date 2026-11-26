@@ -17,16 +17,16 @@
     "en": "Client Multi-Language Localization"
   },
   "description": {
-    "zh-CN": "10 语言界面全量词典与正则翻译（简/繁/日/韩/西/葡/法/俄/意/英）、无重启切换、思考与会话标题零 Token 翻译",
-    "zh-TW": "10 語言介面全量詞典與正則翻譯（簡/繁/日/韓/西/葡/法/俄/義/英）、免重啟切換、思考與對話標題零 Token 翻譯",
-    "ja": "10言語対応のUI辞書・正規表現ローカライズ（簡/繁/日/韓/西/葡/仏/露/伊/英）、再起動不要の切替、思考・会話タイトルのゼロトークン翻訳",
-    "ko": "10개 언어 UI 사전·정규식 현지화(간/번/일/한/스/포/프/러/이/영), 재시작 없는 전환, 사고 및 대화 제목 제로 토큰 번역",
-    "es": "Localización de interfaz en 10 idiomas por diccionario y regex (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en), cambio sin reiniciar y traducción sin tokens",
-    "pt": "Localização de interface em 10 idiomas por dicionário e regex (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en), troca sem reiniciar e tradução sem tokens",
-    "fr": "Localisation d'interface en 10 langues par dictionnaire et regex (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en), bascule sans redémarrage et traduction sans jetons",
-    "ru": "Локализация интерфейса на 10 языках (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en) по словарю и regex, переключение без перезапуска и перевод без токенов",
-    "it": "Localizzazione interfaccia in 10 lingue tramite dizionario e regex (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en), cambio senza riavvio e traduzione a zero token",
-    "en": "10-language UI dictionary/regex localization (zh/zh-TW/ja/ko/es/pt/fr/ru/it/en), zero-restart switching, and zero-token title/thought translation"
+    "zh-CN": "10 语言界面全量词典与正则翻译（简/繁/日/韩/西/葡/法/俄/意/英）、无重启切换、思维链双模流式转译与双语对照",
+    "zh-TW": "10 語言介面全量詞典與正則翻譯（簡/繁/日/韓/西/葡/法/俄/義/英）、免重啟切換、思維鏈雙模串流轉譯與雙語對照",
+    "ja": "10言語対応のUI辞書・正規表現ローカライズ（簡/繁/日/韓/西/葡/仏/露/伊/英）、再起動不要の切替、思考プロセス双モード翻訳・対訳表示",
+    "ko": "10개 언어 UI 사전·정규식 현지화, 재시작 없는 전환, 사고 과정(CoT) 이중 모드 스트리밍 번역 및 대조 표시",
+    "es": "Localización de interfaz en 10 idiomas por diccionario y regex, cambio sin reiniciar y traducción en streaming de CoT bilingüe",
+    "pt": "Localização de interface em 10 idiomas por dicionário e regex, troca sem reiniciar e tradução em streaming de CoT bilíngue",
+    "fr": "Localisation d'interface en 10 langues par dictionnaire et regex, bascule sans redémarrage et traduction en streaming CoT bilingue",
+    "ru": "Локализация интерфейса на 10 языках по словарю и regex, переключение без перезапуска и потоковый перевод CoT с двуязычным режимом",
+    "it": "Localizzazione interfaccia in 10 lingue tramite dizionario e regex, cambio senza riavvio e traduzione streaming CoT bilingue",
+    "en": "10-language UI dictionary/regex localization, zero-restart switching, and dual-mode streaming Chain-of-Thought (CoT) bilingual translation"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -48,7 +48,9 @@
   "permissions": [
     "dom:read",
     "dom:write",
-    "net:outbound:translate.googleapis.com"
+    "bridge:route",
+    "process:spawn",
+    "net:outbound:*"
   ],
   "contributes": {
     "settings": { "schema": "./settings.schema.json" },
@@ -81,6 +83,36 @@
           "ru": "Выбрать язык интерфейса",
           "it": "Imposta lingua interfaccia",
           "en": "Set Display Language"
+        }
+      },
+      {
+        "id": "zh-cn.toggle-thinking-display",
+        "title": {
+          "zh-CN": "切换思考转译双语对照 / 沉浸纯译文",
+          "zh-TW": "切換思考轉譯雙語對照 / 沉浸純譯文",
+          "ja": "思考翻訳の対訳 / 翻訳のみ表示を切り替え",
+          "ko": "사고 번역 이중 언어 / 번역 전용 전환",
+          "es": "Alternar CoT bilingüe / solo traducción",
+          "pt": "Alternar CoT bilíngue / apenas tradução",
+          "fr": "Basculer CoT bilingue / traduction seule",
+          "ru": "Переключить режим CoT: двуязычный / только перевод",
+          "it": "Alterna CoT bilingue / solo traduzione",
+          "en": "Toggle Thinking Bilingual / Translated-Only Mode"
+        }
+      },
+      {
+        "id": "zh-cn.test-thinking-api",
+        "title": {
+          "zh-CN": "测试思考转译 API 连通性",
+          "zh-TW": "測試思考轉譯 API 連通性",
+          "ja": "思考翻訳 API 接続テスト",
+          "ko": "사고 번역 API 연결 테스트",
+          "es": "Probar conexión de API de traducción CoT",
+          "pt": "Testar conexão da API de tradução CoT",
+          "fr": "Tester la connexion API de traduction CoT",
+          "ru": "Проверить подключение API перевода CoT",
+          "it": "Verifica connessione API traduzione CoT",
+          "en": "Test Thinking Translation API Connectivity"
         }
       }
     ],

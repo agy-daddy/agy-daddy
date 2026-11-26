@@ -265,3 +265,96 @@
   transform: translateY(1px) scale(0.96);
   background: var(--ag-control-hover);
 }
+
+.ptySandboxBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ag-border-sub);
+  background: var(--ag-subcard);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.ptySandboxText {
+  font-family: var(--ag-font-mono);
+  font-size: 11px;
+  color: var(--ag-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.wtBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: var(--ag-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.wtDialog {
+  width: 100%;
+  max-width: 400px;
+  background: var(--ag-elevated);
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-lg);
+  box-shadow: var(--ag-shadow-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wtHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wtField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wtLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ag-secondary);
+}
+
+.wtRepoBox {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-subcard);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.wtCheckRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 13px;
+  color: var(--ag-fg);
+}
+
+.wtActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}

@@ -9,11 +9,17 @@ interface RightDrawerProps {
   open: boolean;
   activeTab: RightTabId;
   rootPath: string;
+  worktreeId?: string | null;
+  worktreeBranch?: string | null;
+  isMissingWorktree?: boolean;
+  missingWorktreePath?: string | null;
+  isOverrideRoot?: boolean;
   sessionId: string;
   permissionLevel: PermissionLevel;
   token: string;
   inspectTargetFile: string;
   onSelectTab: (tab: RightTabId) => void;
+  onResetOverride?: () => void;
   onClose: () => void;
   onInjectQuote: (snippet: string) => void;
   onShowToast: (msg: string) => void;
@@ -36,11 +42,17 @@ export function RightDrawer(props: RightDrawerProps) {
     open,
     activeTab,
     rootPath,
+    worktreeId,
+    worktreeBranch,
+    isMissingWorktree,
+    missingWorktreePath,
+    isOverrideRoot,
     sessionId,
     permissionLevel,
     token,
     inspectTargetFile,
     onSelectTab,
+    onResetOverride,
     onClose,
     onInjectQuote,
     onShowToast,
@@ -94,6 +106,10 @@ export function RightDrawer(props: RightDrawerProps) {
   const ActiveComp = loaded[activeTab];
   const activeTabDef = TABS.find((tab) => tab.id === activeTab);
   const activeTabLabel = activeTabDef ? t(activeTabDef.labelKey) : activeTab;
+  const blockedByMissing = Boolean(isMissingWorktree && activeTab !== 'artifacts');
+  const sandboxLabel = worktreeBranch
+    ? `${worktreeBranch} · ${rootPath || missingWorktreePath || ''}`
+    : rootPath || missingWorktreePath || '';
 
   return (
     <div className={styles.wrap}>
@@ -122,14 +138,45 @@ export function RightDrawer(props: RightDrawerProps) {
         </button>
       </div>
 
+      {(sandboxLabel || isOverrideRoot) && (
+        <div className={styles.sandboxBar} data-testid="right-drawer-sandbox-pill">
+          <span className={styles.sandboxPath} title={rootPath || missingWorktreePath || ''}>
+            {isOverrideRoot
+              ? t('right.sandboxOverrideHint', { path: rootPath })
+              : t('right.sandboxLocked', { label: sandboxLabel })}
+          </span>
+          {isOverrideRoot && onResetOverride && (
+            <button
+              type="button"
+              className={styles.sandboxResetBtn}
+              data-testid="right-drawer-reset-override"
+              onClick={onResetOverride}
+            >
+              {t('right.sandboxResetBtn')}
+            </button>
+          )}
+        </div>
+      )}
+
       <div className={styles.content}>
-        {!open ? null : loadError ? (
+        {!open ? null : blockedByMissing ? (
+          <div className={styles.missingCard} data-testid="right-drawer-missing-worktree">
+            <strong className={styles.missingTitle}>{t('right.sandboxMissingTitle')}</strong>
+            <div className={styles.missingDesc}>
+              {t('right.sandboxMissingDesc', {
+                path: missingWorktreePath || rootPath || ''
+              })}
+            </div>
+          </div>
+        ) : loadError ? (
           <div className="ag-empty">{loadError}</div>
         ) : !ActiveComp ? (
           <div className="ag-empty">{t('right.loadingModule', { tab: activeTabLabel })}</div>
         ) : (
           <ActiveComp
             rootPath={rootPath}
+            worktreeId={worktreeId}
+            worktreeBranch={worktreeBranch}
             sessionId={sessionId}
             permissionLevel={permissionLevel}
             token={token}

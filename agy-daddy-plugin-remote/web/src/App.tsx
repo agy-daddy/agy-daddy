@@ -119,6 +119,8 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
     bootstrapWorkspaces: st.bootstrap?.workspaces,
     groups: st.groups,
     projects: st.projects,
+    collapsedNodes: st.collapsedNodes,
+    orgRevision: st.orgRevision,
     pins: st.pins,
     groupOrder: st.groupOrder,
     projectOrder: st.projectOrder,
@@ -143,6 +145,8 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
       workspaces={s.bootstrapWorkspaces || EMPTY_WORKSPACES}
       groups={s.groups}
       projects={s.projects}
+      collapsedNodes={s.collapsedNodes}
+      orgRevision={s.orgRevision}
       pins={s.pins}
       groupOrder={s.groupOrder}
       projectOrder={s.projectOrder}
@@ -157,7 +161,7 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
       pushSubscribed={s.pushSubscribed}
       pushBusy={s.pushBusy}
       onSelectSession={(id) => remoteStore.selectSession(id)}
-      onCreateSession={(title, ws) => remoteStore.createNewSession(title, ws)}
+      onCreateSession={(title, ws, opts) => remoteStore.createNewSession(title, ws, opts)}
       onTogglePin={(kind, id, nextPinned) => remoteStore.togglePin(kind, id, nextPinned)}
       onCreateGroup={(name, icon) => remoteStore.createGroup(name, icon ? { icon } : undefined)}
       onRenameGroup={(groupId, name) => remoteStore.renameGroup(groupId, name)}
@@ -166,10 +170,22 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
       onToggleGroupCollapsed={(groupId, collapsed) =>
         remoteStore.toggleGroupCollapsed(groupId, collapsed)
       }
+      onToggleNodeCollapsed={(nodeType, id, collapsed) =>
+        remoteStore.setNodeCollapsed(nodeType, id, collapsed)
+      }
       onAssignProjectGroup={(groupId, target) => remoteStore.assignProjectGroup(groupId, target)}
+      onAssignSessionProject={(cascadeId, projectId) =>
+        remoteStore.assignSessionProject(cascadeId, projectId)
+      }
       onRenameProject={(projectId, name) => remoteStore.renameProject(projectId, name)}
       onSetProjectIcon={(projectId, icon) => remoteStore.setProjectIcon(projectId, icon)}
       onRemoveProject={(projectId) => remoteStore.removeProject(projectId)}
+      onRefreshWorktrees={(rootPath) => remoteStore.refreshWorktrees(rootPath)}
+      onMutateWorktree={(payload) => remoteStore.mutateWorktree(payload)}
+      onOpenWorktreeInRightDrawer={(worktreePath, tab) =>
+        remoteStore.setRightWorkspaceOverride(worktreePath, tab)
+      }
+      onShowToast={(msg) => remoteStore.showToast(msg)}
       onReorderOrg={(req) => remoteStore.reorderOrg(req)}
       onArchiveSession={(cascadeId, archived) => remoteStore.archiveSession(cascadeId, archived)}
       onDeleteSession={(cascadeId, mode) => remoteStore.deleteSession(cascadeId, mode)}
@@ -194,16 +210,20 @@ const ConnectedRightDrawer = memo(function ConnectedRightDrawer() {
     activeSessionId: st.activeSessionId,
     activeSessionMeta: st.activeSession?.metadata,
     sessions: st.sessions,
+    projects: st.projects,
+    rightWorkspaceOverride: st.rightWorkspaceOverride,
     bootstrapWorkspaces: st.bootstrap?.workspaces,
     permissionLevel: st.permissionLevel,
     token: st.token,
     inspectTargetFile: st.inspectTargetFile
   }));
 
-  const activeRoot = useMemo(() => remoteStore.getActiveWorkspaceRoot(), [
+  const activeCtx = useMemo(() => remoteStore.getActiveWorkspaceContext(), [
     s.activeSessionId,
     s.activeSessionMeta,
     s.sessions,
+    s.projects,
+    s.rightWorkspaceOverride,
     s.bootstrapWorkspaces
   ]);
 
@@ -211,12 +231,18 @@ const ConnectedRightDrawer = memo(function ConnectedRightDrawer() {
     <RightDrawer
       open={s.rightOpen}
       activeTab={s.rightTab}
-      rootPath={activeRoot}
+      rootPath={activeCtx.rootPath}
+      worktreeId={activeCtx.worktreeId}
+      worktreeBranch={activeCtx.worktreeBranch}
+      isMissingWorktree={activeCtx.isMissing}
+      missingWorktreePath={activeCtx.missingPath}
+      isOverrideRoot={activeCtx.isOverride}
       sessionId={s.activeSessionId}
       permissionLevel={s.permissionLevel}
       token={s.token}
       inspectTargetFile={s.inspectTargetFile}
       onSelectTab={(tab) => remoteStore.setRightTab(tab)}
+      onResetOverride={() => remoteStore.setRightWorkspaceOverride(null)}
       onClose={() => remoteStore.setRightOpen(false)}
       onInjectQuote={(snippet) => remoteStore.injectQuoteToComposer(snippet)}
       onShowToast={(msg) => remoteStore.showToast(msg)}

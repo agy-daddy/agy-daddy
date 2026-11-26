@@ -9,6 +9,7 @@ export interface SseClientCallbacks {
   onStatePatch?: (payload: Record<string, unknown>) => void;
   onTaskUpdated?: (payload: Record<string, unknown>) => void;
   onOrgUpdated?: (payload: Record<string, unknown>) => void;
+  onWorktreeUpdated?: (payload: Record<string, unknown>) => void;
   onProjectJob?: (payload: Record<string, unknown>) => void;
 }
 
@@ -159,6 +160,7 @@ export class RemoteSseClient {
     bind('state.patch', (d) => this.callbacks.onStatePatch?.(d));
     bind('task.updated', (d) => this.callbacks.onTaskUpdated?.(d));
     bind('org.updated', (d) => this.callbacks.onOrgUpdated?.(d));
+    bind('worktree.updated', (d) => this.callbacks.onWorktreeUpdated?.(d));
     bind('project.job', (d) => this.callbacks.onProjectJob?.(d));
 
     es.onerror = () => {

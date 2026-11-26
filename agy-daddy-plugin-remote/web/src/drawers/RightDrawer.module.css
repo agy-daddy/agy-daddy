@@ -117,3 +117,63 @@
   flex-direction: column;
   background: var(--ag-bg);
 }
+
+.sandboxBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--ag-border-sub);
+  background: var(--ag-subcard);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.sandboxPath {
+  font-family: var(--ag-font-mono);
+  font-size: 11px;
+  color: var(--ag-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.sandboxResetBtn {
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--ag-r-xs);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-control);
+  color: var(--ag-fg);
+  font-size: 11.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.missingCard {
+  margin: 16px 12px;
+  padding: 14px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-warn-border);
+  background: var(--ag-warn-soft);
+  color: var(--ag-fg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.missingTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ag-warn);
+}
+
+.missingDesc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ag-secondary);
+  word-break: break-all;
+}

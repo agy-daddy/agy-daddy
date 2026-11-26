@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useI18n } from '../i18n';
 import { api, getLastL2ConfirmToken } from '../store/api';
 import type { PermissionLevel, PtySessionInfo } from '../types';
@@ -6,6 +6,8 @@ import styles from './lazy.module.css';
 
 interface PtyTerminalProps {
   rootPath: string;
+  worktreeId?: string | null;
+  worktreeBranch?: string | null;
   sessionId: string;
   permissionLevel: PermissionLevel;
   token: string;
@@ -32,18 +34,45 @@ const VIRTUAL_KEYS: Array<{ label: string; data: string }> = [
 
 const HIBERNATE_IDLE_MS = 60_000;
 
+function normalizeComparableCwd(raw: string | null | undefined): string {
+  return String(raw || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+}
+
+export function deriveClientWorktreeKey(rootPath: string): string {
+  const norm = normalizeComparableCwd(rootPath);
+  if (!norm) return 'wt_default';
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < norm.length; i++) {
+    hash ^= norm.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `wt_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function makeDefaultSlotId(nsKey: string, seq = 1): string {
+  return `pty-${nsKey}-${seq}`;
+}
+
 export default function PtyTerminal({
   rootPath,
-  sessionId,
+  worktreeId,
+  worktreeBranch,
   permissionLevel,
   token,
   onShowToast
 }: PtyTerminalProps) {
   const { t } = useI18n();
-  const [tabs, setTabs] = useState<PtyTab[]>([
-    { id: 'pty-1', title: t('pty.tabTitle', { n: 1 }), hibernated: false, lastActiveAt: Date.now() }
-  ]);
-  const [activeTabId, setActiveTabId] = useState('pty-1');
+  const normRoot = useMemo(() => normalizeComparableCwd(rootPath), [rootPath]);
+  const nsKey = useMemo(
+    () => (worktreeId && worktreeId.trim() ? worktreeId.trim() : deriveClientWorktreeKey(normRoot)),
+    [worktreeId, normRoot]
+  );
+
+  const [tabsByNs, setTabsByNs] = useState<Record<string, PtyTab[]>>({});
+  const [activeTabByNs, setActiveTabByNs] = useState<Record<string, string>>({});
   const [connState, setConnState] = useState<'connecting' | 'open' | 'closed'>('closed');
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -52,46 +81,100 @@ export default function PtyTerminal({
 
   const isL2 = permissionLevel === 'L2';
 
-  // Fetch existing remote PTY sessions on mount
+  const tabs = useMemo(() => {
+    const existing = tabsByNs[nsKey];
+    if (existing && existing.length > 0) return existing;
+    return [
+      {
+        id: makeDefaultSlotId(nsKey, 1),
+        title: t('pty.tabTitle', { n: 1 }),
+        hibernated: false,
+        lastActiveAt: Date.now()
+      }
+    ];
+  }, [tabsByNs, nsKey, t]);
+
+  const activeTabId = useMemo(() => {
+    const cur = activeTabByNs[nsKey];
+    if (cur && tabs.some((tab) => tab.id === cur)) return cur;
+    return tabs[0]?.id || makeDefaultSlotId(nsKey, 1);
+  }, [activeTabByNs, nsKey, tabs]);
+
+  // Fetch existing remote PTY sessions strictly scoped to current rootPath / worktree
   useEffect(() => {
-    if (!isL2) return;
+    if (!isL2 || !normRoot) return;
+    let canceled = false;
     api
-      .listPtySessions()
+      .listPtySessions(normRoot)
       .then((res) => {
+        if (canceled) return;
         const list = Array.isArray(res.sessions) ? res.sessions : [];
-        if (list.length > 0) {
-          setTabs(
-            list.map((s: PtySessionInfo, idx: number) => ({
-              id: s.id,
-              title: t('pty.tabTitle', { n: idx + 1 }),
-              hibernated: false,
-              lastActiveAt: Date.now()
-            }))
+        const matched = list.filter((s: PtySessionInfo) => {
+          if (worktreeId && s.worktreeId) {
+            return s.worktreeId === worktreeId;
+          }
+          const sCwd = normalizeComparableCwd(s.realCwd || s.cwd);
+          return Boolean(sCwd && sCwd === normRoot);
+        });
+        if (matched.length > 0) {
+          const nextTabs: PtyTab[] = matched.map((s, idx) => ({
+            id: s.sessionId || s.id,
+            title: t('pty.tabTitle', { n: idx + 1 }),
+            hibernated: false,
+            lastActiveAt: Date.now()
+          }));
+          setTabsByNs((prev) => ({ ...prev, [nsKey]: nextTabs }));
+          setActiveTabByNs((prev) => ({ ...prev, [nsKey]: nextTabs[0].id }));
+        } else {
+          const defaultId = makeDefaultSlotId(nsKey, 1);
+          setTabsByNs((prev) =>
+            prev[nsKey]?.length
+              ? prev
+              : {
+                  ...prev,
+                  [nsKey]: [
+                    {
+                      id: defaultId,
+                      title: t('pty.tabTitle', { n: 1 }),
+                      hibernated: false,
+                      lastActiveAt: Date.now()
+                    }
+                  ]
+                }
           );
-          setActiveTabId(list[0].id);
+          setActiveTabByNs((prev) => (prev[nsKey] ? prev : { ...prev, [nsKey]: defaultId }));
         }
       })
       .catch(() => {});
-  }, [isL2]);
+    return () => {
+      canceled = true;
+    };
+  }, [isL2, normRoot, nsKey, worktreeId]);
 
   // Idle tab hibernation timer
   useEffect(() => {
     if (!isL2) return;
     const timer = setInterval(() => {
       const now = Date.now();
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.id !== activeTabId && !t.hibernated && now - t.lastActiveAt > HIBERNATE_IDLE_MS
-            ? { ...t, hibernated: true }
-            : t
-        )
-      );
+      setTabsByNs((prev) => {
+        const list = prev[nsKey];
+        if (!list) return prev;
+        let changed = false;
+        const nextList = list.map((tab) => {
+          if (tab.id !== activeTabId && !tab.hibernated && now - tab.lastActiveAt > HIBERNATE_IDLE_MS) {
+            changed = true;
+            return { ...tab, hibernated: true };
+          }
+          return tab;
+        });
+        return changed ? { ...prev, [nsKey]: nextList } : prev;
+      });
     }, 15_000);
     return () => clearInterval(timer);
-  }, [isL2, activeTabId]);
+  }, [isL2, activeTabId, nsKey]);
 
   useEffect(() => {
-    if (!isL2 || !hostRef.current) return;
+    if (!isL2 || !normRoot || !activeTabId || !hostRef.current) return;
     let disposed = false;
     let ro: ResizeObserver | null = null;
 
@@ -126,8 +209,8 @@ export default function PtyTerminal({
         t: token,
         cols: String(term.cols || 80),
         rows: String(term.rows || 24),
-        cwd: rootPath || '',
-        sessionId: activeTabId || sessionId || 'pty-1'
+        cwd: normRoot,
+        sessionId: activeTabId
       });
       const confirmTok = getLastL2ConfirmToken();
       if (confirmTok) params.set('confirm', confirmTok);
@@ -150,8 +233,20 @@ export default function PtyTerminal({
         }
       };
 
-      ws.onclose = () => {
-        if (!disposed) setConnState('closed');
+      ws.onclose = (ev) => {
+        if (disposed) return;
+        setConnState('closed');
+        if (ev?.reason && ev.reason.includes('PTY_CWD_MISMATCH')) {
+          const freshId = `pty-${nsKey}-${Date.now().toString(36)}`;
+          onShowToast?.(t('pty.cwdMismatchRetry'));
+          setTabsByNs((prev) => ({
+            ...prev,
+            [nsKey]: (prev[nsKey] || tabs).map((tab) =>
+              tab.id === activeTabId ? { ...tab, id: freshId, lastActiveAt: Date.now() } : tab
+            )
+          }));
+          setActiveTabByNs((prev) => ({ ...prev, [nsKey]: freshId }));
+        }
       };
       ws.onerror = () => {
         if (!disposed) onShowToast?.(t('pty.wsError'));
@@ -187,7 +282,11 @@ export default function PtyTerminal({
       termRef.current?.dispose();
       termRef.current = null;
     };
-  }, [isL2, activeTabId, rootPath, token]);
+  }, [isL2, activeTabId, normRoot, nsKey, token]);
+
+  if (!normRoot) {
+    return <div className="ag-empty">{t('lazy.noWorkspace')}</div>;
+  }
 
   if (!isL2) {
     return (
@@ -205,29 +304,52 @@ export default function PtyTerminal({
   };
 
   const addTab = () => {
-    const nextIdx = tabs.length + 1;
-    const id = `pty-${Date.now().toString(36)}`;
-    setTabs((prev) => [
+    const current = tabsByNs[nsKey] || tabs;
+    const nextIdx = current.length + 1;
+    const id = `pty-${nsKey}-${Date.now().toString(36)}`;
+    setTabsByNs((prev) => ({
       ...prev,
-      { id, title: t('pty.tabTitle', { n: nextIdx }), hibernated: false, lastActiveAt: Date.now() }
-    ]);
-    setActiveTabId(id);
+      [nsKey]: [
+        ...(prev[nsKey] || tabs),
+        { id, title: t('pty.tabTitle', { n: nextIdx }), hibernated: false, lastActiveAt: Date.now() }
+      ]
+    }));
+    setActiveTabByNs((prev) => ({ ...prev, [nsKey]: id }));
   };
 
   const selectTab = (id: string) => {
-    setTabs((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, hibernated: false, lastActiveAt: Date.now() } : t))
-    );
-    setActiveTabId(id);
+    setTabsByNs((prev) => ({
+      ...prev,
+      [nsKey]: (prev[nsKey] || tabs).map((tab) =>
+        tab.id === id ? { ...tab, hibernated: false, lastActiveAt: Date.now() } : tab
+      )
+    }));
+    setActiveTabByNs((prev) => ({ ...prev, [nsKey]: id }));
   };
+
+  const sandboxDisplay = worktreeBranch ? `${worktreeBranch} · ${normRoot}` : normRoot;
 
   return (
     <div className={styles.pane} data-testid="pty-terminal">
+      <div className={styles.ptySandboxBar} data-testid="pty-sandbox-capsule" title={normRoot}>
+        <span className={styles.ptySandboxText}>
+          {t('pty.sandboxLabel', { label: sandboxDisplay })}
+        </span>
+        <span className="ag-chip" style={{ flexShrink: 0 }}>
+          {connState === 'open'
+            ? t('pty.connected')
+            : connState === 'connecting'
+              ? t('pty.connecting')
+              : t('pty.disconnected')}
+        </span>
+      </div>
+
       <div className={styles.termTabs} data-hscroll="1">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
+            style={{ minHeight: 44 }}
             className={`ag-pill-btn ${tab.id === activeTabId ? 'ag-pill-btn-primary' : ''}`}
             onClick={() => selectTab(tab.id)}
           >
@@ -235,16 +357,15 @@ export default function PtyTerminal({
             {tab.hibernated ? ` (${t('pty.hibernated')})` : ''}
           </button>
         ))}
-        <button type="button" className="ag-pill-btn" onClick={addTab}>
+        <button
+          type="button"
+          className="ag-pill-btn"
+          style={{ minWidth: 44, minHeight: 44 }}
+          onClick={addTab}
+          aria-label="+"
+        >
           +
         </button>
-        <span className="ag-chip" style={{ marginLeft: 'auto' }}>
-          {connState === 'open'
-            ? t('pty.connected')
-            : connState === 'connecting'
-              ? t('pty.connecting')
-              : t('pty.disconnected')}
-        </span>
       </div>
 
       <div ref={hostRef} className={styles.termHost} data-hscroll="1" />

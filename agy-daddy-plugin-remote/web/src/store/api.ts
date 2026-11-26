@@ -223,20 +223,59 @@ export const api = {
       sessions: SessionSummary[];
       groups?: SessionGroup[];
       projects?: HostProject[];
+      collapsedNodes?: import('../types').CollapsedNodes;
       pins?: SessionPins;
       groupOrder?: ZoneOrder;
       projectOrder?: Record<string, ZoneOrder>;
       sessionOrder?: SessionOrderMap;
+      worktreeTombstones?: Record<string, unknown>;
       archivedCount?: number;
       archivedSessions?: Record<string, ArchivedSessionMeta>;
       defaultSessionPath?: string;
     }>(`/api/v1/sessions${qs ? `?${qs}` : ''}`);
   },
 
-  getSessionOrg: (includeArchived = false) =>
-    requestJson<SessionOrgSnapshot>(
-      `/api/v1/sessions/org${includeArchived ? '?includeArchived=1' : ''}`
-    ),
+  getSessionOrg: (includeArchived = false, refreshWorktrees = false) => {
+    const params = new URLSearchParams();
+    if (includeArchived) params.set('includeArchived', '1');
+    if (refreshWorktrees) params.set('refreshWorktrees', '1');
+    const qs = params.toString();
+    return requestJson<SessionOrgSnapshot>(
+      `/api/v1/sessions/org${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  setNodeCollapsed: (payload: {
+    nodeType: 'group' | 'project' | 'worktree';
+    id: string;
+    collapsed: boolean;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      nodeType: 'group' | 'project' | 'worktree';
+      id: string;
+      collapsed: boolean;
+      collapsedNodes?: import('../types').CollapsedNodes;
+      groups?: SessionGroup[];
+      revision?: number;
+    }>('/api/v1/sessions/org/collapse', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  assignSessionProject: (
+    cascadeId: string,
+    payload: { projectId: string | null; worktreeId?: string | null }
+  ) =>
+    requestJson<{
+      ok: boolean;
+      cascadeId: string;
+      projectId: string | null;
+      revision?: number;
+    }>(`/api/v1/sessions/${encodeURIComponent(cascadeId)}/project`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    }),
 
   toggleSessionPin: (payload: {
     type: PinKind;
@@ -429,8 +468,23 @@ export const api = {
       `/api/v1/sessions/${encodeURIComponent(id)}`
     ),
 
-  createSession: (payload: { title?: string; workspaceUri?: string }) =>
-    requestJson<{ ok: boolean; cascadeId: string; session?: SessionSummary }>('/api/v1/sessions', {
+  createSession: (payload: {
+    title?: string;
+    workspaceUri?: string;
+    worktreePath?: string;
+    projectId?: string | null;
+    standalone?: boolean;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      cascadeId: string;
+      workspaceUri?: string;
+      worktreeId?: string;
+      worktreePath?: string;
+      projectId?: string | null;
+      projectName?: string | null;
+      session?: SessionSummary;
+    }>('/api/v1/sessions', {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
@@ -573,10 +627,15 @@ export const api = {
       body: JSON.stringify({ root, path, content })
     }),
 
-  getGitWorktrees: (root: string) =>
-    requestJson<{ ok: boolean; worktrees: GitWorktreeInfo[]; current?: string }>(
-      `/api/v1/git/worktrees?root=${encodeURIComponent(root)}`
-    ),
+  getGitWorktrees: (root: string, refresh = false) =>
+    requestJson<{
+      ok: boolean;
+      repoRoot?: string;
+      isMultiWorktree?: boolean;
+      isGitRepo?: boolean;
+      worktrees: GitWorktreeInfo[];
+      current?: string;
+    }>(`/api/v1/git/worktrees?root=${encodeURIComponent(root)}${refresh ? '&refresh=1' : ''}`),
 
   gitStage: (root: string, paths: string[], unstage = false) =>
     requestJson<{ ok: boolean }>('/api/v1/git/stage', {
@@ -601,12 +660,19 @@ export const api = {
 
   gitWorktree: (payload: {
     root: string;
-    action: 'create' | 'switch' | 'remove';
-    path: string;
+    action: 'add' | 'create' | 'switch' | 'remove' | 'prune';
+    path?: string;
     branch?: string;
     createBranch?: boolean;
   }) =>
-    requestJson<{ ok: boolean; worktrees?: GitWorktreeInfo[] }>('/api/v1/git/worktree', {
+    requestJson<{
+      ok: boolean;
+      action?: string;
+      targetPath?: string;
+      repoRoot?: string;
+      isMultiWorktree?: boolean;
+      worktrees?: GitWorktreeInfo[];
+    }>('/api/v1/git/worktree', {
       method: 'POST',
       confirmable: true,
       body: JSON.stringify(payload)
@@ -622,8 +688,10 @@ export const api = {
       `/api/v1/artifacts/${encodeURIComponent(sessionId)}/${encodeURIComponent(name)}`
     ),
 
-  listPtySessions: () =>
-    requestJson<{ ok: boolean; sessions: PtySessionInfo[] }>('/api/v1/pty/sessions'),
+  listPtySessions: (cwd?: string) =>
+    requestJson<{ ok: boolean; runtimeAvailable?: boolean; sessions: PtySessionInfo[] }>(
+      `/api/v1/pty/sessions${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`
+    ),
 
   listTasks: (params?: { sessionId?: string | null; project?: string | null }) => {
     const qs = new URLSearchParams();

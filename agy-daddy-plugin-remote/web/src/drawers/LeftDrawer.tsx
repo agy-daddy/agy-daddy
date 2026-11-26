@@ -1,3 +1,4 @@
+import type { ComponentType } from 'preact';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { EntityIcon, EntityIconPicker } from '../components/EntityIcon';
 import {
@@ -9,9 +10,11 @@ import {
   useDrawerDragSort
 } from '../hooks/useDrawerDragSort';
 import { useI18n } from '../i18n';
+import type { WorktreeSheetProps } from '../lazy/WorktreeSheet';
 import type {
   AppearanceMode,
   BootstrapResponse,
+  CollapsedNodes,
   HostProject,
   OrgReorderRequest,
   PermissionLevel,
@@ -20,6 +23,7 @@ import type {
   SessionOrderMap,
   SessionPins,
   SessionSummary,
+  WorktreeDto,
   ZoneOrder
 } from '../types';
 import styles from './LeftDrawer.module.css';
@@ -45,6 +49,8 @@ export interface LeftDrawerProps {
   workspaces: BootstrapResponse['workspaces'];
   groups: SessionGroup[];
   projects: HostProject[];
+  collapsedNodes?: CollapsedNodes;
+  orgRevision?: number;
   pins?: SessionPins;
   groupOrder?: ZoneOrder;
   projectOrder?: Record<string, ZoneOrder>;
@@ -59,20 +65,43 @@ export interface LeftDrawerProps {
   pushSubscribed: boolean;
   pushBusy: boolean;
   onSelectSession: (cascadeId: string) => void;
-  onCreateSession: (title?: string, workspaceUri?: string) => Promise<void>;
+  onCreateSession: (
+    title?: string,
+    workspaceUri?: string,
+    opts?: { worktreePath?: string; projectId?: string | null; standalone?: boolean }
+  ) => Promise<void>;
   onTogglePin?: (kind: PinKind, id: string, nextPinned?: boolean) => Promise<void>;
   onCreateGroup?: (name: string, icon?: string | null) => Promise<void>;
   onRenameGroup?: (groupId: string, name: string) => Promise<void>;
   onSetGroupIcon?: (groupId: string, icon: string | null) => Promise<void>;
   onDeleteGroup?: (groupId: string) => Promise<void>;
   onToggleGroupCollapsed?: (groupId: string, collapsed?: boolean) => Promise<void>;
+  onToggleNodeCollapsed?: (
+    nodeType: 'group' | 'project' | 'worktree',
+    id: string,
+    collapsed: boolean
+  ) => Promise<void>;
   onAssignProjectGroup?: (
     groupId: string | null,
     target: { projectId?: string; sessionId?: string; workspaceUri?: string }
   ) => Promise<void>;
+  onAssignSessionProject?: (cascadeId: string, projectId: string | null) => Promise<boolean | void>;
   onRenameProject?: (projectId: string, name: string) => Promise<void>;
   onSetProjectIcon?: (projectId: string, icon: string | null) => Promise<void>;
   onRemoveProject?: (projectId: string) => Promise<void>;
+  onRefreshWorktrees?: (rootPath?: string) => Promise<void>;
+  onMutateWorktree?: (payload: {
+    root: string;
+    action: 'add' | 'remove' | 'prune';
+    path?: string;
+    branch?: string;
+    createBranch?: boolean;
+  }) => Promise<boolean>;
+  onOpenWorktreeInRightDrawer?: (
+    worktreePath: string,
+    tab: 'pty' | 'diff' | 'files' | 'git'
+  ) => void;
+  onShowToast?: (msg: string) => void;
   onReorderOrg?: (req: OrgReorderRequest) => Promise<void>;
   onArchiveSession?: (cascadeId: string, archived: boolean) => Promise<boolean | void>;
   onDeleteSession?: (
@@ -102,12 +131,42 @@ type ActionSheetTarget =
       zoneIds: string[];
     }
   | {
+      kind: 'worktree';
+      project: HostProject;
+      worktree: WorktreeDto;
+    }
+  | {
       kind: 'session';
       session: SessionSummary;
       containerId: string;
       zone: 'pinned' | 'normal';
       zoneIds: string[];
     };
+
+interface OptimisticCollapseEntry {
+  collapsed: boolean;
+  baseRevision: number;
+  serverValueAtClick: boolean;
+}
+
+function getWorktreeDisplayLabel(
+  wt: WorktreeDto,
+  t: (
+    key: 'left.wtBare' | 'left.wtDetached',
+    params?: { sha: string }
+  ) => string
+): string {
+  if (wt.bare) return t('left.wtBare');
+  if (wt.detached) {
+    const sha = wt.headShort || (wt.head ? wt.head.slice(0, 7) : 'HEAD');
+    return t('left.wtDetached', { sha });
+  }
+  return wt.branch || wt.displayLabel || wt.displaySubpath || wt.path;
+}
+
+function isWorktreeMissing(wt: WorktreeDto): boolean {
+  return Boolean(wt.status === 'missing' || wt.prunable === true || wt.exists === false);
+}
 
 interface DeleteModalState {
   session: SessionSummary;
@@ -203,6 +262,8 @@ export function LeftDrawer({
   workspaces,
   groups,
   projects,
+  collapsedNodes,
+  orgRevision = 0,
   pins = EMPTY_PIN_LIST,
   groupOrder = EMPTY_ZONE,
   projectOrder = {},
@@ -223,10 +284,16 @@ export function LeftDrawer({
   onSetGroupIcon,
   onDeleteGroup,
   onToggleGroupCollapsed,
+  onToggleNodeCollapsed,
   onAssignProjectGroup,
+  onAssignSessionProject,
   onRenameProject,
   onSetProjectIcon,
   onRemoveProject,
+  onRefreshWorktrees,
+  onMutateWorktree,
+  onOpenWorktreeInRightDrawer,
+  onShowToast,
   onReorderOrg,
   onArchiveSession,
   onDeleteSession,
@@ -245,8 +312,10 @@ export function LeftDrawer({
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('__all__');
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
-  const [localCollapsedGroups, setLocalCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [optimisticCollapse, setOptimisticCollapse] = useState<
+    Record<string, OptimisticCollapseEntry>
+  >({});
+  const [transientExpandedIds, setTransientExpandedIds] = useState<Set<string>>(() => new Set());
   const [showSubagents, setShowSubagents] = useState<boolean>(() => {
     try {
       return window.localStorage?.getItem(SUBAGENT_VISIBLE_STORAGE_KEY) === '1';
@@ -257,6 +326,10 @@ export function LeftDrawer({
   const [showNewSession, setShowNewSession] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newWorkspaceUri, setNewWorkspaceUri] = useState('');
+  const [newWorktreeTarget, setNewWorktreeTarget] = useState<{
+    projectId: string;
+    worktree: WorktreeDto;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -270,8 +343,20 @@ export function LeftDrawer({
   const [renameDraft, setRenameDraft] = useState('');
   const [iconPickerMode, setIconPickerMode] = useState(false);
   const [moveToGroupMode, setMoveToGroupMode] = useState(false);
+  const [assignSessionProjectMode, setAssignSessionProjectMode] = useState(false);
   const [confirmRemoveProject, setConfirmRemoveProject] = useState(false);
+  const [confirmRemoveWorktree, setConfirmRemoveWorktree] = useState(false);
   const [deleteModal, setDeleteModal] = useState<DeleteModalState | null>(null);
+  const [deleteGroupModal, setDeleteGroupModal] = useState<{
+    group: SessionGroup;
+    projectCount: number;
+  } | null>(null);
+  const [worktreeSheetTarget, setWorktreeSheetTarget] = useState<{
+    repoRoot: string;
+    repoName: string;
+  } | null>(null);
+  const [LazyWorktreeSheet, setLazyWorktreeSheet] =
+    useState<ComponentType<WorktreeSheetProps> | null>(null);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const pillHoldRef = useRef<{
@@ -306,6 +391,25 @@ export function LeftDrawer({
       void onLoadArchived?.();
     }
   }, [statusFilter, onLoadArchived]);
+
+  useEffect(() => {
+    if (!worktreeSheetTarget || LazyWorktreeSheet) return;
+    let canceled = false;
+    void import('../lazy/WorktreeSheet')
+      .then((mod) => {
+        if (!canceled && mod?.default) {
+          setLazyWorktreeSheet(() => mod.default as ComponentType<WorktreeSheetProps>);
+        }
+      })
+      .catch((err) => {
+        if (!canceled) {
+          onShowToast?.((err as Error).message);
+        }
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [worktreeSheetTarget, LazyWorktreeSheet, onShowToast]);
 
   const toggleShowSubagents = () => {
     setShowSubagents((prev) => {
@@ -458,8 +562,9 @@ export function LeftDrawer({
     return { byId, byUri };
   }, [projects]);
 
-  const { sessionsByProject, standaloneZones } = useMemo(() => {
+  const { sessionsByProject, sessionsByWorktree, standaloneZones } = useMemo(() => {
     const byProj = new Map<string, SessionSummary[]>();
+    const byWt = new Map<string, SessionSummary[]>();
     const standalone: SessionSummary[] = [];
     for (const s of visibleSessions) {
       const matched =
@@ -469,15 +574,40 @@ export function LeftDrawer({
         const arr = byProj.get(matched.id) || [];
         arr.push(s);
         byProj.set(matched.id, arr);
+
+        if (matched.isMultiWorktree && Array.isArray(matched.worktrees) && matched.worktrees.length > 0) {
+          const sPath = normalizeUriPath(s.worktreePath || s.workspaceUri);
+          const wtHit =
+            (s.worktreeId
+              ? matched.worktrees.find((w) => w.worktreeId === s.worktreeId)
+              : undefined) ||
+            (sPath
+              ? matched.worktrees.find((w) => normalizeUriPath(w.path) === sPath)
+              : undefined) ||
+            matched.worktrees.find((w) => w.isMain && !w.bare) ||
+            matched.worktrees.find((w) => !w.bare) ||
+            matched.worktrees[0];
+          if (wtHit) {
+            const wtArr = byWt.get(wtHit.worktreeId) || [];
+            wtArr.push(s);
+            byWt.set(wtHit.worktreeId, wtArr);
+          }
+        }
       } else {
         standalone.push(s);
       }
     }
     return {
       sessionsByProject: byProj,
+      sessionsByWorktree: byWt,
       standaloneZones: orderedSessionZones(standalone, '__standalone__')
     };
   }, [visibleSessions, projectByUriOrId, orderedSessionZones]);
+
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.cascadeId === activeSessionId) || null,
+    [sessions, activeSessionId]
+  );
 
   // Group -> { pinned: HostProject[], normal: HostProject[] }
   const projectsByContainer = useMemo(() => {
@@ -488,9 +618,14 @@ export function LeftDrawer({
     for (const p of projects) {
       const matchedSessions = sessionsByProject.get(p.id) || [];
       if ((normalizedSearch || statusFilter !== 'all') && matchedSessions.length === 0) {
+        const wtHay = (p.worktrees || [])
+          .map((w) => `${w.branch || ''} ${w.displayLabel || ''} ${w.path || ''}`)
+          .join(' ');
         const projMatchesSearch =
           normalizedSearch &&
-          `${p.name} ${p.path || ''} ${p.branchName || ''}`.toLowerCase().includes(normalizedSearch);
+          `${p.name} ${p.path || ''} ${p.branchName || ''} ${wtHay}`
+            .toLowerCase()
+            .includes(normalizedSearch);
         if (!projMatchesSearch || statusFilter !== 'all') continue;
       }
       const gid = getProjectGroupId(p);
@@ -526,25 +661,109 @@ export function LeftDrawer({
     projectOrder
   ]);
 
-  const isGroupCollapsed = useCallback(
-    (g: SessionGroup): boolean => {
-      if (Object.prototype.hasOwnProperty.call(localCollapsedGroups, g.id)) {
-        return Boolean(localCollapsedGroups[g.id]);
+  const isFilterAutoExpand =
+    Boolean(normalizedSearch) || (statusFilter !== 'all' && statusFilter !== 'archived');
+
+  const getServerCollapsed = useCallback(
+    (nodeType: 'group' | 'project' | 'worktree', id: string): boolean => {
+      if (nodeType === 'group') {
+        return Boolean(groups.find((g) => g.id === id)?.collapsed);
       }
-      return Boolean(g.collapsed);
+      if (nodeType === 'project') {
+        if (collapsedNodes?.projects && Object.prototype.hasOwnProperty.call(collapsedNodes.projects, id)) {
+          return Boolean(collapsedNodes.projects[id]);
+        }
+        return Boolean(projects.find((p) => p.id === id)?.collapsed);
+      }
+      if (collapsedNodes?.worktrees && Object.prototype.hasOwnProperty.call(collapsedNodes.worktrees, id)) {
+        return Boolean(collapsedNodes.worktrees[id]);
+      }
+      for (const p of projects) {
+        const wt = p.worktrees?.find((w) => w.worktreeId === id);
+        if (wt) return Boolean(wt.collapsed);
+      }
+      return false;
     },
-    [localCollapsedGroups]
+    [groups, projects, collapsedNodes]
   );
 
-  const handleToggleGroupCollapse = useCallback(
-    (g: SessionGroup) => {
-      const next = !isGroupCollapsed(g);
-      setLocalCollapsedGroups((prev) => ({ ...prev, [g.id]: next }));
+  // Drop stale optimistic collapse entries whenever server revision advances or server value diverges
+  useEffect(() => {
+    setOptimisticCollapse((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.length === 0) return prev;
+      let changed = false;
+      const next: Record<string, OptimisticCollapseEntry> = {};
+      for (const key of keys) {
+        const entry = prev[key];
+        const sepIdx = key.indexOf(':');
+        const nodeType = key.slice(0, sepIdx) as 'group' | 'project' | 'worktree';
+        const id = key.slice(sepIdx + 1);
+        const serverVal = getServerCollapsed(nodeType, id);
+        if (orgRevision > entry.baseRevision || serverVal !== entry.serverValueAtClick) {
+          changed = true;
+        } else {
+          next[key] = entry;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [orgRevision, getServerCollapsed]);
+
+  const isNodeCollapsed = useCallback(
+    (nodeType: 'group' | 'project' | 'worktree', id: string): boolean => {
+      const key = `${nodeType}:${id}`;
+      if (isFilterAutoExpand || transientExpandedIds.has(key)) {
+        return false;
+      }
+      const serverVal = getServerCollapsed(nodeType, id);
+      const opt = optimisticCollapse[key];
+      if (opt && orgRevision <= opt.baseRevision && serverVal === opt.serverValueAtClick) {
+        return opt.collapsed;
+      }
+      return serverVal;
+    },
+    [isFilterAutoExpand, transientExpandedIds, getServerCollapsed, optimisticCollapse, orgRevision]
+  );
+
+  const handleToggleNodeCollapse = useCallback(
+    (nodeType: 'group' | 'project' | 'worktree', id: string) => {
+      const key = `${nodeType}:${id}`;
+      const serverVal = getServerCollapsed(nodeType, id);
+      const curCollapsed = isNodeCollapsed(nodeType, id);
+      const nextCollapsed = !curCollapsed;
+      if (transientExpandedIds.has(key)) {
+        setTransientExpandedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+      setOptimisticCollapse((prev) => ({
+        ...prev,
+        [key]: {
+          collapsed: nextCollapsed,
+          baseRevision: orgRevision,
+          serverValueAtClick: serverVal
+        }
+      }));
       if (permissionLevel !== 'L0') {
-        void onToggleGroupCollapsed?.(g.id, next);
+        if (onToggleNodeCollapsed) {
+          void onToggleNodeCollapsed(nodeType, id, nextCollapsed);
+        } else if (nodeType === 'group') {
+          void onToggleGroupCollapsed?.(id, nextCollapsed);
+        }
       }
     },
-    [isGroupCollapsed, onToggleGroupCollapsed, permissionLevel]
+    [
+      getServerCollapsed,
+      isNodeCollapsed,
+      transientExpandedIds,
+      orgRevision,
+      permissionLevel,
+      onToggleNodeCollapsed,
+      onToggleGroupCollapsed
+    ]
   );
 
   // Drag-and-drop hook
@@ -566,6 +785,10 @@ export function LeftDrawer({
           (s) => s.cascadeId
         );
       }
+      if (sessionsByWorktree.has(containerId)) {
+        const zoned = orderedSessionZones(sessionsByWorktree.get(containerId) || [], containerId);
+        return (zone === 'pinned' ? zoned.pinned : zoned.normal).map((s) => s.cascadeId);
+      }
       const zoned = orderedSessionZones(sessionsByProject.get(containerId) || [], containerId);
       return (zone === 'pinned' ? zoned.pinned : zoned.normal).map((s) => s.cascadeId);
     },
@@ -574,10 +797,20 @@ export function LeftDrawer({
       projectsByContainer,
       pinnedQuickSessions,
       standaloneZones,
+      sessionsByWorktree,
       sessionsByProject,
       orderedSessionZones
     ]
   );
+
+  const resetSheetSubModes = useCallback(() => {
+    setRenameMode(false);
+    setIconPickerMode(false);
+    setMoveToGroupMode(false);
+    setAssignSessionProjectMode(false);
+    setConfirmRemoveProject(false);
+    setConfirmRemoveWorktree(false);
+  }, []);
 
   const handleDragLongPressActionSheet = useCallback(
     (item: DragItemMeta) => {
@@ -585,10 +818,7 @@ export function LeftDrawer({
       window.setTimeout(() => {
         suppressRowClickRef.current = false;
       }, 200);
-      setRenameMode(false);
-      setIconPickerMode(false);
-      setMoveToGroupMode(false);
-      setConfirmRemoveProject(false);
+      resetSheetSubModes();
 
       if (item.targetType === 'group') {
         const g = groups.find((x) => x.id === item.id);
@@ -625,7 +855,7 @@ export function LeftDrawer({
         }
       }
     },
-    [groups, projects, sessions, getZoneIds, getProjectGroupId]
+    [groups, projects, sessions, getZoneIds, getProjectGroupId, resetSheetSubModes]
   );
 
   const dragDisabled = permissionLevel === 'L0' || Boolean(normalizedSearch) || statusFilter === 'archived';
@@ -639,11 +869,23 @@ export function LeftDrawer({
         await onReorderOrg?.(req);
       },
       onTempExpandGroup: (gid) => {
-        setLocalCollapsedGroups((prev) => ({ ...prev, [gid]: false }));
+        setTransientExpandedIds((prev) => {
+          const key = `group:${gid}`;
+          if (prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
       },
       onDraggingChange: onDraggingOrgChange,
       onLongPressActionSheet: handleDragLongPressActionSheet
     });
+
+  useEffect(() => {
+    if (!draggingItem && transientExpandedIds.size > 0) {
+      setTransientExpandedIds(new Set());
+    }
+  }, [draggingItem, transientExpandedIds.size]);
 
   // Group pill long-press (450ms) works EVEN when unselected or when drag is disabled
   const startGroupPillHold = (group: SessionGroup, clientX: number, clientY: number) => {
@@ -662,10 +904,7 @@ export function LeftDrawer({
         try {
           navigator.vibrate?.(15);
         } catch {}
-        setRenameMode(false);
-        setIconPickerMode(false);
-        setMoveToGroupMode(false);
-        setConfirmRemoveProject(false);
+        resetSheetSubModes();
         setActionSheet({
           kind: 'group',
           group,
@@ -696,10 +935,7 @@ export function LeftDrawer({
 
   const openGroupActionSheet = (group: SessionGroup) => {
     const zone: 'pinned' | 'normal' = isGroupPinned(group) ? 'pinned' : 'normal';
-    setRenameMode(false);
-    setIconPickerMode(false);
-    setMoveToGroupMode(false);
-    setConfirmRemoveProject(false);
+    resetSheetSubModes();
     setActionSheet({
       kind: 'group',
       group,
@@ -710,10 +946,7 @@ export function LeftDrawer({
 
   const openProjectActionSheet = (project: HostProject, containerId: string) => {
     const zone: 'pinned' | 'normal' = isProjectPinned(project) ? 'pinned' : 'normal';
-    setRenameMode(false);
-    setIconPickerMode(false);
-    setMoveToGroupMode(false);
-    setConfirmRemoveProject(false);
+    resetSheetSubModes();
     setActionSheet({
       kind: 'project',
       project,
@@ -724,15 +957,21 @@ export function LeftDrawer({
     });
   };
 
+  const openWorktreeActionSheet = (project: HostProject, worktree: WorktreeDto) => {
+    resetSheetSubModes();
+    setActionSheet({
+      kind: 'worktree',
+      project,
+      worktree
+    });
+  };
+
   const openSessionActionSheet = (
     session: SessionSummary,
     containerId: string,
     zone: 'pinned' | 'normal'
   ) => {
-    setRenameMode(false);
-    setIconPickerMode(false);
-    setMoveToGroupMode(false);
-    setConfirmRemoveProject(false);
+    resetSheetSubModes();
     setActionSheet({
       kind: 'session',
       session,
@@ -863,8 +1102,18 @@ export function LeftDrawer({
   const handleCreateSession = async () => {
     setCreating(true);
     try {
-      await onCreateSession(newTitle.trim() || undefined, newWorkspaceUri || undefined);
+      await onCreateSession(
+        newTitle.trim() || undefined,
+        newWorkspaceUri || undefined,
+        newWorktreeTarget
+          ? {
+              worktreePath: newWorktreeTarget.worktree.path,
+              projectId: newWorktreeTarget.projectId
+            }
+          : undefined
+      );
       setNewTitle('');
+      setNewWorktreeTarget(null);
       setShowNewSession(false);
     } finally {
       setCreating(false);
@@ -1002,12 +1251,160 @@ export function LeftDrawer({
     );
   };
 
+  const renderWorktreeCard = (p: HostProject, wt: WorktreeDto) => {
+    const wtCollapsed = isNodeCollapsed('worktree', wt.worktreeId);
+    const wtSessions = sessionsByWorktree.get(wt.worktreeId) || [];
+    const wtZones = orderedSessionZones(wtSessions, wt.worktreeId);
+    const wtCount = wtSessions.length;
+    const missing = isWorktreeMissing(wt);
+    const bare = Boolean(wt.bare);
+    const locked = Boolean(wt.locked);
+    const wtLabel = getWorktreeDisplayLabel(wt, t);
+    const hasRunning = (wt.runningCount ?? 0) > 0 || wtSessions.some(isSessionRunning);
+    const hasAttention =
+      (wt.needsAttentionCount ?? 0) > 0 || wtSessions.some((s) => Boolean(s.needsAttention));
+    const isActiveWt = Boolean(
+      activeSession &&
+        (activeSession.worktreeId === wt.worktreeId ||
+          (wt.path &&
+            normalizeUriPath(activeSession.worktreePath || activeSession.workspaceUri) ===
+              normalizeUriPath(wt.path)))
+    );
+
+    return (
+      <div
+        key={wt.worktreeId}
+        className={styles.wtCard}
+        data-testid={`worktree-card-${wt.worktreeId}`}
+      >
+        <div
+          className={`${styles.wtHeader} ${isActiveWt ? styles.wtHeaderActive : ''}`}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            openWorktreeActionSheet(p, wt);
+          }}
+        >
+          <button
+            type="button"
+            className={styles.wtToggle}
+            data-testid={`wt-toggle-${wt.worktreeId}`}
+            onClick={() => handleToggleNodeCollapse('worktree', wt.worktreeId)}
+          >
+            <span className={styles.chevron}>{wtCollapsed ? '▸' : '▾'}</span>
+            <span className={styles.wtToggleBody}>
+              <span className={styles.wtRow1}>
+                {(hasAttention || hasRunning) && (
+                  <span
+                    className={`${styles.dot} ${
+                      hasAttention ? styles.dotAttention : styles.dotRunning
+                    }`}
+                    style={{ marginTop: 0 }}
+                  />
+                )}
+                <span className={styles.wtBranchText}>{wtLabel}</span>
+                {wt.isMain && !bare && (
+                  <span className={`${styles.wtBadge} ${styles.wtBadgeMain}`}>
+                    {t('left.wtMainTag')}
+                  </span>
+                )}
+                {locked && (
+                  <span className={`${styles.wtBadge} ${styles.wtBadgeLocked}`}>
+                    {t('left.wtLocked')}
+                  </span>
+                )}
+                {missing && (
+                  <span className={`${styles.wtBadge} ${styles.wtBadgeWarn}`}>
+                    {t('left.wtMissing')}
+                  </span>
+                )}
+                <span className={styles.wtCount}>{wtCount}</span>
+              </span>
+              <span className={styles.wtRow2} title={wt.path}>
+                {wt.displaySubpath || wt.path}
+              </span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={styles.actionBtn}
+            aria-label={t('left.wtNewSession')}
+            data-testid={`wt-new-session-${wt.worktreeId}`}
+            disabled={permissionLevel === 'L0' || bare || missing}
+            onClick={() => {
+              setNewWorkspaceUri(wt.uri || wt.path || '');
+              setNewWorktreeTarget({ projectId: p.id, worktree: wt });
+              setShowNewSession(true);
+            }}
+          >
+            +
+          </button>
+
+          <button
+            type="button"
+            className={styles.actionBtn}
+            aria-label={t('left.moreActions')}
+            data-testid={`wt-more-${wt.worktreeId}`}
+            onClick={() => openWorktreeActionSheet(p, wt)}
+          >
+            ···
+          </button>
+        </div>
+
+        {!wtCollapsed && (
+          <div className={styles.wtSessionList}>
+            {missing && (
+              <div className={styles.wtInlineBanner} data-testid={`wt-missing-hint-${wt.worktreeId}`}>
+                {t('left.wtMissingHint')}
+              </div>
+            )}
+            {wtCount === 0 ? (
+              !bare && (
+                <div className={styles.empty} style={{ padding: '8px' }}>
+                  {t('left.projectEmpty')}
+                </div>
+              )
+            ) : (
+              <>
+                {wtZones.pinned.map((s) => renderSessionRow(s, wt.worktreeId, 'pinned'))}
+                {wtZones.pinned.length > 0 && wtZones.normal.length > 0 && (
+                  <div className={styles.subDivider} aria-hidden="true" />
+                )}
+                {wtZones.normal.map((s) => renderSessionRow(s, wt.worktreeId, 'normal'))}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderProjectCard = (p: HostProject, groupId: string | null, containerId: string) => {
     const pinned = isProjectPinned(p);
     const zone: 'pinned' | 'normal' = pinned ? 'pinned' : 'normal';
-    const collapsed = Boolean(collapsedProjects[p.id]);
-    const sessionZones = orderedSessionZones(sessionsByProject.get(p.id) || [], p.id);
-    const listCount = sessionZones.pinned.length + sessionZones.normal.length;
+    const collapsed = isNodeCollapsed('project', p.id);
+    const isMultiWt = Boolean(p.isMultiWorktree && Array.isArray(p.worktrees) && p.worktrees.length > 0);
+    const projSessions = sessionsByProject.get(p.id) || [];
+    const sessionZones = orderedSessionZones(projSessions, p.id);
+    const listCount = isMultiWt ? projSessions.length : sessionZones.pinned.length + sessionZones.normal.length;
+    const defaultWt = isMultiWt
+      ? p.worktrees!.find((w) => w.isMain && !w.bare && !isWorktreeMissing(w)) ||
+        p.worktrees!.find((w) => !w.bare && !isWorktreeMissing(w)) ||
+        null
+      : null;
+    const visibleWorktrees = isMultiWt
+      ? p.worktrees!.filter((wt) => {
+          if (!normalizedSearch && statusFilter === 'all') return true;
+          const wtSess = sessionsByWorktree.get(wt.worktreeId) || [];
+          if (wtSess.length > 0) return true;
+          if (statusFilter === 'all' && normalizedSearch) {
+            return `${wt.branch || ''} ${wt.displayLabel || ''} ${wt.path || ''}`
+              .toLowerCase()
+              .includes(normalizedSearch);
+          }
+          return false;
+        })
+      : [];
     const isArmed = armedItem?.targetType === 'project' && armedItem.id === p.id;
     const isDraggingSource = draggingItem?.targetType === 'project' && draggingItem.id === p.id;
     const dragMeta: DragItemMeta = {
@@ -1046,9 +1443,10 @@ export function LeftDrawer({
           <button
             type="button"
             className={styles.projectToggle}
+            data-testid={`project-toggle-${p.id}`}
             onClick={() => {
               if (suppressRowClickRef.current || draggingItem) return;
-              setCollapsedProjects((prev) => ({ ...prev, [p.id]: !collapsed }));
+              handleToggleNodeCollapse('project', p.id);
             }}
           >
             <span className={styles.chevron}>{collapsed ? '▸' : '▾'}</span>
@@ -1065,9 +1463,14 @@ export function LeftDrawer({
                   </span>
                 )}
                 {p.name}
+                {isMultiWt && (
+                  <span className={styles.projWtBadge} data-testid={`project-wt-badge-${p.id}`}>
+                    {t('left.wtBadgeCount', { count: p.worktrees!.length })}
+                  </span>
+                )}
               </span>
               <span className={styles.projectSub}>
-                {p.branchName ? `${p.branchName} · ` : ''}
+                {!isMultiWt && p.branchName ? `${p.branchName} · ` : ''}
                 {listCount}
               </span>
             </span>
@@ -1077,9 +1480,15 @@ export function LeftDrawer({
             type="button"
             className={styles.actionBtn}
             aria-label={t('left.newInProject', { name: p.name })}
-            disabled={permissionLevel === 'L0'}
+            disabled={permissionLevel === 'L0' || (isMultiWt && !defaultWt)}
             onClick={() => {
-              setNewWorkspaceUri(p.uri || p.path || '');
+              if (isMultiWt && defaultWt) {
+                setNewWorkspaceUri(defaultWt.uri || defaultWt.path || '');
+                setNewWorktreeTarget({ projectId: p.id, worktree: defaultWt });
+              } else {
+                setNewWorkspaceUri(p.uri || p.path || '');
+                setNewWorktreeTarget(null);
+              }
               setShowNewSession(true);
             }}
           >
@@ -1118,23 +1527,30 @@ export function LeftDrawer({
           </button>
         </div>
 
-        {!collapsed && (
-          <div className={styles.sessionList}>
-            {listCount === 0 ? (
-              <div className={styles.empty} style={{ padding: '10px 8px' }}>
-                {t('left.projectEmpty')}
-              </div>
-            ) : (
-              <>
-                {sessionZones.pinned.map((s) => renderSessionRow(s, p.id, 'pinned'))}
-                {sessionZones.pinned.length > 0 && sessionZones.normal.length > 0 && (
-                  <div className={styles.subDivider} aria-hidden="true" />
-                )}
-                {sessionZones.normal.map((s) => renderSessionRow(s, p.id, 'normal'))}
-              </>
-            )}
-          </div>
-        )}
+        {!collapsed &&
+          (isMultiWt ? (
+            <div className={styles.wtList} data-testid={`project-wt-list-${p.id}`}>
+              {(visibleWorktrees.length > 0 ? visibleWorktrees : p.worktrees!).map((wt) =>
+                renderWorktreeCard(p, wt)
+              )}
+            </div>
+          ) : (
+            <div className={styles.sessionList}>
+              {listCount === 0 ? (
+                <div className={styles.empty} style={{ padding: '10px 8px' }}>
+                  {t('left.projectEmpty')}
+                </div>
+              ) : (
+                <>
+                  {sessionZones.pinned.map((s) => renderSessionRow(s, p.id, 'pinned'))}
+                  {sessionZones.pinned.length > 0 && sessionZones.normal.length > 0 && (
+                    <div className={styles.subDivider} aria-hidden="true" />
+                  )}
+                  {sessionZones.normal.map((s) => renderSessionRow(s, p.id, 'normal'))}
+                </>
+              )}
+            </div>
+          ))}
       </div>
     );
   };
@@ -1142,7 +1558,7 @@ export function LeftDrawer({
   const renderGroupSection = (g: SessionGroup) => {
     const pinned = isGroupPinned(g);
     const zone: 'pinned' | 'normal' = pinned ? 'pinned' : 'normal';
-    const collapsed = isGroupCollapsed(g);
+    const collapsed = isNodeCollapsed('group', g.id);
     const bucket = projectsByContainer.get(g.id) || { pinned: [], normal: [] };
     const totalCount = bucket.pinned.length + bucket.normal.length;
     const isDropHighlighted =
@@ -1185,9 +1601,10 @@ export function LeftDrawer({
           <button
             type="button"
             className={styles.groupToggleBtn}
+            data-testid={`group-toggle-${g.id}`}
             onClick={() => {
               if (suppressRowClickRef.current || draggingItem) return;
-              handleToggleGroupCollapse(g);
+              handleToggleNodeCollapse('group', g.id);
             }}
           >
             <span className={styles.chevron}>{collapsed ? '▸' : '▾'}</span>
@@ -1282,7 +1699,10 @@ export function LeftDrawer({
           <button
             type="button"
             className={styles.primaryBtn}
-            onClick={() => setShowNewSession((v) => !v)}
+            onClick={() => {
+              setNewWorktreeTarget(null);
+              setShowNewSession((v) => !v);
+            }}
             disabled={permissionLevel === 'L0'}
           >
             {t('left.newSessionBtn')}
@@ -1485,6 +1905,13 @@ export function LeftDrawer({
       {showNewSession && (
         <div className={styles.newCard}>
           <strong style={{ fontSize: 12.5 }}>{t('left.newSessionTitle')}</strong>
+          {newWorktreeTarget ? (
+            <div className={styles.wtLockedChip} data-testid="new-session-wt-chip" title={newWorktreeTarget.worktree.path}>
+              {t('left.wtNewSessionLockedHint', {
+                label: getWorktreeDisplayLabel(newWorktreeTarget.worktree, t)
+              })}
+            </div>
+          ) : null}
           <input
             type="text"
             className="ag-input"
@@ -1492,23 +1919,28 @@ export function LeftDrawer({
             value={newTitle}
             onInput={(e) => setNewTitle((e.target as HTMLInputElement).value)}
           />
-          <select
-            className="ag-select"
-            value={newWorkspaceUri}
-            onChange={(e) => setNewWorkspaceUri((e.target as HTMLSelectElement).value)}
-          >
-            <option value="">{t('left.defaultWorkspace')}</option>
-            {workspaceOptions.map((w) => (
-              <option key={w.uri} value={w.uri}>
-                {w.name || w.path || w.uri}
-              </option>
-            ))}
-          </select>
+          {!newWorktreeTarget && (
+            <select
+              className="ag-select"
+              value={newWorkspaceUri}
+              onChange={(e) => setNewWorkspaceUri((e.target as HTMLSelectElement).value)}
+            >
+              <option value="">{t('left.defaultWorkspace')}</option>
+              {workspaceOptions.map((w) => (
+                <option key={w.uri} value={w.uri}>
+                  {w.name || w.path || w.uri}
+                </option>
+              ))}
+            </select>
+          )}
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
             <button
               type="button"
               className="ag-pill-btn"
-              onClick={() => setShowNewSession(false)}
+              onClick={() => {
+                setShowNewSession(false);
+                setNewWorktreeTarget(null);
+              }}
             >
               {t('common.cancel')}
             </button>
@@ -1516,6 +1948,7 @@ export function LeftDrawer({
               type="button"
               className="ag-pill-btn ag-pill-btn-primary"
               disabled={creating}
+              data-testid="confirm-create-session-btn"
               onClick={handleCreateSession}
             >
               {creating ? t('left.creating') : t('left.createSession')}
@@ -1791,8 +2224,15 @@ export function LeftDrawer({
                 ? actionSheet.group.name
                 : actionSheet.kind === 'project'
                   ? actionSheet.project.name
-                  : actionSheet.session.title}
+                  : actionSheet.kind === 'worktree'
+                    ? `${actionSheet.project.name} · ${getWorktreeDisplayLabel(actionSheet.worktree, t)}`
+                    : actionSheet.session.title}
             </div>
+            {actionSheet.kind === 'worktree' && (
+              <div className={styles.wtSubInfo} title={actionSheet.worktree.path}>
+                {actionSheet.worktree.path}
+              </div>
+            )}
 
             {iconPickerMode &&
             (actionSheet.kind === 'group' || actionSheet.kind === 'project') ? (
@@ -1898,6 +2338,90 @@ export function LeftDrawer({
                   {t('common.cancel')}
                 </button>
               </div>
+            ) : assignSessionProjectMode && actionSheet.kind === 'session' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {actionSheet.session.worktreeId && (
+                  <div style={{ fontSize: 11.5, color: 'var(--ag-muted)', padding: '0 4px' }}>
+                    {t('left.assignSessionWorktreeHint')}
+                  </div>
+                )}
+                {projects.map((proj) => (
+                  <button
+                    key={proj.id}
+                    type="button"
+                    className={styles.actionSheetBtn}
+                    data-testid={`assign-session-proj-${proj.id}`}
+                    onClick={async () => {
+                      await onAssignSessionProject?.(actionSheet.session.cascadeId, proj.id);
+                      setAssignSessionProjectMode(false);
+                      setActionSheet(null);
+                    }}
+                  >
+                    <span>{proj.name}</span>
+                    {actionSheet.session.projectId === proj.id && <span>✓</span>}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className={styles.actionSheetBtn}
+                  data-testid="assign-session-proj-standalone"
+                  onClick={async () => {
+                    await onAssignSessionProject?.(actionSheet.session.cascadeId, null);
+                    setAssignSessionProjectMode(false);
+                    setActionSheet(null);
+                  }}
+                >
+                  <span>{t('left.assignSessionStandalone')}</span>
+                  {!actionSheet.session.projectId && <span>✓</span>}
+                </button>
+                <button
+                  type="button"
+                  className="ag-pill-btn"
+                  style={{ minHeight: 44 }}
+                  onClick={() => setAssignSessionProjectMode(false)}
+                >
+                  {t('common.cancel')}
+                </button>
+              </div>
+            ) : confirmRemoveWorktree && actionSheet.kind === 'worktree' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 12.5, color: 'var(--ag-secondary)', wordBreak: 'break-all' }}>
+                  {t('left.wtRemoveConfirm', {
+                    label: getWorktreeDisplayLabel(actionSheet.worktree, t),
+                    path: actionSheet.worktree.path
+                  })}
+                </div>
+                <div className={styles.modalActions}>
+                  <button
+                    type="button"
+                    className="ag-pill-btn"
+                    style={{ minHeight: 44 }}
+                    onClick={() => setConfirmRemoveWorktree(false)}
+                  >
+                    {t('common.cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.dangerBtn}
+                    data-testid="confirm-remove-worktree-btn"
+                    onClick={async () => {
+                      const repoRoot =
+                        actionSheet.project.repoRootPath ||
+                        actionSheet.project.path ||
+                        actionSheet.worktree.path;
+                      await onMutateWorktree?.({
+                        root: repoRoot,
+                        action: 'remove',
+                        path: actionSheet.worktree.path
+                      });
+                      setConfirmRemoveWorktree(false);
+                      setActionSheet(null);
+                    }}
+                  >
+                    {t('left.wtRemove')}
+                  </button>
+                </div>
+              </div>
             ) : confirmRemoveProject && actionSheet.kind === 'project' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ fontSize: 12.5, color: 'var(--ag-secondary)' }}>
@@ -1973,9 +2497,18 @@ export function LeftDrawer({
                       type="button"
                       className={`${styles.actionSheetBtn} ${styles.actionSheetBtnDanger}`}
                       disabled={permissionLevel === 'L0'}
+                      data-testid="action-delete-group"
                       onClick={async () => {
-                        await onDeleteGroup?.(actionSheet.group.id);
+                        const targetGroup = actionSheet.group;
+                        const count = projects.filter(
+                          (p) => getProjectGroupId(p) === targetGroup.id
+                        ).length;
                         setActionSheet(null);
+                        if (count === 0) {
+                          await onDeleteGroup?.(targetGroup.id);
+                        } else {
+                          setDeleteGroupModal({ group: targetGroup, projectCount: count });
+                        }
                       }}
                     >
                       <span>{t('left.deleteGroup')}</span>
@@ -2035,6 +2568,58 @@ export function LeftDrawer({
                       <span>{t('left.moveToGroup')}</span>
                       <span>›</span>
                     </button>
+                    {onRefreshWorktrees &&
+                      (actionSheet.project.repoRootPath || actionSheet.project.path) && (
+                        <button
+                          type="button"
+                          className={styles.actionSheetBtn}
+                          data-testid="action-refresh-worktrees"
+                          onClick={async () => {
+                            const root =
+                              actionSheet.project.repoRootPath || actionSheet.project.path || '';
+                            setActionSheet(null);
+                            await onRefreshWorktrees(root);
+                          }}
+                        >
+                          <span>{t('left.wtRefresh')}</span>
+                        </button>
+                      )}
+                    {onMutateWorktree &&
+                      (actionSheet.project.repoRootPath || actionSheet.project.path) && (
+                        <button
+                          type="button"
+                          className={styles.actionSheetBtn}
+                          disabled={permissionLevel !== 'L2'}
+                          title={permissionLevel !== 'L2' ? t('wtSheet.l2Hint') : undefined}
+                          data-testid="action-new-worktree"
+                          onClick={() => {
+                            const repoRoot =
+                              actionSheet.project.repoRootPath || actionSheet.project.path || '';
+                            const repoName = actionSheet.project.name;
+                            setActionSheet(null);
+                            setWorktreeSheetTarget({ repoRoot, repoName });
+                          }}
+                        >
+                          <span>{t('left.wtNew')}</span>
+                        </button>
+                      )}
+                    {onMutateWorktree &&
+                      actionSheet.project.worktrees?.some((w) => isWorktreeMissing(w)) && (
+                        <button
+                          type="button"
+                          className={styles.actionSheetBtn}
+                          disabled={permissionLevel !== 'L2'}
+                          data-testid="action-prune-worktrees"
+                          onClick={async () => {
+                            const root =
+                              actionSheet.project.repoRootPath || actionSheet.project.path || '';
+                            setActionSheet(null);
+                            await onMutateWorktree({ root, action: 'prune' });
+                          }}
+                        >
+                          <span>{t('left.wtPrune')}</span>
+                        </button>
+                      )}
                     {onRemoveProject && (
                       <button
                         type="button"
@@ -2048,6 +2633,114 @@ export function LeftDrawer({
                     )}
                   </>
                 )}
+
+                {actionSheet.kind === 'worktree' &&
+                  (() => {
+                    const wt = actionSheet.worktree;
+                    const proj = actionSheet.project;
+                    const missing = isWorktreeMissing(wt);
+                    const bare = Boolean(wt.bare);
+                    const locked = Boolean(wt.locked);
+                    const wtSess = sessionsByWorktree.get(wt.worktreeId) || [];
+                    const hasRunning =
+                      (wt.runningCount ?? 0) > 0 || wtSess.some(isSessionRunning);
+                    const removeDisabledReason = locked
+                      ? t('left.wtLockedHint')
+                      : hasRunning
+                        ? t('left.wtRunningHint')
+                        : undefined;
+                    const repoRoot = proj.repoRootPath || proj.path || wt.path;
+                    const hasAnyMissing =
+                      missing || Boolean(proj.worktrees?.some((w) => isWorktreeMissing(w)));
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.actionSheetBtn}
+                          disabled={permissionLevel === 'L0' || bare || missing}
+                          data-testid="wt-action-new-session"
+                          onClick={() => {
+                            setNewWorkspaceUri(wt.uri || wt.path || '');
+                            setNewWorktreeTarget({ projectId: proj.id, worktree: wt });
+                            setShowNewSession(true);
+                            setActionSheet(null);
+                          }}
+                        >
+                          <span>{t('left.wtNewSession')}</span>
+                        </button>
+                        {onOpenWorktreeInRightDrawer && (
+                          <>
+                            <button
+                              type="button"
+                              className={styles.actionSheetBtn}
+                              disabled={permissionLevel !== 'L2' || bare || missing}
+                              data-testid="wt-action-open-terminal"
+                              onClick={() => {
+                                setActionSheet(null);
+                                onOpenWorktreeInRightDrawer(wt.path, 'pty');
+                                onClose();
+                              }}
+                            >
+                              <span>{t('left.wtOpenTerminal')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.actionSheetBtn}
+                              disabled={bare || missing}
+                              data-testid="wt-action-open-diff"
+                              onClick={() => {
+                                setActionSheet(null);
+                                onOpenWorktreeInRightDrawer(wt.path, 'diff');
+                                onClose();
+                              }}
+                            >
+                              <span>{t('left.wtOpenFilesDiff')}</span>
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          className={styles.actionSheetBtn}
+                          data-testid="wt-action-copy-path"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard?.writeText(wt.path);
+                              onShowToast?.(t('left.wtPathCopied'));
+                            } catch {}
+                            setActionSheet(null);
+                          }}
+                        >
+                          <span>{t('left.wtCopyPath')}</span>
+                        </button>
+                        {onMutateWorktree && !wt.isMain && !bare && !missing && (
+                          <button
+                            type="button"
+                            className={`${styles.actionSheetBtn} ${styles.actionSheetBtnDanger}`}
+                            disabled={permissionLevel !== 'L2' || locked || hasRunning}
+                            title={removeDisabledReason}
+                            data-testid="wt-action-remove"
+                            onClick={() => setConfirmRemoveWorktree(true)}
+                          >
+                            <span>{t('left.wtRemove')}</span>
+                          </button>
+                        )}
+                        {onMutateWorktree && hasAnyMissing && (
+                          <button
+                            type="button"
+                            className={styles.actionSheetBtn}
+                            disabled={permissionLevel !== 'L2'}
+                            data-testid="wt-action-prune"
+                            onClick={async () => {
+                              setActionSheet(null);
+                              await onMutateWorktree({ root: repoRoot, action: 'prune' });
+                            }}
+                          >
+                            <span>{t('left.wtPrune')}</span>
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
 
                 {actionSheet.kind === 'session' && (
                   <>
@@ -2070,6 +2763,18 @@ export function LeftDrawer({
                           : t('left.pinSession')}
                       </span>
                     </button>
+                    {onAssignSessionProject && (
+                      <button
+                        type="button"
+                        className={styles.actionSheetBtn}
+                        disabled={permissionLevel === 'L0'}
+                        data-testid="action-assign-session-project"
+                        onClick={() => setAssignSessionProjectMode(true)}
+                      >
+                        <span>{t('left.assignSessionProject')}</span>
+                        <span>›</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       className={styles.actionSheetBtn}
@@ -2100,7 +2805,9 @@ export function LeftDrawer({
                   </>
                 )}
 
-                {actionSheet.zoneIds.length > 1 && permissionLevel !== 'L0' && (
+                {actionSheet.kind !== 'worktree' &&
+                  actionSheet.zoneIds.length > 1 &&
+                  permissionLevel !== 'L0' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <div className={styles.sectionHeader} style={{ paddingTop: 4 }}>
                       <span>{t('left.reorderSection')}</span>
@@ -2164,6 +2871,62 @@ export function LeftDrawer({
             )}
           </div>
         </div>
+      )}
+
+      {deleteGroupModal && (
+        <div
+          className={`${styles.modalBackdrop} ${styles.centerBackdrop}`}
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setDeleteGroupModal(null)}
+        >
+          <div
+            className={styles.modalDialog}
+            data-testid="delete-group-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <strong style={{ fontSize: 15 }}>{t('left.deleteGroupModalTitle')}</strong>
+            <div style={{ fontSize: 12.5, color: 'var(--ag-secondary)', lineHeight: 1.45 }}>
+              {t('left.deleteGroupModalDesc', {
+                name: deleteGroupModal.group.name,
+                count: deleteGroupModal.projectCount
+              })}
+            </div>
+            <div className={styles.modalActions}>
+              <button
+                type="button"
+                className="ag-pill-btn"
+                style={{ minHeight: 44 }}
+                onClick={() => setDeleteGroupModal(null)}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className={styles.dangerBtn}
+                data-testid="confirm-delete-group-btn"
+                onClick={async () => {
+                  const gid = deleteGroupModal.group.id;
+                  setDeleteGroupModal(null);
+                  await onDeleteGroup?.(gid);
+                }}
+              >
+                {t('left.deleteGroupModalConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {worktreeSheetTarget && LazyWorktreeSheet && onMutateWorktree && (
+        <LazyWorktreeSheet
+          open={true}
+          repoRoot={worktreeSheetTarget.repoRoot}
+          repoName={worktreeSheetTarget.repoName}
+          permissionLevel={permissionLevel}
+          onSubmit={(payload) => onMutateWorktree(payload)}
+          onClose={() => setWorktreeSheetTarget(null)}
+        />
       )}
 
       {deleteModal && (

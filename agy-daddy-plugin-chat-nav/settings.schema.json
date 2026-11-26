@@ -9,6 +9,48 @@
       "description": { "zh-CN": "在对话视口右侧显示置顶、置底、上/下一轮、思考展开、复制会话 ID 与导出 Markdown 控制栏", "en": "Show top, bottom, turn step, thinking, copy session ID, and Markdown export controls alongside chat" }
     },
     {
+      "key": "showOutlineRail",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "左侧会话导轨与悬停大纲", "en": "Left outline rail & hover index" },
+      "description": { "zh-CN": "在对话区左侧展示章节刻度导轨，悬停展开快速大纲并支持关键提问筛选", "en": "Show chapter ticks on the left edge of chat with hover outline and key-question filtering" }
+    },
+    {
+      "key": "enableTurnShortcuts",
+      "type": "boolean",
+      "default": true,
+      "label": { "zh-CN": "Alt+↑/↓ 快捷轮次跳转", "en": "Alt+Up/Down turn navigation shortcuts" },
+      "description": { "zh-CN": "非编辑焦点下按 Alt+↑ / Alt+↓ 快速定位上一轮或下一轮对话", "en": "Press Alt+Up / Alt+Down outside editable inputs to jump between conversation turns" }
+    },
+    {
+      "key": "enableCodeBlockSticky",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "代码块增强", "en": "Code Blocks" },
+      "label": { "zh-CN": "代码块顶栏 Sticky 吸顶", "en": "Sticky code block headers" },
+      "description": { "zh-CN": "滚动长会话或 Artifacts 时保持代码块顶栏语言标签与操作按钮可见", "en": "Keep code block language label and actions pinned while scrolling Markdown or Artifacts" }
+    },
+    {
+      "key": "enableCodeBlockFold",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "代码块增强", "en": "Code Blocks" },
+      "label": { "zh-CN": "长代码块折叠/展开开关", "en": "Long code block fold toggle" },
+      "description": { "zh-CN": "为已完成且超过阈值的长代码块提供折叠/展开开关，折叠时自动补偿视口滚动防止跳动", "en": "Add collapse/expand controls to completed long code blocks with scroll-jump compensation" }
+    },
+    {
+      "key": "codeFoldMinLines",
+      "type": "number",
+      "min": 12,
+      "max": 500,
+      "default": 48,
+      "group": { "zh-CN": "代码块增强", "en": "Code Blocks" },
+      "unit": { "zh-CN": "行", "en": "lines" },
+      "placeholder": "48",
+      "label": { "zh-CN": "触发折叠的最小行数", "en": "Minimum lines for folding" },
+      "description": { "zh-CN": "已完成代码块达到或超过该行数时显示手动折叠开关（默认 48 行）", "en": "Show fold toggle when a completed code block reaches at least this many lines (default 48)" }
+    },
+    {
       "key": "keepThinkingExpanded",
       "type": "boolean",
       "default": false,

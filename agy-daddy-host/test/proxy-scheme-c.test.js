@@ -19,13 +19,13 @@ const { readInstalledIndex } = require('../src/core/installer');
 const HOST_ROOT = path.resolve(__dirname, '..');
 const PROXY_PLUGIN_DIR = path.resolve(HOST_ROOT, '..', 'agy-daddy-plugin-proxy');
 
-async function waitFor(predicate, timeoutMs = 4000, intervalMs = 20) {
+async function waitFor(predicate, timeoutMs = 8000, intervalMs = 20, label = 'condition') {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return true;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  return false;
+  throw new Error(`waitFor timeout after ${timeoutMs}ms: ${label}`);
 }
 
 function sendHttpViaProxy(proxyPort, targetUrl) {
@@ -211,18 +211,33 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
 
     uiHost.toggleSettingsPanel(true);
     const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
-    await waitFor(() => Boolean(shadow.querySelector('#agy-marketplace-more-btn') || shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]')));
+    await waitFor(
+      () => Boolean(shadow.querySelector('#agy-marketplace-more-btn') || shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]')),
+      8000,
+      20,
+      'marketplace view ready'
+    );
 
     // 1. 首次从插件市场安装 agy-daddy.proxy（T0）：UI 层要求重启生效，并提示不重启将无法使用
     const moreBtn = shadow.querySelector('#agy-marketplace-more-btn');
     if (moreBtn) {
       moreBtn.click();
-      await waitFor(() => Boolean(shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]')));
+      await waitFor(
+        () => Boolean(shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]') && !shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]').disabled),
+        8000,
+        20,
+        'catalog install button ready'
+      );
     }
     const catInstallBtn = shadow.querySelector('[data-catalog-install="agy-daddy.proxy"]');
     assert.ok(catInstallBtn);
     catInstallBtn.click();
-    await waitFor(() => Boolean(shadow.querySelector('#agy-host-restart-banner')));
+    await waitFor(
+      () => Boolean(shadow.querySelector('#agy-host-restart-banner') && !shadow.querySelector('#agy-host-restart-btn')?.disabled),
+      8000,
+      20,
+      'install restart banner'
+    );
 
     assert.equal(daemon.activePlugins.has('agy-daddy.proxy'), true);
     const installBanner = shadow.querySelector('#agy-host-restart-banner');
@@ -236,7 +251,12 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const restartBtn = shadow.querySelector('#agy-host-restart-btn');
     assert.ok(restartBtn);
     restartBtn.click();
-    await waitFor(() => relaunchCalls.length === 1 && !shadow.querySelector('#agy-host-restart-banner'));
+    await waitFor(
+      () => relaunchCalls.length === 1 && !shadow.querySelector('#agy-host-restart-banner'),
+      8000,
+      20,
+      'first relaunch completed'
+    );
     assert.ok(relaunchCalls[0].extraArgs.some((a) => /^--proxy-server=http:\/\/127\.0\.0\.1:\d+$/.test(a)));
     assert.ok(/^http:\/\/127\.0\.0\.1:\d+$/.test(relaunchCalls[0].proxyEnv.HTTP_PROXY));
 
@@ -244,7 +264,12 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const marketBackBtn = shadow.querySelector('#agy-marketplace-back-btn');
     if (marketBackBtn) {
       marketBackBtn.click();
-      await waitFor(() => Boolean(shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]')));
+      await waitFor(
+        () => Boolean(shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]') && !shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]').disabled),
+        8000,
+        20,
+        'plugin toggle ready'
+      );
     }
     const proxySvc = daemon.bus.getServiceProxy('proxy');
     const gwPort = (await proxySvc.getStatus()).gatewayPort;
@@ -263,11 +288,18 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     assert.ok(listToggle);
     listToggle.checked = false;
     listToggle.dispatchEvent({ type: 'change', target: listToggle });
-    await waitFor(() => (
-      !daemon.activePlugins.has('agy-daddy.proxy')
-      && daemon.getSessionProxyFallbackStatus().active
-      && Boolean(shadow.querySelector('[data-proxy-fallback="true"]'))
-    ));
+    await waitFor(
+      () => (
+        !daemon.activePlugins.has('agy-daddy.proxy') &&
+        daemon.getSessionProxyFallbackStatus().active &&
+        Boolean(shadow.querySelector('[data-proxy-fallback="true"]')) &&
+        /直连直到重启/.test(shadow.querySelector('#agy-manage-toast')?.textContent || '') &&
+        !shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]')?.disabled
+      ),
+      8000,
+      20,
+      'disable proxy fallback UI settled'
+    );
 
     // UI 不应要求强制重启横幅，而应展示直连兜底提示与芯片
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
@@ -294,21 +326,37 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     const reEnableToggle = shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]');
     reEnableToggle.checked = true;
     reEnableToggle.dispatchEvent({ type: 'change', target: reEnableToggle });
-    await waitFor(() => (
-      daemon.activePlugins.has('agy-daddy.proxy')
-      && !daemon.getSessionProxyFallbackStatus().active
-      && !shadow.querySelector('[data-proxy-fallback="true"]')
-    ));
+    await waitFor(
+      () => (
+        daemon.activePlugins.has('agy-daddy.proxy') &&
+        !daemon.getSessionProxyFallbackStatus().active &&
+        /已启用 agy-daddy\.proxy/.test(shadow.querySelector('#agy-manage-toast')?.textContent || '') &&
+        !shadow.querySelector('[data-plugin-toggle="agy-daddy.proxy"]')?.disabled
+      ),
+      8000,
+      20,
+      're-enable proxy UI settled'
+    );
     assert.equal(daemon.getSessionProxyFallbackStatus().active, false);
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);
 
     // 5. 卸载插件：UI 层要求重启生效，并提示不重启将无法使用
     shadow.querySelector('[data-plugin-detail="agy-daddy.proxy"]').click();
-    await waitFor(() => Boolean(shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]')));
+    await waitFor(
+      () => Boolean(shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]') && !shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').disabled),
+      8000,
+      20,
+      'uninstall button ready'
+    );
     shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').click();
     assert.equal(shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').textContent, '确认卸载?');
     shadow.querySelector('[data-plugin-uninstall="agy-daddy.proxy"]').click();
-    await waitFor(() => !daemon.activePlugins.has('agy-daddy.proxy') && Boolean(shadow.querySelector('#agy-host-restart-banner')));
+    await waitFor(
+      () => !daemon.activePlugins.has('agy-daddy.proxy') && Boolean(shadow.querySelector('#agy-host-restart-banner') && !shadow.querySelector('#agy-host-restart-btn')?.disabled),
+      8000,
+      20,
+      'uninstall restart banner'
+    );
 
     assert.equal(daemon.getSessionProxyFallbackStatus().active, false);
     const uninstallBanner = shadow.querySelector('#agy-host-restart-banner');
@@ -318,7 +366,12 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
 
     // 点击重启后以干净无 --proxy-server= 参数拉起
     shadow.querySelector('#agy-host-restart-btn').click();
-    await waitFor(() => relaunchCalls.length === 2 && !shadow.querySelector('#agy-host-restart-banner'));
+    await waitFor(
+      () => relaunchCalls.length === 2 && !shadow.querySelector('#agy-host-restart-banner'),
+      8000,
+      20,
+      'second relaunch completed'
+    );
     assert.equal(relaunchCalls[1].extraArgs.some((a) => a.startsWith('--proxy-server=')), false);
     assert.equal(relaunchCalls[1].proxyEnv.HTTP_PROXY, undefined);
   } finally {

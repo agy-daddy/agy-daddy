@@ -26,6 +26,18 @@ const {
   openDirectoryDialog
 } = require('../src/conversation-export');
 const { isSafeExternalUrl, mount: mountChatNav, dispose: disposeChatNav } = require('../src/renderer');
+const {
+  countCodeLines,
+  extractCodeLanguage,
+  isCodeBlockCompleted,
+  computeCollapseScrollCompensation
+} = require('../src/code-block-enhancer');
+const {
+  isEditableElement,
+  isKeyQuestionText,
+  extractOutlineItems,
+  filterOutlineItems
+} = require('../src/outline-rail');
 
 test('file-service 安全原子读写与系统黑名单/凭据目录/大小/外链协议守卫', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cnav-file-'));
@@ -1084,5 +1096,395 @@ test('悬浮栏 z-index 低于弹窗/浮层，并在原生弹窗打开时自动�
   } finally {
     disposeChatNav();
     assert.equal(dialogObservers.size, 0);
+  }
+});
+
+test('code-block-enhancer 与 outline-rail 纯函数：行数统计、语言提取、完成态判定、滚动补偿与关键提问识别', () => {
+  assert.equal(countCodeLines(''), 0);
+  assert.equal(countCodeLines('a\nb\n'), 2);
+  assert.equal(countCodeLines('line1\nline2\nline3'), 3);
+
+  const doc = createMockDocument([]);
+  const pre = createMockElement('pre', doc);
+  const code = createMockElement('code', doc);
+  code.className = 'language-TypeScript';
+  pre.appendChild(code);
+  assert.equal(extractCodeLanguage(pre), 'typescript');
+
+  const nativeWrap = createMockElement('div', doc);
+  const nativeHdr = createMockElement('div', doc);
+  nativeHdr.textContent = 'python 复制代码';
+  const barePre = createMockElement('pre', doc);
+  nativeWrap.appendChild(nativeHdr);
+  nativeWrap.appendChild(barePre);
+  assert.equal(extractCodeLanguage(barePre, nativeHdr), 'python');
+
+  // 滚动补偿：块顶在视口上方 300px，高度从 1000 折叠到 40（差 960），scrollTop=800 -> 500（零跳动）
+  assert.equal(computeCollapseScrollCompensation({
+    blockTop: -260,
+    blockHeightBefore: 1000,
+    blockHeightAfter: 40,
+    viewportTop: 40,
+    scrollTop: 800
+  }), 500);
+
+  // 块顶已在视口下方时不改变 scrollTop
+  assert.equal(computeCollapseScrollCompensation({
+    blockTop: 120,
+    blockHeightBefore: 1000,
+    blockHeightAfter: 40,
+    viewportTop: 40,
+    scrollTop: 200
+  }), 200);
+
+  // 流式输出中最后一个 agent-response 的尾代码块未完成，前序块已完成
+  const vp = createMockElement('div', doc);
+  vp.setAttribute('data-testid', 'autoscroll-viewport');
+  doc.body.appendChild(vp);
+  const r1 = createMockElement('div', doc);
+  r1.setAttribute('data-testid', 'agent-response');
+  const p1 = createMockElement('pre', doc);
+  r1.appendChild(p1);
+  const r2 = createMockElement('div', doc);
+  r2.setAttribute('data-testid', 'agent-response');
+  const p2 = createMockElement('pre', doc);
+  const p3 = createMockElement('pre', doc);
+  r2.appendChild(p2);
+  r2.appendChild(p3);
+  vp.appendChild(r1);
+  vp.appendChild(r2);
+
+  assert.equal(isCodeBlockCompleted(p1, { isAssistantBusy: true, doc, viewport: vp }), true);
+  assert.equal(isCodeBlockCompleted(p2, { isAssistantBusy: true, doc, viewport: vp }), true);
+  assert.equal(isCodeBlockCompleted(p3, { isAssistantBusy: true, doc, viewport: vp }), false);
+  assert.equal(isCodeBlockCompleted(p3, { isAssistantBusy: false, doc, viewport: vp }), true);
+
+  // 关键提问与可编辑节点判断
+  assert.equal(isKeyQuestionText('为什么这里会出现内存泄漏？'), true);
+  assert.equal(isKeyQuestionText('How should we migrate this service?'), true);
+  assert.equal(isKeyQuestionText('请继续执行构建'), false);
+
+  const ta = createMockElement('textarea', doc);
+  const lex = createMockElement('div', doc);
+  lex.setAttribute('data-lexical-editor', 'true');
+  const plainDiv = createMockElement('div', doc);
+  assert.equal(isEditableElement(ta, doc), true);
+  assert.equal(isEditableElement(lex, doc), true);
+  assert.equal(isEditableElement(plainDiv, doc), false);
+
+  const u1 = createMockElement('div', doc);
+  u1.setAttribute('data-testid', 'user-message');
+  u1.textContent = '为什么 SSE 断连没有重连？';
+  const u2 = createMockElement('div', doc);
+  u2.setAttribute('data-testid', 'user-message');
+  u2.textContent = '继续补全单元测试';
+  vp.appendChild(u1);
+  vp.appendChild(u2);
+  const items = extractOutlineItems(vp);
+  assert.equal(items.length, 4);
+  assert.equal(filterOutlineItems(items, 'questions').length, 1);
+  assert.equal(filterOutlineItems(items, 'code').length, 2);
+});
+
+test('代码块 Sticky 吸顶与长代码块折叠（含 Markdown/Artifacts、流式门禁、滚动补偿及零残留）', async () => {
+  const doc = createMockDocument([]);
+  const vp = createMockElement('div', doc);
+  vp.setAttribute('data-testid', 'autoscroll-viewport');
+  vp.scrollTop = 500;
+  vp.scrollHeight = 3000;
+  vp.clientHeight = 600;
+  vp.getBoundingClientRect = () => ({ top: 100, bottom: 700, left: 40, right: 840, width: 800, height: 600 });
+  doc.body.appendChild(vp);
+
+  // 短代码块（10 行，不显示折叠按钮）
+  const resp1 = createMockElement('div', doc);
+  resp1.setAttribute('data-testid', 'agent-response');
+  const shortPre = createMockElement('pre', doc);
+  const shortCode = createMockElement('code', doc);
+  shortCode.className = 'language-json';
+  shortCode.textContent = Array.from({ length: 10 }, (_, i) => `  "k${i}": ${i}`).join('\n');
+  shortPre.appendChild(shortCode);
+  resp1.appendChild(shortPre);
+  vp.appendChild(resp1);
+
+  // 长代码块（60 行，带原生外壳与复制按钮）
+  const resp2 = createMockElement('div', doc);
+  resp2.setAttribute('data-testid', 'agent-response');
+  const nativeCard = createMockElement('div', doc);
+  let collapsedState = false;
+  nativeCard.getBoundingClientRect = () => ({
+    top: -150,
+    bottom: collapsedState ? -110 : 850,
+    left: 60,
+    right: 800,
+    width: 740,
+    height: collapsedState ? 40 : 1000
+  });
+  const nativeHdr = createMockElement('div', doc);
+  const langTxt = createMockElement('span', doc);
+  langTxt.textContent = 'ts';
+  const nativeCopy = createMockElement('button', doc);
+  nativeCopy.setAttribute('aria-label', 'Copy code');
+  nativeHdr.appendChild(langTxt);
+  nativeHdr.appendChild(nativeCopy);
+  const longPre = createMockElement('pre', doc);
+  const longCode = createMockElement('code', doc);
+  longCode.className = 'language-ts';
+  longCode.textContent = Array.from({ length: 60 }, (_, i) => `const line${i} = ${i};`).join('\n');
+  longPre.appendChild(longCode);
+  nativeCard.appendChild(nativeHdr);
+  nativeCard.appendChild(longPre);
+  resp2.appendChild(nativeCard);
+  vp.appendChild(resp2);
+
+  // Artifact 中的长代码块（52 行，无原生顶栏，需注入吸顶顶栏）
+  const artifactBox = createMockElement('div', doc);
+  artifactBox.setAttribute('data-testid', 'artifact-panel');
+  const artPre = createMockElement('pre', doc);
+  const artCode = createMockElement('code', doc);
+  artCode.className = 'language-python';
+  artCode.textContent = Array.from({ length: 52 }, (_, i) => `def fn_${i}(): return ${i}`).join('\n');
+  artPre.appendChild(artCode);
+  artifactBox.appendChild(artPre);
+  doc.body.appendChild(artifactBox);
+
+  let busy = true;
+  let svc = null;
+  let settingsHandler = null;
+  let currentSettings = {
+    showFloatDock: false,
+    showOutlineRail: false,
+    enableCodeBlockSticky: true,
+    enableCodeBlockFold: true,
+    codeFoldMinLines: 48
+  };
+
+  const ctx = {
+    hostDom: { isAssistantBusy: () => busy },
+    anchors: {
+      query: (n) => (n === 'chat.scrollViewport' ? vp : null),
+      queryAll: () => [],
+      observe: () => () => {}
+    },
+    events: { emit: () => {}, on: () => () => {} },
+    services: { provide: (_name, api) => { svc = api; return () => {}; } },
+    surfaces: { provide: () => () => {} },
+    styles: { inject: () => () => {} },
+    settings: {
+      get: () => currentSettings,
+      onChange: (fn) => { settingsHandler = fn; return () => {}; }
+    },
+    bridge: { post: async () => ({ ok: true }) }
+  };
+
+  try {
+    await mountChatNav(ctx, { document: doc, window: { innerWidth: 1200, innerHeight: 800 } });
+
+    // 短代码块注入了吸顶顶栏，但不显示折叠开关
+    const shortHeader = resp1.querySelector('[data-agy-code-header="injected"]');
+    assert.ok(shortHeader);
+    assert.equal(shortHeader.querySelector('.agy-code-lang').textContent, 'json');
+    assert.equal(shortHeader.querySelector('.agy-code-fold-btn').hidden, true);
+
+    // 处于流式生成中（busy=true），resp2 最后一个代码块尚不可折叠；Artifact 块已完成可折叠
+    assert.equal(nativeHdr.getAttribute('data-agy-code-header'), 'native');
+    assert.equal(nativeCard.getAttribute('data-agy-code-wrap'), '1');
+    const nativeFoldBtn = nativeHdr.querySelector('[data-agy-code-fold="1"]');
+    assert.ok(nativeFoldBtn);
+    assert.equal(nativeFoldBtn.hidden, true);
+
+    const artFoldBtn = artifactBox.querySelector('[data-agy-code-fold="1"]');
+    assert.ok(artFoldBtn);
+    assert.equal(artFoldBtn.hidden, false);
+
+    // 生成结束后刷新，长代码块出现折叠开关
+    busy = false;
+    svc.refreshCodeBlocks();
+    assert.equal(nativeFoldBtn.hidden, false);
+
+    // 点击折叠：标记 collapsed，同时视口 scrollTop 从 500 精确补偿到 250（100 - (-150) = 250）
+    const origSetAttr = longPre.setAttribute.bind(longPre);
+    longPre.setAttribute = (k, v) => {
+      origSetAttr(k, v);
+      if (k === 'data-agy-code-collapsed') collapsedState = v === 'true';
+    };
+    const origRemoveAttr = longPre.removeAttribute.bind(longPre);
+    longPre.removeAttribute = (k) => {
+      origRemoveAttr(k);
+      if (k === 'data-agy-code-collapsed') collapsedState = false;
+    };
+
+    nativeFoldBtn.click();
+    assert.equal(longPre.getAttribute('data-agy-code-collapsed'), 'true');
+    assert.equal(nativeCard.getAttribute('data-agy-code-collapsed'), 'true');
+    assert.equal(vp.scrollTop, 250);
+
+    const collapsedBar = nativeCard.querySelector('[data-agy-code-collapsed-bar="1"]');
+    assert.ok(collapsedBar);
+    assert.equal(collapsedBar.hidden, false);
+
+    // 点击折叠条展开
+    collapsedBar.click();
+    assert.equal(longPre.getAttribute('data-agy-code-collapsed'), null);
+    assert.equal(collapsedBar.hidden, true);
+
+    // 动态调高阈值到 80 行后，60 行代码块隐藏折叠按钮
+    currentSettings = { ...currentSettings, codeFoldMinLines: 80 };
+    settingsHandler(currentSettings);
+    assert.equal(nativeFoldBtn.hidden, true);
+
+    disposeChatNav();
+    assert.equal(resp1.querySelector('[data-agy-code-injected="1"]'), null);
+    assert.equal(nativeHdr.querySelector('[data-agy-code-fold="1"]'), null);
+    assert.equal(nativeHdr.getAttribute('data-agy-code-header'), null);
+    assert.equal(nativeCard.getAttribute('data-agy-code-wrap'), null);
+  } finally {
+    disposeChatNav();
+  }
+});
+
+test('左侧会话导轨章节刻度、悬停大纲、关键提问筛选与 Alt+↑/↓ 非编辑态快捷键跳转', async () => {
+  const harness = createMockHostHarness({
+    seedAnchors: [
+      { tag: 'div', attr: 'data-testid', val: 'autoscroll-viewport' },
+      { tag: 'div', attr: 'data-testid', val: 'turn-cards-container' },
+      { tag: 'button', attr: 'data-testid', val: 'thinking-collapsible-trigger' }
+    ]
+  });
+
+  const vp = harness.mockDoc.querySelector('[data-testid="autoscroll-viewport"]');
+  vp.scrollTop = 0;
+  vp.scrollHeight = 2400;
+  vp.clientHeight = 600;
+  vp.getBoundingClientRect = () => ({ top: 40, bottom: 640, left: 240, right: 1040, width: 800, height: 600 });
+
+  const u1 = createMockElement('div', harness.mockDoc);
+  u1.setAttribute('data-testid', 'user-message');
+  u1.textContent = '如何优化长会话渲染性能？';
+  u1.getBoundingClientRect = () => ({ top: 100 - vp.scrollTop, bottom: 150 - vp.scrollTop, left: 260, right: 1000, width: 740, height: 50 });
+
+  const a1 = createMockElement('div', harness.mockDoc);
+  a1.setAttribute('data-testid', 'agent-response');
+  const h2 = createMockElement('h2', harness.mockDoc);
+  h2.textContent = '虚拟列表与吸顶优化';
+  h2.getBoundingClientRect = () => ({ top: 260 - vp.scrollTop, bottom: 290 - vp.scrollTop, left: 260, right: 1000, width: 740, height: 30 });
+  const codeBlock = createMockElement('pre', harness.mockDoc);
+  codeBlock.textContent = 'const x = 1;';
+  a1.appendChild(h2);
+  a1.appendChild(codeBlock);
+
+  const u2 = createMockElement('div', harness.mockDoc);
+  u2.setAttribute('data-testid', 'user-message');
+  u2.textContent = '帮我更新配置文件';
+  u2.getBoundingClientRect = () => ({ top: 900 - vp.scrollTop, bottom: 950 - vp.scrollTop, left: 260, right: 1000, width: 740, height: 50 });
+
+  const a2 = createMockElement('div', harness.mockDoc);
+  a2.setAttribute('data-testid', 'agent-response');
+  a2.textContent = '已更新完毕';
+
+  vp.appendChild(u1);
+  vp.appendChild(a1);
+  vp.appendChild(u2);
+  vp.appendChild(a2);
+
+  // 加入一个输入框测试编辑焦点隔离
+  const composerInput = createMockElement('div', harness.mockDoc);
+  composerInput.setAttribute('contenteditable', 'true');
+  composerInput.setAttribute('data-lexical-editor', 'true');
+  harness.mockDoc.body.appendChild(composerInput);
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const rail = harness.mockDoc.getElementById('agy-chat-outline-rail');
+    const popover = harness.mockDoc.getElementById('agy-chat-outline-popover');
+    assert.ok(rail);
+    assert.ok(popover);
+    assert.equal(rail.hidden, false);
+    assert.equal(rail.style.left, '246px');
+    assert.equal(popover.hidden, true);
+
+    const ticks = rail.querySelectorAll('.agy-rail-tick');
+    assert.equal(ticks.length, 2);
+    assert.equal(ticks[0].getAttribute('data-key-question'), 'true');
+    assert.equal(ticks[1].getAttribute('data-key-question'), 'false');
+
+    // 悬停导轨展开大纲索引，支持「全部 / 关键提问 / 含代码」筛选与章节跳转
+    rail.dispatchEvent({ type: 'mouseenter' });
+    assert.equal(popover.hidden, false);
+    assert.equal(popover.querySelectorAll('.agy-outline-item').length, 2);
+    assert.equal(popover.querySelectorAll('.agy-outline-subheading').length, 1);
+
+    const qFilterBtn = harness.mockDoc.getElementById('agy-outline-filter-questions');
+    qFilterBtn.click();
+    assert.equal(popover.querySelectorAll('.agy-outline-item').length, 1);
+
+    const allFilterBtn = harness.mockDoc.getElementById('agy-outline-filter-all');
+    allFilterBtn.click();
+    const outlineItems = popover.querySelectorAll('.agy-outline-item');
+    assert.equal(outlineItems.length, 2);
+    outlineItems[1].click();
+    assert.equal(vp.scrollTop, 848);
+
+    // 键盘 Alt+↑ / Alt+↓ 在非编辑焦点下跳转，不阻断事件冒泡；编辑焦点下不拦截
+    let preventedNonEdit = false;
+    let stoppedNonEdit = false;
+    harness.mockDoc.dispatchEvent({
+      type: 'keydown',
+      key: 'ArrowUp',
+      code: 'ArrowUp',
+      altKey: true,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      target: vp,
+      preventDefault() { preventedNonEdit = true; },
+      stopPropagation() { stoppedNonEdit = true; }
+    });
+    assert.equal(preventedNonEdit, true);
+    assert.equal(stoppedNonEdit, false);
+    assert.equal(vp.scrollTop, 48);
+
+    let preventedInEditor = false;
+    harness.mockDoc.dispatchEvent({
+      type: 'keydown',
+      key: 'ArrowDown',
+      code: 'ArrowDown',
+      altKey: true,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      target: composerInput,
+      preventDefault() { preventedInEditor = true; }
+    });
+    assert.equal(preventedInEditor, false);
+    assert.equal(vp.scrollTop, 48);
+
+    // Escape 关闭大纲浮层
+    harness.mockDoc.dispatchEvent({
+      type: 'keydown',
+      key: 'Escape',
+      target: vp,
+      preventDefault() {}
+    });
+    assert.equal(popover.hidden, true);
+
+    // 验证新增命令 chat-nav.toggle-outline / chat-nav.turn-next / chat-nav.collapse-long-code
+    const toggleOutlineRes = await harness.executeCommand('chat-nav.toggle-outline');
+    assert.equal(toggleOutlineRes.ok, true);
+    const turnNextRes = await harness.executeCommand('chat-nav.turn-next');
+    assert.equal(turnNextRes.ok, true);
+    const collapseCodeRes = await harness.executeCommand('chat-nav.collapse-long-code');
+    assert.equal(collapseCodeRes.ok, true);
+
+    // 卸载清理零残留
+    await harness.unloadPlugin('agy-daddy.chat-nav');
+    assert.equal(harness.mockDoc.getElementById('agy-chat-outline-rail'), null);
+    assert.equal(harness.mockDoc.getElementById('agy-chat-outline-popover'), null);
+    harness.assertCleanDispose('agy-daddy.chat-nav');
+  } finally {
+    await harness.cleanup();
   }
 });

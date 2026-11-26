@@ -263,7 +263,12 @@ test('方案C全链路：首次安装要求重启、停用切换18766直连直�
     assert.ok(listToggle);
     listToggle.checked = false;
     listToggle.dispatchEvent({ type: 'change', target: listToggle });
-    await waitFor(() => !daemon.activePlugins.has('agy-daddy.proxy') && daemon.getSessionProxyFallbackStatus().active);
+    await waitFor(() => (
+      !daemon.activePlugins.has('agy-daddy.proxy')
+      && daemon.getSessionProxyFallbackStatus().active
+      && Boolean(shadow.querySelector('[data-proxy-fallback="true"]'))
+      && /直连直到重启/.test(shadow.querySelector('#agy-manage-toast')?.textContent || '')
+    ));
 
     // UI 不应要求强制重启横幅，而应展示直连兜底提示与芯片
     assert.equal(shadow.querySelector('#agy-host-restart-banner'), null);

@@ -1,10 +1,13 @@
 'use strict';
 
+const { normalizeLang } = require('./dictionary');
 const {
   THINKING_TRANSLATION_MODES,
   THINKING_DISPLAY_MODES,
+  getCotOverlayLabels,
   normalizeThinkingTranslationMode,
   normalizeThinkingDisplayMode,
+  resolveEffectiveCotTargetLang,
   hashCotKey,
   tokenizeTextWithFileLinks,
   parseThinkingSegments
@@ -289,7 +292,7 @@ function createCotOverlayController(options = {}) {
     }
   }
 
-  function appendTokenizedSegmentContent(pEl, text, bodyEl) {
+  function appendTokenizedSegmentContent(pEl, text, bodyEl, uiLabels) {
     clearSegmentElements(pEl);
     const tokens = tokenizeTextWithFileLinks(text);
     if (tokens.length === 0) {
@@ -313,7 +316,7 @@ function createCotOverlayController(options = {}) {
         a.setAttribute('data-file-path', tok.path);
         a.setAttribute('data-file-line', String(tok.line));
         if (tok.endLine) a.setAttribute('data-file-end-line', String(tok.endLine));
-        a.setAttribute('title', `点击定位源码: ${tok.path}#L${tok.line}`);
+        a.setAttribute('title', `${uiLabels.jumpTitlePrefix}: ${tok.path}#L${tok.line}`);
         a.textContent = tok.label;
         a.addEventListener('click', (ev) => {
           ev?.preventDefault?.();
@@ -493,21 +496,32 @@ function createCotOverlayController(options = {}) {
   function renderHeader(rec, cfg) {
     const mode = normalizeThinkingTranslationMode(cfg.thinkingTranslationMode, cfg.enableRemoteThinkingTranslation);
     const displayMode = normalizeThinkingDisplayMode(cfg.thinkingDisplayMode);
-    const modeText = mode === THINKING_TRANSLATION_MODES.CUSTOM_API ? 'AI 流式转译' : '免配置机翻';
-    const displayText = displayMode === THINKING_DISPLAY_MODES.TRANSLATED ? '纯译文' : '双语对照';
+    const uiLang = normalizeLang(cfg.lang, 'zh');
+    const labels = getCotOverlayLabels(uiLang);
+
+    let modeText = labels.modeFree;
+    if (mode === THINKING_TRANSLATION_MODES.CUSTOM_API) modeText = labels.modeCustomApi;
+    else if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) modeText = labels.modeAntigravity;
+
+    const displayText = displayMode === THINKING_DISPLAY_MODES.TRANSLATED
+      ? labels.displayTranslated
+      : labels.displayBilingual;
     rec.badgeEl.textContent = `${modeText} · ${displayText}`;
     rec.panelEl.setAttribute('data-cot-mode', mode);
     rec.panelEl.setAttribute('data-cot-display', displayMode);
-    rec.toggleBtn.textContent = displayMode === THINKING_DISPLAY_MODES.TRANSLATED ? '切换双语对照' : '切换纯译文';
+    rec.panelEl.setAttribute('data-cot-target-lang', resolveEffectiveCotTargetLang(cfg, normalizeLang));
+    rec.toggleBtn.textContent = displayMode === THINKING_DISPLAY_MODES.TRANSLATED
+      ? labels.switchToBilingual
+      : labels.switchToTranslated;
 
     const hasStreaming = rec.segments.some((s) => s.status === 'streaming');
     const hasError = rec.segments.some((s) => s.status === 'error');
     if (hasStreaming) {
-      rec.statusEl.textContent = '流式转译中…';
+      rec.statusEl.textContent = labels.statusStreaming;
     } else if (hasError) {
-      rec.statusEl.textContent = '部分段落转译失败';
+      rec.statusEl.textContent = labels.statusPartialError;
     } else if (rec.segments.length > 0) {
-      rec.statusEl.textContent = '已转译';
+      rec.statusEl.textContent = labels.statusDone;
     } else {
       rec.statusEl.textContent = '';
     }
@@ -516,10 +530,12 @@ function createCotOverlayController(options = {}) {
   function renderPanel(rec) {
     if (disposed || !rec || !rec.panelEl) return;
     const cfg = getConfig();
+    const uiLang = normalizeLang(cfg.lang, 'zh');
+    const labels = getCotOverlayLabels(uiLang);
+
     applyBodyVisibility(rec, cfg);
     renderHeader(rec, cfg);
 
-    // Grow or shrink paragraph slots minimally to avoid full subtree teardown
     while (rec.pEls.length < rec.segments.length) {
       const pEl = doc.createElement('p');
       pEl.className = 'agy-cot-segment';
@@ -534,12 +550,14 @@ function createCotOverlayController(options = {}) {
     for (let i = 0; i < rec.segments.length; i++) {
       const seg = rec.segments[i];
       const pEl = rec.pEls[i];
-      const displayStr = seg.translatedText || (seg.status === 'error' ? `[转译失败] ${seg.sourceText}` : '正在转译…');
-      const renderKey = `${seg.status}::${displayStr}`;
+      const displayStr = seg.translatedText || (seg.status === 'error'
+        ? `${labels.failedPrefix} ${seg.sourceText}`
+        : labels.translatingSegment);
+      const renderKey = `${uiLang}::${seg.status}::${displayStr}`;
       if (seg.lastRenderedKey === renderKey) continue;
       seg.lastRenderedKey = renderKey;
       pEl.setAttribute('data-state', seg.status);
-      appendTokenizedSegmentContent(pEl, displayStr, rec.bodyEl);
+      appendTokenizedSegmentContent(pEl, displayStr, rec.bodyEl, labels);
     }
   }
 
@@ -556,9 +574,10 @@ function createCotOverlayController(options = {}) {
     activePollCancels.add(cancelFn);
 
     try {
+      const effectiveTarget = resolveEffectiveCotTargetLang(cfg, normalizeLang);
       const startRes = await ctx.bridge.post('/cot/translate', {
         text: seg.sourceText,
-        targetLang: cfg.lang || 'zh',
+        targetLang: effectiveTarget,
         mode: normalizeThinkingTranslationMode(cfg.thinkingTranslationMode, cfg.enableRemoteThinkingTranslation),
         initialWaitMs: 80
       });
@@ -635,10 +654,12 @@ function createCotOverlayController(options = {}) {
     rec.triggerEl = triggerEl || rec.triggerEl;
 
     const mode = normalizeThinkingTranslationMode(cfg.thinkingTranslationMode, cfg.enableRemoteThinkingTranslation);
-    const targetLang = cfg.lang || 'zh';
-    const modelKey = mode === THINKING_TRANSLATION_MODES.CUSTOM_API ? String(cfg.thinkingApiModel || '') : 'mt';
-    const rawSegs = parseThinkingSegments(sourceText);
+    const targetLang = resolveEffectiveCotTargetLang(cfg, normalizeLang);
+    let modelKey = 'mt';
+    if (mode === THINKING_TRANSLATION_MODES.CUSTOM_API) modelKey = String(cfg.thinkingApiModel || '');
+    else if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) modelKey = String(cfg.thinkingAntigravityModel || 'auto');
 
+    const rawSegs = parseThinkingSegments(sourceText);
     const prevSegments = rec.segments;
     const nextSegments = [];
     let changed = prevSegments.length !== rawSegs.length;
@@ -674,13 +695,9 @@ function createCotOverlayController(options = {}) {
 
     rec.segments = nextSegments;
     applyBodyVisibility(rec, cfg);
-    if (changed) {
-      scheduleRender(rec);
-    } else {
-      renderHeader(rec, cfg);
-    }
+    renderHeader(rec, cfg);
+    scheduleRender(rec);
 
-    // Start finalized earlier segments immediately
     for (let i = 0; i < nextSegments.length - 1; i++) {
       const seg = nextSegments[i];
       if (seg.status === 'streaming' && !seg.cancelPoll && !seg.jobId) {
@@ -688,7 +705,6 @@ function createCotOverlayController(options = {}) {
       }
     }
 
-    // Trailing segment: short debounce so live host streaming does not flood requests
     const lastSeg = nextSegments[nextSegments.length - 1];
     if (lastSeg && lastSeg.status === 'streaming' && !lastSeg.cancelPoll && !lastSeg.jobId) {
       if (rec.debounceTimer) clearTimeout(rec.debounceTimer);
@@ -709,7 +725,7 @@ function createCotOverlayController(options = {}) {
     if (disposed || !doc) return;
     const cfg = getConfig();
     const mode = normalizeThinkingTranslationMode(cfg.thinkingTranslationMode, cfg.enableRemoteThinkingTranslation);
-    if (cfg.lang === 'en' || mode === THINKING_TRANSLATION_MODES.OFF) {
+    if (mode === THINKING_TRANSLATION_MODES.OFF) {
       clearAll();
       return;
     }

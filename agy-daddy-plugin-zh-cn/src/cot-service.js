@@ -9,6 +9,7 @@ const {
   DEFAULT_THINKING_API_MODEL,
   normalizeThinkingTranslationMode,
   normalizeApiBaseUrl,
+  resolveEffectiveCotTargetLang,
   hashCotKey,
   parseFileUriTarget,
   protectFileUrisForTranslation,
@@ -19,6 +20,76 @@ const {
 const MAX_COT_CACHE_ENTRIES = 500;
 const MAX_ACTIVE_JOBS = 64;
 const COMPLETED_JOB_TTL_MS = 5 * 60 * 1000;
+
+const DEFAULT_ANTIGRAVITY_FALLBACK_MODELS = Object.freeze([
+  { model: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite' },
+  { model: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { model: 'gemini-4-argon', label: 'Gemini 4 Argon' }
+]);
+
+function scoreAntigravityModelCandidate(entry, isPreferred = false) {
+  if (isPreferred) return -100;
+  const mid = String(entry?.modelId || '').toLowerCase();
+  const label = String(entry?.label || '').toLowerCase();
+  const model = String(entry?.model || '').toLowerCase();
+  const text = `${mid} ${label} ${model}`;
+  const remaining = entry?.remainingFraction;
+  const exhaustedPenalty = (typeof remaining === 'number' && Number.isFinite(remaining) && remaining <= 0) ? 200 : 0;
+
+  let baseScore = 50;
+  if (text.includes('orchestrator')) baseScore = 90;
+  else if (text.includes('flash')) {
+    if (text.includes('low') || text.includes('lite')) baseScore = 10;
+    else if (text.includes('medium')) baseScore = 15;
+    else baseScore = 18;
+  } else if (text.includes('argon')) baseScore = 20;
+  else if (/\b(?:haiku|mini|lite)\b|gpt[-_]oss/i.test(text)) baseScore = 22;
+  else if (/\blow\b|\(low\)|-low\b|_low\b/.test(text)) baseScore = 26;
+  else if (/\bmedium\b|\(medium\)|-medium\b|_medium\b/.test(text)) baseScore = 36;
+  else if (/\bhigh\b|\(high\)|-high\b|_high\b/.test(text)) baseScore = 62;
+
+  return baseScore + exhaustedPenalty;
+}
+
+function collectAntigravityModelsFromStatus(cfgData) {
+  if (!cfgData || typeof cfgData !== 'object') return [];
+  const configs = Array.isArray(cfgData.clientModelConfigs) ? cfgData.clientModelConfigs : [];
+  const out = [];
+  const seen = new Set();
+  for (const c of configs) {
+    const model = String(c?.modelOrAlias?.model || c?.model || c?.modelId || '').trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    out.push({
+      model,
+      modelId: String(c?.modelId || '').trim(),
+      label: String(c?.label || c?.displayName || c?.modelId || model).trim(),
+      remainingFraction: typeof c?.quotaInfo?.remainingFraction === 'number' ? c.quotaInfo.remainingFraction : null
+    });
+  }
+  return out;
+}
+
+function collectAntigravityModelsFromAvailable(rawModels) {
+  const list = Array.isArray(rawModels)
+    ? rawModels
+    : Object.entries(rawModels || {}).map(([id, m]) => ({ model: m?.model || m?.modelId || id, ...(m || {}) }));
+  const out = [];
+  const seen = new Set();
+  for (const raw of list) {
+    if (!raw || raw.disabled === true) continue;
+    const model = String(raw.model || raw.modelId || raw.id || '').trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    out.push({
+      model,
+      modelId: String(raw.modelId || '').trim(),
+      label: String(raw.displayName || raw.label || model).trim(),
+      remainingFraction: typeof raw.remainingFraction === 'number' ? raw.remainingFraction : null
+    });
+  }
+  return out;
+}
 
 function splitChunksForMachineTranslation(text, maxLen = 1400) {
   const raw = String(text || '').trim();
@@ -58,6 +129,26 @@ function buildCotSystemPrompt(targetLangLabel) {
     '2. Preserve all file:// URIs, #L line references, filesystem paths, symbol/function/variable names, CLI commands, and Markdown formatting verbatim.',
     '3. Keep technical terms natural and accurate in the target language.'
   ].join('\n');
+}
+
+function buildAntigravityTranslatePrompt(rawText, targetLangLabel) {
+  return [
+    buildCotSystemPrompt(targetLangLabel),
+    '',
+    '<thinking_text>',
+    rawText,
+    '</thinking_text>'
+  ].join('\n');
+}
+
+function cleanAntigravityTranslateOutput(rawOutput) {
+  let out = String(rawOutput || '').replace(/\r\n?/g, '\n').trim();
+  out = out.replace(/^<thinking_text>\s*/i, '').replace(/\s*<\/thinking_text>$/i, '').trim();
+  const fenceMatch = out.match(/^```(?:markdown|md|text|txt)?\r?\n([\s\S]*?)\r?\n```$/i);
+  if (fenceMatch) {
+    out = fenceMatch[1].trim();
+  }
+  return out;
 }
 
 function findAntigravityCliCandidates(options = {}) {
@@ -184,7 +275,10 @@ async function openFileInHost(input = {}, options = {}) {
 function createCotTranslationManager(deps = {}) {
   const getConfig = deps.getConfig;
   const getLanguageMeta = deps.getLanguageMeta;
+  const normalizeLang = deps.normalizeLang;
   const fetchFn = deps.fetch;
+  const rpc = deps.rpc || null;
+  const services = deps.services || null;
   const storage = deps.storage;
   const cacheFile = deps.cacheFile || 'zh-cot-translation-cache.json';
 
@@ -198,6 +292,7 @@ function createCotTranslationManager(deps = {}) {
 
   const jobs = new Map();
   const dedupeMap = new Map();
+  let modelCache = { candidates: [], fetchedAt: 0 };
   let seq = 0;
   let disposed = false;
 
@@ -214,7 +309,12 @@ function createCotTranslationManager(deps = {}) {
   }
 
   function makeCacheKey(mode, targetLang, model, text) {
-    const modelPart = mode === THINKING_TRANSLATION_MODES.CUSTOM_API ? String(model || DEFAULT_THINKING_API_MODEL) : 'mt';
+    let modelPart = 'mt';
+    if (mode === THINKING_TRANSLATION_MODES.CUSTOM_API) {
+      modelPart = String(model || DEFAULT_THINKING_API_MODEL);
+    } else if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) {
+      modelPart = String(model || 'auto');
+    }
     return `${mode}::${targetLang}::${modelPart}::${hashCotKey(text)}`;
   }
 
@@ -241,6 +341,102 @@ function createCotTranslationManager(deps = {}) {
       jobs.delete(firstId);
       if (old && dedupeMap.get(old.cacheKey) === firstId) dedupeMap.delete(old.cacheKey);
     }
+  }
+
+  async function resolveAntigravityModels(opts = {}) {
+    const cfg = getConfig();
+    const preferred = String(opts.preferredModel !== undefined ? opts.preferredModel : (cfg.thinkingAntigravityModel || '')).trim();
+    let list = [];
+    if (!opts.forceRefresh && modelCache.candidates.length > 0 && (Date.now() - modelCache.fetchedAt) < 60000) {
+      list = modelCache.candidates;
+    }
+
+    if (list.length === 0 && rpc && typeof rpc.call === 'function') {
+      try {
+        const userStatus = await rpc.call('GetUserStatus', {}, { timeoutMs: 8000 });
+        const cfgData = userStatus?.userStatus?.cascadeModelConfigData || userStatus?.cascadeModelConfigData || null;
+        const fromStatus = collectAntigravityModelsFromStatus(cfgData);
+        if (fromStatus.length > 0) list = fromStatus;
+      } catch {}
+
+      if (list.length === 0) {
+        try {
+          const res = await rpc.call('GetAvailableModels', { forceRefresh: false }, { timeoutMs: 8000 });
+          const rawModels = res?.response?.models || res?.models || [];
+          const fromAvail = collectAntigravityModelsFromAvailable(rawModels);
+          if (fromAvail.length > 0) list = fromAvail;
+        } catch {}
+      }
+
+      if (list.length > 0) {
+        modelCache = { candidates: list, fetchedAt: Date.now() };
+      }
+    }
+
+    let quotaSnap = null;
+    if (services && typeof services.call === 'function') {
+      try {
+        const qRes = await services.call('quota', 'getSnapshot', [], { optional: true });
+        if (qRes?.ok) quotaSnap = qRes.value;
+      } catch {}
+    }
+    const geminiExhausted = quotaSnap?.gemini?.isExhausted === true || quotaSnap?.gemini?.remainingFraction === 0;
+    const claudeExhausted = quotaSnap?.claude?.isExhausted === true || quotaSnap?.claude?.remainingFraction === 0;
+
+    const byModel = new Map();
+    for (const item of list) {
+      const lower = item.model.toLowerCase();
+      const is3p = lower.includes('claude') || lower.includes('gpt-oss');
+      if (item.model !== preferred) {
+        if (is3p && claudeExhausted) continue;
+        if (!is3p && geminiExhausted) continue;
+      }
+      byModel.set(item.model, {
+        ...item,
+        score: scoreAntigravityModelCandidate(item, item.model === preferred)
+      });
+    }
+    if (preferred && !byModel.has(preferred)) {
+      byModel.set(preferred, {
+        model: preferred,
+        modelId: preferred,
+        label: preferred,
+        remainingFraction: null,
+        score: -100
+      });
+    }
+    const sorted = Array.from(byModel.values()).sort((a, b) => a.score - b.score || a.model.localeCompare(b.model));
+    if (sorted.length === 0) {
+      return DEFAULT_ANTIGRAVITY_FALLBACK_MODELS.map((m) => ({
+        ...m,
+        modelId: m.model,
+        remainingFraction: null,
+        score: scoreAntigravityModelCandidate(m, m.model === preferred)
+      }));
+    }
+    return sorted;
+  }
+
+  async function listAntigravityModelOptions(opts = {}) {
+    const out = [
+      {
+        value: '',
+        label: '自动选择轻量快速模型（推荐）',
+        description: 'Auto-select fast Antigravity model'
+      }
+    ];
+    const seen = new Set(['']);
+    const models = await resolveAntigravityModels({ ...opts, forceRefresh: true });
+    for (const m of models) {
+      if (!m?.model || seen.has(m.model)) continue;
+      seen.add(m.model);
+      out.push({
+        value: m.model,
+        label: m.label || m.model,
+        description: m.label && m.label !== m.model ? m.model : ''
+      });
+    }
+    return { ok: true, options: out };
   }
 
   async function runFreeTranslationJob(job, rawText, targetMeta) {
@@ -272,6 +468,55 @@ function createCotTranslationManager(deps = {}) {
     cache.set(job.cacheKey, finalText);
     persistCache();
     notifyJobWaiters(job);
+  }
+
+  async function runAntigravityRpcJob(job, rawText, targetMeta, config) {
+    if (!rpc || typeof rpc.call !== 'function') {
+      throw new Error('ANTIGRAVITY_RPC_UNAVAILABLE');
+    }
+    const candidates = await resolveAntigravityModels({ preferredModel: config.thinkingAntigravityModel });
+    const prompt = buildAntigravityTranslatePrompt(rawText, `${targetMeta.nativeName} (${targetMeta.bcp47})`);
+    const attempts = [];
+
+    for (const cand of candidates.slice(0, 4)) {
+      if (job.aborted || disposed) return;
+      const modelEnum = String(cand?.model || '').trim();
+      if (!modelEnum) continue;
+      try {
+        const resPayload = await rpc.call(
+          'GetModelResponse',
+          { prompt, model: modelEnum },
+          { timeoutMs: 25000, retryOnTimeout: false }
+        );
+        if (job.aborted || disposed) return;
+        const rawResp = resPayload?.response ?? resPayload?.text ?? '';
+        const cleaned = cleanAntigravityTranslateOutput(rawResp);
+        if (!cleaned) {
+          const emptyErr = new Error('ANTIGRAVITY_EMPTY_RESPONSE');
+          emptyErr.status = 200;
+          throw emptyErr;
+        }
+        job.translatedText = cleaned;
+        job.modelUsed = modelEnum;
+        job.done = true;
+        job.status = 'done';
+        job.updatedAt = Date.now();
+        cache.delete(job.cacheKey);
+        cache.set(job.cacheKey, cleaned);
+        persistCache();
+        notifyJobWaiters(job);
+        return;
+      } catch (err) {
+        const msg = String(err?.message || 'RPC_FAILED');
+        const statusMatch = msg.match(/\bHTTP\s+(\d{3})\b/i);
+        const status = Number(err?.status || (statusMatch ? statusMatch[1] : 0));
+        attempts.push(`${modelEnum}: ${msg}`);
+        if (status === 401 || status === 403) break;
+      }
+    }
+
+    modelCache.fetchedAt = 0;
+    throw new Error(attempts[attempts.length - 1] || 'ANTIGRAVITY_TRANSLATION_FAILED');
   }
 
   async function runCustomApiStreamJob(job, rawText, targetMeta, config) {
@@ -414,6 +659,7 @@ function createCotTranslationManager(deps = {}) {
       status: job.status,
       done: Boolean(job.done),
       source: job.source,
+      ...(job.modelUsed ? { model: job.modelUsed } : {}),
       translatedText: fullText,
       delta: fullText.slice(start),
       cursor: fullText.length,
@@ -430,10 +676,9 @@ function createCotTranslationManager(deps = {}) {
       return { ok: true, status: 'done', done: true, translatedText: '', delta: '', cursor: 0, source: 'empty' };
     }
     const cfg = getConfig();
-    const targetLang = params.targetLang || cfg.lang || 'zh';
-    if (targetLang === 'en') {
-      return { ok: true, status: 'done', done: true, translatedText: rawText, delta: rawText, cursor: rawText.length, source: 'passthrough' };
-    }
+    const effectiveTarget = params.targetLang !== undefined
+      ? (typeof normalizeLang === 'function' ? normalizeLang(params.targetLang, cfg.lang || 'zh') : params.targetLang)
+      : resolveEffectiveCotTargetLang(cfg, normalizeLang);
     const mode = normalizeThinkingTranslationMode(
       params.mode !== undefined ? params.mode : cfg.thinkingTranslationMode,
       cfg.enableRemoteThinkingTranslation
@@ -448,7 +693,10 @@ function createCotTranslationManager(deps = {}) {
       };
     }
 
-    const cacheKey = makeCacheKey(mode, targetLang, cfg.thinkingApiModel, rawText);
+    const activeModel = mode === THINKING_TRANSLATION_MODES.CUSTOM_API
+      ? cfg.thinkingApiModel
+      : (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY ? (cfg.thinkingAntigravityModel || 'auto') : 'mt');
+    const cacheKey = makeCacheKey(mode, effectiveTarget, activeModel, rawText);
     if (!params.force && cache.has(cacheKey)) {
       const hit = cache.get(cacheKey);
       cache.delete(cacheKey);
@@ -473,14 +721,18 @@ function createCotTranslationManager(deps = {}) {
     }
 
     pruneOldJobs();
-    const targetMeta = getLanguageMeta(targetLang);
+    const targetMeta = getLanguageMeta(effectiveTarget);
     const jobId = `cot_${++seq}_${Date.now().toString(36)}`;
+    let source = 'free';
+    if (mode === THINKING_TRANSLATION_MODES.CUSTOM_API) source = 'custom_api';
+    else if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) source = 'antigravity';
+
     const job = {
       id: jobId,
       cacheKey,
       mode,
-      targetLang,
-      source: mode === THINKING_TRANSLATION_MODES.CUSTOM_API ? 'custom_api' : 'free',
+      targetLang: effectiveTarget,
+      source,
       status: 'streaming',
       done: false,
       aborted: false,
@@ -493,9 +745,14 @@ function createCotTranslationManager(deps = {}) {
     jobs.set(jobId, job);
     dedupeMap.set(cacheKey, jobId);
 
-    const runner = mode === THINKING_TRANSLATION_MODES.CUSTOM_API
-      ? runCustomApiStreamJob(job, rawText, targetMeta, cfg)
-      : runFreeTranslationJob(job, rawText, targetMeta);
+    let runner;
+    if (mode === THINKING_TRANSLATION_MODES.CUSTOM_API) {
+      runner = runCustomApiStreamJob(job, rawText, targetMeta, cfg);
+    } else if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) {
+      runner = runAntigravityRpcJob(job, rawText, targetMeta, cfg);
+    } else {
+      runner = runFreeTranslationJob(job, rawText, targetMeta);
+    }
 
     void runner.catch((err) => {
       if (job.aborted || disposed) return;
@@ -566,8 +823,51 @@ function createCotTranslationManager(deps = {}) {
     return { ok: true, cancelled: true, jobId: job.id };
   }
 
+  async function testAntigravityRpc(cfg) {
+    if (!rpc || typeof rpc.call !== 'function') {
+      return { ok: false, mode: 'antigravity', error: 'ANTIGRAVITY_RPC_UNAVAILABLE' };
+    }
+    const startedAt = Date.now();
+    const candidates = await resolveAntigravityModels({
+      preferredModel: cfg.thinkingAntigravityModel,
+      forceRefresh: true
+    });
+    const first = candidates[0];
+    if (!first?.model) {
+      return { ok: false, mode: 'antigravity', error: 'NO_ANTIGRAVITY_MODELS' };
+    }
+    try {
+      const resPayload = await rpc.call(
+        'GetModelResponse',
+        { prompt: 'Reply with OK.', model: first.model },
+        { timeoutMs: 12000, retryOnTimeout: false }
+      );
+      const rawResp = String(resPayload?.response ?? resPayload?.text ?? '').trim();
+      if (!rawResp) {
+        return { ok: false, mode: 'antigravity', model: first.model, error: 'ANTIGRAVITY_EMPTY_RESPONSE' };
+      }
+      return {
+        ok: true,
+        mode: 'antigravity',
+        model: first.model,
+        latencyMs: Date.now() - startedAt
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        mode: 'antigravity',
+        model: first.model,
+        error: err?.message || String(err)
+      };
+    }
+  }
+
   async function testCustomEndpoint(override = {}) {
     const cfg = { ...getConfig(), ...(override && typeof override === 'object' ? override : {}) };
+    const mode = normalizeThinkingTranslationMode(override.mode ?? cfg.thinkingTranslationMode, false);
+    if (mode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) {
+      return await testAntigravityRpc(cfg);
+    }
     const urlCheck = normalizeApiBaseUrl(cfg.thinkingApiBaseUrl);
     if (!urlCheck.ok) {
       return { ok: false, error: urlCheck.error || 'INVALID_API_BASE_URL' };
@@ -630,6 +930,8 @@ function createCotTranslationManager(deps = {}) {
     pollJob,
     cancelJob,
     testCustomEndpoint,
+    listAntigravityModelOptions,
+    resolveAntigravityModels,
     dispose,
     getCacheSize: () => cache.size
   };
@@ -638,6 +940,10 @@ function createCotTranslationManager(deps = {}) {
 module.exports = {
   splitChunksForMachineTranslation,
   buildCotSystemPrompt,
+  buildAntigravityTranslatePrompt,
+  cleanAntigravityTranslateOutput,
+  collectAntigravityModelsFromStatus,
+  collectAntigravityModelsFromAvailable,
   findAntigravityCliCandidates,
   resolveAntigravityCliBinary,
   openFileInHost,

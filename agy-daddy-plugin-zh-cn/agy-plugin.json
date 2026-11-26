@@ -17,16 +17,16 @@
     "en": "Client Multi-Language Localization"
   },
   "description": {
-    "zh-CN": "10 语言界面全量词典与正则翻译（简/繁/日/韩/西/葡/法/俄/意/英）、无重启切换、思维链双模流式转译与双语对照",
-    "zh-TW": "10 語言介面全量詞典與正則翻譯（簡/繁/日/韓/西/葡/法/俄/義/英）、免重啟切換、思維鏈雙模串流轉譯與雙語對照",
-    "ja": "10言語対応のUI辞書・正規表現ローカライズ（簡/繁/日/韓/西/葡/仏/露/伊/英）、再起動不要の切替、思考プロセス双モード翻訳・対訳表示",
-    "ko": "10개 언어 UI 사전·정규식 현지화, 재시작 없는 전환, 사고 과정(CoT) 이중 모드 스트리밍 번역 및 대조 표시",
-    "es": "Localización de interfaz en 10 idiomas por diccionario y regex, cambio sin reiniciar y traducción en streaming de CoT bilingüe",
-    "pt": "Localização de interface em 10 idiomas por dicionário e regex, troca sem reiniciar e tradução em streaming de CoT bilíngue",
-    "fr": "Localisation d'interface en 10 langues par dictionnaire et regex, bascule sans redémarrage et traduction en streaming CoT bilingue",
-    "ru": "Локализация интерфейса на 10 языках по словарю и regex, переключение без перезапуска и потоковый перевод CoT с двуязычным режимом",
-    "it": "Localizzazione interfaccia in 10 lingue tramite dizionario e regex, cambio senza riavvio e traduzione streaming CoT bilingue",
-    "en": "10-language UI dictionary/regex localization, zero-restart switching, and dual-mode streaming Chain-of-Thought (CoT) bilingual translation"
+    "zh-CN": "10 语言界面全量词典与正则翻译（简/繁/日/韩/西/葡/法/俄/意/英）、无重启切换、思维链多模转译（含 Antigravity 内置模型）与双语对照",
+    "zh-TW": "10 語言介面全量詞典與正則翻譯（簡/繁/日/韓/西/葡/法/俄/義/英）、免重啟切換、思維鏈多模轉譯（含 Antigravity 內置模型）與雙語對照",
+    "ja": "10言語対応のUI辞書・正規表現ローカライズ、再起動不要の切替、Antigravity内蔵モデル含む思考プロセス多モード翻訳・対訳表示",
+    "ko": "10개 언어 UI 사전·정규식 현지화, 재시작 없는 전환, Antigravity 내장 모델 포함 사고 과정(CoT) 다중 모드 번역 및 대조 표시",
+    "es": "Localización de interfaz en 10 idiomas, cambio sin reiniciar y traducción CoT multimodo (incluido modelo integrado de Antigravity) bilingüe",
+    "pt": "Localização de interface em 10 idiomas, troca sem reiniciar e tradução CoT multimodo (incluindo modelo integrado Antigravity) bilíngue",
+    "fr": "Localisation d'interface en 10 langues, bascule sans redémarrage et traduction CoT multimode (modèle Antigravity intégré inclus) bilingue",
+    "ru": "Локализация интерфейса на 10 языках, переключение без перезапуска и многорежимный перевод CoT (включая встроенную модель Antigravity)",
+    "it": "Localizzazione interfaccia in 10 lingue, cambio senza riavvio e traduzione CoT multimodale (incluso modello integrato Antigravity) bilingue",
+    "en": "10-language UI dictionary/regex localization, zero-restart switching, and multi-mode Chain-of-Thought translation (including built-in Antigravity RPC models)"
   },
   "engines": {
     "agyDaddy": "^1.0.0",
@@ -48,6 +48,7 @@
   "permissions": [
     "dom:read",
     "dom:write",
+    "rpc:read",
     "bridge:route",
     "process:spawn",
     "net:outbound:*"
@@ -103,16 +104,31 @@
       {
         "id": "zh-cn.test-thinking-api",
         "title": {
-          "zh-CN": "测试思考转译 API 连通性",
-          "zh-TW": "測試思考轉譯 API 連通性",
-          "ja": "思考翻訳 API 接続テスト",
-          "ko": "사고 번역 API 연결 테스트",
-          "es": "Probar conexión de API de traducción CoT",
-          "pt": "Testar conexão da API de tradução CoT",
-          "fr": "Tester la connexion API de traduction CoT",
-          "ru": "Проверить подключение API перевода CoT",
-          "it": "Verifica connessione API traduzione CoT",
-          "en": "Test Thinking Translation API Connectivity"
+          "zh-CN": "测试思考转译服务连通性",
+          "zh-TW": "測試思考轉譯服務連通性",
+          "ja": "思考翻訳サービス接続テスト",
+          "ko": "사고 번역 서비스 연결 테스트",
+          "es": "Probar conexión del servicio de traducción CoT",
+          "pt": "Testar conexão do serviço de tradução CoT",
+          "fr": "Tester la connexion du service de traduction CoT",
+          "ru": "Проверить подключение сервиса перевода CoT",
+          "it": "Verifica connessione servizio traduzione CoT",
+          "en": "Test Thinking Translation Service Connectivity"
+        }
+      },
+      {
+        "id": "zh-cn.list-antigravity-models",
+        "title": {
+          "zh-CN": "获取 Antigravity 可用转译模型列表",
+          "zh-TW": "取得 Antigravity 可用轉譯模型清單",
+          "ja": "Antigravity 利用可能モデル一覧を取得",
+          "ko": "Antigravity 사용 가능 모델 목록 조회",
+          "es": "Listar modelos disponibles de Antigravity",
+          "pt": "Listar modelos disponíveis do Antigravity",
+          "fr": "Lister les modèles Antigravity disponibles",
+          "ru": "Список доступных моделей Antigravity",
+          "it": "Elenca modelli Antigravity disponibili",
+          "en": "List Available Antigravity Models"
         }
       }
     ],

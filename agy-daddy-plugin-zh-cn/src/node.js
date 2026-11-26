@@ -14,10 +14,13 @@ const {
 const {
   THINKING_TRANSLATION_MODES,
   THINKING_DISPLAY_MODES,
+  THINKING_TARGET_LANG_FOLLOW,
   DEFAULT_THINKING_API_BASE_URL,
   DEFAULT_THINKING_API_MODEL,
   normalizeThinkingTranslationMode,
-  normalizeThinkingDisplayMode
+  normalizeThinkingDisplayMode,
+  normalizeThinkingTargetLang,
+  resolveEffectiveCotTargetLang
 } = require('./cot-utils');
 const {
   openFileInHost,
@@ -36,7 +39,11 @@ function normalizeManagedSettings(raw = {}) {
     translateConversationTitles: raw.translateConversationTitles !== false,
     enableRemoteThinkingTranslation: enableRemote,
     thinkingTranslationMode: normalizeThinkingTranslationMode(raw.thinkingTranslationMode, false),
+    thinkingTargetLang: normalizeThinkingTargetLang(raw.thinkingTargetLang, normalizeLang),
     thinkingDisplayMode: normalizeThinkingDisplayMode(raw.thinkingDisplayMode),
+    thinkingAntigravityModel: typeof raw.thinkingAntigravityModel === 'string'
+      ? raw.thinkingAntigravityModel.trim()
+      : '',
     thinkingApiBaseUrl: typeof raw.thinkingApiBaseUrl === 'string' && raw.thinkingApiBaseUrl.trim()
       ? raw.thinkingApiBaseUrl.trim()
       : DEFAULT_THINKING_API_BASE_URL,
@@ -59,7 +66,10 @@ async function activate(host, options = {}) {
   const cotManager = createCotTranslationManager({
     getConfig: () => config,
     getLanguageMeta,
+    normalizeLang,
     fetch: (url, init) => host.net.fetch(url, init),
+    rpc: host.rpc,
+    services: host.services,
     storage: host.storage
   });
 
@@ -79,7 +89,10 @@ async function activate(host, options = {}) {
       translateConversationTitles: config.translateConversationTitles,
       enableRemoteThinkingTranslation: config.enableRemoteThinkingTranslation,
       thinkingTranslationMode: config.thinkingTranslationMode,
+      thinkingTargetLang: config.thinkingTargetLang,
+      effectiveCotTargetLang: resolveEffectiveCotTargetLang(config, normalizeLang),
       thinkingDisplayMode: config.thinkingDisplayMode,
+      thinkingAntigravityModel: config.thinkingAntigravityModel,
       thinkingApiBaseUrl: config.thinkingApiBaseUrl,
       thinkingApiModel: config.thinkingApiModel,
       hasThinkingApiKey: Boolean(config.thinkingApiKey)
@@ -104,8 +117,14 @@ async function activate(host, options = {}) {
     if (patch.thinkingTranslationMode !== undefined) {
       managedPatch.thinkingTranslationMode = normalizeThinkingTranslationMode(patch.thinkingTranslationMode, false);
     }
+    if (patch.thinkingTargetLang !== undefined) {
+      managedPatch.thinkingTargetLang = normalizeThinkingTargetLang(patch.thinkingTargetLang, normalizeLang);
+    }
     if (patch.thinkingDisplayMode !== undefined) {
       managedPatch.thinkingDisplayMode = normalizeThinkingDisplayMode(patch.thinkingDisplayMode);
+    }
+    if (patch.thinkingAntigravityModel !== undefined) {
+      managedPatch.thinkingAntigravityModel = String(patch.thinkingAntigravityModel || '').trim();
     }
     if (patch.thinkingApiBaseUrl !== undefined) {
       managedPatch.thinkingApiBaseUrl = String(patch.thinkingApiBaseUrl || '').trim() || DEFAULT_THINKING_API_BASE_URL;
@@ -162,6 +181,7 @@ async function activate(host, options = {}) {
       return {
         ...safeConfig,
         hasThinkingApiKey: Boolean(config.thinkingApiKey),
+        effectiveCotTargetLang: resolveEffectiveCotTargetLang(config, normalizeLang),
         lastNonEnLang,
         supportedLanguages: SUPPORTED_LANGUAGES.map((l) => l.code),
         customRules: customRulesRaw,
@@ -200,6 +220,30 @@ async function activate(host, options = {}) {
 
       if (options.kind === 'thinking' && !config.translateThinking) {
         return { ok: true, text: raw, source: 'disabled', lang: targetLang };
+      }
+
+      if (options.kind === 'thinking' && config.thinkingTranslationMode === THINKING_TRANSLATION_MODES.ANTIGRAVITY) {
+        const cotTarget = options.lang !== undefined
+          ? targetLang
+          : resolveEffectiveCotTargetLang(config, normalizeLang);
+        const agyRes = await cotManager.startOrGetJob({
+          text: raw,
+          targetLang: cotTarget,
+          mode: THINKING_TRANSLATION_MODES.ANTIGRAVITY,
+          initialWaitMs: 250
+        });
+        let finalRes = agyRes;
+        while (finalRes && !finalRes.done && finalRes.jobId) {
+          finalRes = await cotManager.pollJob({ jobId: finalRes.jobId, cursor: finalRes.cursor, waitMs: 1500 });
+        }
+        return {
+          ok: Boolean(finalRes?.ok),
+          text: finalRes?.translatedText || raw,
+          source: finalRes?.source || 'antigravity',
+          lang: cotTarget,
+          ...(finalRes?.model ? { model: finalRes.model } : {}),
+          ...(finalRes?.error ? { error: finalRes.error } : {})
+        };
       }
 
       if (targetLang !== 'en') {
@@ -266,6 +310,9 @@ async function activate(host, options = {}) {
       }
       const res = await serviceMethods.translateSnippet(rawTitle, options);
       return { ...res, cascadeId: cid, title: res.text };
+    },
+    async listAntigravityModels(opts = {}) {
+      return await cotManager.listAntigravityModelOptions(opts);
     },
     async startCotTranslation(params = {}) {
       return await cotManager.startOrGetJob(params);
@@ -334,7 +381,7 @@ async function activate(host, options = {}) {
       thinkingDisplayMode: updated.thinkingDisplayMode,
       message: updated.thinkingDisplayMode === THINKING_DISPLAY_MODES.TRANSLATED
         ? '已切换为沉浸式纯译文'
-        : '已切换为中英双语上下对照'
+        : '已切换为双语上下对照'
     };
   });
   const stopTestApiCmd = host.commands.register('zh-cn.test-thinking-api', async (arg = {}) => {
@@ -345,6 +392,9 @@ async function activate(host, options = {}) {
         ? `连接成功 (${res.model}, ${res.latencyMs}ms)`
         : `连接失败: ${res.error}`
     };
+  });
+  const stopListAgyModelsCmd = host.commands.register('zh-cn.list-antigravity-models', async (arg = {}) => {
+    return await cotManager.listAntigravityModelOptions(arg && typeof arg === 'object' ? arg : {});
   });
 
   publishLangState();
@@ -361,7 +411,8 @@ async function activate(host, options = {}) {
     stopToggleCmd,
     stopSetLangCmd,
     stopToggleDisplayCmd,
-    stopTestApiCmd
+    stopTestApiCmd,
+    stopListAgyModelsCmd
   );
 }
 
@@ -374,5 +425,6 @@ async function deactivate() {
 
 module.exports = {
   activate,
-  deactivate
+  deactivate,
+  THINKING_TARGET_LANG_FOLLOW
 };

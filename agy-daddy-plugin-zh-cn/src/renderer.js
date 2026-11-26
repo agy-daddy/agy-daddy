@@ -11,9 +11,11 @@ const {
 } = require('./dictionary');
 const {
   THINKING_TRANSLATION_MODES,
+  THINKING_TARGET_LANG_FOLLOW,
   DEFAULT_THINKING_API_MODEL,
   normalizeThinkingTranslationMode,
-  normalizeThinkingDisplayMode
+  normalizeThinkingDisplayMode,
+  normalizeThinkingTargetLang
 } = require('./cot-utils');
 const {
   createCotOverlayController
@@ -352,9 +354,15 @@ function mergeManagedSettings(raw = {}, base = {}) {
     thinkingTranslationMode: raw.thinkingTranslationMode !== undefined
       ? normalizeThinkingTranslationMode(raw.thinkingTranslationMode, false)
       : normalizeThinkingTranslationMode(base.thinkingTranslationMode, false),
+    thinkingTargetLang: raw.thinkingTargetLang !== undefined
+      ? normalizeThinkingTargetLang(raw.thinkingTargetLang, normalizeLang)
+      : normalizeThinkingTargetLang(base.thinkingTargetLang || THINKING_TARGET_LANG_FOLLOW, normalizeLang),
     thinkingDisplayMode: raw.thinkingDisplayMode !== undefined
       ? normalizeThinkingDisplayMode(raw.thinkingDisplayMode)
       : normalizeThinkingDisplayMode(base.thinkingDisplayMode),
+    thinkingAntigravityModel: raw.thinkingAntigravityModel !== undefined
+      ? String(raw.thinkingAntigravityModel || '').trim()
+      : String(base.thinkingAntigravityModel || '').trim(),
     thinkingApiModel: typeof raw.thinkingApiModel === 'string' && raw.thinkingApiModel.trim()
       ? raw.thinkingApiModel.trim()
       : (base.thinkingApiModel || DEFAULT_THINKING_API_MODEL)
@@ -372,7 +380,9 @@ async function mount(ctx, options = {}) {
     translateConversationTitles: true,
     enableRemoteThinkingTranslation: false,
     thinkingTranslationMode: THINKING_TRANSLATION_MODES.OFF,
+    thinkingTargetLang: THINKING_TARGET_LANG_FOLLOW,
     thinkingDisplayMode: 'bilingual',
+    thinkingAntigravityModel: '',
     thinkingApiModel: DEFAULT_THINKING_API_MODEL,
     customRules: [],
     titles: {}
@@ -423,30 +433,40 @@ async function mount(ctx, options = {}) {
 
   function flushPendingMutations() {
     flushTimer = null;
-    if (disposed || cfg.lang === 'en' || pendingNodes.size === 0) {
+    const cotEnabled = cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF;
+    if (disposed || (cfg.lang === 'en' && !cotEnabled) || pendingNodes.size === 0) {
       pendingNodes.clear();
       return;
     }
     const nodes = Array.from(pendingNodes);
     pendingNodes.clear();
     let touchedThinking = false;
-    runWithMutationGuard(() => {
-      if (nodes.length > 60) {
-        translator.applyTranslations(cfg);
-        touchedThinking = true;
-        return;
-      }
-      const nodeSet = new Set(nodes);
-      for (const node of nodes) {
-        if (!node || hasAncestorInSet(node, nodeSet)) continue;
-        if (node.isConnected === false) continue;
-        if (!touchedThinking && isThinkingNode(node.parentElement || node)) {
+    if (cfg.lang !== 'en') {
+      runWithMutationGuard(() => {
+        if (nodes.length > 60) {
+          translator.applyTranslations(cfg);
           touchedThinking = true;
+          return;
         }
-        translator.applyTranslations(cfg, node);
+        const nodeSet = new Set(nodes);
+        for (const node of nodes) {
+          if (!node || hasAncestorInSet(node, nodeSet)) continue;
+          if (node.isConnected === false) continue;
+          if (!touchedThinking && isThinkingNode(node.parentElement || node)) {
+            touchedThinking = true;
+          }
+          translator.applyTranslations(cfg, node);
+        }
+      });
+    } else {
+      for (const node of nodes) {
+        if (node && isThinkingNode(node.parentElement || node)) {
+          touchedThinking = true;
+          break;
+        }
       }
-    });
-    if (touchedThinking && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+    }
+    if (touchedThinking && cotEnabled) {
       cotOverlay.scheduleScan(30);
     }
   }
@@ -459,7 +479,7 @@ async function mount(ctx, options = {}) {
         translator.applyTranslations(cfg);
       }
     });
-    if (cfg.lang === 'en' || cfg.thinkingTranslationMode === THINKING_TRANSLATION_MODES.OFF) {
+    if (cfg.thinkingTranslationMode === THINKING_TRANSLATION_MODES.OFF) {
       cotOverlay.clearAll();
     } else {
       cotOverlay.scanNow();
@@ -483,13 +503,13 @@ async function mount(ctx, options = {}) {
     if (cfg.lang !== 'en' && cfg.translateThinking !== false) {
       runWithMutationGuard(() => translator.applyTranslations(cfg));
     }
-    if (cfg.lang !== 'en' && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+    if (cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
       cotOverlay.scheduleScan(20);
     }
   });
 
   const stopThinkingAnchor = ctx.anchors.observe('chat.thinkingTrigger', () => {
-    if (cfg.lang !== 'en' && cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
+    if (cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF) {
       cotOverlay.scheduleScan(30);
     }
   });
@@ -508,7 +528,8 @@ async function mount(ctx, options = {}) {
   const observeRoot = docRef?.documentElement || docRef?.body || null;
   if (MutationObserverCtor && observeRoot) {
     domObserver = new MutationObserverCtor((records) => {
-      if (disposed || isApplying || cfg.lang === 'en' || !Array.isArray(records)) return;
+      const cotEnabled = cfg.thinkingTranslationMode !== THINKING_TRANSLATION_MODES.OFF;
+      if (disposed || isApplying || (cfg.lang === 'en' && !cotEnabled) || !Array.isArray(records)) return;
       let queued = false;
       for (const rec of records) {
         if (!rec) continue;

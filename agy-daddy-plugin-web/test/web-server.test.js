@@ -993,7 +993,7 @@ test('D7: host locale sync + SSE broadcast, web-scoped plugins/settings, workspa
       body: { root: extraRootDir }
     });
     assert.equal(authOk.status, 200);
-    const realExtra = fs.realpathSync(extraRootDir);
+    const realExtra = (fs.realpathSync.native || fs.realpathSync)(extraRootDir);
     assert.equal(authOk.json.root, realExtra);
     assert.equal(authOk.json.allowedRoots.includes(realExtra), true);
 

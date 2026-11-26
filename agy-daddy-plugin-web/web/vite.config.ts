@@ -13,6 +13,9 @@ export default defineConfig({
     target: 'es2022',
     minify: 'esbuild',
     cssMinify: true,
+    commonjsOptions: {
+      include: [/node_modules/, /agy-daddy-plugin-pet/],
+    },
     sourcemap: nodeEnv.VITE_SOURCEMAP === 'true',
     reportCompressedSize: true,
     rollupOptions: {

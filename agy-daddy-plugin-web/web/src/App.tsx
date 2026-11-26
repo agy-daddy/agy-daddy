@@ -21,6 +21,7 @@ import {
 } from './host-admin';
 import { formatSessionTitle, useI18n, type TranslateFn } from './i18n';
 import { ThreeColumnShell } from './layout/ThreeColumnShell';
+import { WebPetOverlay } from './pet/WebPetOverlay';
 import {
   createNotificationManager,
   getNotificationPermission,
@@ -44,6 +45,8 @@ import type {
   ModelTreeLeafNode,
   ModelTreeNode,
   OrgReorderRequest,
+  PetBusState,
+  PetStateResponse,
   ProjectGroup,
   ProjectItem,
   RemoteProvisionJob,
@@ -544,6 +547,17 @@ export function App() {
   const [composerDraftPatch, setComposerDraftPatch] = useState<{ text: string; nonce: number } | null>(null);
   const [contextLocationOverride, setContextLocationOverride] = useState<ContextDisplayLocation | null>(null);
   const [contextShowSpeedOverride, setContextShowSpeedOverride] = useState<boolean | null>(null);
+  const [petData, setPetData] = useState<PetStateResponse | null>(null);
+
+  const refreshPet = useCallback(async () => {
+    if (typeof apiClient.getPetState !== 'function') return;
+    try {
+      const res = await apiClient.getPetState();
+      setPetData(res);
+    } catch {
+      // Companion pet soft-degrades when plugin is disabled
+    }
+  }, []);
   const [enableNotifications, setEnableNotifications] = useState<boolean>(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(() =>
     getNotificationPermission(),
@@ -975,6 +989,7 @@ export function App() {
         remoteRes,
         webAccessRes,
         tasksRes,
+        petRes,
       ] = await Promise.allSettled([
         apiClient.getHealth(),
         apiClient.listSessions({ limit: 80, includeInternal: false }),
@@ -990,6 +1005,9 @@ export function App() {
           : Promise.resolve(null),
         typeof apiClient.listBackgroundTasks === 'function'
           ? apiClient.listBackgroundTasks()
+          : Promise.resolve(null),
+        typeof apiClient.getPetState === 'function'
+          ? apiClient.getPetState()
           : Promise.resolve(null),
       ]);
 
@@ -1108,6 +1126,10 @@ export function App() {
       if (tasksRes.status === 'fulfilled' && tasksRes.value) {
         setTasksData(tasksRes.value);
       }
+
+      if (petRes.status === 'fulfilled' && petRes.value) {
+        setPetData(petRes.value);
+      }
     }
 
     void bootstrap();
@@ -1143,6 +1165,13 @@ export function App() {
       detailAbortControllerRef.current = null;
     };
   }, [activeSessionId, loadSessionDetail]);
+
+  useEffect(() => {
+    if (typeof apiClient.interactPet !== 'function') return;
+    void apiClient
+      .interactPet({ action: 'set-active-session', cascadeId: activeSessionId || null })
+      .catch(() => {});
+  }, [activeSessionId]);
 
   // Live SSE subscription per active session
   useEffect(() => {
@@ -1437,6 +1466,29 @@ export function App() {
             .catch(() => {});
           return;
         }
+        if (patch.key === 'state:pet.state@1') {
+          const valObj =
+            patch.value && typeof patch.value === 'object'
+              ? (patch.value as PetBusState)
+              : null;
+          if (valObj) {
+            let needsSceneRefresh = false;
+            setPetData((prev) => {
+              if (!prev) {
+                needsSceneRefresh = true;
+                return { ok: true, available: true, state: valObj, scene: null, themes: [] };
+              }
+              if (prev.state?.themeId !== valObj.themeId || !prev.scene) {
+                needsSceneRefresh = true;
+              }
+              return { ...prev, available: true, state: valObj };
+            });
+            if (needsSceneRefresh) {
+              void refreshPet();
+            }
+          }
+          return;
+        }
         if (patch.key === 'state:host.plugins@1') {
           void refreshHealth();
           void refreshTopbar();
@@ -1474,6 +1526,8 @@ export function App() {
               .getComposerState()
               .then((res) => setComposerState(res))
               .catch(() => {});
+          } else if (targetPlugin === 'agy-daddy.pet') {
+            void refreshPet();
           }
           return;
         }
@@ -1535,6 +1589,7 @@ export function App() {
     loadSessionDetail,
     markActiveSessionAsRead,
     refreshHealth,
+    refreshPet,
     refreshProjects,
     refreshRemoteStatus,
     refreshSessions,
@@ -2493,13 +2548,14 @@ export function App() {
       .getHostLocale()
       .then((res) => syncHostLocale(res.locale, res.supportedLanguages))
       .catch(() => {});
+    void refreshPet();
     void apiClient
       .getPluginSettings('agy-daddy.web')
       .then((res) => {
         if (res?.values) applyWebPluginSettings(res.values);
       })
       .catch(() => {});
-  }, [applyWebPluginSettings, refreshHealth, refreshRemoteStatus, refreshTopbar, syncHostLocale]);
+  }, [applyWebPluginSettings, refreshHealth, refreshPet, refreshRemoteStatus, refreshTopbar, syncHostLocale]);
 
   const handleCommandExecuted = useCallback(() => {
     void refreshTopbar();
@@ -3150,6 +3206,12 @@ export function App() {
           </form>
         </div>
       )}
+      <WebPetOverlay
+        petData={petData}
+        onSelectSession={handleSelectSession}
+        onOpenSettings={() => handleOpenAdmin('plugins', 'agy-daddy.pet')}
+        onRefreshPet={refreshPet}
+      />
     </>
   );
 }

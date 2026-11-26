@@ -498,6 +498,24 @@ async function activate(host) {
       };
       host.state?.set?.('state:context.snapshot@1', latestSnapshot);
       return { ok: true, snapshot: latestSnapshot };
+    },
+    ingestLiveState(payload = {}) {
+      if (payload === null) {
+        host.state?.set?.('state:context.live@1', null);
+        return { ok: true, live: null };
+      }
+      if (!payload || typeof payload !== 'object') return { ok: false };
+      const live = {
+        cascadeId: payload.cascadeId ? String(payload.cascadeId) : null,
+        busy: Boolean(payload.busy),
+        phase: String(payload.phase || (payload.busy ? 'waiting' : 'idle')),
+        tps: payload.tps === null || payload.tps === undefined ? null : Number(payload.tps),
+        ttft: payload.ttft === null || payload.ttft === undefined ? null : Number(payload.ttft),
+        estimatedOutputTokens: Number(payload.estimatedOutputTokens || 0),
+        updatedAt: Number(payload.updatedAt) || Date.now()
+      };
+      host.state?.set?.('state:context.live@1', live);
+      return { ok: true, live };
     }
   };
 
@@ -506,6 +524,7 @@ async function activate(host) {
   const stopRescanRoute = await host.bridge.registerRoute('/rescan', async (body) => serviceMethods.rescan(body || {}));
   const stopAuditRoute = await host.bridge.registerRoute('/audit-attachments', async (body) => serviceMethods.auditAttachments(body?.media || []));
   const stopIngestRoute = await host.bridge.registerRoute('/ingest-renderer-snapshot', async (body) => serviceMethods.ingestRendererSnapshot(body || {}));
+  const stopLiveRoute = await host.bridge.registerRoute('/live-state', async (body) => serviceMethods.ingestLiveState(body ?? null));
   const stopSettingsSub = typeof host.settings?.onChange === 'function'
     ? host.settings.onChange(() => {
         syncSnapshotFromSettings();
@@ -521,6 +540,7 @@ async function activate(host) {
     stopRescanRoute,
     stopAuditRoute,
     stopIngestRoute,
+    stopLiveRoute,
     stopSettingsSub,
     stopRescanCmd
   );
@@ -535,6 +555,7 @@ async function deactivate() {
   activeHost = null;
   try {
     host?.state?.set?.('state:context.snapshot@1', null);
+    host?.state?.set?.('state:context.live@1', null);
   } catch {}
 }
 

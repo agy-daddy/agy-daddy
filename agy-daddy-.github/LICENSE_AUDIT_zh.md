@@ -45,6 +45,7 @@
 | `agy-daddy-plugin-composer/` | MIT | 已配备 | 已配备 | 衍生自 `antigravity-suite`、`antigravity-panel`、`agy-fast-io` |
 | `agy-daddy-plugin-remote/` | MIT | 已配备 | 已配备 | 衍生自 `antigravity-suite`（`mobile-remote.js`） |
 | `agy-daddy-plugin-web/` | MIT | *待补充独立文件* | 不适用（原创） | `Agy-Daddy Contributors` 原创实现（`package.json` 与 `agy-plugin.json` 已声明 `"license": "MIT"`）；公开发布前需补充独立 `LICENSE` 文件 |
+| `agy-daddy-plugin-pet/` | MIT | 已配备 | 不适用（原创） | `Agy-Daddy Contributors` 净室原创伴侣宠与 12 款 MIT 声明式矢量主题（零第三方版权素材） |
 | `agy-daddy-plugin-template/` | MIT | 已配备 | 不适用（原创） | `Agy-Daddy Contributors` 原创插件脚手架模板 |
 | `agy-daddy-registry/` | MIT | 已配备 | 不适用（原创） | `Agy-Daddy Contributors` 原创信任注册表与 DOM 夹具 |
 

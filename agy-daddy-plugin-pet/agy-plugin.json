@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.pet",
+  "publisher": "agy-daddy",
+  "version": "1.1.1",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "桌面与网页伴侣宠",
+    "en": "Companion Pet"
+  },
+  "description": {
+    "zh-CN": "系统级透明置顶与 PC-Web 同步伴侣宠物：12 款 MIT 原创矢量主题、本地形象导入、Token 流速联动及多会话审阅提醒",
+    "en": "Always-on-top desktop & PC-Web companion pet with 12 MIT vector themes, custom pack import, live TPS motion, and approval/reply alerts"
+  },
+  "engines": {
+    "agyDaddy": "^1.2.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["topbar.rightCluster"]
+  },
+  "provides": {
+    "services": {
+      "pet": { "version": "1.0.0", "realm": "node" }
+    },
+    "events": ["pet:focus-session@1", "pet:theme-changed@1"],
+    "states": ["state:pet.state@1", "state:session.active@1"]
+  },
+  "consumes": {
+    "context": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "rpc:read",
+    "bridge:route",
+    "ui:desktop-overlay"
+  ],
+  "contributes": {
+    "topbar.units": [{ "id": "pet-chip", "order": 35 }],
+    "topbar.popovers": [{ "id": "pet-panel", "anchorId": "pet-chip" }],
+    "desktop.overlay": { "id": "pet-companion", "defaultWidth": 220, "defaultHeight": 200 },
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      { "id": "pet.toggleDesktop", "title": { "zh-CN": "切换桌面置顶桌宠", "en": "Toggle Desktop Pet" } },
+      { "id": "pet.toggleWeb", "title": { "zh-CN": "切换 PC-Web 悬浮桌宠", "en": "Toggle PC-Web Pet" } },
+      { "id": "pet.listThemes", "title": { "zh-CN": "列出可用桌宠主题", "en": "List Pet Themes" } },
+      { "id": "pet.listProjectOptions", "title": { "zh-CN": "列出可监听项目", "en": "List Watchable Projects" } },
+      { "id": "pet.listGroupOptions", "title": { "zh-CN": "列出可监听分组", "en": "List Watchable Groups" } }
+    ],
+    "locales": "./locales"
+  }
+}

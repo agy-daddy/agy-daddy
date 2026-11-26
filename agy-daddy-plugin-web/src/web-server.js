@@ -199,6 +199,8 @@ function requiredPermissionFor(method, pathname) {
   }
   if (READ_METHODS.has(method)) return 'L0';
   if (pathname === '/api/v1/web/switch-ticket' || pathname === '/api/v1/web/auth') return 'L0';
+  if (pathname === '/api/v1/pet/interact') return 'L0';
+  if (pathname.startsWith('/api/v1/pet/themes')) return 'L1';
   if (pathname === '/api/v1/confirm') return 'L1';
   if (method === 'DELETE' && /^\/api\/v1\/sessions\/[^/]+$/.test(pathname)) return 'L2';
   if (pathname.startsWith('/api/v1/sessions') || pathname.startsWith('/api/sessions/')) return 'L1';
@@ -2360,6 +2362,58 @@ class WebServer {
             status: result.status
           });
         }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/v1/pet/state') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        if (typeof proxy.getPetState !== 'function') {
+          sendJson(res, 200, { ok: true, available: false, state: null, scene: null, themes: [] });
+          return;
+        }
+        const result = await proxy.getPetState();
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/pet/interact') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, Math.max(this.maxBodyBytes, 8 * 1024 * 1024));
+        if (body?.action === 'import-theme' || body?.action === 'delete-theme') {
+          if (!this._requireChannelPermission(req, res, 'POST', '/api/v1/pet/themes', channel)) {
+            return;
+          }
+        }
+        if (typeof proxy.interactPet !== 'function') {
+          sendJson(res, 404, { ok: false, error: 'PET_SERVICE_UNAVAILABLE' });
+          return;
+        }
+        const result = await proxy.interactPet(body || {});
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/pet/themes') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, Math.max(this.maxBodyBytes, 8 * 1024 * 1024));
+        if (typeof proxy.interactPet !== 'function') {
+          sendJson(res, 404, { ok: false, error: 'PET_SERVICE_UNAVAILABLE' });
+          return;
+        }
+        const result = await proxy.interactPet({ ...(body || {}), action: 'import-theme' });
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'DELETE' && (match = pathname.match(/^\/api\/v1\/pet\/themes\/([^/]+)$/))) {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const themeId = decodeURIComponent(match[1]);
+        if (typeof proxy.interactPet !== 'function') {
+          sendJson(res, 404, { ok: false, error: 'PET_SERVICE_UNAVAILABLE' });
+          return;
+        }
+        const result = await proxy.interactPet({ action: 'delete-theme', themeId });
         sendActionResult(res, result);
         return;
       }

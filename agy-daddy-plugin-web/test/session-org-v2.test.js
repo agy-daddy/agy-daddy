@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { createSessionOrgBridge } = require('../src/session-org-bridge');
+const { createSessionOrgBridge, buildOrgBusSummary } = require('../src/session-org-bridge');
 const { createWorkspaceMetaStore } = require('../src/workspace-meta-store');
 
 function makeTempDir(prefix) {
@@ -217,6 +217,12 @@ test('S3-1: auto-unarchive detector, archive unpins atomically, and fs.watch ext
     }
     assert.ok(externalEvents.length >= 1);
     assert.ok(bridgeA.getOrg().pins.groups.includes('grp_ext'));
+    const busSummary = buildOrgBusSummary(bridgeA.getOrg(), 'agy-daddy.web');
+    assert.ok(Array.isArray(busSummary.projects));
+    assert.equal(typeof busSummary.sessionGroupMap, 'object');
+    assert.equal(typeof busSummary.sessionProjectOverrides, 'object');
+    assert.ok(Array.isArray(busSummary.archivedSessionIds));
+    assert.ok(Array.isArray(busSummary.deletedSessionIds));
 
     bridgeA.dispose();
     bridgeB.dispose();

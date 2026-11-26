@@ -1229,13 +1229,29 @@ function writeJsonAtomicSync(targetPath, data) {
 }
 
 function buildOrgBusSummary(org, updatedBy) {
+  const projectGroupMap = isPlainObject(org.projectGroupMap) ? { ...org.projectGroupMap } : {};
+  const projects = Array.isArray(org.projects)
+    ? org.projects.map((p) => ({
+        id: p.id,
+        aliases: Array.isArray(p.aliases) ? [...p.aliases] : [],
+        name: p.name,
+        rootPath: p.rootPath,
+        uri: p.uri,
+        groupId: p.groupId || projectGroupMap[p.id] || null
+      }))
+    : [];
   return {
     revision: org.revision,
     updatedAt: org.updatedAt,
     updatedBy: updatedBy || org.updatedBy || null,
     pins: org.pins,
     groups: org.groups,
-    projectGroupMap: org.projectGroupMap,
+    projects,
+    projectGroupMap,
+    sessionGroupMap: isPlainObject(org.sessionGroupMap) ? { ...org.sessionGroupMap } : {},
+    sessionProjectOverrides: isPlainObject(org.sessionProjectOverrides) ? { ...org.sessionProjectOverrides } : {},
+    archivedSessionIds: Object.keys(org.archivedSessions || {}),
+    deletedSessionIds: Object.keys(org.deletedSessions || {}),
     groupOrder: org.groupOrder,
     projectOrder: org.projectOrder,
     sessionOrder: org.sessionOrder,

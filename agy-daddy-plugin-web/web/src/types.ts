@@ -1571,3 +1571,94 @@ export interface SseTaskUpdatedPayload {
   taskId?: string;
   status?: BackgroundTaskStatus;
 }
+
+export type PetAnimState =
+  | 'idle'
+  | 'thinking'
+  | 'walking'
+  | 'trotting'
+  | 'sprinting'
+  | 'approval'
+  | 'error'
+  | 'sleeping';
+
+export type PetRoamMode = 'none' | 'bottom-edge' | 'screen-edges' | 'free-workarea';
+
+export interface PetAttentionItem {
+  id: string;
+  kind: 'approval' | 'reply' | 'error';
+  cascadeId: string;
+  sessionTitle: string;
+  stepIndex?: number;
+  summary: string;
+  timestamp: number;
+}
+
+export interface PetBusState {
+  enabled: boolean;
+  desktopVisible: boolean;
+  webVisible: boolean;
+  themeId: string;
+  petScale: number;
+  roamMode: PetRoamMode;
+  webAnchor: { xRatio: number; yRatio: number };
+  motion: {
+    animState: PetAnimState;
+    tps: number;
+    speedFactor: number;
+    roamSpeedPxPerSec: number;
+    primarySessionId: string | null;
+    primarySessionTitle: string;
+    watchedRunningCount: number;
+  };
+  attention: {
+    pendingApprovals: PetAttentionItem[];
+    unreadReplies: PetAttentionItem[];
+    activeBubble: PetAttentionItem | null;
+  };
+  orgCatalog?: {
+    projects: Array<{ id: string; name: string }>;
+    groups: Array<{ id: string; name: string }>;
+  };
+  updatedAt: number;
+}
+
+export interface PetSceneSpec {
+  sceneId: string;
+  viewBox?: { width: number; height: number };
+  fps?: { active?: number; idle?: number; sleep?: number };
+  hitBox?: { x: number; y: number; width: number; height: number };
+  particles?: { preset?: string; color?: string };
+  layers: Array<Record<string, unknown>>;
+}
+
+export interface PetThemeSummary {
+  id: string;
+  name: Record<string, string> | string;
+  description?: Record<string, string> | string;
+  accentHex?: string;
+  builtin: boolean;
+  usesHostAccent?: boolean;
+}
+
+export interface PetStateResponse {
+  ok: boolean;
+  available: boolean;
+  overlaySupported?: { supported: boolean; backend: string };
+  state: PetBusState | null;
+  scene: PetSceneSpec | null;
+  themes: PetThemeSummary[];
+  error?: string;
+}
+
+export interface PetInteractRequest {
+  action: string;
+  cascadeId?: string | null;
+  bubbleId?: string;
+  webAnchor?: { xRatio: number; yRatio: number };
+  themeId?: string;
+  fileName?: string;
+  jsonText?: string;
+  svgText?: string;
+  archiveBase64?: string;
+}

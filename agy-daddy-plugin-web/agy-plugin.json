@@ -24,7 +24,8 @@
   "consumes": {
     "context": { "version": "^1.0.0", "optional": true },
     "usage": { "version": "^1.0.0", "optional": true },
-    "quota": { "version": "^1.0.0", "optional": true }
+    "quota": { "version": "^1.0.0", "optional": true },
+    "pet": { "version": "^1.0.0", "optional": true }
   },
   "permissions": [
     "rpc:read",

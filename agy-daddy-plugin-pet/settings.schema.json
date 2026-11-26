@@ -1,0 +1,136 @@
+{
+  "title": { "zh-CN": "桌面与网页伴侣宠", "en": "Companion Pet" },
+  "fields": [
+    {
+      "key": "enabled",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "显示与载体", "en": "Display & Surfaces" },
+      "label": { "zh-CN": "启用伴侣宠物", "en": "Enable companion pet" },
+      "description": { "zh-CN": "总开关：关闭后同时隐藏桌面透明置顶窗与 PC-Web 网页端宠物", "en": "Master switch for both native desktop overlay and PC-Web pet" }
+    },
+    {
+      "key": "desktopVisible",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "显示与载体", "en": "Display & Surfaces" },
+      "label": { "zh-CN": "在系统桌面置顶显示", "en": "Show Always-on-Top on desktop" },
+      "description": { "zh-CN": "开启后使用原生轻量透明窗口在桌面最上层悬浮游走；关闭时立即释放子进程", "en": "Render a native lightweight transparent topmost window on desktop; exits immediately when off" }
+    },
+    {
+      "key": "webVisible",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "显示与载体", "en": "Display & Surfaces" },
+      "label": { "zh-CN": "在 PC-Web 页面内显示", "en": "Show inside PC-Web" },
+      "description": { "zh-CN": "在 PC-Web 工作台页面内同步悬浮展示并响应审核/回复气泡", "en": "Display the shared Canvas companion pet inside the PC-Web workbench" }
+    },
+    {
+      "key": "themeId",
+      "type": "enum",
+      "default": "daddy-orb",
+      "optionsCommand": "pet.listThemes",
+      "options": [
+        { "value": "daddy-orb", "label": "紫晶脉冲灵 (Agy Pulse)" },
+        { "value": "abyssal-whale", "label": "深海算力鲸 (Abyssal Whale)" },
+        { "value": "sunny-sponge", "label": "阳光海绵块 (Sunny Sponge)" },
+        { "value": "nimble-mouse", "label": "机灵芝士鼠 (Nimble Mouse)" },
+        { "value": "aegis-visor", "label": "赤金机甲盔 (Aegis Visor)" },
+        { "value": "cyber-neko", "label": "霓虹义体猫 (Cyber Neko)" },
+        { "value": "arcade-chomp", "label": "街机像素豆 (Arcade Chomp)" },
+        { "value": "astro-shiba", "label": "星航柴犬 (Astro Shiba)" },
+        { "value": "vapor-dolphin", "label": "蒸汽波海豚 (Vapor Dolphin)" },
+        { "value": "cli-phantom", "label": "终端光标灵 (CLI Phantom)" },
+        { "value": "graffiti-cub", "label": "街头涂鸦熊 (Graffiti Cub)" },
+        { "value": "arcane-cat", "label": "奥术黑猫 (Arcane Cat)" }
+      ],
+      "group": { "zh-CN": "形象与动效", "en": "Theme & Motion" },
+      "label": { "zh-CN": "桌宠主题", "en": "Pet theme" },
+      "description": { "zh-CN": "12 款内置 MIT 原创矢量主题及已导入的本地自定义形象", "en": "12 built-in MIT vector themes plus any locally imported custom packs" }
+    },
+    {
+      "key": "petScale",
+      "type": "number",
+      "min": 0.6,
+      "max": 2.0,
+      "default": 1.0,
+      "group": { "zh-CN": "形象与动效", "en": "Theme & Motion" },
+      "label": { "zh-CN": "缩放倍率", "en": "Scale factor" },
+      "description": { "zh-CN": "调节桌宠与动画渲染的显示尺寸（0.6 – 2.0）", "en": "Adjust pet display size (0.6 – 2.0)" }
+    },
+    {
+      "key": "roamMode",
+      "type": "enum",
+      "default": "bottom-edge",
+      "options": [
+        { "value": "bottom-edge", "label": "屏幕底部巡视" },
+        { "value": "screen-edges", "label": "屏幕边缘游走" },
+        { "value": "free-workarea", "label": "工作区自由漫步" },
+        { "value": "none", "label": "原地待命（不位移）" }
+      ],
+      "group": { "zh-CN": "形象与动效", "en": "Theme & Motion" },
+      "label": { "zh-CN": "游走模式", "en": "Roaming mode" },
+      "description": { "zh-CN": "游走速率随实时 tokens/s 加快；悬停或出现待审批气泡时自动停稳防误点", "en": "Movement speed scales with live tokens/s; pauses on hover or pending approvals" }
+    },
+    {
+      "key": "followCurrentSession",
+      "type": "boolean",
+      "default": true,
+      "group": { "zh-CN": "会话监听与白名单", "en": "Session Watch & Whitelists" },
+      "label": { "zh-CN": "跟随当前会话", "en": "Follow current session" },
+      "description": { "zh-CN": "优先绑定当前活跃焦点会话的流式流速与状态；闲置时自动回退后台运行中会话", "en": "Prioritize the active focused session for TPS & state, falling back to running background sessions when idle" }
+    },
+    {
+      "key": "excludeCurrentSession",
+      "type": "boolean",
+      "default": false,
+      "group": { "zh-CN": "会话监听与白名单", "en": "Session Watch & Whitelists" },
+      "label": { "zh-CN": "排除当前会话", "en": "Exclude current session" },
+      "description": { "zh-CN": "最高优过滤：仅盯防后台与其它会话，屏蔽眼前正在浏览的当前会话动态", "en": "Highest priority exclusion: ignore the currently focused session and watch only background conversations" }
+    },
+    {
+      "key": "projectWhitelist",
+      "type": "list",
+      "default": [],
+      "itemEditor": {
+        "kind": "ordered-preset-list",
+        "presets": [],
+        "allowCustom": false,
+        "dynamicPresetsCommand": "pet.listProjectOptions",
+        "dynamicPoolTitle": { "zh-CN": "可选项目", "en": "Available projects" },
+        "dynamicEmptyHint": { "zh-CN": "暂无已识别项目，打开工作区后自动同步", "en": "No projects discovered yet" }
+      },
+      "group": { "zh-CN": "会话监听与白名单", "en": "Session Watch & Whitelists" },
+      "label": { "zh-CN": "指定项目白名单", "en": "Project whitelist" },
+      "description": { "zh-CN": "仅监听所选项目下的会话（与下方分组白名单取并集；均留空时监听全部非排除会话）", "en": "Watch sessions belonging to selected projects (unioned with group whitelist; empty watches all)" }
+    },
+    {
+      "key": "groupWhitelist",
+      "type": "list",
+      "default": [],
+      "itemEditor": {
+        "kind": "ordered-preset-list",
+        "presets": [],
+        "allowCustom": false,
+        "dynamicPresetsCommand": "pet.listGroupOptions",
+        "dynamicPoolTitle": { "zh-CN": "可选分组", "en": "Available groups" },
+        "dynamicEmptyHint": { "zh-CN": "暂无会话分组", "en": "No session groups found" }
+      },
+      "group": { "zh-CN": "会话监听与白名单", "en": "Session Watch & Whitelists" },
+      "label": { "zh-CN": "分组白名单", "en": "Group whitelist" },
+      "description": { "zh-CN": "仅监听所选分组下的会话（与项目白名单取并集）", "en": "Watch sessions belonging to selected groups (unioned with project whitelist)" }
+    }
+  ],
+  "actions": [
+    {
+      "id": "toggle-desktop",
+      "command": "pet.toggleDesktop",
+      "label": { "zh-CN": "切换桌面置顶显示", "en": "Toggle Desktop Overlay" }
+    },
+    {
+      "id": "toggle-web",
+      "command": "pet.toggleWeb",
+      "label": { "zh-CN": "切换 PC-Web 页面显示", "en": "Toggle PC-Web Pet" }
+    }
+  ]
+}

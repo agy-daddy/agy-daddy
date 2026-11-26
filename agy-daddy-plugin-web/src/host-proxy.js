@@ -51,6 +51,10 @@ const WEB_RELEVANT_PLUGIN_POLICY = Object.freeze({
   'agy-daddy.quota': Object.freeze({
     mode: 'all',
     reason: 'Topbar Quota capsule telemetry'
+  }),
+  'agy-daddy.pet': Object.freeze({
+    mode: 'all',
+    reason: 'Desktop & PC-Web companion pet, themes, and session watch filters'
   })
 });
 
@@ -1680,6 +1684,42 @@ function localExportMarkdown(events = [], opts = {}) {
     }
   }
 
+  async function getPetState() {
+    if (!hasService('pet')) {
+      return { ok: true, available: false, state: null, scene: null, themes: [] };
+    }
+    try {
+      const res = await host.services.call('pet', 'getSnapshot', [], { optional: true });
+      const val = res?.ok && 'value' in res ? res.value : res;
+      if (!val || typeof val !== 'object') {
+        return { ok: true, available: false, state: null, scene: null, themes: [] };
+      }
+      return { ok: true, available: true, ...val };
+    } catch (err) {
+      return { ok: false, available: false, error: err?.message || 'PET_STATE_FAILED' };
+    }
+  }
+
+  async function interactPet(payload = {}) {
+    if (!hasService('pet')) {
+      return { ok: false, statusCode: 404, error: 'PET_SERVICE_UNAVAILABLE' };
+    }
+    if (payload?.action === 'set-active-session') {
+      const res = await host.services.call('pet', 'setActiveWebSession', [payload.cascadeId || null], { optional: true });
+      return { ok: true, activeSession: res?.value ?? res };
+    }
+    if (payload?.action === 'import-theme') {
+      const res = await host.services.call('pet', 'importThemePack', [payload], { optional: true });
+      return res?.value ?? res;
+    }
+    if (payload?.action === 'delete-theme') {
+      const res = await host.services.call('pet', 'deleteCustomTheme', [payload.themeId], { optional: true });
+      return res?.value ?? res;
+    }
+    const res = await host.services.call('pet', 'handleInteraction', [payload], { optional: true });
+    return res?.value ?? res;
+  }
+
   return {
     getPlugins,
     pluginAction,
@@ -1697,7 +1737,9 @@ function localExportMarkdown(events = [], opts = {}) {
     optimizePrompt,
     exportSessionMarkdown,
     getArtifactPreviewers,
-    renderPluginArtifactPreview
+    renderPluginArtifactPreview,
+    getPetState,
+    interactPet
   };
 }
 

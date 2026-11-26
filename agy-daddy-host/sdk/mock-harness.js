@@ -23,6 +23,7 @@ const { createScopedNetFetch } = require('../src/core/plugin-worker');
 const { bundlePluginRendererSource, buildIsolatedWorldPluginScript } = require('../src/core/injector');
 const { DEFAULT_HOST_SETTINGS, normalizeHostSettings, createScopedHostControl } = require('../src/core/daemon');
 const { TrayManager, MemoryTrayBackend } = require('../src/core/tray-manager');
+const { OverlayManager, MemoryOverlayBackend } = require('../src/core/overlay-manager');
 
 function matchSimpleSelector(el, sel) {
   if (!el || !sel) return false;
@@ -318,6 +319,11 @@ function createMockHostHarness(options = {}) {
     backend: new MemoryTrayBackend(),
     executeCommand: (cmdId, args, opts) => executeCommand(cmdId, args, opts)
   });
+  const overlayManager = new OverlayManager({
+    bus,
+    stateDir,
+    backend: options.overlayBackend || new MemoryOverlayBackend()
+  });
 
   const rendererHost = createHostRuntime({
     document: mockDoc,
@@ -600,6 +606,10 @@ function createMockHostHarness(options = {}) {
         tray: trayManager.createScopedApi(manifest.id, {
           pluginDir,
           executeCommand: (cmdId, args, opts) => executeCommand(cmdId, args, opts)
+        }),
+        overlay: overlayManager.createScopedApi(manifest.id, {
+          pluginDir,
+          permissions: trust.granted
         })
       };
       if (Array.isArray(manifest.contributes?.['tray.menu'])) {
@@ -699,6 +709,8 @@ function createMockHostHarness(options = {}) {
     assert.equal(cmdLeft, 0, `Plugin ${pluginId} leaked ${cmdLeft} commands`);
     const trayLeft = trayManager.listPluginMenuItems(pluginId).length;
     assert.equal(trayLeft, 0, `Plugin ${pluginId} leaked ${trayLeft} tray menu items`);
+    const overlayLeft = overlayManager.listPluginWindows(pluginId).length;
+    assert.equal(overlayLeft, 0, `Plugin ${pluginId} leaked ${overlayLeft} overlay windows`);
     const uiStats = rendererHost.getPluginUsageStats(pluginId);
     assert.deepEqual(
       uiStats,
@@ -712,6 +724,7 @@ function createMockHostHarness(options = {}) {
       await unloadPlugin(id);
     }
     await trayManager.dispose();
+    await overlayManager.dispose();
     await rendererHost.dispose();
     await bridge.stop();
     try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch {}
@@ -723,6 +736,7 @@ function createMockHostHarness(options = {}) {
     bus,
     bridge,
     trayManager,
+    overlayManager,
     rpcCalls,
     mockDoc,
     mockMainWin,

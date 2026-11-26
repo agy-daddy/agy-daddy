@@ -914,7 +914,23 @@ export interface I18nMessages {
   'tasks.filterEmpty': string;
   'tasks.filterProjectAria': string;
   'tasks.filterSessionAria': string;
-
+  'pet.ariaOverlay': string;
+  'pet.clickToFocus': string;
+  'pet.dismissBubble': string;
+  'pet.openSettings': string;
+  'pet.importTheme': string;
+  'pet.hideWebPet': string;
+  'pet.tpsLabel': string;
+  'pet.approvalBadge': string;
+  'pet.replyBadge': string;
+  'pet.errorBadge': string;
+  'pet.importSuccess': string;
+  'pet.importFailed': string;
+  'pet.menuAria': string;
+  'pet.statusIdle': string;
+  'pet.statusRunning': string;
+  'pet.statusSleeping': string;
+  'pet.dragHint': string;
   'notifications.taskDoneTitle': string;
   'notifications.taskDoneBody': string;
   'notifications.taskErrorTitle': string;

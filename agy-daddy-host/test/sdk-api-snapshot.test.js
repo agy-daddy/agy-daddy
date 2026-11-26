@@ -34,7 +34,7 @@ test('Plugin API v1 SDK 导出快照与 index.d.ts 契约锁定', () => {
   for (const key of expectedKeys) {
     assert.ok(sdk[key] !== undefined, `Missing SDK export: ${key}`);
   }
-  assert.equal(sdk.HOST_API_VERSION, '1.0.0');
+  assert.equal(sdk.HOST_API_VERSION, '1.2.0');
   assert.equal(sdk.KNOWN_ANCHORS.length, 14);
   for (const a of ['settings.dialog', 'settings.nav', 'settings.content', 'settings.openTrigger']) {
     assert.ok(sdk.KNOWN_ANCHORS.includes(a), `Missing KNOWN_ANCHORS entry: ${a}`);
@@ -46,12 +46,15 @@ test('Plugin API v1 SDK 导出快照与 index.d.ts 契约锁定', () => {
     'interface AgyHostApi',
     'interface AgyRendererContext',
     'interface SettingsAction',
+    'interface OverlayWindowHandle',
+    'interface OverlaySceneSpec',
     'function createPluginScaffold',
     'settings.dialog',
     'hostDom:',
     'surfaces:',
     'styles:',
-    'commands:'
+    'commands:',
+    'overlay:'
   ]) {
     assert.ok(dts.includes(sym), `index.d.ts missing declaration: ${sym}`);
   }

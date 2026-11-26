@@ -149,6 +149,18 @@
       "repo": "https://github.com/hubo1989/agy-plugin-design.git",
       "ref": "v0.1.0",
       "description": "本地优先的 Antigravity 可视化设计工作台：统一管理幻灯片、无限画布、设计系统、数据看板与动效五类作品，与 <workspace>/.design/ 双向互通"
+    },
+    {
+      "shortName": "pet",
+      "id": "agy-daddy.pet",
+      "name": "桌面与网页伴侣宠",
+      "layer": 4,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-pet",
+      "npmPackage": "@agy-daddy/plugin-pet",
+      "description": "系统级透明置顶与 PC-Web 同步伴侣宠物：12 款 MIT 原创矢量主题、本地形象导入、Token 流速联动及多会话审阅提醒"
     }
   ]
 }

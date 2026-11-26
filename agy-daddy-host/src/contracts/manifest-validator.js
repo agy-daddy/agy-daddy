@@ -186,6 +186,19 @@ function validateManifest(manifest, options = {}) {
           errors.push(`unknown contribution point: ${key}`);
         }
       }
+      if (manifest.contributes['desktop.overlay'] !== undefined) {
+        const ovl = manifest.contributes['desktop.overlay'];
+        if (!isPlainObject(ovl) || typeof ovl.id !== 'string' || !ovl.id.trim()) {
+          errors.push('contributes["desktop.overlay"] must be an object with a non-empty string id');
+        } else {
+          if (ovl.defaultWidth !== undefined && (!Number.isFinite(ovl.defaultWidth) || ovl.defaultWidth < 64 || ovl.defaultWidth > 360)) {
+            errors.push('contributes["desktop.overlay"].defaultWidth must be between 64 and 360');
+          }
+          if (ovl.defaultHeight !== undefined && (!Number.isFinite(ovl.defaultHeight) || ovl.defaultHeight < 64 || ovl.defaultHeight > 360)) {
+            errors.push('contributes["desktop.overlay"].defaultHeight must be between 64 and 360');
+          }
+        }
+      }
     }
   }
 

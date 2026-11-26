@@ -29,7 +29,7 @@
       "context-ui": { "version": "1.0.0", "realm": "page-isolated" }
     },
     "events": ["telemetry:generator-calls@1", "context:auto-compact-triggered@1"],
-    "states": ["state:context.snapshot@1"]
+    "states": ["state:context.snapshot@1", "state:context.live@1"]
   },
   "consumes": {
     "usage": { "version": "^1.0.0", "optional": true }

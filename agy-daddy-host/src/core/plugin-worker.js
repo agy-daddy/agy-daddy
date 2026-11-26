@@ -53,6 +53,7 @@ if (require.main === module) {
   const serviceMethods = new Map();
   const commandHandlers = new Map();
   const trayHandlers = new Map();
+  const overlayInteractionHandlers = new Map();
   const eventHandlers = new Map();
   const stateHandlers = new Map();
   const settingsListeners = new Set();
@@ -176,6 +177,16 @@ if (require.main === module) {
       if (set) {
         for (const fn of set) {
           try { fn(msg.value, msg.meta); } catch {}
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'overlay-interaction') {
+      const set = overlayInteractionHandlers.get(msg.windowId);
+      if (set) {
+        for (const fn of Array.from(set)) {
+          try { fn(msg.event); } catch {}
         }
       }
       return;
@@ -353,7 +364,37 @@ if (require.main === module) {
               return callParent('listTrayMenuItems', {});
             }
           };
-        })()
+        })(),
+        overlay: {
+          isSupported: () => callParent('overlay:isSupported', {}),
+          async createWindow(def) {
+            const res = await callParent('overlay:createWindow', { def: def || {} });
+            const localId = res.id;
+            return {
+              id: localId,
+              fullId: res.fullId,
+              setScene: (scene) => callParent('overlay:setScene', { windowId: localId, scene }),
+              updateState: (patch) => callParent('overlay:updateState', { windowId: localId, patch }),
+              setBounds: (bounds) => callParent('overlay:setBounds', { windowId: localId, bounds }),
+              setVisible: (visible) => callParent('overlay:setVisible', { windowId: localId, visible }),
+              onInteraction(handler) {
+                if (typeof handler !== 'function') return () => {};
+                if (!overlayInteractionHandlers.has(localId)) overlayInteractionHandlers.set(localId, new Set());
+                overlayInteractionHandlers.get(localId).add(handler);
+                return () => overlayInteractionHandlers.get(localId)?.delete(handler);
+              },
+              dispose: async () => {
+                overlayInteractionHandlers.delete(localId);
+                return callParent('overlay:dispose', { windowId: localId });
+              }
+            };
+          },
+          listWindows: () => callParent('overlay:listWindows', {}),
+          disposeAll: async () => {
+            overlayInteractionHandlers.clear();
+            return callParent('overlay:disposeAll', {});
+          }
+        }
       };
       hostProxyRef = hostProxy;
 

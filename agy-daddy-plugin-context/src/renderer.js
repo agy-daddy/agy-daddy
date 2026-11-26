@@ -217,6 +217,40 @@ async function mount(ctx) {
   let lastObservedCascadeId = null;
   let lastObservedIsNewEmptyChat = false;
   let refreshSeq = 0;
+  let lastPublishedLiveKey = '';
+  let lastPublishedLiveAt = 0;
+  let lastPublishedPhase = '';
+  let lastPublishedHasTps = false;
+
+  function publishLiveState(cascadeId, busy, live, force = false) {
+    const phase = live?.phase || (busy ? 'waiting' : 'idle');
+    const tps = live?.tps ?? null;
+    const ttft = live?.ttft ?? null;
+    const estimatedOutputTokens = live?.estimatedOutputTokens ?? 0;
+    const key = `${cascadeId || ''}:${busy ? 1 : 0}:${phase}:${tps ?? ''}`;
+    const now = Date.now();
+    const hasTps = tps !== null;
+    const majorTransition = phase !== lastPublishedPhase || (!lastPublishedHasTps && hasTps);
+    if (!force && key === lastPublishedLiveKey) return;
+    if (!force && !majorTransition && busy && now - lastPublishedLiveAt < 280) return;
+    lastPublishedLiveKey = key;
+    lastPublishedLiveAt = now;
+    lastPublishedPhase = phase;
+    lastPublishedHasTps = hasTps;
+    try {
+      const payload = {
+        cascadeId: cascadeId || null,
+        busy: Boolean(busy),
+        phase,
+        tps,
+        ttft,
+        estimatedOutputTokens,
+        updatedAt: now
+      };
+      Promise.resolve(ctx.state?.set?.('state:context.live@1', payload)).catch(() => {});
+      Promise.resolve(ctx.bridge?.post?.('/live-state', payload)).catch(() => {});
+    } catch {}
+  }
 
   function readDomSessionContext() {
     const cascadeId = ctx.hostDom?.getSessionId?.() || null;
@@ -916,7 +950,7 @@ async function mount(ctx) {
   }
 
   function sampleLiveStreaming() {
-    syncSessionTransition();
+    const domCtx = syncSessionTransition();
     const busy = Boolean(ctx.hostDom?.isAssistantBusy?.());
     const text = busy ? getLiveAssistantText() : '';
     const { live, completed } = speedTracker.sample({ busy, text });
@@ -927,6 +961,7 @@ async function mount(ctx) {
       ? `${live.phase}:${live.tps}:${live.estimatedOutputTokens}`
       : 'idle';
     latestLiveSpeed = live;
+    publishLiveState(domCtx?.cascadeId || null, busy, live, completed || !busy);
 
     const prevQuick = showQuickCompact;
     evaluateCompactState(latestSnapshot);
@@ -1079,6 +1114,7 @@ async function mount(ctx) {
     () => { if (typeof stopUnit === 'function') stopUnit(); stopUnit = null; unitNode = null; },
     () => popoverHandle?.dispose(),
     () => pulseController.dispose(),
+    () => { try { Promise.resolve(ctx.state?.set?.('state:context.live@1', null)).catch(() => {}); } catch {} },
     stopPanelStyles,
     stopPulseStyles
   );

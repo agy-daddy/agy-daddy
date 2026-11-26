@@ -20,6 +20,9 @@ function buildHostRenderer() {
   const themeSrc = fs.existsSync(path.join(srcDir, 'theme.js'))
     ? fs.readFileSync(path.join(srcDir, 'theme.js'), 'utf8').trim()
     : '';
+  const customCenterSrc = fs.existsSync(path.join(srcDir, 'customization-center.js'))
+    ? fs.readFileSync(path.join(srcDir, 'customization-center.js'), 'utf8').trim()
+    : '';
   const runtime = fs.readFileSync(path.join(srcDir, 'host-runtime.js'), 'utf8').trim();
 
   const header = [
@@ -30,7 +33,7 @@ function buildHostRenderer() {
     `const __AGY_LIGHTDOM_CSS__ = ${JSON.stringify(lightDomCss)};`,
     ''
   ].join('\n');
-  const bundle = [header, themeSrc, runtime].filter(Boolean).join('\n\n') + '\n';
+  const bundle = [header, themeSrc, customCenterSrc, runtime].filter(Boolean).join('\n\n') + '\n';
 
   // 构建前严格语法编译验证
   new vm.Script(bundle, { filename: 'host-renderer.js' });

@@ -25,6 +25,7 @@
 
   const SETTINGS_SEGMENTS = [
     { id: 'plugins', label: '通用' },
+    { id: 'customizations', label: '自定义项' },
     { id: 'appearance', label: '外观' }
   ];
 
@@ -32,6 +33,10 @@
     plugins: {
       subtitle: '安装与发现插件、管理已安装扩展及查看运行诊断。',
       searchPlaceholder: '搜索插件或配置项...'
+    },
+    customizations: {
+      subtitle: '管理全局与工作区 .agents/ 下的 Skills、Rules、MCP 与插件，监控 20,000 Token 预算。',
+      searchPlaceholder: '搜索自定义项、技能、规则或 MCP 工具...'
     },
     appearance: {
       subtitle: '配置入口显示、原生设置集成、顶栏胶囊上限与排列顺序。',
@@ -65,6 +70,14 @@
     if (root && root.__AGYThemeEngine) return root.__AGYThemeEngine;
     if (typeof require === 'function') {
       try { return require('./theme'); } catch {}
+    }
+    return null;
+  }
+
+  function getCustomizationCenter() {
+    if (root && root.__AGYCustomizationCenter) return root.__AGYCustomizationCenter;
+    if (typeof require === 'function') {
+      try { return require('./customization-center'); } catch {}
     }
     return null;
   }
@@ -168,6 +181,7 @@
     if (!tab) return 'plugins';
     const raw = String(tab).toLowerCase();
     if (raw === 'plugins' || raw === 'manage' || raw === 'general' || raw === 'diagnostics' || raw === 'health' || raw === 'marketplace') return 'plugins';
+    if (raw === 'customizations' || raw === 'customization' || raw === 'custom' || raw === 'skills' || raw === 'rules' || raw === 'mcp') return 'customizations';
     if (raw === 'appearance' || raw === 'theme') return 'appearance';
     return 'plugins';
   }
@@ -641,6 +655,27 @@
       hostHealthError: '',
       lastRuntimeHealthSig: '',
       lastRuntimeHealthSentAt: 0,
+      customizations: getCustomizationCenter()?.createCustomizationState
+        ? getCustomizationCenter().createCustomizationState()
+        : {
+            loading: false,
+            loaded: false,
+            busyId: null,
+            error: '',
+            sourceMode: 'empty',
+            workspacePath: '',
+            workspaceName: '',
+            scopeFilter: 'all',
+            typeFilter: 'all',
+            items: [],
+            budgets: {
+              customizations: { limit: 20000, used: 0, warnThreshold: 16000, excludedCount: 0 },
+              rules: { limit: 20000, used: 0, warnThreshold: 16000, excludedCount: 0 }
+            },
+            confirmUninstallId: null,
+            expandedMcpIds: new Set(),
+            installModal: null
+          },
       xworldNonce: mergedOpts.xworldNonce || (String(Math.random()).slice(2) + Date.now().toString(36))
     };
 
@@ -775,6 +810,8 @@
     let pluginAlertBtnEl = null;
     let pluginAlertPopoverEl = null;
     let pluginAlertListEl = null;
+    let customPopoverEl = null;
+    let customPopoverListEl = null;
     let modalBackdropEl = null;
     let modalDialogEl = null;
     let modalSettingsRootEl = null;
@@ -1045,6 +1082,50 @@
       overflowListEl.className = 'ag-overflow-list';
       overflowMenuEl.appendChild(overflowListEl);
       shadow.appendChild(overflowMenuEl);
+
+      customPopoverEl = doc.createElement('section');
+      customPopoverEl.id = 'agy-customization-popover';
+      customPopoverEl.className = 'ag-panel ag-custom-popover';
+      setHidden(customPopoverEl, true);
+      const cpHead = doc.createElement('div');
+      cpHead.className = 'ag-panel-head';
+      const cpTitleWrap = doc.createElement('div');
+      cpTitleWrap.className = 'ag-panel-title-wrap';
+      const cpTitle = doc.createElement('span');
+      cpTitle.className = 'ag-panel-title';
+      cpTitle.textContent = '自定义项增强中心';
+      cpTitleWrap.appendChild(cpTitle);
+      const cpActions = doc.createElement('div');
+      cpActions.className = 'ag-panel-actions';
+      const cpSettings = doc.createElement('button');
+      cpSettings.type = 'button';
+      cpSettings.className = 'ag-icon-btn ag-popover-settings-btn';
+      cpSettings.setAttribute('data-popover-settings', 'customizations');
+      cpSettings.setAttribute('title', '打开完整自定义项中心');
+      cpSettings.setAttribute('aria-label', '打开完整自定义项中心');
+      cpSettings.appendChild(createIconEl('settings'));
+      cpSettings.addEventListener('click', () => {
+        toggleCustomizationPopover(false);
+        void openSettings({ tab: 'customizations' });
+      });
+      const cpClose = doc.createElement('button');
+      cpClose.type = 'button';
+      cpClose.className = 'ag-icon-btn ag-popover-close-btn';
+      cpClose.setAttribute('data-popover-close', '__customizations__');
+      cpClose.setAttribute('aria-label', '关闭');
+      cpClose.setAttribute('title', '关闭');
+      cpClose.appendChild(createIconEl('close'));
+      cpClose.addEventListener('click', () => toggleCustomizationPopover(false));
+      cpActions.appendChild(cpSettings);
+      cpActions.appendChild(cpClose);
+      cpHead.appendChild(cpTitleWrap);
+      cpHead.appendChild(cpActions);
+      customPopoverEl.appendChild(cpHead);
+      customPopoverListEl = doc.createElement('div');
+      customPopoverListEl.id = 'agy-customization-popover-body';
+      customPopoverListEl.className = 'ag-panel-body ag-custom-popover-body';
+      customPopoverEl.appendChild(customPopoverListEl);
+      shadow.appendChild(customPopoverEl);
 
       // 独立居中模态窗降级壳 (760x560)
       modalBackdropEl = doc.createElement('div');
@@ -1771,6 +1852,9 @@
       if (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden) {
         return { el: pluginAlertPopoverEl, fullViewport: false };
       }
+      if (customPopoverEl && !customPopoverEl.hidden) {
+        return { el: customPopoverEl, fullViewport: false };
+      }
       for (const p of state.popovers.values()) {
         if (p?.node && !p.node.hidden) {
           return { el: p.node, fullViewport: false };
@@ -2492,6 +2576,9 @@
         setHidden(pluginAlertPopoverEl, true);
         pluginAlertBtnEl?.setAttribute?.('data-active', 'false');
         pluginAlertBtnEl?.setAttribute?.('aria-expanded', 'false');
+      }
+      if (exceptKey !== '__customizations__' && customPopoverEl && !customPopoverEl.hidden) {
+        setHidden(customPopoverEl, true);
       }
       if (exceptKey !== '__settings__' && state.settingsMode === 'modal') {
         setHidden(modalBackdropEl, true);
@@ -3466,6 +3553,7 @@
     // Antigravity 原生设置弹窗融合挂载器
     function teardownNativeSettingsMount() {
       closeFieldModal(false);
+      closeCustomInstallModal(false);
       state.recordingShortcutKey = null;
       state.openComboboxKey = null;
       if (nativeState.active && nativeState.contentEl) {
@@ -3507,6 +3595,7 @@
 
     function deactivateNativeSettingsView() {
       closeFieldModal(false);
+      closeCustomInstallModal(false);
       state.recordingShortcutKey = null;
       state.openComboboxKey = null;
       if (nativeState.active && nativeState.contentEl) {
@@ -3552,6 +3641,8 @@
       renderSettingsView();
       if (state.activeSettingsTab === 'plugins' && hasBridgeAvailable() && !state.manageLoading) {
         void fetchManagePlugins();
+      } else if (state.activeSettingsTab === 'customizations' && hasBridgeAvailable() && !state.customizations.loading) {
+        void fetchCustomizations();
       }
       return true;
     }
@@ -4732,6 +4823,353 @@
       }
     }
 
+    function closeCustomInstallModal(rerenderSettings = false) {
+      state.customizations.installModal = null;
+      for (const rootContainer of [shadow, nativeState.mountShadow]) {
+        if (!rootContainer) continue;
+        const stale = rootContainer.querySelector?.('#agy-custom-install-modal-backdrop');
+        if (stale?.remove) stale.remove();
+      }
+      if (rerenderSettings && state.settingsMode !== 'closed') {
+        renderSettingsBody();
+      }
+    }
+
+    function applyCustomizationsPayload(rawPayload) {
+      const cc = getCustomizationCenter();
+      if (!cc) return;
+      const normalized = cc.normalizeCustomizationPayload(rawPayload, getCombinedPlugins(), pickLocaleText);
+      state.customizations.sourceMode = normalized.sourceMode;
+      state.customizations.workspacePath = normalized.workspacePath;
+      state.customizations.workspaceName = normalized.workspaceName;
+      state.customizations.items = normalized.items;
+      state.customizations.budgets = normalized.budgets;
+      state.customizations.loaded = true;
+    }
+
+    async function fetchCustomizations(opts = {}) {
+      const cc = getCustomizationCenter();
+      if (!cc) return null;
+      if (!hasBridgeAvailable()) {
+        applyCustomizationsPayload(null);
+        if (state.settingsMode !== 'closed' && state.activeSettingsTab === 'customizations') {
+          renderSettingsBody();
+        }
+        return state.customizations;
+      }
+      state.customizations.loading = true;
+      state.customizations.error = '';
+      if (state.settingsMode !== 'closed' && state.activeSettingsTab === 'customizations') {
+        renderSettingsBody();
+      }
+      try {
+        const res = await hostBridgePost('/host/customizations', {
+          ...(state.customizations.workspacePath ? { workspacePath: state.customizations.workspacePath } : {}),
+          forceRefresh: Boolean(opts?.forceRefresh)
+        });
+        if (res && Array.isArray(res.items)) {
+          applyCustomizationsPayload(res);
+        } else {
+          applyCustomizationsPayload(null);
+        }
+      } catch (err) {
+        const msg = err?.message || String(err);
+        if (/404|NOT_FOUND|Unknown/i.test(msg)) {
+          applyCustomizationsPayload(null);
+        } else {
+          state.customizations.error = msg;
+          applyCustomizationsPayload(null);
+        }
+      } finally {
+        state.customizations.loading = false;
+        if (!state.disposed) {
+          if (state.settingsMode !== 'closed' && state.activeSettingsTab === 'customizations') {
+            renderSettingsBody();
+          }
+          if (customPopoverEl && !customPopoverEl.hidden) {
+            renderCustomPopoverContent();
+          }
+        }
+      }
+      return state.customizations;
+    }
+
+    async function runCustomizationAction(busyId, pendingMsg, fn) {
+      if (state.customizations.busyId || state.disposed) return;
+      state.customizations.busyId = busyId;
+      state.manageError = '';
+      state.manageToast = { tone: 'info', spinning: true, text: pendingMsg };
+      if (state.settingsMode !== 'closed') renderSettingsBody();
+      if (customPopoverEl && !customPopoverEl.hidden) renderCustomPopoverContent();
+      try {
+        await fn();
+      } catch (err) {
+        if (state.disposed) return;
+        state.manageToast = { tone: 'error', spinning: false, text: `操作失败：${err?.message || String(err)}` };
+      } finally {
+        if (state.disposed) return;
+        state.customizations.busyId = null;
+        if (state.settingsMode !== 'closed') renderSettingsBody();
+        if (customPopoverEl && !customPopoverEl.hidden) renderCustomPopoverContent();
+      }
+    }
+
+    function getCustomizationHandlers() {
+      const wsOpt = state.customizations.workspacePath ? { workspacePath: state.customizations.workspacePath } : {};
+      return {
+        onSelectScope(scopeId) {
+          state.customizations.scopeFilter = scopeId || 'all';
+          state.customizations.confirmUninstallId = null;
+          renderSettingsBody();
+        },
+        onSelectType(kindId) {
+          state.customizations.typeFilter = kindId || 'all';
+          state.customizations.confirmUninstallId = null;
+          renderSettingsBody();
+        },
+        onRefresh() {
+          void fetchCustomizations({ forceRefresh: true });
+        },
+        onToggleMcpExpand(itemId) {
+          if (state.customizations.expandedMcpIds.has(itemId)) {
+            state.customizations.expandedMcpIds.delete(itemId);
+          } else {
+            state.customizations.expandedMcpIds.add(itemId);
+          }
+          renderSettingsBody();
+        },
+        onToggle(item, wantEnabled) {
+          state.customizations.confirmUninstallId = null;
+          void runCustomizationAction(item.id, `正在${wantEnabled ? '启用' : '禁用'} ${item.displayName || item.name}...`, async () => {
+            const res = await hostBridgePost('/host/customizations/toggle', {
+              id: item.id,
+              kind: item.kind,
+              scope: item.scope,
+              enabled: Boolean(wantEnabled),
+              ...wsOpt
+            });
+            if (Array.isArray(res?.items)) {
+              applyCustomizationsPayload(res);
+            } else {
+              item.enabled = Boolean(wantEnabled);
+            }
+            state.manageToast = { tone: 'info', spinning: false, text: `已${wantEnabled ? '启用' : '禁用'} ${item.displayName || item.name}` };
+          });
+        },
+        onPromote(item) {
+          state.customizations.confirmUninstallId = null;
+          void runCustomizationAction(item.id, `正在将 ${item.displayName || item.name} 落位到当前工作区 .agents/...`, async () => {
+            const res = await hostBridgePost('/host/customizations/promote', {
+              id: item.id,
+              kind: item.kind,
+              fromScope: item.scope,
+              toScope: 'workspace',
+              ...wsOpt
+            });
+            if (Array.isArray(res?.items)) {
+              applyCustomizationsPayload(res);
+            } else {
+              item.promotedToWorkspace = true;
+            }
+            state.manageToast = { tone: 'info', spinning: false, text: `已将 ${item.displayName || item.name} 同步至工作区 .agents/` };
+          });
+        },
+        onUninstall(item) {
+          if (state.customizations.confirmUninstallId !== item.id) {
+            state.customizations.confirmUninstallId = item.id;
+            state.manageToast = { tone: 'warn', spinning: false, text: `再次点击「确认卸载?」将移除 ${item.displayName || item.name}` };
+            renderSettingsBody();
+            return;
+          }
+          state.customizations.confirmUninstallId = null;
+          void runCustomizationAction(item.id, `正在卸载 ${item.displayName || item.name}...`, async () => {
+            const res = await hostBridgePost('/host/customizations/uninstall', {
+              id: item.id,
+              kind: item.kind,
+              scope: item.scope,
+              ...wsOpt
+            });
+            if (Array.isArray(res?.items)) {
+              applyCustomizationsPayload(res);
+            } else {
+              state.customizations.items = state.customizations.items.filter((x) => x.id !== item.id);
+            }
+            state.manageToast = { tone: 'info', spinning: false, text: `已卸载 ${item.displayName || item.name}` };
+          });
+        },
+        onSetMcpPolicy(item, policy) {
+          const targetPolicy = policy === 'lazy' ? 'lazy' : 'eager';
+          void runCustomizationAction(item.id, `正在切换 ${item.displayName || item.name} 为 ${targetPolicy === 'lazy' ? 'Smart Lazy' : 'Force Eager'}...`, async () => {
+            const res = await hostBridgePost('/host/customizations/mcp-policy', {
+              id: item.id,
+              serverName: item.mcp?.serverName || item.name,
+              scope: item.scope,
+              policy: targetPolicy,
+              ...wsOpt
+            });
+            if (Array.isArray(res?.items)) {
+              applyCustomizationsPayload(res);
+            } else if (item.mcp) {
+              item.mcp.policy = targetPolicy;
+              if (targetPolicy === 'lazy') {
+                item.mcp.excludedTools = [];
+                item.excluded = false;
+              }
+            }
+            state.manageToast = {
+              tone: 'info',
+              spinning: false,
+              text: `${item.displayName || item.name} 已切换为 ${targetPolicy === 'lazy' ? 'Smart Lazy（按需加载）' : 'Force Eager（全量常驻）'}`
+            };
+          });
+        },
+        onOpenInstallModal() {
+          state.customizations.installModal = {
+            tab: 'local',
+            spec: '',
+            kind: state.customizations.typeFilter !== 'all' ? state.customizations.typeFilter : 'auto',
+            scope: state.customizations.scopeFilter === 'workspace' ? 'workspace' : 'global',
+            copy: true,
+            marketQuery: ''
+          };
+          renderCustomInstallModalView();
+        },
+        onOpenCenter() {
+          toggleCustomizationPopover(false);
+          void openSettings({ tab: 'customizations' });
+        }
+      };
+    }
+
+    function renderCustomInstallModalView() {
+      const cc = getCustomizationCenter();
+      const container = getActiveModalContainerShadow();
+      if (!cc || !container) return;
+      const marketEntries = getMarketplaceEntries(getCombinedPlugins());
+      cc.renderCustomInstallModal({
+        doc,
+        container,
+        customState: state.customizations,
+        catalogEntries: marketEntries,
+        hasBridge: hasBridgeAvailable(),
+        handlers: {
+          onClose: () => closeCustomInstallModal(false),
+          onUpdateModal(patch) {
+            if (!state.customizations.installModal) return;
+            Object.assign(state.customizations.installModal, patch || {});
+            renderCustomInstallModalView();
+          },
+          onInstallLocal() {
+            const modal = state.customizations.installModal;
+            if (!modal) return;
+            const spec = String(modal.spec || '').trim();
+            if (!spec) {
+              state.manageToast = { tone: 'warn', spinning: false, text: '请输入本地路径、github: 或 npm: 地址' };
+              renderSettingsBody();
+              return;
+            }
+            const scope = modal.scope || 'global';
+            const kind = modal.kind || 'auto';
+            const copy = modal.copy !== false;
+            closeCustomInstallModal(false);
+            void runCustomizationAction('__custom_install__', `正在导入 ${spec}...`, async () => {
+              const res = await hostBridgePost('/host/customizations/install', {
+                source: spec,
+                mode: 'local',
+                kind,
+                scope,
+                copy,
+                ...(state.customizations.workspacePath ? { workspacePath: state.customizations.workspacePath } : {})
+              });
+              if (Array.isArray(res?.items)) {
+                applyCustomizationsPayload(res);
+              }
+              state.manageToast = { tone: 'info', spinning: false, text: `已导入至 ${scope === 'workspace' ? '工作区 .agents/' : '全局 Global'}` };
+            });
+          },
+          onInstallMarket(entry) {
+            const modal = state.customizations.installModal;
+            const scope = modal?.scope || 'global';
+            const source = entry.recommendedSpec || entry.id;
+            closeCustomInstallModal(false);
+            void runCustomizationAction(entry.id, `正在从市场安装 ${entry.displayName || entry.id}...`, async () => {
+              const res = await hostBridgePost('/host/customizations/install', {
+                source,
+                pluginId: entry.id,
+                mode: 'market',
+                kind: 'plugins',
+                scope,
+                copy: true,
+                ...(state.customizations.workspacePath ? { workspacePath: state.customizations.workspacePath } : {})
+              });
+              if (Array.isArray(res?.items)) {
+                applyCustomizationsPayload(res);
+              }
+              state.manageToast = { tone: 'info', spinning: false, text: `已安装 ${entry.displayName || entry.id}` };
+            });
+          }
+        }
+      });
+    }
+
+    function renderCustomizationsTab(body) {
+      const cc = getCustomizationCenter();
+      if (!cc) return;
+      if (!state.customizations.loaded && !state.customizations.loading) {
+        if (hasBridgeAvailable()) {
+          void fetchCustomizations();
+        } else {
+          applyCustomizationsPayload(null);
+        }
+      }
+      cc.renderCustomizationCenterView({
+        doc,
+        body,
+        customState: state.customizations,
+        queryLower: state.settingsSearchQuery.trim().toLowerCase(),
+        hasBridge: hasBridgeAvailable(),
+        createSectionBlock,
+        handlers: getCustomizationHandlers()
+      });
+      if (state.customizations.installModal) {
+        renderCustomInstallModalView();
+      }
+    }
+
+    function renderCustomPopoverContent() {
+      const cc = getCustomizationCenter();
+      if (!cc || !customPopoverListEl) return;
+      if (!state.customizations.loaded && !state.customizations.loading) {
+        applyCustomizationsPayload(null);
+      }
+      cc.renderCustomizationPopoverBody({
+        doc,
+        listEl: customPopoverListEl,
+        customState: state.customizations,
+        hasBridge: hasBridgeAvailable(),
+        handlers: getCustomizationHandlers()
+      });
+    }
+
+    function toggleCustomizationPopover(force) {
+      ensureDomShell();
+      if (!customPopoverEl) return false;
+      const open = typeof force === 'boolean' ? force : Boolean(customPopoverEl.hidden);
+      if (open) {
+        if (hasBridgeAvailable() && !state.customizations.loaded && !state.customizations.loading) {
+          void fetchCustomizations();
+        }
+        renderCustomPopoverContent();
+        closeAllPopovers('__customizations__');
+        positionPopoverNearAnchor(customPopoverEl, null, null, settingsBtnEl);
+        setHidden(customPopoverEl, false);
+      } else {
+        setHidden(customPopoverEl, true);
+      }
+      updateElevationAttr();
+      return open;
+    }
+
     // <agy-settings-view> 渲染引擎
     function getActiveSettingsRootEl() {
       if (state.settingsMode === 'native') return nativeState.viewRootEl;
@@ -5046,6 +5484,7 @@
           }
           state.manageConfirmUninstallId = null;
           state.managePendingNativeUninstall = null;
+          state.customizations.confirmUninstallId = null;
           if (state.manageToast && !state.manageToast.spinning && state.manageToast.tone === 'info') {
             state.manageToast = null;
           }
@@ -5053,6 +5492,8 @@
           renderSettingsBody();
           if (seg.id === 'plugins' && hasBridgeAvailable()) {
             void fetchManagePlugins();
+          } else if (seg.id === 'customizations' && hasBridgeAvailable()) {
+            void fetchCustomizations();
           }
         });
         segWrap.appendChild(btn);
@@ -11403,6 +11844,10 @@
         renderAppearanceTab(body);
         return;
       }
+      if (state.activeSettingsTab === 'customizations') {
+        renderCustomizationsTab(body);
+        return;
+      }
       if (state.selectedPluginId) {
         renderPluginDetailView(body, state.selectedPluginId);
         return;
@@ -11436,12 +11881,15 @@
       renderSettingsView();
       if (state.activeSettingsTab === 'plugins' && hasBridgeAvailable() && !state.manageLoading) {
         void fetchManagePlugins();
+      } else if (state.activeSettingsTab === 'customizations' && hasBridgeAvailable() && !state.customizations.loading) {
+        void fetchCustomizations();
       }
       return true;
     }
 
     function closeSettings() {
       closeFieldModal(false);
+      closeCustomInstallModal(false);
       resetDragReorderState();
       state.pendingFlipReorder = null;
       state.recordingShortcutKey = null;
@@ -12596,6 +13044,14 @@
         e.preventDefault?.();
         e.stopPropagation?.();
         e.stopImmediatePropagation?.();
+        return;
+      }
+      if (state.customizations.installModal) {
+        lastHandledEscEvent = e;
+        closeCustomInstallModal(false);
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        e.stopImmediatePropagation?.();
       }
     };
 
@@ -12608,6 +13064,10 @@
         }
         if (state.fieldModal) {
           closeFieldModal(false);
+          return;
+        }
+        if (state.customizations.installModal) {
+          closeCustomInstallModal(false);
           return;
         }
         if (state.openComboboxKey) {
@@ -12636,6 +13096,7 @@
       }
       const hasOpenPopover = (overflowMenuEl && !overflowMenuEl.hidden)
         || (pluginAlertPopoverEl && !pluginAlertPopoverEl.hidden)
+        || (customPopoverEl && !customPopoverEl.hidden)
         || Array.from(state.popovers.values()).some((p) => p.node && !p.node.hidden);
       if (!hasOpenPopover || !hostEl) return;
       const path = typeof ev?.composedPath === 'function' ? ev.composedPath() : null;
@@ -12723,6 +13184,8 @@
       mountPlugin,
       disposePlugin,
       openSettings,
+      openCustomizations: (opts = {}) => openSettings({ ...opts, tab: 'customizations' }),
+      toggleCustomizationPopover,
       closeSettings,
       toggleSettingsPanel,
       syncNativeSettings: () => {
@@ -12902,6 +13365,7 @@
           doc.removeEventListener(xworldChannelName, handleCrossWorldRequest);
         }
         closeFieldModal(false);
+        closeCustomInstallModal(false);
         state.recordingShortcutKey = null;
         if (lightDomStyleEl?.remove) lightDomStyleEl.remove();
         lightDomStyleEl = null;

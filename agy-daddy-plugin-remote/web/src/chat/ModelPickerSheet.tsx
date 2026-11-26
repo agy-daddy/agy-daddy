@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { type TranslateFn, useI18n } from '../i18n';
 import {
   DEFAULT_ORCHESTRATOR_THINKING,
-  groupModelsForPicker
+  groupModelsForPicker,
+  resolveMasterThinkingTier
 } from '../store/modelCatalog';
 import type {
   BackendModelGroup,
+  ModelCatalogTree,
   ModelOption,
   ModelPickerGroup,
   ModelPickerMasterGroup,
@@ -21,6 +23,7 @@ export interface ModelPickerSheetProps {
   models: Array<ModelOption | string>;
   modelGroups?: ModelPickerGroup[];
   backendModelGroups?: BackendModelGroup[];
+  modelTree?: ModelCatalogTree | null;
   selectedModelId: string;
   orchestratorThinking?: OrchestratorThinkingMap;
   activeOrchestratorMaster?: OrchestratorMasterKey | null;
@@ -89,6 +92,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
     models,
     modelGroups,
     backendModelGroups,
+    modelTree,
     selectedModelId,
     orchestratorThinking,
     activeOrchestratorMaster = null,
@@ -112,8 +116,8 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
 
   const groups = useMemo(() => {
     if (Array.isArray(modelGroups) && modelGroups.length > 0) return modelGroups;
-    return groupModelsForPicker(models, backendModelGroups);
-  }, [modelGroups, models, backendModelGroups]);
+    return groupModelsForPicker(models, backendModelGroups, undefined, modelTree);
+  }, [modelGroups, models, backendModelGroups, modelTree]);
 
   const [depth, setDepth] = useState<PickerDepth>(0);
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
@@ -253,6 +257,12 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
     if (disabled) return;
     const allDisabled = master.variants.every((v) => v.disabled);
     if (allDisabled) return;
+    const hasTierSubLevels = master.hasSubLevels ?? master.variants.length > 1;
+    if (!hasTierSubLevels) {
+      const target = master.variants.find((v) => !v.disabled) || master.variants[0];
+      if (target) handleVariantTap(target, master);
+      return;
+    }
     setSelectedMasterId(master.id);
     setDepth(2);
   };
@@ -384,8 +394,10 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
     ariaLabel: string,
     masterContext?: ModelPickerMasterGroup | null
   ) => {
-    const masterKey = masterContext?.masterKey;
-    const configuredTier = masterKey ? effectiveOrchThinking[masterKey] : null;
+    const masterKey = masterContext?.masterKey ?? null;
+    const configuredTier = masterKey
+      ? resolveMasterThinkingTier(masterContext, effectiveOrchThinking[masterKey])
+      : null;
     const claimedTestIds = new Set<string>();
 
     return (
@@ -423,6 +435,7 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
               aria-checked={isVarActive}
               disabled={disabled || variant.disabled}
               data-testid={testId}
+              data-tier={variant.tierKey}
               className={`${styles.tierCard} ${isVarActive ? styles.tierCardActive : ''}`}
               onClick={() => handleVariantTap(variant, masterContext)}
             >
@@ -545,9 +558,25 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                     const isGroupDisabled = group.variants.every((v) => v.disabled);
                     const hasNextStage = group.isOrchestrator || group.hasSubLevels;
 
+                    const masterList = group.masterGroups || [];
+                    const activeMasterEntry =
+                      group.isOrchestrator && activeOrchestratorMaster
+                        ? masterList.find((m) => m.masterKey === activeOrchestratorMaster) || null
+                        : null;
+                    const resolvedActiveMasterTier =
+                      group.isOrchestrator && activeOrchestratorMaster
+                        ? activeMasterEntry
+                          ? resolveMasterThinkingTier(
+                              activeMasterEntry,
+                              effectiveOrchThinking[activeOrchestratorMaster]
+                            )
+                          : effectiveOrchThinking[activeOrchestratorMaster]
+                        : null;
                     const activeOrchLabel =
                       group.isOrchestrator && activeOrchestratorMaster
-                        ? `${activeOrchestratorMaster} · ${TIER_SHORT_LABELS[effectiveOrchThinking[activeOrchestratorMaster]] || effectiveOrchThinking[activeOrchestratorMaster]}`
+                        ? resolvedActiveMasterTier
+                          ? `${activeMasterEntry?.name || activeOrchestratorMaster} · ${TIER_SHORT_LABELS[resolvedActiveMasterTier] || resolvedActiveMasterTier}`
+                          : activeMasterEntry?.name || activeOrchestratorMaster
                         : null;
 
                     const groupDisplayName = group.isOrchestrator
@@ -555,7 +584,10 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                       : group.name;
 
                     const subtitleText = group.isOrchestrator
-                      ? t('model.orchestratorSub', { count: group.masterGroups?.length || 4 })
+                      ? t('model.orchestratorSub', {
+                          count: masterList.length,
+                          names: masterList.map((m) => m.name).join(' / ')
+                        })
                       : group.subtitle
                         ? group.subtitle
                         : group.hasSubLevels
@@ -634,14 +666,25 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                   <div className={styles.list}>
                     <div className={styles.stageHint}>{t('model.step1Hint')}</div>
                     {orchestratorMasters.map((master) => {
-                      const mKey = master.masterKey;
-                      const configuredTier = mKey ? effectiveOrchThinking[mKey] : 'high';
-                      const tierBadge = TIER_SHORT_LABELS[configuredTier] || configuredTier;
+                      const mKey = master.masterKey ?? null;
+                      const configuredTier = mKey ? effectiveOrchThinking[mKey] : null;
+                      const resolvedTier = resolveMasterThinkingTier(master, configuredTier);
+                      const tierBadge = resolvedTier
+                        ? TIER_SHORT_LABELS[resolvedTier] || resolvedTier
+                        : master.variants[0]?.shortTag === '标准'
+                          ? t('model.standard')
+                          : master.variants[0]?.shortTag || '';
                       const isMasterActive = Boolean(
-                        mKey && activeOrchestratorMaster === mKey
+                        (mKey && activeOrchestratorMaster === mKey) ||
+                          (!mKey && master.variants.some((v) => v.id === selectedModelId))
                       );
                       const masterDisabled = master.variants.every((v) => v.disabled);
-                      const subSummary = t('model.masterSub', { count: master.variants.length });
+                      const hasTierSubLevels = master.hasSubLevels ?? master.variants.length > 1;
+                      const subSummary = hasTierSubLevels
+                        ? t('model.masterSub', { count: master.variants.length })
+                        : resolvedTier
+                          ? master.variants[0]?.tierLabel || tierBadge
+                          : t('model.standard');
 
                       return (
                         <div
@@ -661,9 +704,11 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                             <div className={styles.groupMeta}>
                               <div className={styles.groupNameRow}>
                                 <span className={styles.groupName}>{master.name}</span>
-                                <span className={styles.tierMiniPill} data-testid={`master-tier-${mKey || master.id}`}>
-                                  {tierBadge}
-                                </span>
+                                {tierBadge && (
+                                  <span className={styles.tierMiniPill} data-testid={`master-tier-${mKey || master.id}`}>
+                                    {tierBadge}
+                                  </span>
+                                )}
                               </div>
                               <div className={styles.groupSub}>{subSummary}</div>
                             </div>
@@ -671,9 +716,15 @@ export function ModelPickerSheet(props: ModelPickerSheetProps) {
                               {isMasterActive && (
                                 <span className={styles.activeBadge}>{t('model.currentMaster')}</span>
                               )}
-                              <span className={styles.arrowRight} aria-hidden="true">
-                                ›
-                              </span>
+                              {hasTierSubLevels ? (
+                                <span className={styles.arrowRight} aria-hidden="true">
+                                  ›
+                                </span>
+                              ) : isMasterActive ? (
+                                <span className={styles.checkIcon} aria-hidden="true">
+                                  ✓
+                                </span>
+                              ) : null}
                             </div>
                           </button>
                         </div>

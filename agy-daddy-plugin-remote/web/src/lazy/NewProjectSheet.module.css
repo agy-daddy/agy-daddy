@@ -1,0 +1,306 @@
+.content {
+  padding: 10px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--ag-r-md);
+  background: var(--ag-subcard);
+  border: 1px solid var(--ag-border-sub);
+}
+
+.segmentedTwo {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.segBtn {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: var(--ag-r-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ag-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.segBtnActive {
+  background: var(--ag-card);
+  color: var(--ag-fg);
+  box-shadow: var(--ag-highlight-top), var(--ag-shadow-sm);
+}
+
+.card {
+  padding: 12px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-card);
+  box-shadow: var(--ag-highlight-top), var(--ag-shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ag-secondary);
+}
+
+.checkboxRow {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ag-fg);
+  cursor: pointer;
+}
+
+.checkboxInput {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--ag-accent);
+  flex-shrink: 0;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--ag-muted);
+  line-height: 1.45;
+}
+
+.warnCard {
+  padding: 12px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-warn-border);
+  background: var(--ag-warn-soft);
+  color: var(--ag-fg);
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.errorCard {
+  padding: 12px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-danger-border);
+  background: var(--ag-danger-soft);
+  color: var(--ag-danger);
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hScroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 0;
+}
+
+.hScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.chipBtn {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--ag-r-pill);
+  border: 1px solid var(--ag-border-sub);
+  background: var(--ag-control);
+  color: var(--ag-fg);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chipBtn:hover {
+  background: var(--ag-control-hover);
+}
+
+.toolbarRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dirList {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--ag-border-sub);
+  border-radius: var(--ag-r-sm);
+  background: var(--ag-subcard);
+  display: flex;
+  flex-direction: column;
+}
+
+.dirRow {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border-top: 1px solid var(--ag-border-sub);
+}
+
+.dirRow:first-child {
+  border-top: none;
+}
+
+.dirRowSelected {
+  background: var(--ag-accent-soft);
+}
+
+.dirPickBtn {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  color: var(--ag-fg);
+  font-size: 13px;
+}
+
+.dirName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitBadge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-ok-soft);
+  color: var(--ag-ok);
+  border: 1px solid var(--ag-ok-border);
+  flex-shrink: 0;
+}
+
+.enterBtn {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ag-secondary);
+  font-size: 16px;
+  border-left: 1px solid var(--ag-border-sub);
+  flex-shrink: 0;
+}
+
+.enterBtn:hover {
+  background: var(--ag-control);
+  color: var(--ag-fg);
+}
+
+.footerActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: var(--ag-r-sm);
+  border: 1px solid var(--ag-border);
+  background: var(--ag-control);
+  color: var(--ag-fg);
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.btnPrimary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  border-color: transparent;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.repoList {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--ag-border-sub);
+  border-radius: var(--ag-r-sm);
+  display: flex;
+  flex-direction: column;
+}
+
+.repoRow {
+  min-height: 44px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--ag-border-sub);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--ag-fg);
+}
+
+.repoRow:first-child {
+  border-top: none;
+}
+
+.repoRow:hover {
+  background: var(--ag-control);
+}
+
+.checkList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ag-secondary);
+}
+
+.jobBox {
+  padding: 12px;
+  border-radius: var(--ag-r-md);
+  border: 1px solid var(--ag-accent-border);
+  background: var(--ag-accent-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

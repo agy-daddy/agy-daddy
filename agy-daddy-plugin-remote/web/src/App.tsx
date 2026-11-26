@@ -1,3 +1,4 @@
+import type { ComponentType } from 'preact';
 import { Component, type ComponentChildren } from 'preact';
 import { memo } from 'preact/compat';
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
@@ -107,14 +108,21 @@ export function App() {
   );
 }
 
+const EMPTY_WORKSPACES: never[] = [];
+
 const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
   const s = useRemoteSelector((st) => ({
     sessions: st.sessions,
+    archivedList: st.archivedList,
+    archivedCount: st.archivedCount,
     activeSessionId: st.activeSessionId,
     bootstrapWorkspaces: st.bootstrap?.workspaces,
     groups: st.groups,
     projects: st.projects,
     pins: st.pins,
+    groupOrder: st.groupOrder,
+    projectOrder: st.projectOrder,
+    sessionOrder: st.sessionOrder,
     channel: st.channel,
     permissionLevel: st.permissionLevel,
     token: st.token,
@@ -128,11 +136,16 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
   return (
     <LeftDrawer
       sessions={s.sessions}
+      archivedList={s.archivedList}
+      archivedCount={s.archivedCount}
       activeSessionId={s.activeSessionId}
-      workspaces={s.bootstrapWorkspaces || []}
+      workspaces={s.bootstrapWorkspaces || EMPTY_WORKSPACES}
       groups={s.groups}
       projects={s.projects}
       pins={s.pins}
+      groupOrder={s.groupOrder}
+      projectOrder={s.projectOrder}
+      sessionOrder={s.sessionOrder}
       channel={s.channel}
       permissionLevel={s.permissionLevel}
       token={s.token}
@@ -145,6 +158,20 @@ const ConnectedLeftDrawer = memo(function ConnectedLeftDrawer() {
       onCreateSession={(title, ws) => remoteStore.createNewSession(title, ws)}
       onTogglePin={(kind, id, nextPinned) => remoteStore.togglePin(kind, id, nextPinned)}
       onCreateGroup={(name) => remoteStore.createGroup(name)}
+      onRenameGroup={(groupId, name) => remoteStore.renameGroup(groupId, name)}
+      onDeleteGroup={(groupId) => remoteStore.deleteGroup(groupId)}
+      onToggleGroupCollapsed={(groupId, collapsed) =>
+        remoteStore.toggleGroupCollapsed(groupId, collapsed)
+      }
+      onAssignProjectGroup={(groupId, target) => remoteStore.assignProjectGroup(groupId, target)}
+      onRenameProject={(projectId, name) => remoteStore.renameProject(projectId, name)}
+      onRemoveProject={(projectId) => remoteStore.removeProject(projectId)}
+      onReorderOrg={(req) => remoteStore.reorderOrg(req)}
+      onArchiveSession={(cascadeId, archived) => remoteStore.archiveSession(cascadeId, archived)}
+      onDeleteSession={(cascadeId, mode) => remoteStore.deleteSession(cascadeId, mode)}
+      onLoadArchived={() => remoteStore.loadArchivedSessions()}
+      onDraggingOrgChange={(dragging) => remoteStore.setDraggingOrg(dragging)}
+      onOpenNewProject={() => remoteStore.setActiveSheet('newProject')}
       onCycleAppearance={() => remoteStore.cycleAppearance()}
       onToggleSound={() => remoteStore.toggleSoundAlert()}
       onToggleVibrate={() => remoteStore.toggleVibrateAlert()}
@@ -530,6 +557,8 @@ const ConnectedComposer = memo(function ConnectedComposer() {
   );
 });
 
+type LazyNewProjectSheet = ComponentType<Record<string, unknown>>;
+
 const ConnectedSheets = memo(function ConnectedSheets() {
   const { t } = useI18n();
   const s = useRemoteSelector((st) => ({
@@ -545,6 +574,9 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     activeOrchestratorMaster: st.activeOrchestratorMaster,
     permissionLevel: st.permissionLevel,
     activeSessionId: st.activeSessionId,
+    groups: st.groups,
+    defaultSessionPath: st.defaultSessionPath,
+    latestJobEvent: st.latestJobEvent,
     channel: st.channel,
     runningTasksCount: st.runningTasksCount,
     appearance: st.appearance,
@@ -555,6 +587,26 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     pushSubscribed: st.pushSubscribed,
     pushBusy: st.pushBusy
   }));
+  const [NewProjectComp, setNewProjectComp] = useState<LazyNewProjectSheet | null>(null);
+
+  useEffect(() => {
+    if (s.activeSheet !== 'newProject' || NewProjectComp) return;
+    let canceled = false;
+    void import('./lazy/NewProjectSheet')
+      .then((mod) => {
+        if (!canceled && mod?.default) {
+          setNewProjectComp(() => mod.default as unknown as LazyNewProjectSheet);
+        }
+      })
+      .catch((err) => {
+        if (!canceled) {
+          remoteStore.showToast((err as Error).message);
+        }
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [s.activeSheet, NewProjectComp]);
 
   const catalogModels = useMemo(
     () => (s.models.length > 0 ? s.models : s.bootstrapModels || []),
@@ -691,6 +743,27 @@ const ConnectedSheets = memo(function ConnectedSheets() {
         onShowToast={(msg) => remoteStore.showToast(msg)}
         onClose={closeSheet}
       />
+
+      {NewProjectComp && s.activeSheet === 'newProject' && (
+        <NewProjectComp
+          open={true}
+          permissionLevel={s.permissionLevel}
+          groups={s.groups}
+          defaultSessionPath={s.defaultSessionPath}
+          latestJobEvent={s.latestJobEvent}
+          onCreateLocalProject={(req: {
+            name?: string;
+            rootPath: string;
+            groupId?: string | null;
+            createDir?: boolean;
+          }) => remoteStore.createLocalProject(req)}
+          onRemoteCreated={(project: unknown) =>
+            remoteStore.handleRemoteProjectCreated(project as never)
+          }
+          onShowToast={(msg: string) => remoteStore.showToast(msg)}
+          onClose={closeSheet}
+        />
+      )}
     </>
   );
 });
@@ -700,11 +773,15 @@ function AppInner() {
   const s = useRemoteSelector((st) => ({
     token: st.token,
     authError: st.authError,
+    ready: st.ready,
     online: st.online,
     leftOpen: st.leftOpen,
     rightOpen: st.rightOpen,
     confirmPrompt: st.confirmPrompt,
-    toast: st.toast
+    toast: st.toast,
+    toastAction: st.toastAction,
+    hasActiveSession: Boolean(st.activeSessionId),
+    hasSessions: st.sessions.length > 0
   }));
   const [manualToken, setManualToken] = useState('');
 
@@ -766,6 +843,19 @@ function AppInner() {
 
       <main className={styles.main}>
         <ConnectedChangeStrip />
+        {s.ready && !s.hasActiveSession && !s.hasSessions && (
+          <div className={styles.emptySessionBanner} data-testid="empty-sessions-cta">
+            <span>{t('left.emptyChatState')}</span>
+            <button
+              type="button"
+              className="ag-pill-btn ag-pill-btn-primary"
+              style={{ minHeight: 44 }}
+              onClick={() => void remoteStore.createNewSession()}
+            >
+              {t('left.emptyChatNewBtn')}
+            </button>
+          </div>
+        )}
         <ConnectedStreamStage />
         <ConnectedPendingFloatingCard />
         <ConnectedComposer />
@@ -801,8 +891,26 @@ function AppInner() {
       )}
 
       {s.toast && (
-        <div className={styles.toast} role="status">
-          {s.toast}
+        <div
+          className={`${styles.toast} ${s.toastAction ? styles.toastInteractive : ''}`}
+          role="status"
+          data-testid="app-toast"
+        >
+          <span className={styles.toastText}>{s.toast}</span>
+          {s.toastAction && (
+            <button
+              type="button"
+              className={styles.toastActionBtn}
+              data-testid="app-toast-action"
+              onClick={() => {
+                const act = s.toastAction;
+                remoteStore.dismissToast();
+                act?.onAction();
+              }}
+            >
+              {s.toastAction.label}
+            </button>
+          )}
         </div>
       )}
     </SwipeDrawerShell>

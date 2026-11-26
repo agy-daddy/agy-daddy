@@ -27,7 +27,7 @@ export type ThinkingTier =
   | string;
 
 export type OrchestratorMasterKey = 'carbon' | 'argon' | 'neon' | 'opus5.5';
-export type OrchestratorThinkingTier = 'low' | 'medium' | 'high' | 'xhigh';
+export type OrchestratorThinkingTier = ThinkingTier;
 export type OrchestratorThinkingMap = Record<OrchestratorMasterKey, OrchestratorThinkingTier>;
 export type ModelSortMode = 'custom' | 'name_asc' | 'name_desc' | 'provider' | 'frequency';
 
@@ -47,6 +47,7 @@ export interface ModelQuotaInfo {
 export interface ModelOption {
   id: string;
   model?: string;
+  modelId?: string | null;
   label?: string;
   displayName?: string;
   name?: string;
@@ -54,6 +55,7 @@ export interface ModelOption {
   family?: string | null;
   thinkingLevel?: ThinkingTier | null;
   thinkingLabel?: string | null;
+  supportedThinkingLevels?: ThinkingTier[] | null;
   isOrchestrator?: boolean;
   orchestratorVariant?: string | null;
   orchestratorMaster?: string | null;
@@ -73,6 +75,7 @@ export interface NormalizedModel extends ModelOption {
   family: string;
   thinkingLevel: ThinkingTier | null;
   thinkingLabel: string | null;
+  supportedThinkingLevels?: ThinkingTier[] | null;
   isOrchestrator: boolean;
   orchestratorVariant: string | null;
   orchestratorMaster: string | null;
@@ -83,6 +86,7 @@ export interface BackendModelGroupVariant {
   modelId: string;
   label?: string;
   thinkingLevel?: ThinkingTier | null;
+  supportedThinkingLevels?: ThinkingTier[] | null;
   orchestratorVariant?: string | null;
   orchestratorMaster?: string | null;
   tagTitle?: string | null;
@@ -96,10 +100,55 @@ export interface BackendModelGroup {
   kind?: 'orchestrator' | 'thinking_family' | 'single' | 'host_group' | string;
   isOrchestrator?: boolean;
   hasThinkingTiers?: boolean;
+  supportedThinkingLevels?: ThinkingTier[] | null;
   defaultModelId?: string;
   modelIds?: string[];
   variants?: BackendModelGroupVariant[];
   [key: string]: unknown;
+}
+
+export interface ModelTreeSelectionPayload {
+  mode?: 'single' | 'orchestrator_preset' | string;
+  requestedModel?: string;
+  modelId?: string;
+  plannerFamilyId?: string;
+  executorFamilyId?: string;
+  plannerThinkingSuffix?: string;
+  backingModels?: Record<string, string>;
+}
+
+export interface ModelTreeNodeBase {
+  key: string;
+  role?: string;
+  label: string;
+  secondaryLabel?: string;
+  badge?: { text?: string; tone?: string } | null;
+  quota?: ModelQuotaInfo | null;
+  disabled?: boolean;
+  isRecommended?: boolean;
+}
+
+export interface ModelTreeBranchNode extends ModelTreeNodeBase {
+  kind: 'branch';
+  defaultChildKey?: string;
+  children: ModelTreeNode[];
+}
+
+export interface ModelTreeLeafNode extends ModelTreeNodeBase {
+  kind: 'leaf';
+  selectedDisplayLabel?: string;
+  selection?: ModelTreeSelectionPayload;
+  supportedThinkingLevels?: ThinkingTier[] | null;
+  defaultThinkingSuffix?: string | null;
+  thinkingLevel?: number | string | null;
+}
+
+export type ModelTreeNode = ModelTreeBranchNode | ModelTreeLeafNode;
+
+export interface ModelCatalogTree {
+  supportsCustomOrchestrator?: boolean;
+  defaultSelectionKey?: string | null;
+  nodes: ModelTreeNode[];
 }
 
 export interface ModelPickerVariant {
@@ -112,16 +161,19 @@ export interface ModelPickerVariant {
   disabled: boolean;
   tagTitle?: string | null;
   quotaInfo?: ModelQuotaInfo | null;
-  orchestratorMasterKey?: OrchestratorMasterKey;
+  orchestratorMasterKey?: OrchestratorMasterKey | null;
   resolvedThinkingLevel?: OrchestratorThinkingTier;
 }
 
 export interface ModelPickerMasterGroup {
   id: string;
-  masterKey?: OrchestratorMasterKey;
+  masterKey?: OrchestratorMasterKey | null;
   name: string;
   provider: 'gemini' | 'claude' | 'openai' | 'orchestrator' | 'other';
   defaultModelId: string;
+  defaultThinkingLevel?: ThinkingTier | null;
+  supportedThinkingLevels?: ThinkingTier[];
+  hasSubLevels?: boolean;
   variants: ModelPickerVariant[];
 }
 
@@ -659,6 +711,7 @@ export interface BootstrapResponse {
   permissionInfo?: PermissionInfo | null;
   models: Array<ModelOption | string>;
   modelGroups?: BackendModelGroup[];
+  modelTree?: ModelCatalogTree | null;
   defaultModelId?: string;
   orchestratorThinking?: Partial<OrchestratorThinkingMap>;
   modelPreferences?: Partial<ModelPreferences>;

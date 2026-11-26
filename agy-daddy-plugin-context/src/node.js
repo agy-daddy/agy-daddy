@@ -174,6 +174,8 @@ async function activate(host) {
       displayLocation: settings.displayLocation,
       showSpeed: settings.showSpeed,
       compactPolicy: settings.compactPolicy,
+      warnThreshold: settings.warnThreshold,
+      cliffThreshold: settings.cliffThreshold,
       updatedAt: Date.now()
     };
   }
@@ -258,7 +260,7 @@ async function activate(host) {
     }
 
     let summaries = {};
-    if (!cascadeId) {
+    if (!cascadeId && !options.isNewChat) {
       try {
         const allResp = await host.rpc.call('GetAllCascadeTrajectories', {
           metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
@@ -271,6 +273,7 @@ async function activate(host) {
     if (!cascadeId) {
       const emptySnap = buildEmptySnapshot(settings);
       latestSnapshot = emptySnap;
+      host.storage.writeJson('latest-snapshot.json', emptySnap);
       host.state?.set?.('state:context.snapshot@1', emptySnap);
       return emptySnap;
     }
@@ -422,6 +425,9 @@ async function activate(host) {
       return loadSettings();
     },
     async getSnapshot(opts = {}) {
+      if (opts.isNewChat && !opts.cascadeId) {
+        return await scanCascade(opts);
+      }
       if (!opts.force && latestSnapshot && (!opts.cascadeId || opts.cascadeId === latestSnapshot.cascadeId) && Date.now() - latestSnapshot.updatedAt < 1000) {
         return latestSnapshot;
       }

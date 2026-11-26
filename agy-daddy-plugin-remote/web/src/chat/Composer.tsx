@@ -8,6 +8,7 @@ import {
 } from '../store/modelCatalog';
 import { sanitizePresets } from '../store/useRemoteStore';
 import type {
+  BackendModelGroup,
   ChatMode,
   ComposerPreset,
   ComposerQuickPrompt,
@@ -15,6 +16,7 @@ import type {
   ComposerStateResponse,
   DispatchMode,
   ImageAttachment,
+  ModelCatalogTree,
   ModelOption,
   ModelPickerGroup,
   OrchestratorMasterKey,
@@ -41,6 +43,8 @@ export interface ComposerProps {
   presets: ComposerPreset[];
   models: Array<ModelOption | string>;
   modelGroups?: ModelPickerGroup[];
+  backendModelGroups?: BackendModelGroup[];
+  modelTree?: ModelCatalogTree | null;
   selectedModelId: string;
   orchestratorThinking?: OrchestratorThinkingMap;
   activeOrchestratorMaster?: OrchestratorMasterKey | null;
@@ -96,6 +100,8 @@ export function Composer(props: ComposerProps) {
     presets,
     models,
     modelGroups,
+    backendModelGroups,
+    modelTree,
     selectedModelId,
     orchestratorThinking,
     activeOrchestratorMaster,
@@ -145,10 +151,16 @@ export function Composer(props: ComposerProps) {
 
   const isReadOnly = permissionLevel === 'L0';
   const safePresets = useMemo(() => sanitizePresets(presets), [presets]);
-  const catalog = useMemo(() => normalizeModelCatalog(models), [models]);
+  const catalog = useMemo(
+    () => normalizeModelCatalog(models, backendModelGroups, modelTree),
+    [models, backendModelGroups, modelTree]
+  );
   const pickerGroups = useMemo(
-    () => (Array.isArray(modelGroups) && modelGroups.length > 0 ? modelGroups : groupModelsForPicker(models)),
-    [modelGroups, models]
+    () =>
+      Array.isArray(modelGroups) && modelGroups.length > 0
+        ? modelGroups
+        : groupModelsForPicker(models, backendModelGroups, undefined, modelTree),
+    [modelGroups, models, backendModelGroups, modelTree]
   );
 
   const effectiveModelId = useMemo(() => {
@@ -160,10 +172,11 @@ export function Composer(props: ComposerProps) {
     const raw = formatCompactModelBadge(
       effectiveModelId,
       models,
-      undefined,
+      backendModelGroups,
       activeOrchestratorMaster
         ? { master: activeOrchestratorMaster, thinkingMap: orchestratorThinking }
-        : null
+        : null,
+      modelTree
     );
     if (raw.isOrchestrator && raw.shortName === '编排') {
       return {
@@ -182,7 +195,7 @@ export function Composer(props: ComposerProps) {
       };
     }
     return raw;
-  }, [effectiveModelId, models, activeOrchestratorMaster, orchestratorThinking, t]);
+  }, [effectiveModelId, models, backendModelGroups, modelTree, activeOrchestratorMaster, orchestratorThinking, t]);
 
   const permDetails = useMemo(() => {
     if (permissionInfo?.levels && permissionInfo.levels.length > 0 && locale.startsWith('zh')) {
@@ -846,6 +859,8 @@ export function Composer(props: ComposerProps) {
           open={localModelPickerOpen}
           models={models}
           modelGroups={pickerGroups}
+          backendModelGroups={backendModelGroups}
+          modelTree={modelTree}
           selectedModelId={effectiveModelId}
           orchestratorThinking={orchestratorThinking}
           activeOrchestratorMaster={activeOrchestratorMaster}

@@ -494,6 +494,8 @@ const ConnectedComposer = memo(function ConnectedComposer() {
       composerSettings: st.composerSettings,
       models: st.models,
       bootstrapModels: st.bootstrap?.models,
+      bootstrapModelGroups: st.bootstrap?.modelGroups,
+      bootstrapModelTree: st.bootstrap?.modelTree,
       voiceSupported: Boolean(st.bootstrap?.voiceSupported),
       modelGroups: st.modelGroups,
       selectedModelId: st.selectedModelId,
@@ -524,6 +526,8 @@ const ConnectedComposer = memo(function ConnectedComposer() {
       composerSettings={s.composerSettings}
       models={catalogModels}
       modelGroups={s.modelGroups}
+      backendModelGroups={s.bootstrapModelGroups}
+      modelTree={s.bootstrapModelTree}
       selectedModelId={s.selectedModelId}
       orchestratorThinking={s.orchestratorThinking}
       activeOrchestratorMaster={s.activeOrchestratorMaster}
@@ -568,6 +572,7 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     models: st.models,
     bootstrapModels: st.bootstrap?.models,
     bootstrapModelGroups: st.bootstrap?.modelGroups,
+    bootstrapModelTree: st.bootstrap?.modelTree,
     modelGroups: st.modelGroups,
     selectedModelId: st.selectedModelId,
     orchestratorThinking: st.orchestratorThinking,
@@ -624,7 +629,8 @@ const ConnectedSheets = memo(function ConnectedSheets() {
         s.selectedModelId,
         catalogModels,
         s.bootstrapModelGroups,
-        orchSel
+        orchSel,
+        s.bootstrapModelTree
       );
       if (bySelected.name !== '选择模型') return bySelected;
     }
@@ -638,7 +644,8 @@ const ConnectedSheets = memo(function ConnectedSheets() {
       unified,
       catalogModels,
       s.bootstrapModelGroups,
-      orchSel
+      orchSel,
+      s.bootstrapModelTree
     );
     return rawBadge;
   }, [
@@ -646,6 +653,7 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     s.telemetry,
     catalogModels,
     s.bootstrapModelGroups,
+    s.bootstrapModelTree,
     s.activeOrchestratorMaster,
     s.orchestratorThinking
   ]);
@@ -693,6 +701,7 @@ const ConnectedSheets = memo(function ConnectedSheets() {
         models={catalogModels}
         modelGroups={s.modelGroups}
         backendModelGroups={s.bootstrapModelGroups}
+        modelTree={s.bootstrapModelTree}
         selectedModelId={s.selectedModelId}
         orchestratorThinking={s.orchestratorThinking}
         activeOrchestratorMaster={s.activeOrchestratorMaster}

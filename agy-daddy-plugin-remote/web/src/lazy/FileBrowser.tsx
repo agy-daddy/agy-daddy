@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import { api } from '../store/api';
 import type { FsTreeEntry, PermissionLevel } from '../types';
 import styles from './lazy.module.css';
@@ -54,6 +55,7 @@ export default function FileBrowser({
   inspectTargetFile,
   onShowToast
 }: FileBrowserProps) {
+  const { t } = useI18n();
   const [currentDir, setCurrentDir] = useState('');
   const [entries, setEntries] = useState<FsTreeEntry[]>([]);
   const [filter, setFilter] = useState('');
@@ -70,7 +72,7 @@ export default function FileBrowser({
       setCurrentDir(dirPath);
       setEntries(Array.isArray(res.entries) ? res.entries : []);
     } catch (err) {
-      onShowToast?.(`目录加载失败: ${(err as Error).message}`);
+      onShowToast?.(t('files.loadDirFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -88,7 +90,7 @@ export default function FileBrowser({
       setDraftContent(res.content || '');
       setEditing(false);
     } catch (err) {
-      onShowToast?.(`文件读取失败: ${(err as Error).message}`);
+      onShowToast?.(t('files.readFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -117,16 +119,16 @@ export default function FileBrowser({
       await api.writeFsFile(rootPath, openFile.path, draftContent);
       setOpenFile({ path: openFile.path, content: draftContent });
       setEditing(false);
-      onShowToast?.('文件已保存');
+      onShowToast?.(t('files.saved'));
     } catch (err) {
-      onShowToast?.(`保存失败: ${(err as Error).message}`);
+      onShowToast?.(t('files.saveFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
   };
 
   if (!rootPath) {
-    return <div className="ag-empty">当前会话未绑定工作区目录</div>;
+    return <div className="ag-empty">{t('lazy.noWorkspace')}</div>;
   }
 
   if (openFile) {
@@ -135,7 +137,7 @@ export default function FileBrowser({
       <div className={styles.pane} data-testid="file-preview">
         <div className={styles.toolbar}>
           <button type="button" className="ag-pill-btn" onClick={() => setOpenFile(null)}>
-            ← 返回
+            ← {t('common.back')}
           </button>
           <span className={styles.mono} style={{ flex: 1 }}>
             {openFile.path}
@@ -146,7 +148,7 @@ export default function FileBrowser({
               className="ag-pill-btn ag-pill-btn-primary"
               onClick={() => setEditing(true)}
             >
-              编辑
+              {t('files.edit')}
             </button>
           )}
           {editing && (
@@ -156,7 +158,7 @@ export default function FileBrowser({
               disabled={busy}
               onClick={saveFile}
             >
-              {busy ? '保存中…' : '保存'}
+              {busy ? t('files.saving') : t('files.save')}
             </button>
           )}
         </div>
@@ -193,24 +195,23 @@ export default function FileBrowser({
       <div className={styles.toolbar}>
         {currentDir && (
           <button type="button" className="ag-pill-btn" onClick={() => loadDir(parentDir)}>
-            ↑ 上级
+            {t('files.upDir')}
           </button>
         )}
         <input
           type="text"
           className="ag-input"
-          style={{ minHeight: 30, fontSize: 12 }}
-          placeholder="按文件名过滤..."
+          placeholder={t('files.filterPlaceholder')}
           value={filter}
           onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
         />
         <button type="button" className="ag-pill-btn" onClick={() => loadDir(currentDir)}>
-          刷新
+          {t('common.refresh')}
         </button>
       </div>
       <div className={styles.scroll}>
         {filtered.length === 0 ? (
-          <div className="ag-empty">{busy ? '加载中...' : '目录为空'}</div>
+          <div className="ag-empty">{busy ? t('files.loading') : t('files.emptyDir')}</div>
         ) : (
           <div className={styles.list}>
             {filtered.map((item) => (

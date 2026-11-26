@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { type TranslateFn, useI18n } from '../i18n';
 import type { PermissionLevel, SessionEvent } from '../types';
 import { summarizeToolEvent } from './chatFilter';
 import styles from './PendingFloatingCard.module.css';
@@ -11,7 +12,7 @@ export interface PendingFloatingCardProps {
   onJumpToStep?: (seq: number) => void;
 }
 
-function getPendingPreview(ev: SessionEvent): string {
+function getPendingPreview(ev: SessionEvent, t: TranslateFn): string {
   const p = ev.payload || {};
   if (ev.kind === 'ask_question') {
     const reqInt =
@@ -37,10 +38,10 @@ function getPendingPreview(ev: SessionEvent): string {
       const txt = String(obj.question || obj.prompt || obj.text || '').trim();
       if (txt) return txt;
     }
-    return '有待回答的问题';
+    return t('pending.questionFallback');
   }
 
-  return summarizeToolEvent(ev);
+  return summarizeToolEvent(ev, t);
 }
 
 export function PendingFloatingCard({
@@ -49,13 +50,14 @@ export function PendingFloatingCard({
   onApprove,
   onJumpToStep
 }: PendingFloatingCardProps) {
+  const { t } = useI18n();
   const [busy, setBusy] = useState(false);
 
   if (!pendingEvent) return null;
 
   const isReadOnly = permissionLevel === 'L0';
   const isAsk = pendingEvent.kind === 'ask_question';
-  const preview = getPendingPreview(pendingEvent);
+  const preview = getPendingPreview(pendingEvent, t);
 
   const jumpToInlineCard = () => {
     if (onJumpToStep) {
@@ -81,19 +83,26 @@ export function PendingFloatingCard({
   };
 
   return (
-    <div className={styles.floatBar} data-testid="pending-floating-card" role="region" aria-label="待处理操作">
+    <div
+      className={styles.floatBar}
+      data-testid="pending-floating-card"
+      role="region"
+      aria-label={t('pending.regionLabel')}
+    >
       <button
         type="button"
         className={styles.infoBtn}
         onClick={jumpToInlineCard}
-        title="定位到消息位置"
+        title={t('pending.jumpTitle')}
       >
         <span className={styles.pulseDot} aria-hidden="true" />
         <div className={styles.infoText}>
           <div className={styles.headLine}>
-            <span className={styles.badge}>{isAsk ? '待回答' : '待审批'}</span>
+            <span className={styles.badge}>
+              {isAsk ? t('pending.askBadge') : t('pending.approvalBadge')}
+            </span>
             <span className={styles.seq}>#{pendingEvent.seq}</span>
-            {isReadOnly && <span className={styles.roBadge}>L0 只读</span>}
+            {isReadOnly && <span className={styles.roBadge}>{t('pending.readOnlyBadge')}</span>}
           </div>
           <div className={styles.preview}>{preview}</div>
         </div>
@@ -107,7 +116,7 @@ export function PendingFloatingCard({
             onClick={jumpToInlineCard}
             data-testid="pending-jump-answer"
           >
-            去回答
+            {t('pending.answerBtn')}
           </button>
         ) : (
           <>
@@ -115,21 +124,21 @@ export function PendingFloatingCard({
               type="button"
               className={`${styles.compactBtn} ${styles.denyBtn}`}
               disabled={isReadOnly || busy}
-              aria-label="拒绝 Deny"
+              aria-label={t('pending.deny')}
               onClick={() => handleDecision('deny')}
               data-testid="pending-quick-deny"
             >
-              拒绝
+              {t('pending.deny')}
             </button>
             <button
               type="button"
               className={`${styles.compactBtn} ${styles.allowBtn}`}
               disabled={isReadOnly || busy}
-              aria-label="允许 Allow"
+              aria-label={t('pending.allow')}
               onClick={() => handleDecision('allow')}
               data-testid="pending-quick-allow"
             >
-              {busy ? '...' : '允许'}
+              {busy ? '...' : t('pending.allow')}
             </button>
           </>
         )}

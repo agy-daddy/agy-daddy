@@ -1,5 +1,7 @@
 import type { ComponentType } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/types';
 import type { PermissionLevel, RightTabId } from '../types';
 import styles from './RightDrawer.module.css';
 
@@ -18,17 +20,18 @@ interface RightDrawerProps {
   onRefreshDiffBadge: () => void;
 }
 
-const TABS: Array<{ id: RightTabId; label: string }> = [
-  { id: 'diff', label: 'Diff' },
-  { id: 'files', label: '文件' },
-  { id: 'git', label: 'Git' },
-  { id: 'artifacts', label: '产物' },
-  { id: 'pty', label: '终端' }
+const TABS: Array<{ id: RightTabId; labelKey: I18nKey }> = [
+  { id: 'diff', labelKey: 'right.tabDiff' },
+  { id: 'files', labelKey: 'right.tabFiles' },
+  { id: 'git', labelKey: 'right.tabGit' },
+  { id: 'artifacts', labelKey: 'right.tabArtifacts' },
+  { id: 'pty', labelKey: 'right.tabPty' }
 ];
 
 type LazyComp = ComponentType<Record<string, unknown>>;
 
 export function RightDrawer(props: RightDrawerProps) {
+  const { t } = useI18n();
   const {
     open,
     activeTab,
@@ -78,7 +81,7 @@ export function RightDrawer(props: RightDrawerProps) {
         }
       } catch (err) {
         if (!canceled) {
-          setLoadError(`模块加载失败: ${(err as Error).message}`);
+          setLoadError(t('right.loadFailed', { msg: (err as Error).message }));
         }
       }
     };
@@ -86,31 +89,33 @@ export function RightDrawer(props: RightDrawerProps) {
     return () => {
       canceled = true;
     };
-  }, [open, activeTab, loaded]);
+  }, [open, activeTab, loaded, t]);
 
   const ActiveComp = loaded[activeTab];
+  const activeTabDef = TABS.find((tab) => tab.id === activeTab);
+  const activeTabLabel = activeTabDef ? t(activeTabDef.labelKey) : activeTab;
 
   return (
     <div className={styles.wrap}>
       <div className={styles.head}>
         <div className={styles.tabs} data-hscroll="1" role="tablist">
-          {TABS.map((t) => (
+          {TABS.map((tab) => (
             <button
-              key={t.id}
+              key={tab.id}
               type="button"
               role="tab"
-              aria-selected={activeTab === t.id}
-              className={`${styles.tabBtn} ${activeTab === t.id ? styles.tabActive : ''}`}
-              onClick={() => onSelectTab(t.id)}
+              aria-selected={activeTab === tab.id}
+              className={`${styles.tabBtn} ${activeTab === tab.id ? styles.tabActive : ''}`}
+              onClick={() => onSelectTab(tab.id)}
             >
-              {t.label}
+              {t(tab.labelKey)}
             </button>
           ))}
         </div>
         <button
           type="button"
           className={styles.closeBtn}
-          aria-label="关闭右侧工作区抽屉"
+          aria-label={t('topbar.rightDrawer')}
           onClick={onClose}
         >
           ✕
@@ -121,7 +126,7 @@ export function RightDrawer(props: RightDrawerProps) {
         {!open ? null : loadError ? (
           <div className="ag-empty">{loadError}</div>
         ) : !ActiveComp ? (
-          <div className="ag-empty">正在按需加载 {activeTab} 模块...</div>
+          <div className="ag-empty">{t('right.loadingModule', { tab: activeTabLabel })}</div>
         ) : (
           <ActiveComp
             rootPath={rootPath}

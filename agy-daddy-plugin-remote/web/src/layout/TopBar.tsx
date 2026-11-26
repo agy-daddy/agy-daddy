@@ -1,3 +1,4 @@
+import { normalizeCacheHitRatePct } from '../chat/composerUtils';
 import { useI18n } from '../i18n';
 import type { SseStatus } from '../store/sse';
 import { useRemoteSelector } from '../store/useRemoteStore';
@@ -226,7 +227,7 @@ export function TopBar({
         : ctx?.used != null && ctx?.budget
           ? (Number(ctx.used) / Number(ctx.budget)) * 100
           : 0;
-  const hit = Number(ctx?.cacheHitRate || 0);
+  const hit = normalizeCacheHitRatePct(ctx?.cacheHitRate) ?? 0;
   const ctxPctLabel = Number.isFinite(occ) && ctx && (ctx.used != null || ctx.percent != null)
     ? `${Math.round(occ)}%`
     : '--';

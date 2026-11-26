@@ -1,12 +1,12 @@
 import { memo } from 'preact/compat';
 import { useEffect, useState } from 'preact/hooks';
+import { type TranslateFn, useI18n } from '../i18n';
 import type { PermissionLevel, SessionEvent, SessionEventStatus } from '../types';
 import {
   extractPlannerText,
   extractUserText,
   formatBasename,
   isToolEvent,
-  KIND_LABELS,
   summarizeToolEvent
 } from './chatFilter';
 import {
@@ -63,7 +63,7 @@ function formatJson(v: unknown): string {
   }
 }
 
-function normalizeQuestions(p: Record<string, unknown>): NormalizedQuestion[] {
+function normalizeQuestions(p: Record<string, unknown>, t: TranslateFn): NormalizedQuestion[] {
   const reqInt =
     p.requestedInteraction && typeof p.requestedInteraction === 'object'
       ? (p.requestedInteraction as Record<string, unknown>)
@@ -98,14 +98,14 @@ function normalizeQuestions(p: Record<string, unknown>): NormalizedQuestion[] {
         return { id: opt, label: opt };
       }
       const o = (opt && typeof opt === 'object' ? opt : {}) as Record<string, unknown>;
-      const label = String(o.label || o.text || o.id || `选项 ${oIdx + 1}`);
+      const label = String(o.label || o.text || o.id || t('step.optionFallback', { index: oIdx + 1 }));
       const id = String(o.id || o.label || o.text || oIdx);
       const description = typeof o.description === 'string' ? o.description : undefined;
       return { id, label, description };
     });
     return {
       header: typeof obj.header === 'string' && obj.header ? obj.header : undefined,
-      question: String(obj.question || obj.prompt || obj.text || `问题 ${qIdx + 1}`),
+      question: String(obj.question || obj.prompt || obj.text || t('step.questionFallback', { index: qIdx + 1 })),
       isMultiSelect: Boolean(obj.isMultiSelect || obj.multiSelect),
       options
     };
@@ -207,7 +207,7 @@ function parseCompletedAnswers(
   });
 }
 
-function getPendingSummaryLines(ev: SessionEvent): {
+function getPendingSummaryLines(ev: SessionEvent, t: TranslateFn): {
   command?: string;
   filePath?: string;
   cwd?: string;
@@ -252,7 +252,7 @@ function getPendingSummaryLines(ev: SessionEvent): {
   const description =
     (typeof spec?.description === 'string' && spec.description) ||
     (typeof p.description === 'string' && p.description) ||
-    (!command && !filePath ? ev.title || summarizeToolEvent(ev) : undefined);
+    (!command && !filePath ? ev.title || summarizeToolEvent(ev, t) : undefined);
 
   return { command, filePath, cwd, description };
 }
@@ -279,6 +279,7 @@ function StepCardInner({
   searchCaseSensitive = false,
   isCurrentMatch = false
 }: StepCardProps) {
+  const { t } = useI18n();
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
   const [diffExpanded, setDiffExpanded] = useState(false);
@@ -337,7 +338,11 @@ function StepCardInner({
               </pre>
             )}
             <div className={styles.metaRow}>
-              {typeof p.cwd === 'string' && p.cwd && <span className="ag-chip">cwd: {p.cwd}</span>}
+              {typeof p.cwd === 'string' && p.cwd && (
+                <span className="ag-chip ag-chip-ellipsis" title={`cwd: ${p.cwd}`}>
+                  cwd: {p.cwd}
+                </span>
+              )}
               {hasExit && (
                 <span className="ag-chip" data-tone={p.exitCode === 0 ? 'ok' : 'danger'}>
                   exit {String(p.exitCode)}
@@ -369,14 +374,18 @@ function StepCardInner({
                     {filePath}
                   </button>
                 ) : (
-                  <span className="ag-chip">{filePath}</span>
+                  <span className="ag-chip ag-chip-ellipsis" title={filePath}>
+                    {filePath}
+                  </span>
                 ))}
               {hasRange && (
                 <span className="ag-chip">
                   L{String(p.startLine)}-{String(p.endLine)}
                 </span>
               )}
-              {typeof p.numLines === 'number' && <span className="ag-chip">{p.numLines} 行</span>}
+              {typeof p.numLines === 'number' && (
+                <span className="ag-chip">{t('chat.linesCount', { count: p.numLines })}</span>
+              )}
             </div>
             {typeof p.content === 'string' && p.content && (
               <pre className={styles.codeBlock} data-hscroll="1">
@@ -435,7 +444,7 @@ function StepCardInner({
                   onClick={() => openDiff(targetFile)}
                   data-testid={`code-action-diff-${event.seq}`}
                 >
-                  在 Diff 中查看 ↗
+                  {t('chat.viewInDiff')} ↗
                 </button>
               )}
             </div>
@@ -467,7 +476,9 @@ function StepCardInner({
                     className={styles.diffExpandBtn}
                     onClick={() => setDiffExpanded((v) => !v)}
                   >
-                    {diffExpanded ? '收起预览' : `展开其余 ${diffLines.length - 16} 行`}
+                    {diffExpanded
+                      ? t('chat.collapsePreview')
+                      : t('chat.expandLines', { count: diffLines.length - 16 })}
                   </button>
                 )}
               </div>
@@ -489,16 +500,20 @@ function StepCardInner({
           <>
             <div className={styles.metaRow}>
               {typeof p.query === 'string' && p.query && (
-                <span className="ag-chip">检索: {p.query}</span>
+                <span className="ag-chip ag-chip-ellipsis" title={p.query}>
+                  {t('chat.searchQuery')}: {p.query}
+                </span>
               )}
-              {docs.length > 0 && <span className="ag-chip">{docs.length} 条来源</span>}
+              {docs.length > 0 && (
+                <span className="ag-chip">{t('chat.sourcesCount', { count: docs.length })}</span>
+              )}
             </div>
             {typeof p.summary === 'string' && p.summary && <Markdown text={p.summary} />}
             {docs.length > 0 && (
               <div className={styles.subList}>
                 {docs.slice(0, 6).map((d, idx) => {
                   const doc = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>;
-                  const title = String(doc.title || doc.url || `结果 ${idx + 1}`);
+                  const title = String(doc.title || doc.url || t('chat.resultIndex', { index: idx + 1 }));
                   const url = typeof doc.url === 'string' ? doc.url : '';
                   return (
                     <div key={idx} className={styles.subItem}>
@@ -529,10 +544,14 @@ function StepCardInner({
             )}
             <div className={styles.metaRow}>
               {p.includedStepIndexEnd != null && (
-                <span className="ag-chip">至步骤 #{String(p.includedStepIndexEnd)}</span>
+                <span className="ag-chip">
+                  {t('chat.toStep', { seq: String(p.includedStepIndexEnd) })}
+                </span>
               )}
               {typeof p.totalSubagentCount === 'number' && p.totalSubagentCount > 0 && (
-                <span className="ag-chip">{p.totalSubagentCount} 子代理</span>
+                <span className="ag-chip">
+                  {t('chat.subagentsCount', { count: p.totalSubagentCount })}
+                </span>
               )}
             </div>
           </>
@@ -565,7 +584,7 @@ function StepCardInner({
 
   // Standalone non-pending tool call: compact collapsed-by-default disclosure row
   if (isStandaloneTool) {
-    const summary = summarizeToolEvent(event);
+    const summary = summarizeToolEvent(event, t);
     const hasExit = event.kind === 'command' && typeof p.exitCode === 'number';
     const { additions, deletions } =
       event.kind === 'code_action'
@@ -609,7 +628,7 @@ function StepCardInner({
                 aria-hidden="true"
               />
             )}
-            <span className={styles.kind}>{KIND_LABELS[event.kind] || event.kind}</span>
+            <span className={styles.kind}>{t(`kind.${event.kind}`)}</span>
             <span className={styles.toolSummaryText}>{summary}</span>
           </button>
 
@@ -645,7 +664,7 @@ function StepCardInner({
             <button
               type="button"
               className={styles.chevronBtn}
-              aria-label={toolOpen ? '收起' : '展开'}
+              aria-label={toolOpen ? t('chat.collapse') : t('chat.expand')}
               onClick={() => setToolOpen((prev) => !prev)}
             >
               <span className={[styles.chevron, toolOpen ? styles.chevronOpen : ''].join(' ')}>
@@ -662,7 +681,7 @@ function StepCardInner({
 
   // Pending authorization card (command / code_action / file_view / tool_generic / etc.)
   if (isPending && !isUser && event.kind !== 'ask_question') {
-    const info = getPendingSummaryLines(event);
+    const info = getPendingSummaryLines(event, t);
     return (
       <article
         className={`${styles.card} ${styles.cardPending}`}
@@ -673,10 +692,14 @@ function StepCardInner({
         <header className={styles.header}>
           <div className={styles.headerLeft}>
             <span className={styles.pendingDot} aria-hidden="true" />
-            <span className={styles.kindPending}>待审批 · {KIND_LABELS[event.kind] || event.kind}</span>
+            <span className={styles.kindPending}>
+              {t('pending.approvalBadge')} · {t(`kind.${event.kind}`)}
+            </span>
             <span className={styles.seq}>#{event.seq}</span>
           </div>
-          <span className={`${styles.status} ${styles.statusPending}`}>等待确认</span>
+          <span className={`${styles.status} ${styles.statusPending}`}>
+            {t('step.awaitingConfirm')}
+          </span>
         </header>
 
         <div className={styles.approvalBody} data-testid={`inline-approval-${event.seq}`}>
@@ -697,9 +720,15 @@ function StepCardInner({
                   {info.filePath}
                 </button>
               ) : (
-                <span className="ag-chip">{info.filePath}</span>
+                <span className="ag-chip ag-chip-ellipsis" title={info.filePath}>
+                  {info.filePath}
+                </span>
               ))}
-            {info.cwd && <span className="ag-chip">cwd: {info.cwd}</span>}
+            {info.cwd && (
+              <span className="ag-chip ag-chip-ellipsis" title={`cwd: ${info.cwd}`}>
+                cwd: {info.cwd}
+              </span>
+            )}
           </div>
 
           {onApprove && (
@@ -711,7 +740,7 @@ function StepCardInner({
                 onClick={() => handleDecision('deny')}
                 data-testid={`inline-deny-${event.seq}`}
               >
-                拒绝 Deny
+                {t('step.denyLabel')}
               </button>
               <button
                 type="button"
@@ -720,16 +749,12 @@ function StepCardInner({
                 onClick={() => handleDecision('allow')}
                 data-testid={`inline-allow-${event.seq}`}
               >
-                {busy ? '处理中...' : '允许 Allow'}
+                {busy ? t('step.processing') : t('step.allowLabel')}
               </button>
             </div>
           )}
 
-          {isReadOnly && (
-            <div className={styles.roNote}>
-              当前为 L0 只读模式，无法远程审批；请在桌面端处理或切换至 L1/L2
-            </div>
-          )}
+          {isReadOnly && <div className={styles.roNote}>{t('step.readOnlyApproveHint')}</div>}
         </div>
       </article>
     );
@@ -737,7 +762,7 @@ function StepCardInner({
 
   // Ask question card (interactive when pending, clean answer summary when done)
   if (event.kind === 'ask_question') {
-    const questions = normalizeQuestions(p);
+    const questions = normalizeQuestions(p, t);
     const completedAnswers = !isPending ? parseCompletedAnswers(p, questions) : [];
 
     const toggleOption = (qIdx: number, optId: string, isMulti: boolean) => {
@@ -789,12 +814,12 @@ function StepCardInner({
           <div className={styles.headerLeft}>
             {isPending && <span className={styles.pendingDot} aria-hidden="true" />}
             <span className={isPending ? styles.kindPending : styles.kind}>
-              {isPending ? '需要回答' : '已回答'}
+              {isPending ? t('step.needAnswer') : t('step.answered')}
             </span>
             <span className={styles.seq}>#{event.seq}</span>
           </div>
           <span className={`${styles.status} ${isPending ? styles.statusPending : ''}`}>
-            {isPending ? '等待回复' : '已完成'}
+            {isPending ? t('step.awaitingReply') : t('step.completed')}
           </span>
         </header>
 
@@ -808,7 +833,9 @@ function StepCardInner({
               <div key={idx} className={styles.qCard}>
                 <div className={styles.qHead}>
                   {q.header && <span className={styles.qHeaderTag}>{q.header}</span>}
-                  {q.isMultiSelect && isPending && <span className={styles.qMultiTag}>可多选</span>}
+                  {q.isMultiSelect && isPending && (
+                    <span className={styles.qMultiTag}>{t('step.multiSelect')}</span>
+                  )}
                 </div>
                 <div className={styles.qText}>{q.question}</div>
 
@@ -847,7 +874,7 @@ function StepCardInner({
                       type="text"
                       className={styles.qInput}
                       disabled={isReadOnly || busy}
-                      placeholder="或输入自定义回答..."
+                      placeholder={t('step.customAnswerPlaceholder')}
                       value={customVal}
                       onInput={(e) =>
                         setCustomInputs((prev) => ({
@@ -860,7 +887,7 @@ function StepCardInner({
                 ) : (
                   <div className={styles.answeredRow}>
                     {doneAns?.skipped ? (
-                      <span className="ag-chip">已跳过</span>
+                      <span className="ag-chip">{t('step.skipped')}</span>
                     ) : doneAns && doneAns.answers.length > 0 ? (
                       doneAns.answers.map((ans, aIdx) => (
                         <span key={aIdx} className={styles.answeredChip}>
@@ -876,7 +903,7 @@ function StepCardInner({
                         ))}
                       </div>
                     ) : (
-                      <span className={styles.mutedNote}>已提交</span>
+                      <span className={styles.mutedNote}>{t('step.submitted')}</span>
                     )}
                   </div>
                 )}
@@ -892,14 +919,12 @@ function StepCardInner({
               onClick={submitInlineAnswers}
               data-testid={`inline-answer-submit-${event.seq}`}
             >
-              {busy ? '提交中...' : '提交回答'}
+              {busy ? t('step.submitting') : t('step.submitAnswer')}
             </button>
           )}
 
           {isPending && isReadOnly && (
-            <div className={styles.roNote}>
-              当前为 L0 只读模式，请在桌面端或升级 L1 后提交回答
-            </div>
+            <div className={styles.roNote}>{t('step.readOnlyAnswerHint')}</div>
           )}
         </div>
       </article>
@@ -934,7 +959,7 @@ function StepCardInner({
       >
         <div className={styles.userBubble}>
           <Markdown
-            text={userText || '(空消息)'}
+            text={userText || t('chat.emptyMessage')}
             highlightQuery={searchQuery}
             highlightRegex={searchRegex}
             highlightCaseSensitive={searchCaseSensitive}
@@ -944,19 +969,23 @@ function StepCardInner({
         {(isOptimistic || isError || Boolean(userText)) && (
           <div className={styles.userFooter}>
             {isOptimistic && (
-              <span className={`${styles.status} ${styles.statusOptimistic}`}>发送中…</span>
+              <span className={`${styles.status} ${styles.statusOptimistic}`}>
+                {t('chat.sending')}
+              </span>
             )}
             {isError && (
-              <span className={`${styles.status} ${styles.statusError}`}>发送异常</span>
+              <span className={`${styles.status} ${styles.statusError}`}>
+                {t('chat.sendError')}
+              </span>
             )}
             {userText && (
               <button
                 type="button"
                 className={styles.copyStepBtn}
                 onClick={() => handleCopyText(userText)}
-                aria-label="复制消息"
+                aria-label={t('chat.copyMessage')}
               >
-                {copiedTurn ? '✓ 已复制' : '复制'}
+                {copiedTurn ? `✓ ${t('common.copied')}` : t('common.copy')}
               </button>
             )}
           </div>
@@ -1008,10 +1037,12 @@ function StepCardInner({
                     ▸
                   </span>
                 )}
-                <span>{isThinkingLive ? '正在思考' : '思考过程'}</span>
+                <span>{isThinkingLive ? t('chat.thinkingLive') : t('chat.thinking')}</span>
                 {duration && <span className={styles.thinkingDur}>{duration}</span>}
               </span>
-              <span className={styles.thinkingAction}>{thinkingOpen ? '收起' : '展开'}</span>
+              <span className={styles.thinkingAction}>
+                {thinkingOpen ? t('chat.collapse') : t('chat.expand')}
+              </span>
             </button>
             {thinkingOpen && (
               <pre className={styles.thinkingBody} data-testid={`thinking-body-${event.seq}`}>
@@ -1034,7 +1065,7 @@ function StepCardInner({
           !thinking && (
             <div className={styles.streamingPlaceholder}>
               <span className={styles.pulseDot} aria-hidden="true" />
-              <span>正在生成回复...</span>
+              <span>{t('chat.generatingReply')}</span>
             </div>
           )
         )}
@@ -1042,7 +1073,11 @@ function StepCardInner({
           <div className={styles.assistantMetaRow}>
             {(isRunning || isError) && (
               <span className={`${styles.status} ${statusCls}`}>
-                {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
+                {isGenerating
+                  ? t('chat.generating')
+                  : event.status === 'running'
+                    ? t('chat.running')
+                    : t('chat.error')}
               </span>
             )}
             {text && !isRunning && (
@@ -1050,10 +1085,10 @@ function StepCardInner({
                 type="button"
                 className={styles.copyStepBtn}
                 onClick={() => handleCopyText(text)}
-                aria-label="复制回复"
+                aria-label={t('chat.copyReply')}
                 data-testid={`step-copy-${event.seq}`}
               >
-                {copiedTurn ? '✓ 已复制' : '复制'}
+                {copiedTurn ? `✓ ${t('common.copied')}` : t('common.copy')}
               </button>
             )}
           </div>
@@ -1088,7 +1123,7 @@ function StepCardInner({
       case 'error': {
         return (
           <pre className={styles.codeBlock} data-hscroll="1">
-            {formatJson(p.error ?? p) || '未知错误'}
+            {formatJson(p.error ?? p) || t('chat.unknownError')}
           </pre>
         );
       }
@@ -1120,14 +1155,18 @@ function StepCardInner({
       <header className={styles.header}>
         <div className={styles.headerLeft}>
           <span className={[styles.kind, isError ? styles.kindError : ''].filter(Boolean).join(' ')}>
-            {KIND_LABELS[event.kind] || event.kind}
+            {t(`kind.${event.kind}`)}
           </span>
           {!isOptimistic && <span className={styles.seq}>#{event.seq}</span>}
           {event.title && <span className={styles.title}>{event.title}</span>}
         </div>
         {(isRunning || isError) && (
           <span className={`${styles.status} ${statusCls}`}>
-            {isGenerating ? '生成中' : event.status === 'running' ? '运行中' : '异常'}
+            {isGenerating
+              ? t('chat.generating')
+              : event.status === 'running'
+                ? t('chat.running')
+                : t('chat.error')}
           </span>
         )}
       </header>

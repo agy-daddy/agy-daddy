@@ -28,6 +28,7 @@ import type {
 import {
   detectHighRiskPrompt,
   getGhostSuggestions,
+  normalizeCacheHitRatePct,
   resolveQuickPrompts,
   truncateGhostLabel
 } from './composerUtils';
@@ -75,15 +76,7 @@ export interface ComposerProps {
   onRemoveQueueItem?: (id: string) => void;
 }
 
-const DEFAULT_PERM_LEVELS: Array<{
-  level: PermissionLevel;
-  label: string;
-  description: string;
-}> = [
-  { level: 'L0', label: 'L0 只读', description: '仅查看对话、文件、Diff 与监控指标' },
-  { level: 'L1', label: 'L1 对话与审批', description: '可发消息、排队插队、审批命令与回答提问' },
-  { level: 'L2', label: 'L2 完整操作', description: '含文件写入、Git 提交推送与 PTY 终端' }
-];
+const PERM_LEVEL_KEYS: PermissionLevel[] = ['L0', 'L1', 'L2'];
 
 const TEXTAREA_MIN_HEIGHT = 66; // 3 lines default
 const TEXTAREA_MAX_HEIGHT = 156;
@@ -130,7 +123,7 @@ export function Composer(props: ComposerProps) {
     onOptimize
   } = props;
 
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [localModelPickerOpen, setLocalModelPickerOpen] = useState(false);
@@ -163,22 +156,44 @@ export function Composer(props: ComposerProps) {
     return catalog[0]?.id || '';
   }, [catalog, selectedModelId]);
 
-  const modelBadge = useMemo(
-    () =>
-      formatCompactModelBadge(
-        effectiveModelId,
-        models,
-        undefined,
-        activeOrchestratorMaster
-          ? { master: activeOrchestratorMaster, thinkingMap: orchestratorThinking }
-          : null
-      ),
-    [effectiveModelId, models, activeOrchestratorMaster, orchestratorThinking]
-  );
+  const modelBadge = useMemo(() => {
+    const raw = formatCompactModelBadge(
+      effectiveModelId,
+      models,
+      undefined,
+      activeOrchestratorMaster
+        ? { master: activeOrchestratorMaster, thinkingMap: orchestratorThinking }
+        : null
+    );
+    if (raw.isOrchestrator && raw.shortName === '编排') {
+      return {
+        ...raw,
+        name: t('model.orchestratorGroup'),
+        shortName: t('model.orchestratorShort'),
+        full: raw.tag ? `${t('model.orchestratorShort')} · ${raw.tag}` : t('model.orchestratorGroup')
+      };
+    }
+    if (raw.name === '选择模型') {
+      return {
+        ...raw,
+        name: t('model.selectTitle'),
+        shortName: t('model.selectShort'),
+        full: t('model.selectTitle')
+      };
+    }
+    return raw;
+  }, [effectiveModelId, models, activeOrchestratorMaster, orchestratorThinking, t]);
 
-  const permDetails = permissionInfo?.levels && permissionInfo.levels.length > 0
-    ? permissionInfo.levels
-    : DEFAULT_PERM_LEVELS;
+  const permDetails = useMemo(() => {
+    if (permissionInfo?.levels && permissionInfo.levels.length > 0 && locale.startsWith('zh')) {
+      return permissionInfo.levels;
+    }
+    return PERM_LEVEL_KEYS.map((lvl) => ({
+      level: lvl,
+      label: t(`perm.${lvl}.label`),
+      description: t(`perm.${lvl}.desc`)
+    }));
+  }, [permissionInfo, locale, t]);
 
   const resolvedQuickPrompts = useMemo(
     () => resolveQuickPrompts(quickPrompts, locale),
@@ -364,7 +379,7 @@ export function Composer(props: ComposerProps) {
 
   const canSend = !isReadOnly && (text.trim().length > 0 || images.length > 0);
   // Sending while running always defaults to queue; switching to Steer happens on the queued message card
-  const actionLabel = running ? '入队' : '发送';
+  const actionLabel = running ? t('composer.enqueue') : t('composer.send');
 
   const permToneClass =
     permissionLevel === 'L2'
@@ -402,12 +417,12 @@ export function Composer(props: ComposerProps) {
           >
             <div className={styles.planToggleText}>
               <div className={styles.planToggleTitle}>
-                <span>Plan 规划模式</span>
-                {chatMode === 'plan' && <span className={styles.planOnBadge}>已开启</span>}
+                <span>{t('composer.planMode')}</span>
+                {chatMode === 'plan' && (
+                  <span className={styles.planOnBadge}>{t('composer.planEnabled')}</span>
+                )}
               </div>
-              <div className={styles.planToggleSub}>
-                先制定方案与步骤，确认后再修改代码（唯一入口）
-              </div>
+              <div className={styles.planToggleSub}>{t('composer.planDesc')}</div>
             </div>
             <span
               className={`${styles.switchTrack} ${chatMode === 'plan' ? styles.switchTrackOn : ''}`}
@@ -418,10 +433,10 @@ export function Composer(props: ComposerProps) {
           </button>
 
           <div className={styles.popDivider} />
-          <div className={styles.popSectionLabel}>快捷提示词</div>
+          <div className={styles.popSectionLabel}>{t('composer.quickPromptsLabel')}</div>
 
           {safePresets.length === 0 ? (
-            <div className={styles.popEmpty}>暂无快捷提示词预设</div>
+            <div className={styles.popEmpty}>{t('composer.noPresets')}</div>
           ) : (
             <div className={styles.presetsList}>
               {safePresets.map((p, idx) => (
@@ -449,11 +464,13 @@ export function Composer(props: ComposerProps) {
       {permOpen && (
         <div className={styles.popover} data-testid="permission-popover">
           <div className={styles.permPopHeader}>
-            <span className={styles.permPopTitle}>当前访问权限 · {permissionLevel}</span>
+            <span className={styles.permPopTitle}>
+              {t('composer.permTitle', { level: permissionLevel })}
+            </span>
             <button
               type="button"
               className={styles.popCloseBtn}
-              aria-label="关闭权限说明"
+              aria-label={t('composer.closePermInfo')}
               onClick={() => setPermOpen(false)}
             >
               ✕
@@ -469,23 +486,21 @@ export function Composer(props: ComposerProps) {
                 >
                   <div className={styles.permRowTop}>
                     <span className={styles.permRowLabel}>{item.label}</span>
-                    {active && <span className={styles.permCurrentTag}>当前</span>}
+                    {active && <span className={styles.permCurrentTag}>{t('composer.currentTag')}</span>}
                   </div>
                   <div className={styles.permRowDesc}>{item.description}</div>
                 </div>
               );
             })}
           </div>
-          <div className={styles.permFootnote}>
-            安全边界：权限提升仅可在桌面主机端 Antigravity 面板操作
-          </div>
+          <div className={styles.permFootnote}>{t('composer.permFootnote')}</div>
         </div>
       )}
 
       {pendingHighRisk && (
         <div className={styles.highRiskBanner} data-testid="composer-high-risk-banner" role="alert">
           <div className={styles.highRiskText}>
-            检测到高危指令（{pendingHighRisk.labels.join(' / ')}），请确认是否仍要发送：
+            {t('composer.highRiskConfirm', { labels: pendingHighRisk.labels.join(' / ') })}
           </div>
           <div className={styles.highRiskActions}>
             <button
@@ -494,7 +509,7 @@ export function Composer(props: ComposerProps) {
               onClick={() => setPendingHighRisk(null)}
               data-testid="composer-high-risk-cancel"
             >
-              取消
+              {t('common.cancel')}
             </button>
             <button
               type="button"
@@ -507,7 +522,7 @@ export function Composer(props: ComposerProps) {
               }}
               data-testid="composer-high-risk-confirm"
             >
-              仍要发送
+              {t('composer.sendAnyway')}
             </button>
           </div>
         </div>
@@ -554,7 +569,7 @@ export function Composer(props: ComposerProps) {
                 taRef.current?.focus();
               }}
             >
-              ↶ 撤销优化
+              ↶ {t('composer.undoOptimize')}
             </button>
           )}
           {showGhostChip && (
@@ -568,7 +583,9 @@ export function Composer(props: ComposerProps) {
                 taRef.current?.focus();
               }}
             >
-              <span>建议: {truncateGhostLabel(ghostSuggestions[0], 26)}</span>
+              <span>
+                {t('composer.suggestPrefix')}: {truncateGhostLabel(ghostSuggestions[0], 26)}
+              </span>
               <span>↵</span>
             </button>
           )}
@@ -586,11 +603,11 @@ export function Composer(props: ComposerProps) {
             {chatMode === 'plan' && (
               <span className={styles.planChip} data-testid="composer-plan-chip">
                 <span className={styles.planChipDot} />
-                Plan 规划模式
+                {t('composer.planMode')}
                 <button
                   type="button"
                   className={styles.planChipClose}
-                  aria-label="退出 Plan 模式"
+                  aria-label={t('composer.exitPlan')}
                   onClick={() => onChatModeChange('chat')}
                 >
                   ×
@@ -605,7 +622,7 @@ export function Composer(props: ComposerProps) {
                     <button
                       type="button"
                       className={styles.thumbDel}
-                      aria-label="移除图片"
+                      aria-label={t('composer.removeImage')}
                       onClick={() => onRemoveImage(img.id)}
                     >
                       ×
@@ -626,12 +643,12 @@ export function Composer(props: ComposerProps) {
           disabled={isReadOnly}
           placeholder={
             isReadOnly
-              ? 'L0 只读模式（请在桌面主机端切换至 L1/L2）'
+              ? t('composer.placeholderReadOnly')
               : running
-                ? '运行中 · 输入消息自动入队，可在消息上点「立即插队」...'
+                ? t('composer.placeholderRunning')
                 : chatMode === 'plan'
-                  ? 'Plan 模式 · 描述需要规划的任务，或输入 / 快捷词...'
-                  : '输入指令，或输入 / 打开快捷词与 Plan 模式...'
+                  ? t('composer.placeholderPlan')
+                  : t('composer.placeholder')
           }
           value={text}
           onFocus={handleFocus}
@@ -670,8 +687,8 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={styles.toolIconBtn}
-              aria-label="上传图片"
-              title="添加附件图片"
+              aria-label={t('composer.uploadImage')}
+              title={t('composer.attachImageTitle')}
               data-testid="composer-attach-btn"
               disabled={isReadOnly}
               onClick={() => fileRef.current?.click()}
@@ -682,7 +699,7 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={`${styles.toolChipBtn} ${presetsOpen ? styles.toolChipActive : ''}`}
-              aria-label="快捷词与 Plan 模式"
+              aria-label={t('composer.presetsAria')}
               data-testid="composer-presets-btn"
               disabled={isReadOnly}
               onClick={() => {
@@ -690,14 +707,14 @@ export function Composer(props: ComposerProps) {
                 setPresetsOpen((o) => !o);
               }}
             >
-              / 快捷词
+              {t('composer.presetsBtn')}
             </button>
 
             {catalog.length > 0 && (
               <button
                 type="button"
                 className={styles.modelTriggerBtn}
-                aria-label="切换模型"
+                aria-label={t('composer.switchModel')}
                 data-testid="composer-model-btn"
                 disabled={isReadOnly}
                 onClick={handleOpenModelSelector}
@@ -716,7 +733,7 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={`${styles.permBtn} ${permToneClass}`}
-              aria-label={`当前权限 ${permissionLevel}`}
+              aria-label={t('composer.currentPermAria', { level: permissionLevel })}
               data-testid="composer-permission-btn"
               onClick={() => {
                 setPresetsOpen(false);
@@ -732,8 +749,8 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={`${styles.toolIconBtn} ${optimizing ? styles.optimizing : ''}`}
-              aria-label="优化提示词"
-              title="提示词优化"
+              aria-label={t('composer.optimize')}
+              title={t('composer.optimizeTitle')}
               data-testid="composer-optimize-btn"
               disabled={isReadOnly || !text.trim() || optimizing}
               onClick={handleOptimize}
@@ -745,7 +762,7 @@ export function Composer(props: ComposerProps) {
               <button
                 type="button"
                 className={styles.toolIconBtn}
-                aria-label="语音输入"
+                aria-label={t('composer.voiceInput')}
                 disabled={isReadOnly}
                 data-testid="voice-input-btn"
               >
@@ -758,8 +775,8 @@ export function Composer(props: ComposerProps) {
                 type="button"
                 className={styles.stopBtn}
                 onClick={onCancel}
-                aria-label="停止当前生成"
-                title="停止当前生成"
+                aria-label={t('composer.stop')}
+                title={t('composer.stop')}
                 data-testid="composer-stop-btn"
               >
                 <span className={styles.stopSquare} aria-hidden="true" />
@@ -785,7 +802,7 @@ export function Composer(props: ComposerProps) {
             type="button"
             className={styles.contextBarMain}
             onClick={() => onOpenTelemetry?.()}
-            aria-label="查看上下文与用量"
+            aria-label={t('composer.viewTelemetry')}
           >
             <span className={styles.contextBarTrack}>
               <span
@@ -796,9 +813,10 @@ export function Composer(props: ComposerProps) {
             </span>
             <span className={styles.contextBarMeta}>
               {ctxPct ?? 0}% · {fmtCtxTok(ctxUsed)} / {fmtCtxTok(ctxLimit)}
-              {typeof ctxData.cacheHitRate === 'number'
-                ? ` · 命中 ${Math.round(ctxData.cacheHitRate * 100)}%`
-                : ''}
+              {(() => {
+                const hitPct = normalizeCacheHitRatePct(ctxData.cacheHitRate);
+                return hitPct !== null ? ` · ${t('composer.cacheHitShort')} ${hitPct}%` : '';
+              })()}
             </span>
           </button>
           {ctxLevel !== 'ok' && onCompact && (

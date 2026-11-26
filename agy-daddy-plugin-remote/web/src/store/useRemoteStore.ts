@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { LOCALE_STORAGE_KEY, normalizeLocale } from '../i18n';
+import {
+  createTranslator,
+  LOCALE_STORAGE_KEY,
+  normalizeLocale,
+  type I18nKey,
+  type I18nParams
+} from '../i18n';
 import {
   COLOR_THEME_STORAGE_KEY,
   DRAWER_SPEED_STORAGE_KEY,
@@ -499,7 +505,11 @@ export function sanitizePresets(raw: unknown): ComposerPreset[] {
   return out;
 }
 
-function buildDefaultPermissionInfo(level: PermissionLevel): PermissionInfo {
+function buildDefaultPermissionInfo(
+  level: PermissionLevel,
+  locale: SupportedLocale = 'zh-CN'
+): PermissionInfo {
+  const tr = createTranslator(locale);
   return {
     level,
     canRead: true,
@@ -507,9 +517,9 @@ function buildDefaultPermissionInfo(level: PermissionLevel): PermissionInfo {
     canWriteFsGitPty: level === 'L2',
     hostOnlyElevation: true,
     levels: [
-      { level: 'L0', label: 'L0 只读', description: '仅查看对话、文件、Diff 与监控指标' },
-      { level: 'L1', label: 'L1 对话审批', description: '可发消息、插队、审批命令与回答提问' },
-      { level: 'L2', label: 'L2 完整操作', description: '含文件写入、Git 提交推送与 PTY 终端（仅主机端开启）' }
+      { level: 'L0', label: tr('perm.L0.label'), description: tr('perm.L0.desc') },
+      { level: 'L1', label: tr('perm.L1.label'), description: tr('perm.L1.desc') },
+      { level: 'L2', label: tr('perm.L2.label'), description: tr('perm.L2.desc') }
     ]
   };
 }
@@ -523,6 +533,10 @@ export class RemoteStoreController {
   private prevAttentionIds = new Set<string>();
   private initialized = false;
   private pendingUserModelId = '';
+
+  private t(key: I18nKey, params?: I18nParams): string {
+    return createTranslator(this.state.locale)(key, params);
+  }
   private optimisticSeq = 0;
   private pendingSwitchTicket = '';
 
@@ -560,7 +574,7 @@ export class RemoteStoreController {
       channel: 'loopback',
       apiBaseOrigin: getApiBaseOrigin(),
       permissionLevel: 'L0',
-      permissionInfo: buildDefaultPermissionInfo('L0'),
+      permissionInfo: buildDefaultPermissionInfo('L0', locale),
       models: [],
       modelGroups: [],
       modelPickerOpen: false,
@@ -641,7 +655,7 @@ export class RemoteStoreController {
     return new Promise((resolve) => {
       this.setState({
         confirmPrompt: {
-          title: '高危操作二次确认',
+          title: this.t('store.l2ConfirmTitle'),
           hint,
           resolve: (confirmed: boolean) => {
             this.setState({ confirmPrompt: null });
@@ -675,7 +689,7 @@ export class RemoteStoreController {
           }
         }
       } catch {
-        this.showToast('跨协议切通道票据已过期，请重新扫码或输入令牌');
+        this.showToast(this.t('store.ticketExpired'));
       } finally {
         scrubSwitchTicketFromUrl();
       }
@@ -840,7 +854,7 @@ export class RemoteStoreController {
       const permissionLevel: PermissionLevel =
         boot.permissionLevel || (boot.writeEnabled ? 'L1' : 'L0');
       const permissionInfo: PermissionInfo =
-        boot.permissionInfo || buildDefaultPermissionInfo(permissionLevel);
+        boot.permissionInfo || buildDefaultPermissionInfo(permissionLevel, this.state.locale);
 
       const bootPins = boot.pins ? normalizePins(boot.pins) : this.state.pins;
       const bootGroups = Array.isArray(boot.groups) ? boot.groups : this.state.groups;
@@ -972,10 +986,14 @@ export class RemoteStoreController {
     } catch (err) {
       const e = err as { status?: number; message?: string };
       if (e.status === 401 || e.status === 403) {
-        this.setState({ authError: '访问令牌无效或通道未授权', ready: true });
+        this.setState({ authError: this.t('store.authInvalid'), ready: true });
       } else {
         this.setState({ ready: true });
-        this.showToast(`连接失败: ${e.message || '网络不可达'}`);
+        this.showToast(
+          this.t('store.connectFailed', {
+            msg: e.message || this.t('store.networkUnreachable')
+          })
+        );
       }
     }
   }
@@ -1053,7 +1071,7 @@ export class RemoteStoreController {
       } catch (err) {
         const code = (err as { code?: string })?.code;
         if (code === 'PERMISSION_DENIED') {
-          this.showToast('当前为 L0 只读模式，置顶已暂存本地');
+          this.showToast(this.t('store.l0PinLocal'));
         }
       }
     }
@@ -1087,11 +1105,11 @@ export class RemoteStoreController {
             pins: syncedPins
           });
           writeJsonPref(GROUPS_CACHE_KEY, syncedOrg.groups);
-          this.showToast(`已创建分组「${clean}」`);
+          this.showToast(this.t('store.groupCreated', { name: clean }));
           return;
         }
       } catch (err) {
-        this.showToast(`创建分组失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupCreateFailed', { msg: (err as Error).message }));
         return;
       }
     }
@@ -1109,7 +1127,7 @@ export class RemoteStoreController {
     const nextGroups = [...this.state.groups, localGroup];
     this.setState({ groups: nextGroups });
     writeJsonPref(GROUPS_CACHE_KEY, nextGroups);
-    this.showToast(`已在本地创建分组「${clean}」`);
+    this.showToast(this.t('store.groupCreatedLocal', { name: clean }));
   }
 
   public async deleteGroup(groupId: string): Promise<void> {
@@ -1127,7 +1145,7 @@ export class RemoteStoreController {
         }
       } catch (err) {
         this.setState({ groups: prevGroups });
-        this.showToast(`删除分组失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupDeleteFailed', { msg: (err as Error).message }));
       }
     }
   }
@@ -1164,7 +1182,7 @@ export class RemoteStoreController {
           return;
         }
       } catch (err) {
-        this.showToast(`分组调整失败: ${(err as Error).message}`);
+        this.showToast(this.t('store.groupUpdateFailed', { msg: (err as Error).message }));
         return;
       }
     }
@@ -1286,7 +1304,7 @@ export class RemoteStoreController {
         await this.selectSession(res.cascadeId);
       }
     } catch (err) {
-      this.showToast(`新建会话失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.newSessionFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1546,7 +1564,7 @@ export class RemoteStoreController {
           ? {
               ...q,
               status: 'failed' as const,
-              error: typeof payload.error === 'string' ? payload.error : '发送失败'
+              error: typeof payload.error === 'string' ? payload.error : this.t('store.sendFailed')
             }
           : q
       );
@@ -1571,7 +1589,7 @@ export class RemoteStoreController {
     const next = prev ? `${prev}\n\n${snippet}\n` : `${snippet}\n`;
     this.setComposerText(next);
     this.setState({ rightOpen: false });
-    this.showToast('已回注到输入框');
+    this.showToast(this.t('store.injectedToComposer'));
   }
 
   public addComposerImage(img: ImageAttachment): void {
@@ -1625,7 +1643,10 @@ export class RemoteStoreController {
     this.pendingUserModelId = modelId;
 
     const chosen = this.state.models.find((m) => m.id === modelId);
-    const displayLabel = `编排 · ${masterKey} · ${thinkingLevel}`;
+    const displayLabel = this.t('store.orchestratorSelected', {
+      master: masterKey,
+      tier: thinkingLevel
+    });
     const nextTelemetry: TelemetryPanels =
       this.state.telemetry.context?.available && this.state.telemetry.context.data
         ? {
@@ -1691,7 +1712,7 @@ export class RemoteStoreController {
       this.sse?.connect(this.state.token, sessionId);
     }
     if (!sessionId) {
-      this.showToast('请先创建或选择会话');
+      this.showToast(this.t('store.selectSessionFirst'));
       return;
     }
 
@@ -1722,7 +1743,7 @@ export class RemoteStoreController {
         saveDraft(sessionId, ''),
         initialActiveId !== sessionId ? saveDraft(initialActiveId, '') : Promise.resolve()
       ]);
-      this.showToast('离线草稿已入队，恢复后自动发送');
+      this.showToast(this.t('store.queuedOffline'));
       return;
     }
 
@@ -1798,7 +1819,7 @@ export class RemoteStoreController {
             await saveQueue(nextQ);
           }
         }
-        this.showToast('已加入发送队列，可在消息上点「立即插队」');
+        this.showToast(this.t('store.queuedWhileRunning'));
         return;
       }
 
@@ -1820,7 +1841,7 @@ export class RemoteStoreController {
       if (canRestoreComposer && text) {
         saveDraft(sessionId, text).catch(() => {});
       }
-      this.showToast(`发送失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.sendFailedMsg', { msg: (err as Error).message }));
     }
   }
 
@@ -1845,7 +1866,7 @@ export class RemoteStoreController {
           this.setState({ queue: remaining });
           await saveQueue(remaining);
         }
-        this.showToast('已立即插队发送');
+        this.showToast(this.t('store.steered'));
         if (this.state.sseStatus !== 'connected') {
           void this.loadSessionDetail(target.sessionId);
         }
@@ -1863,7 +1884,7 @@ export class RemoteStoreController {
       const remaining = this.state.queue.filter((q) => q.id !== target.id);
       this.setState({ queue: remaining });
       await saveQueue(remaining);
-      this.showToast('已立即插队发送');
+      this.showToast(this.t('store.steered'));
       if (this.state.sseStatus !== 'connected') {
         void this.loadSessionDetail(target.sessionId);
       }
@@ -1875,7 +1896,7 @@ export class RemoteStoreController {
       );
       this.setState({ queue: failed });
       await saveQueue(failed);
-      this.showToast(`插队失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.steerFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -1889,14 +1910,14 @@ export class RemoteStoreController {
       this.setChatMode('plan');
     }
     await this.removeQueuedMessage(target.id);
-    this.showToast('已移回输入框编辑');
+    this.showToast(this.t('store.movedToEditor'));
   }
 
   public async retryQueuedMessage(id: string): Promise<void> {
     const target = this.state.queue.find((q) => q.id === id || q.queueId === id);
     if (!target) return;
     if (!this.state.online) {
-      this.showToast('当前离线，恢复网络后将自动重试');
+      this.showToast(this.t('store.offlineRetryLater'));
       return;
     }
     this.setState({
@@ -1930,7 +1951,7 @@ export class RemoteStoreController {
       );
       this.setState({ queue: failed });
       await saveQueue(failed);
-      this.showToast(`重试失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.retryFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -2000,9 +2021,9 @@ export class RemoteStoreController {
     if (!this.state.activeSessionId) return;
     try {
       await api.cancelSession(this.state.activeSessionId);
-      this.showToast('已发送中断请求');
+      this.showToast(this.t('store.cancelSent'));
     } catch (err) {
-      this.showToast(`中断失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.cancelFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -2012,7 +2033,7 @@ export class RemoteStoreController {
       await api.approveStep(this.state.activeSessionId, seq, decision);
       await this.loadSessionDetail(this.state.activeSessionId);
     } catch (err) {
-      this.showToast(`审批失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.approveFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -2022,7 +2043,7 @@ export class RemoteStoreController {
       await api.answerStep(this.state.activeSessionId, seq, answers);
       await this.loadSessionDetail(this.state.activeSessionId);
     } catch (err) {
-      this.showToast(`提交回答失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.answerFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -2033,10 +2054,12 @@ export class RemoteStoreController {
       const res = await api.optimizePrompt(text);
       const next = res.optimizedText || res.text || text;
       this.setComposerText(next);
-      this.showToast(res.unchanged ? '提示词已足够清晰' : '已优化提示词');
+      this.showToast(
+        res.unchanged ? this.t('store.promptClearEnough') : this.t('store.promptOptimized')
+      );
       return next;
     } catch (err) {
-      this.showToast(`优化失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.optimizeFailed', { msg: (err as Error).message }));
       return null;
     }
   }
@@ -2081,7 +2104,7 @@ export class RemoteStoreController {
       try {
         const res = await api.setLocale(next);
         if (res?.localOnly) {
-          this.showToast('当前为 L0 模式，语言已在手机本地生效');
+          this.showToast(this.t('store.localeLocalOnly'));
         }
       } catch {}
     }
@@ -2109,24 +2132,24 @@ export class RemoteStoreController {
       if (this.state.pushSubscribed) {
         await unsubscribeWebPush();
         this.setState({ pushSubscribed: false, pushBusy: false });
-        this.showToast('已关闭锁屏推送');
+        this.showToast(this.t('store.pushDisabled'));
       } else {
-        await subscribeWebPush(this.state.bootstrap?.vapidPublicKey);
+        await subscribeWebPush(this.state.bootstrap?.vapidPublicKey, this.state.locale);
         this.setState({ pushSubscribed: true, pushBusy: false });
-        this.showToast('已开启锁屏推送');
+        this.showToast(this.t('store.pushEnabled'));
       }
     } catch (err) {
       this.setState({ pushBusy: false });
-      this.showToast((err as Error).message || '推送设置失败');
+      this.showToast((err as Error).message || this.t('store.pushFailed'));
     }
   }
 
   public async sendTestPush(): Promise<void> {
     try {
       await api.testPush();
-      this.showToast('已触发测试推送');
+      this.showToast(this.t('store.testPushSent'));
     } catch (err) {
-      this.showToast(`测试推送失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.testPushFailed', { msg: (err as Error).message }));
     }
   }
 
@@ -2216,15 +2239,15 @@ export class RemoteStoreController {
 
   public async compactActiveSession(): Promise<boolean> {
     if (!this.state.activeSessionId) {
-      this.showToast('请先选择一个会话');
+      this.showToast(this.t('store.selectSessionAction'));
       return false;
     }
     try {
       await api.compactSession(this.state.activeSessionId);
-      this.showToast('已派发 /compact 上下文压缩');
+      this.showToast(this.t('store.compactSent'));
       return true;
     } catch (err) {
-      this.showToast(`压缩失败: ${(err as Error).message}`);
+      this.showToast(this.t('store.compactFailed', { msg: (err as Error).message }));
       return false;
     }
   }
@@ -2237,7 +2260,7 @@ export class RemoteStoreController {
     });
     this.sse?.setBaseOrigin(entry.origin);
     this.sse?.reconnect();
-    this.showToast(`已切换至 ${entry.label}`);
+    this.showToast(this.t('channels.switchedToast', { label: entry.label }));
     try {
       const boot = await api.bootstrap();
       const nextTelemetry = boot.telemetry?.panels || boot.panels || this.state.telemetry;

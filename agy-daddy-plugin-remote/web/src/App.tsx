@@ -9,7 +9,7 @@ import { PendingFloatingCard } from './chat/PendingFloatingCard';
 import { VirtualChatList } from './chat/VirtualChatList';
 import { LeftDrawer } from './drawers/LeftDrawer';
 import { RightDrawer } from './drawers/RightDrawer';
-import { I18nProvider, useI18n } from './i18n';
+import { createTranslator, I18nProvider, useI18n } from './i18n';
 import { SwipeDrawerShell } from './layout/SwipeDrawerShell';
 import { TopBar } from './layout/TopBar';
 import { BackgroundTasksSheet } from './sheets/BackgroundTasksSheet';
@@ -45,19 +45,20 @@ class ErrorBoundary extends Component<{ children: ComponentChildren }, ErrorBoun
 
   render() {
     if (this.state.error) {
+      const tr = createTranslator(remoteStore.getState().locale);
       return (
         <div className="ag-shell">
           <div className={styles.authCard} data-testid="error-boundary-fallback">
-            <strong style={{ fontSize: 15 }}>界面渲染异常</strong>
+            <strong style={{ fontSize: 15 }}>{tr('app.errorTitle')}</strong>
             <div style={{ fontSize: 12.5, color: 'var(--ag-secondary)' }}>
-              {this.state.error.message || '未知错误'}
+              {this.state.error.message || tr('chat.unknownError')}
             </div>
             <button
               type="button"
               className="ag-pill-btn ag-pill-btn-primary"
               onClick={this.handleReset}
             >
-              重置界面
+              {tr('app.resetUi')}
             </button>
           </div>
         </div>
@@ -218,7 +219,9 @@ const ConnectedTopBar = memo(function ConnectedTopBar() {
 
   const activeTitle =
     activeSessionSummary?.title ||
-    (s.activeSessionId ? `会话 ${s.activeSessionId.slice(0, 8)}` : t('app.title'));
+    (s.activeSessionId
+      ? t('app.sessionFallback', { id: s.activeSessionId.slice(0, 8) })
+      : t('app.title'));
 
   return (
     <TopBar
@@ -528,6 +531,7 @@ const ConnectedComposer = memo(function ConnectedComposer() {
 });
 
 const ConnectedSheets = memo(function ConnectedSheets() {
+  const { t } = useI18n();
   const s = useRemoteSelector((st) => ({
     activeSheet: st.activeSheet,
     telemetryTab: st.telemetryTab,
@@ -576,7 +580,13 @@ const ConnectedSheets = memo(function ConnectedSheets() {
       s.selectedModelId,
       s.bootstrapModelGroups
     );
-    return formatCompactModelBadge(unified, catalogModels, s.bootstrapModelGroups, orchSel);
+    const rawBadge = formatCompactModelBadge(
+      unified,
+      catalogModels,
+      s.bootstrapModelGroups,
+      orchSel
+    );
+    return rawBadge;
   }, [
     s.selectedModelId,
     s.telemetry,
@@ -585,6 +595,20 @@ const ConnectedSheets = memo(function ConnectedSheets() {
     s.activeOrchestratorMaster,
     s.orchestratorThinking
   ]);
+
+  const localizedModelFull = useMemo(() => {
+    if (modelBadge.isOrchestrator && modelBadge.shortName === '编排') {
+      const sub =
+        modelBadge.tag === '标准'
+          ? t('model.standard')
+          : modelBadge.tag || modelBadge.name;
+      return `${t('model.orchestratorShort')} · ${sub}`;
+    }
+    if (modelBadge.name === '选择模型') {
+      return t('model.selectTitle');
+    }
+    return modelBadge.full;
+  }, [modelBadge, t]);
 
   const closeSheet = useCallback(() => remoteStore.setActiveSheet(null), []);
 
@@ -614,7 +638,7 @@ const ConnectedSheets = memo(function ConnectedSheets() {
         open={s.activeSheet === 'telemetry'}
         activeTab={s.telemetryTab}
         telemetry={s.telemetry}
-        modelName={modelBadge.full}
+        modelName={localizedModelFull}
         permissionLevel={s.permissionLevel}
         hasActiveSession={Boolean(s.activeSessionId)}
         onSelectTab={(tab) => remoteStore.setTelemetryTab(tab)}

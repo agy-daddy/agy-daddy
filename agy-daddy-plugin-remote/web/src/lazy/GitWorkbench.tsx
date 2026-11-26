@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import { api } from '../store/api';
 import type { GitDiffFile, GitWorktreeInfo, PermissionLevel } from '../types';
 import styles from './lazy.module.css';
@@ -16,6 +17,7 @@ export default function GitWorkbench({
   onShowToast,
   onRefreshDiffBadge
 }: GitWorkbenchProps) {
+  const { t } = useI18n();
   const [branch, setBranch] = useState('');
   const [files, setFiles] = useState<GitDiffFile[]>([]);
   const [worktrees, setWorktrees] = useState<GitWorktreeInfo[]>([]);
@@ -39,7 +41,7 @@ export default function GitWorkbench({
       setWorktrees(Array.isArray(wtRes.worktrees) ? wtRes.worktrees : []);
       onRefreshDiffBadge?.();
     } catch (err) {
-      onShowToast?.(`Git 状态获取失败: ${(err as Error).message}`);
+      onShowToast?.(t('git.statusFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -56,7 +58,7 @@ export default function GitWorkbench({
       await api.gitStage(rootPath, [file.path], Boolean(file.staged));
       await refresh();
     } catch (err) {
-      onShowToast?.(`暂存失败: ${(err as Error).message}`);
+      onShowToast?.(t('git.stageFailed', { msg: (err as Error).message }));
       setBusy(false);
     }
   };
@@ -67,10 +69,10 @@ export default function GitWorkbench({
     try {
       await api.gitCommit(rootPath, commitMsg.trim());
       setCommitMsg('');
-      onShowToast?.('已提交 Commit');
+      onShowToast?.(t('git.committed'));
       await refresh();
     } catch (err) {
-      onShowToast?.(`提交失败: ${(err as Error).message}`);
+      onShowToast?.(t('git.commitFailed', { msg: (err as Error).message }));
       setBusy(false);
     }
   };
@@ -80,9 +82,9 @@ export default function GitWorkbench({
     setBusy(true);
     try {
       await api.gitPush(rootPath, undefined, branch || undefined);
-      onShowToast?.('Push 成功');
+      onShowToast?.(t('git.pushed'));
     } catch (err) {
-      onShowToast?.(`Push 失败: ${(err as Error).message}`);
+      onShowToast?.(t('git.pushFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -101,30 +103,30 @@ export default function GitWorkbench({
       });
       setWtPath('');
       setWtBranch('');
-      onShowToast?.('Worktree 已创建');
+      onShowToast?.(t('git.wtCreated'));
       await refresh();
     } catch (err) {
-      onShowToast?.(`创建 Worktree 失败: ${(err as Error).message}`);
+      onShowToast?.(t('git.wtFailed', { msg: (err as Error).message }));
       setBusy(false);
     }
   };
 
   if (!rootPath) {
-    return <div className="ag-empty">当前会话未绑定工作区目录</div>;
+    return <div className="ag-empty">{t('lazy.noWorkspace')}</div>;
   }
 
   return (
     <div className={styles.pane} data-testid="git-workbench">
       <div className={styles.toolbar}>
-        <span className="ag-chip">分支: {branch || '--'}</span>
+        <span className="ag-chip">{t('git.branch', { name: branch || '--' })}</span>
         {!isL2 && (
           <span className="ag-chip" data-tone="warn">
-            {permissionLevel} 只读
+            {t('git.readOnly', { level: permissionLevel })}
           </span>
         )}
         <div style={{ flex: 1 }} />
         <button type="button" className="ag-pill-btn" onClick={refresh} disabled={busy}>
-          刷新
+          {t('common.refresh')}
         </button>
         {isL2 && (
           <button
@@ -149,7 +151,7 @@ export default function GitWorkbench({
                 <span className={styles.mono}>
                   {wt.branch || wt.head || 'detached'} · {wt.path}
                 </span>
-                {wt.isCurrent && <span className="ag-chip">当前</span>}
+                {wt.isCurrent && <span className="ag-chip">{t('git.current')}</span>}
               </div>
             ))}
           </div>
@@ -158,16 +160,15 @@ export default function GitWorkbench({
               <input
                 type="text"
                 className="ag-input"
-                style={{ minHeight: 30, fontSize: 12 }}
-                placeholder="Worktree 路径"
+                placeholder={t('git.wtPathPlaceholder')}
                 value={wtPath}
                 onInput={(e) => setWtPath((e.target as HTMLInputElement).value)}
               />
               <input
                 type="text"
                 className="ag-input"
-                style={{ minHeight: 30, fontSize: 12, maxWidth: 110 }}
-                placeholder="分支名"
+                style={{ maxWidth: 110 }}
+                placeholder={t('git.wtBranchPlaceholder')}
                 value={wtBranch}
                 onInput={(e) => setWtBranch((e.target as HTMLInputElement).value)}
               />
@@ -177,7 +178,7 @@ export default function GitWorkbench({
                 disabled={busy || !wtPath.trim()}
                 onClick={handleCreateWorktree}
               >
-                +新建
+                {t('git.createWt')}
               </button>
             </div>
           )}
@@ -185,11 +186,11 @@ export default function GitWorkbench({
 
         <div>
           <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ag-muted)', marginBottom: 6 }}>
-            工作区变更 ({files.length})
+            {t('git.changesTitle', { count: files.length })}
           </div>
           <div className={styles.list}>
             {files.length === 0 ? (
-              <div className="ag-empty">无未提交变更</div>
+              <div className="ag-empty">{t('git.noChanges')}</div>
             ) : (
               files.map((f) => (
                 <div key={f.path} className={styles.itemBtn}>
@@ -219,7 +220,7 @@ export default function GitWorkbench({
             <input
               type="text"
               className="ag-input"
-              placeholder="输入 Commit message..."
+              placeholder={t('git.commitPlaceholder')}
               value={commitMsg}
               onInput={(e) => setCommitMsg((e.target as HTMLInputElement).value)}
             />

@@ -54,6 +54,7 @@ export function SwipeDrawerShell({
   const backdropRef = useRef<HTMLDivElement | null>(null);
 
   const [showHint, setShowHint] = useState<boolean>(() => !isHintDismissed());
+  const [hintTopPx, setHintTopPx] = useState<number | null>(null);
 
   const stateRef = useRef({ leftOpen, rightOpen, onSetLeft, onSetRight });
   stateRef.current = { leftOpen, rightOpen, onSetLeft, onSetRight };
@@ -62,6 +63,52 @@ export function SwipeDrawerShell({
     markHintDismissed();
     setShowHint(false);
   };
+
+  useEffect(() => {
+    if (!showHint || leftOpen || rightOpen) return;
+    const shellEl = shellRef.current;
+    if (!shellEl) return;
+
+    const updateHintTop = () => {
+      const scroller = shellEl.querySelector('[data-testid="chat-scroller"]');
+      if (scroller) {
+        const rect = scroller.getBoundingClientRect();
+        if (rect.top > 0) {
+          setHintTopPx(Math.round(rect.top + 8));
+          return;
+        }
+      }
+      const strip = shellEl.querySelector('[data-testid="change-review-strip"]');
+      if (strip) {
+        const rect = strip.getBoundingClientRect();
+        if (rect.bottom > 0) {
+          setHintTopPx(Math.round(rect.bottom + 8));
+          return;
+        }
+      }
+      setHintTopPx(null);
+    };
+
+    updateHintTop();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateHintTop) : null;
+    ro?.observe(shellEl);
+    const mainEl = shellEl.querySelector('main');
+    const scrollerEl = shellEl.querySelector('[data-testid="chat-scroller"]');
+    if (mainEl) ro?.observe(mainEl);
+    if (scrollerEl) ro?.observe(scrollerEl);
+    const mo =
+      typeof MutationObserver !== 'undefined' && mainEl
+        ? new MutationObserver(updateHintTop)
+        : null;
+    if (mo && mainEl) mo.observe(mainEl, { childList: true });
+    window.addEventListener('resize', updateHintTop);
+
+    return () => {
+      ro?.disconnect();
+      mo?.disconnect();
+      window.removeEventListener('resize', updateHintTop);
+    };
+  }, [showHint, leftOpen, rightOpen]);
 
   useEffect(() => {
     if ((leftOpen || rightOpen) && showHint) {
@@ -306,7 +353,12 @@ export function SwipeDrawerShell({
       )}
 
       {showHint && !anyOpen && (
-        <div className={styles.hintBar} role="note" data-testid="drawer-edge-hint">
+        <div
+          className={styles.hintBar}
+          role="note"
+          data-testid="drawer-edge-hint"
+          style={hintTopPx !== null ? ({ '--hint-top': `${hintTopPx}px` } as Record<string, string>) : undefined}
+        >
           <span className={styles.hintText}>{t('drawer.edgeHint')}</span>
           <button
             type="button"

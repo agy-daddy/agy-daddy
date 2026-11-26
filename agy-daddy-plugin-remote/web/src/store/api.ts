@@ -1,3 +1,4 @@
+import { createTranslator, LOCALE_STORAGE_KEY, normalizeLocale } from '../i18n';
 import type {
   ArtifactItem,
   BackgroundTaskDetailDto,
@@ -132,10 +133,17 @@ async function requestJson<T>(
     data.error === 'CONFIRMATION_REQUIRED' &&
     init.confirmable !== false
   ) {
+    const fallbackConfirmHint = (() => {
+      const stored =
+        typeof window !== 'undefined'
+          ? normalizeLocale(window.localStorage?.getItem(LOCALE_STORAGE_KEY))
+          : null;
+      return createTranslator(stored || 'zh-CN')('store.l2ConfirmHint');
+    })();
     const hint =
       typeof data.confirmHint === 'string' && data.confirmHint
         ? data.confirmHint
-        : '公网 Cloudflare 通道执行高危写操作需要二次确认';
+        : fallbackConfirmHint;
     const approved = await confirmCallback(hint);
     if (approved) {
       const confirmToken =

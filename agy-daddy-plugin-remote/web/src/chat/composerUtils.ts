@@ -174,6 +174,14 @@ export function getGhostSuggestions(options: {
   return candidates.slice(0, 4);
 }
 
+export function normalizeCacheHitRatePct(rate: unknown): number | null {
+  if (rate === null || rate === undefined || rate === '') return null;
+  const n = Number(rate);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const pct = n <= 1 ? n * 100 : n;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
 export function truncateGhostLabel(text: string, maxChars = 24): string {
   const clean = text.trim();
   const chars = Array.from(clean);

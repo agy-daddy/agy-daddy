@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { memo } from 'preact/compat';
 import { useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import styles from './Markdown.module.css';
 
 interface CodeBlockProps {
@@ -11,6 +12,7 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ lang, code, unclosed, streaming }: CodeBlockProps) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   const onCopy = () => {
@@ -28,10 +30,10 @@ function CodeBlock({ lang, code, unclosed, streaming }: CodeBlockProps) {
       <div className={styles.codeHead}>
         <span className={styles.codeLang}>
           {lang || 'code'}
-          {streaming && unclosed && <span className={styles.codeLive}>生成中</span>}
+          {streaming && unclosed && <span className={styles.codeLive}>{t('chat.generating')}</span>}
         </span>
         <button type="button" className={styles.copyBtn} onClick={onCopy}>
-          {copied ? '已复制' : '复制'}
+          {copied ? t('common.copied') : t('common.copy')}
         </button>
       </div>
       <pre className={styles.pre} data-hscroll="1">

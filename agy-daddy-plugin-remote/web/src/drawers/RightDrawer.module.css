@@ -36,13 +36,17 @@
 
 .tabBtn {
   position: relative;
-  min-height: 36px;
-  padding: 6px 12px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px 13px;
   border-radius: var(--ag-r-pill);
   font-size: 12px;
   font-weight: 550;
   color: var(--ag-secondary);
   background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   white-space: nowrap;
   transition:
     background-color 150ms var(--ag-ease-out),
@@ -54,7 +58,7 @@
 .tabBtn::after {
   content: '';
   position: absolute;
-  inset: -4px 0;
+  inset: -1px;
 }
 
 .tabBtn:hover:not(.tabActive) {
@@ -94,7 +98,7 @@
 .closeBtn::after {
   content: '';
   position: absolute;
-  inset: -5px;
+  inset: -7px;
 }
 
 .closeBtn:hover {

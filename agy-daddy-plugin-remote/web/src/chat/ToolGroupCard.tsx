@@ -1,10 +1,10 @@
 import { memo } from 'preact/compat';
 import { useState } from 'preact/hooks';
+import { type TranslateFn, useI18n } from '../i18n';
 import type { SessionEvent } from '../types';
 import {
   type BridgedThinkingNote,
   formatBasename,
-  KIND_LABELS,
   summarizeToolEvent,
   summarizeToolGroup
 } from './chatFilter';
@@ -40,6 +40,7 @@ function formatJson(v: unknown): string {
 
 function CodeActionToolDetail({
   ev,
+  t,
   onInspectFile,
   onViewDiffFile,
   searchQuery,
@@ -48,6 +49,7 @@ function CodeActionToolDetail({
   isCurrentMatch
 }: {
   ev: SessionEvent;
+  t: TranslateFn;
   onInspectFile?: (filePath: string) => void;
   onViewDiffFile?: (filePath: string) => void;
   searchQuery?: string;
@@ -111,7 +113,7 @@ function CodeActionToolDetail({
             }}
             data-testid={`tool-group-diff-${ev.seq}`}
           >
-            在 Diff 中查看 ↗
+            {t('chat.viewInDiff')} ↗
           </button>
         )}
       </div>
@@ -146,7 +148,9 @@ function CodeActionToolDetail({
                 setDiffExpanded((v) => !v);
               }}
             >
-              {diffExpanded ? '收起预览' : `展开其余 ${diffLines.length - 16} 行`}
+              {diffExpanded
+                ? t('chat.collapsePreview')
+                : t('chat.expandLines', { count: diffLines.length - 16 })}
             </button>
           )}
         </div>
@@ -164,6 +168,7 @@ function CodeActionToolDetail({
 
 function renderToolDetail(
   ev: SessionEvent,
+  t: TranslateFn,
   onInspectFile?: (filePath: string) => void,
   onViewDiffFile?: (filePath: string) => void,
   searchQuery?: string,
@@ -185,7 +190,11 @@ function renderToolDetail(
             </pre>
           )}
           <div className={styles.metaRow}>
-            {typeof p.cwd === 'string' && p.cwd && <span className="ag-chip">cwd: {p.cwd}</span>}
+            {typeof p.cwd === 'string' && p.cwd && (
+              <span className="ag-chip ag-chip-ellipsis" title={`cwd: ${p.cwd}`}>
+                cwd: {p.cwd}
+              </span>
+            )}
             {hasExit && (
               <span className="ag-chip" data-tone={p.exitCode === 0 ? 'ok' : 'danger'}>
                 exit {String(p.exitCode)}
@@ -220,14 +229,18 @@ function renderToolDetail(
                   {filePath}
                 </button>
               ) : (
-                <span className="ag-chip">{filePath}</span>
+                <span className="ag-chip ag-chip-ellipsis" title={filePath}>
+                  {filePath}
+                </span>
               ))}
             {hasRange && (
               <span className="ag-chip">
                 L{String(p.startLine)}-{String(p.endLine)}
               </span>
             )}
-            {typeof p.numLines === 'number' && <span className="ag-chip">{p.numLines} 行</span>}
+            {typeof p.numLines === 'number' && (
+              <span className="ag-chip">{t('chat.linesCount', { count: p.numLines })}</span>
+            )}
           </div>
           {typeof p.content === 'string' && p.content && (
             <pre className={styles.codeBlock} data-hscroll="1">
@@ -242,6 +255,7 @@ function renderToolDetail(
       return (
         <CodeActionToolDetail
           ev={ev}
+          t={t}
           onInspectFile={onInspectFile}
           onViewDiffFile={onViewDiffFile}
           searchQuery={searchQuery}
@@ -257,16 +271,20 @@ function renderToolDetail(
         <div className={styles.detailBody}>
           <div className={styles.metaRow}>
             {typeof p.query === 'string' && p.query && (
-              <span className="ag-chip">检索: {p.query}</span>
+              <span className="ag-chip ag-chip-ellipsis" title={p.query}>
+                {t('chat.searchQuery')}: {p.query}
+              </span>
             )}
-            {docs.length > 0 && <span className="ag-chip">{docs.length} 条来源</span>}
+            {docs.length > 0 && (
+              <span className="ag-chip">{t('chat.sourcesCount', { count: docs.length })}</span>
+            )}
           </div>
           {typeof p.summary === 'string' && p.summary && <Markdown text={p.summary} />}
           {docs.length > 0 && (
             <div className={styles.webList}>
               {docs.slice(0, 6).map((d, idx) => {
                 const doc = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>;
-                const title = String(doc.title || doc.url || `结果 ${idx + 1}`);
+                const title = String(doc.title || doc.url || t('chat.resultIndex', { index: idx + 1 }));
                 const url = typeof doc.url === 'string' ? doc.url : '';
                 return (
                   <div key={idx} className={styles.webItem}>
@@ -299,10 +317,14 @@ function renderToolDetail(
           )}
           <div className={styles.metaRow}>
             {p.includedStepIndexEnd != null && (
-              <span className="ag-chip">至步骤 #{String(p.includedStepIndexEnd)}</span>
+              <span className="ag-chip">
+                {t('chat.toStep', { seq: String(p.includedStepIndexEnd) })}
+              </span>
             )}
             {typeof p.totalSubagentCount === 'number' && p.totalSubagentCount > 0 && (
-              <span className="ag-chip">{p.totalSubagentCount} 子代理</span>
+              <span className="ag-chip">
+                {t('chat.subagentsCount', { count: p.totalSubagentCount })}
+              </span>
             )}
           </div>
         </div>
@@ -346,6 +368,7 @@ function getInspectableFilePath(ev: SessionEvent): string {
 
 function ToolSubRow({
   event,
+  t,
   onInspectFile,
   onViewDiffFile,
   searchQuery,
@@ -354,6 +377,7 @@ function ToolSubRow({
   isCurrentMatch
 }: {
   event: SessionEvent;
+  t: TranslateFn;
   onInspectFile?: (filePath: string) => void;
   onViewDiffFile?: (filePath: string) => void;
   searchQuery?: string;
@@ -366,7 +390,7 @@ function ToolSubRow({
   const isRunning = event.status === 'running' || event.status === 'generating';
   const isError = event.status === 'error';
   const filePath = getInspectableFilePath(event);
-  const summary = summarizeToolEvent(event);
+  const summary = summarizeToolEvent(event, t);
 
   const { additions, deletions } =
     event.kind === 'code_action'
@@ -398,7 +422,7 @@ function ToolSubRow({
               aria-hidden="true"
             />
           )}
-          <span className={styles.subKind}>{KIND_LABELS[event.kind] || event.kind}</span>
+          <span className={styles.subKind}>{t(`kind.${event.kind}`)}</span>
           <span className={styles.subSummary}>{summary}</span>
         </button>
 
@@ -407,7 +431,7 @@ function ToolSubRow({
             <button
               type="button"
               className={styles.inspectQuickBtn}
-              title={`查看 ${filePath}`}
+              title={t('chat.inspectFile', { path: filePath })}
               onClick={(e) => {
                 e.stopPropagation();
                 chipHandler(filePath);
@@ -434,7 +458,7 @@ function ToolSubRow({
           <button
             type="button"
             className={styles.chevronBtn}
-            aria-label={expanded ? '收起工具详情' : '展开工具详情'}
+            aria-label={expanded ? t('chat.collapse') : t('chat.expand')}
             onClick={() => setExpanded((prev) => !prev)}
           >
             <span className={[styles.chevron, expanded ? styles.chevronOpen : ''].join(' ')}>
@@ -448,6 +472,7 @@ function ToolSubRow({
         <div className={styles.subDetail}>
           {renderToolDetail(
             event,
+            t,
             onInspectFile,
             onViewDiffFile,
             searchQuery,
@@ -472,9 +497,10 @@ function ToolGroupCardInner({
   searchCaseSensitive,
   currentMatchSeq
 }: ToolGroupCardProps) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const { headline, activeEvent, hasError } = summarizeToolGroup(events);
+  const { headline, activeEvent, hasError } = summarizeToolGroup(events, t);
 
   return (
     <section
@@ -520,6 +546,7 @@ function ToolGroupCardInner({
             <ToolSubRow
               key={ev.seq}
               event={ev}
+              t={t}
               onInspectFile={onInspectFile}
               onViewDiffFile={onViewDiffFile}
               searchQuery={searchQuery}
@@ -537,8 +564,8 @@ function ToolGroupCardInner({
                 aria-expanded={notesOpen}
                 onClick={() => setNotesOpen((prev) => !prev)}
               >
-                <span>中间思考记录 ({thinkingNotes.length})</span>
-                <span>{notesOpen ? '收起' : '展开'}</span>
+                <span>{t('chat.bridgedThinking', { count: thinkingNotes.length })}</span>
+                <span>{notesOpen ? t('chat.collapse') : t('chat.expand')}</span>
               </button>
               {notesOpen && (
                 <div className={styles.notesList}>

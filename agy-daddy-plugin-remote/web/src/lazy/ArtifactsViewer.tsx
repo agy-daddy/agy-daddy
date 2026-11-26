@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Markdown } from '../chat/Markdown';
+import { useI18n } from '../i18n';
 import { api } from '../store/api';
 import type { ArtifactItem } from '../types';
 import styles from './lazy.module.css';
@@ -10,6 +11,7 @@ interface ArtifactsViewerProps {
 }
 
 export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsViewerProps) {
+  const { t } = useI18n();
   const [items, setItems] = useState<ArtifactItem[]>([]);
   const [selected, setSelected] = useState<{
     name: string;
@@ -26,7 +28,7 @@ export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsVie
       const res = await api.listArtifacts(sessionId);
       setItems(Array.isArray(res.items) ? res.items : []);
     } catch (err) {
-      onShowToast?.(`加载产物列表失败: ${(err as Error).message}`);
+      onShowToast?.(t('artifacts.loadFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -43,7 +45,7 @@ export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsVie
         dataUrl: res.dataUrl
       });
     } catch (err) {
-      onShowToast?.(`读取产物失败: ${(err as Error).message}`);
+      onShowToast?.(t('artifacts.readFailed', { msg: (err as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -55,7 +57,7 @@ export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsVie
   }, [sessionId]);
 
   if (!sessionId) {
-    return <div className="ag-empty">请先选择一个会话</div>;
+    return <div className="ag-empty">{t('lazy.noSession')}</div>;
   }
 
   if (selected) {
@@ -65,7 +67,7 @@ export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsVie
       <div className={styles.pane} data-testid="artifact-detail">
         <div className={styles.toolbar}>
           <button type="button" className="ag-pill-btn" onClick={() => setSelected(null)}>
-            ← 返回
+            ← {t('common.back')}
           </button>
           <span className={styles.mono} style={{ flex: 1 }}>
             {selected.name}
@@ -100,12 +102,12 @@ export default function ArtifactsViewer({ sessionId, onShowToast }: ArtifactsVie
           brain/{sessionId}
         </span>
         <button type="button" className="ag-pill-btn" onClick={loadList} disabled={busy}>
-          刷新
+          {t('common.refresh')}
         </button>
       </div>
       <div className={styles.scroll}>
         {items.length === 0 ? (
-          <div className="ag-empty">{busy ? '加载中...' : '当前会话暂无产物文件'}</div>
+          <div className="ag-empty">{busy ? t('files.loading') : t('artifacts.empty')}</div>
         ) : (
           <div className={styles.list}>
             {items.map((it) => (

@@ -1,3 +1,4 @@
+import type { TranslateFn } from '../i18n';
 import type { SessionEvent, SessionEventKind } from '../types';
 
 export interface BridgedThinkingNote {
@@ -339,16 +340,17 @@ export function formatBasename(rawPath: string): string {
   return parts[parts.length - 1] || clean;
 }
 
-export function summarizeToolEvent(ev: SessionEvent): string {
+export function summarizeToolEvent(ev: SessionEvent, t?: TranslateFn): string {
   const p = ev.payload || {};
+  const kindLabel = (k: SessionEventKind) => (t ? t(`kind.${k}`) : KIND_LABELS[k] || k);
   switch (ev.kind) {
     case 'command': {
       const cmd = String(p.commandLine || p.proposedCommandLine || ev.title || '').trim();
-      return cmd ? `$ ${cmd}` : '执行命令';
+      return cmd ? `$ ${cmd}` : kindLabel('command');
     }
     case 'file_view': {
       const filePath = String(p.absolutePathUri || ev.title || '').trim();
-      const base = filePath ? formatBasename(filePath) : '查看文件';
+      const base = filePath ? formatBasename(filePath) : kindLabel('file_view');
       const hasRange = p.startLine != null && p.endLine != null;
       return hasRange ? `${base} L${p.startLine}-${p.endLine}` : base;
     }
@@ -359,26 +361,33 @@ export function summarizeToolEvent(ev: SessionEvent): string {
       if (typeof spec?.description === 'string' && spec.description.trim()) {
         return spec.description.trim();
       }
-      return ev.title || '修改代码';
+      return ev.title || kindLabel('code_action');
     }
     case 'web_search': {
       if (typeof p.query === 'string' && p.query.trim()) return p.query.trim();
-      return ev.title || '网络检索';
+      return ev.title || kindLabel('web_search');
     }
     case 'checkpoint': {
-      if (p.includedStepIndexEnd != null) return `至步骤 #${String(p.includedStepIndexEnd)}`;
-      return ev.title || '会话快照';
+      if (p.includedStepIndexEnd != null) {
+        return t
+          ? t('chat.toStep', { seq: String(p.includedStepIndexEnd) })
+          : `至步骤 #${String(p.includedStepIndexEnd)}`;
+      }
+      return ev.title || kindLabel('checkpoint');
     }
     case 'tool_generic': {
       const name = extractToolName(ev);
-      return name || ev.rawType.replace(/^CORTEX_STEP_TYPE_/i, '') || '工具调用';
+      return name || ev.rawType.replace(/^CORTEX_STEP_TYPE_/i, '') || kindLabel('tool_generic');
     }
     default:
-      return ev.title || KIND_LABELS[ev.kind] || ev.kind;
+      return ev.title || kindLabel(ev.kind);
   }
 }
 
-export function summarizeToolGroup(events: SessionEvent[]): {
+export function summarizeToolGroup(
+  events: SessionEvent[],
+  t?: TranslateFn
+): {
   headline: string;
   activeEvent: SessionEvent | null;
   hasError: boolean;
@@ -386,12 +395,15 @@ export function summarizeToolGroup(events: SessionEvent[]): {
   const activeEvent =
     events.find((e) => e.status === 'running' || e.status === 'generating') || null;
   const hasError = events.some((e) => e.status === 'error');
+  const kindLabel = (k: SessionEventKind) => (t ? t(`kind.${k}`) : KIND_LABELS[k] || k);
 
   if (activeEvent) {
-    const kindLabel = KIND_LABELS[activeEvent.kind] || activeEvent.kind;
-    const detail = summarizeToolEvent(activeEvent);
+    const kLabel = kindLabel(activeEvent.kind);
+    const detail = summarizeToolEvent(activeEvent, t);
     return {
-      headline: `正在执行 (${events.length}) · ${kindLabel}: ${detail}`,
+      headline: t
+        ? t('chat.toolsRunning', { count: events.length, kind: kLabel, detail })
+        : `正在执行 (${events.length}) · ${kLabel}: ${detail}`,
       activeEvent,
       hasError
     };
@@ -404,11 +416,13 @@ export function summarizeToolGroup(events: SessionEvent[]): {
     counts.set(ev.kind, (counts.get(ev.kind) || 0) + 1);
   }
   const breakdown = order
-    .map((k) => `${KIND_LABELS[k] || k}×${counts.get(k)}`)
+    .map((k) => `${kindLabel(k)}×${counts.get(k)}`)
     .join(' · ');
 
   return {
-    headline: `已调用 ${events.length} 个工具 · ${breakdown}`,
+    headline: t
+      ? t('chat.toolsDone', { count: events.length, breakdown })
+      : `已调用 ${events.length} 个工具 · ${breakdown}`,
     activeEvent: null,
     hasError
   };

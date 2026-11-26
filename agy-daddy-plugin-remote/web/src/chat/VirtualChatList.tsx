@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import type { PermissionLevel, QueuedMessage, SessionEvent } from '../types';
 import { buildDisplayTimeline, type DisplayTimelineItem } from './chatFilter';
 import { StepCard } from './StepCard';
@@ -82,6 +83,7 @@ export function VirtualChatList({
   onEditQueueItem,
   onRetryQueueItem
 }: VirtualChatListProps) {
+  const { t } = useI18n();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef<Map<string, number>>(new Map());
@@ -301,7 +303,7 @@ export function VirtualChatList({
     return (
       <div ref={scrollerRef} className={styles.scroller} data-testid="chat-scroller">
         <div className="ag-empty">
-          {loading ? '正在加载对话记录...' : '暂无步骤记录，在下方输入开始对话'}
+          {loading ? t('chat.loadingHistory') : t('chat.emptyHistory')}
         </div>
       </div>
     );
@@ -361,7 +363,11 @@ export function VirtualChatList({
         )}
 
         {sessionQueue.length > 0 && (
-          <section className={styles.queueSection} data-testid="chat-queue-list" aria-label="排队消息">
+          <section
+            className={styles.queueSection}
+            data-testid="chat-queue-list"
+            aria-label={t('chat.queueRegion')}
+          >
             {sessionQueue.map((q) => {
               const isBusy = Boolean(busyQueueIds[q.id]) || q.status === 'sending';
               const isFailed = q.status === 'failed';
@@ -386,11 +392,17 @@ export function VirtualChatList({
                               : styles.queuedBadgeWaiting
                         ].join(' ')}
                       >
-                        {isFailed ? '发送失败' : q.status === 'sending' ? '发送中...' : '排队中'}
+                        {isFailed
+                          ? t('chat.queueFailed')
+                          : q.status === 'sending'
+                            ? t('chat.sending')
+                            : t('chat.queueQueued')}
                       </span>
                       {q.mode === 'plan' && <span className={styles.modeTag}>Plan</span>}
                       {q.images && q.images.length > 0 && (
-                        <span className="ag-chip">{q.images.length} 张图片</span>
+                        <span className="ag-chip">
+                          {t('chat.imagesCount', { count: q.images.length })}
+                        </span>
                       )}
                     </div>
                   </header>
@@ -408,7 +420,7 @@ export function VirtualChatList({
                         onClick={() => runQueueAction(q.id, onSteerQueueItem)}
                         data-testid={`queue-steer-${q.id}`}
                       >
-                        立即插队
+                        {t('chat.steerNow')}
                       </button>
                     )}
 
@@ -420,7 +432,7 @@ export function VirtualChatList({
                         onClick={() => runQueueAction(q.id, onRetryQueueItem)}
                         data-testid={`queue-retry-${q.id}`}
                       >
-                        重试
+                        {t('chat.retry')}
                       </button>
                     )}
 
@@ -432,7 +444,7 @@ export function VirtualChatList({
                         onClick={() => onEditQueueItem(q.id)}
                         data-testid={`queue-edit-${q.id}`}
                       >
-                        编辑
+                        {t('chat.edit')}
                       </button>
                     )}
 
@@ -444,7 +456,7 @@ export function VirtualChatList({
                         onClick={() => runQueueAction(q.id, onRemoveQueueItem)}
                         data-testid={`queue-remove-${q.id}`}
                       >
-                        撤回
+                        {t('chat.withdraw')}
                       </button>
                     )}
                   </div>
@@ -466,7 +478,7 @@ export function VirtualChatList({
           }}
           data-testid="jump-bottom-btn"
         >
-          ↓ 回到底部
+          ↓ {t('chat.jumpBottom')}
         </button>
       )}
     </div>

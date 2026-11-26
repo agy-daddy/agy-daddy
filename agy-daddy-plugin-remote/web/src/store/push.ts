@@ -1,4 +1,14 @@
+import { createTranslator, LOCALE_STORAGE_KEY, normalizeLocale } from '../i18n';
+import type { SupportedLocale } from '../types';
 import { api } from './api';
+
+function getTranslator(locale?: SupportedLocale) {
+  const stored =
+    typeof window !== 'undefined'
+      ? normalizeLocale(window.localStorage?.getItem(LOCALE_STORAGE_KEY))
+      : null;
+  return createTranslator(locale || stored || 'zh-CN');
+}
 
 export function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -30,13 +40,17 @@ export async function getActivePushSubscription(): Promise<PushSubscription | nu
   }
 }
 
-export async function subscribeWebPush(vapidKeyHint?: string | null): Promise<PushSubscription> {
+export async function subscribeWebPush(
+  vapidKeyHint?: string | null,
+  locale?: SupportedLocale
+): Promise<PushSubscription> {
+  const t = getTranslator(locale);
   if (!isPushSupported()) {
-    throw new Error('当前浏览器不支持 Web Push');
+    throw new Error(t('push.unsupported'));
   }
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') {
-    throw new Error('通知权限未授予');
+    throw new Error(t('push.denied'));
   }
 
   let vapidPublicKey = vapidKeyHint || '';
@@ -45,7 +59,7 @@ export async function subscribeWebPush(vapidKeyHint?: string | null): Promise<Pu
     vapidPublicKey = keyRes.publicKey || keyRes.vapidPublicKey || '';
   }
   if (!vapidPublicKey) {
-    throw new Error('服务端未提供 VAPID 公钥');
+    throw new Error(t('push.noVapid'));
   }
 
   const reg = await navigator.serviceWorker.ready;

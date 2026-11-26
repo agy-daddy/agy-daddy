@@ -266,7 +266,9 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   padding: 3px 9px;
+  min-width: 44px;
   min-height: 30px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-accent-soft, var(--ag-control));
@@ -280,7 +282,7 @@
 .fileChipBtn::after {
   content: '';
   position: absolute;
-  inset: -7px -2px;
+  inset: -9px -4px;
 }
 
 .fileChipText {
@@ -310,7 +312,7 @@
 .chevronBtn::after {
   content: '';
   position: absolute;
-  inset: -5px;
+  inset: -6px;
 }
 
 .chevron {
@@ -373,6 +375,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .approvalDesc {
@@ -570,6 +574,8 @@
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .fileBtn {
@@ -660,7 +666,7 @@
 .copyStepBtn::after {
   content: '';
   position: absolute;
-  inset: -8px -4px;
+  inset: -9px -4px;
 }
 
 .copyStepBtn:hover {

@@ -80,7 +80,7 @@
 .planChipClose::after {
   content: '';
   position: absolute;
-  inset: -11px;
+  inset: -12px;
 }
 
 .planChipClose:hover {
@@ -135,7 +135,7 @@
 .thumbDel::after {
   content: '';
   position: absolute;
-  inset: -12px;
+  inset: -13px;
 }
 
 .textarea {
@@ -206,7 +206,11 @@
 .toolIconBtn::after {
   content: '';
   position: absolute;
-  inset: -6px;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .toolIconBtn:hover:not(:disabled) {
@@ -241,7 +245,11 @@
 .toolChipBtn::after {
   content: '';
   position: absolute;
-  inset: -6px -2px;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .toolChipBtn:hover:not(:disabled) {
@@ -262,7 +270,7 @@
 .modelTriggerBtn {
   position: relative;
   height: 32px;
-  min-width: 0;
+  min-width: 48px;
   max-width: 148px;
   flex: 0 1 auto;
   padding: 0 8px;
@@ -281,7 +289,11 @@
 .modelTriggerBtn::after {
   content: '';
   position: absolute;
-  inset: -6px 0;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .modelTriggerBtn:hover:not(:disabled) {
@@ -338,7 +350,11 @@
 .permBtn::after {
   content: '';
   position: absolute;
-  inset: -6px -2px;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .permBtn:active {
@@ -387,7 +403,11 @@
 .stopBtn::after {
   content: '';
   position: absolute;
-  inset: -6px;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .stopSquare {
@@ -403,6 +423,7 @@
 
 .sendBtn {
   position: relative;
+  min-width: 44px;
   height: 32px;
   padding: 0 12px;
   border-radius: var(--ag-r-sm, 10px);
@@ -420,7 +441,11 @@
 .sendBtn::after {
   content: '';
   position: absolute;
-  inset: -6px -2px;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 46px);
+  height: max(100%, 46px);
+  transform: translate(-50%, -50%);
 }
 
 .sendBtn:active:not(:disabled) {
@@ -450,6 +475,7 @@
 
 .planToggleRow {
   width: 100%;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -554,6 +580,7 @@
 }
 
 .presetItem {
+  min-height: 44px;
   text-align: left;
   padding: 8px 10px;
   border-radius: var(--ag-r-sm, 10px);
@@ -612,7 +639,7 @@
 .popCloseBtn::after {
   content: '';
   position: absolute;
-  inset: -7px;
+  inset: -8px;
 }
 
 .permList {
@@ -711,7 +738,7 @@
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 2px 2px 7px;
+  padding: 6px 2px 9px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -738,6 +765,8 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 44px;
   height: 28px;
   padding: 0 11px;
   border-radius: var(--ag-r-pill, 999px);
@@ -754,7 +783,7 @@
 .quickPill::after {
   content: '';
   position: absolute;
-  inset: -8px 0;
+  inset: -10px -2px;
 }
 
 .quickPill:hover {
@@ -789,7 +818,7 @@
 .ghostBtn::after {
   content: '';
   position: absolute;
-  inset: -8px 0;
+  inset: -10px -2px;
 }
 
 .undoOptimizeBtn {
@@ -810,7 +839,7 @@
 .undoOptimizeBtn::after {
   content: '';
   position: absolute;
-  inset: -8px 0;
+  inset: -10px -2px;
 }
 
 .highRiskBanner {
@@ -915,6 +944,8 @@
 }
 
 .contextBarCompactBtn {
+  position: relative;
+  min-width: 44px;
   min-height: 36px;
   padding: 0 10px;
   border-radius: var(--ag-r-pill, 999px);
@@ -923,4 +954,43 @@
   font-size: 11px;
   font-weight: 600;
   flex-shrink: 0;
+}
+
+.contextBarCompactBtn::after {
+  content: '';
+  position: absolute;
+  inset: -5px -2px;
+}
+
+@media (max-width: 380px) {
+  .toolbar {
+    gap: 4px;
+  }
+
+  .toolLeft,
+  .toolRight {
+    gap: 4px;
+  }
+
+  .toolIconBtn,
+  .stopBtn {
+    width: 30px;
+  }
+
+  .toolChipBtn,
+  .permBtn {
+    padding: 0 6px;
+  }
+
+  .modelTriggerBtn {
+    padding: 0 6px;
+  }
+
+  .modelTagText {
+    display: none;
+  }
+
+  .sendBtn {
+    padding: 0 9px;
+  }
 }

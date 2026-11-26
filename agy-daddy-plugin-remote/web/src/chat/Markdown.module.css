@@ -102,6 +102,11 @@
 
 .copyBtn {
   position: relative;
+  min-height: 26px;
+  min-width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 2px 8px;
   border-radius: var(--ag-r-pill, 999px);
   background: var(--ag-control);
@@ -114,7 +119,7 @@
 .copyBtn::after {
   content: '';
   position: absolute;
-  inset: -11px -8px;
+  inset: -10px -8px;
 }
 
 .copyBtn:hover {

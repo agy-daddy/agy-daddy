@@ -91,7 +91,7 @@
 .backBtn::after {
   content: '';
   position: absolute;
-  inset: -6px -4px;
+  inset: -8px -4px;
 }
 
 .backBtn:active {
@@ -156,7 +156,7 @@
 .closeBtn::after {
   content: '';
   position: absolute;
-  inset: -6px;
+  inset: -7px;
 }
 
 .closeBtn:active {

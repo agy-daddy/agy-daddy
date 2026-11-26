@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { normalizeCacheHitRatePct } from '../chat/composerUtils';
 import { useI18n } from '../i18n';
 import { BottomSheet } from '../layout/BottomSheet';
 import type {
@@ -357,8 +358,11 @@ export function TelemetrySheet({
                   </div>
                   <div className={styles.metricCell}>
                     <span className={styles.metricLabel}>{t('telemetry.hitRate')}</span>
-                    <span className={styles.metricVal}>
-                      {ctx.cacheHitRate != null ? `${Math.round(ctx.cacheHitRate)}%` : '--'}
+                    <span className={styles.metricVal} data-testid="telemetry-hit-rate">
+                      {(() => {
+                        const hitPct = normalizeCacheHitRatePct(ctx.cacheHitRate);
+                        return hitPct !== null ? `${hitPct}%` : '--';
+                      })()}
                     </span>
                   </div>
                   <div className={styles.metricCell}>

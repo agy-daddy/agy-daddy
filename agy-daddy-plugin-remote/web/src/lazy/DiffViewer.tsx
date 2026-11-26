@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useI18n } from '../i18n';
 import { api } from '../store/api';
 import type { GitDiffFile } from '../types';
 import styles from './lazy.module.css';
@@ -70,6 +71,7 @@ export default function DiffViewer({
   onInjectQuote,
   onRefreshDiffBadge
 }: DiffViewerProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [branch, setBranch] = useState('');
@@ -109,7 +111,7 @@ export default function DiffViewer({
       setLineLimits({});
       onRefreshDiffBadge?.();
     } catch (err) {
-      setError((err as Error).message || '加载 Diff 失败');
+      setError((err as Error).message || t('diff.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -181,14 +183,14 @@ export default function DiffViewer({
   const submitComment = () => {
     if (!selectedLine || !onInjectQuote) return;
     const cleanCode = selectedLine.code.replace(/^[+-]/, '').trim();
-    const quote = `\`${selectedLine.file}:${selectedLine.line}\`\n> \`${cleanCode}\`\n${comment.trim() || '请检查这一行'}`;
+    const quote = `\`${selectedLine.file}:${selectedLine.line}\`\n> \`${cleanCode}\`\n${comment.trim() || t('diff.defaultComment')}`;
     onInjectQuote(quote);
     setSelectedLine(null);
     setComment('');
   };
 
   if (!rootPath) {
-    return <div className="ag-empty">当前会话未绑定工作区目录</div>;
+    return <div className="ag-empty">{t('lazy.noWorkspace')}</div>;
   }
 
   const fileOptions =
@@ -200,7 +202,7 @@ export default function DiffViewer({
         <span className="ag-chip">{branch || 'HEAD'}</span>
         <select
           className={styles.diffSelect}
-          aria-label="筛选变更文件"
+          aria-label={t('diff.filterFilesAria')}
           value={selectedFile || 'all'}
           onChange={(e) => {
             const val = (e.target as HTMLSelectElement).value;
@@ -210,7 +212,7 @@ export default function DiffViewer({
             }
           }}
         >
-          <option value="all">全部改动 ({fileOptions.length})</option>
+          <option value="all">{t('diff.allChanges', { count: fileOptions.length })}</option>
           {fileOptions.map((fp) => (
             <option key={fp} value={fp}>
               {fp}
@@ -218,7 +220,7 @@ export default function DiffViewer({
           ))}
         </select>
         <button type="button" className="ag-pill-btn" onClick={loadDiff} disabled={loading}>
-          {loading ? '…' : '刷新'}
+          {loading ? '…' : t('common.refresh')}
         </button>
       </div>
 
@@ -237,7 +239,7 @@ export default function DiffViewer({
       >
         {error && <div className="ag-empty">{error}</div>}
         {!error && visibleSections.length === 0 && (
-          <div className="ag-empty">{loading ? '正在加载 Diff...' : '工作区暂无未提交变更'}</div>
+          <div className="ag-empty">{loading ? t('diff.loading') : t('diff.empty')}</div>
         )}
 
         {visibleSections.map((sec, sIdx) => {
@@ -258,7 +260,7 @@ export default function DiffViewer({
                 >
                   <span className={styles.mono}>{sec.file}</span>
                   <span style={{ fontSize: 11, color: 'var(--ag-muted)', flexShrink: 0 }}>
-                    {isExpanded ? '▾' : '▸'} {sec.lines.length} 行
+                    {isExpanded ? '▾' : '▸'} {t('chat.linesCount', { count: sec.lines.length })}
                   </span>
                 </button>
               ) : (
@@ -301,7 +303,7 @@ export default function DiffViewer({
                   className={styles.loadMoreBtn}
                   onClick={() => showMoreLines(sec.file)}
                 >
-                  加载更多（剩余 {remaining} 行）
+                  {t('diff.loadMore', { count: remaining })}
                 </button>
               )}
             </div>
@@ -313,17 +315,17 @@ export default function DiffViewer({
         <div className={styles.commentBar} data-testid="inline-comment-bar">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span className={styles.mono}>
-              批注 {selectedLine.file}:{selectedLine.line}
+              {t('diff.annotate', { target: `${selectedLine.file}:${selectedLine.line}` })}
             </span>
             <button type="button" className="ag-pill-btn" onClick={() => setSelectedLine(null)}>
-              取消
+              {t('common.cancel')}
             </button>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <input
               type="text"
               className="ag-input"
-              placeholder="输入行内批注内容..."
+              placeholder={t('diff.commentPlaceholder')}
               value={comment}
               onInput={(e) => setComment((e.target as HTMLInputElement).value)}
             />
@@ -332,7 +334,7 @@ export default function DiffViewer({
               className="ag-pill-btn ag-pill-btn-primary"
               onClick={submitComment}
             >
-              回注对话
+              {t('diff.injectChat')}
             </button>
           </div>
         </div>

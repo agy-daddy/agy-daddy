@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChangeReviewStrip } from './chat/ChangeReviewStrip';
 import { ChatNavDock } from './chat/ChatNavDock';
 import { Composer } from './chat/Composer';
+import { normalizeCacheHitRatePct } from './chat/composerUtils';
 import { ModelPickerSheet } from './chat/ModelPickerSheet';
+import { PendingFloatingCard } from './chat/PendingFloatingCard';
 import { StepCard } from './chat/StepCard';
 import { ToolGroupCard } from './chat/ToolGroupCard';
 import { VirtualChatList } from './chat/VirtualChatList';
+import { LeftDrawer } from './drawers/LeftDrawer';
+import { RightDrawer } from './drawers/RightDrawer';
 import { I18nProvider, useI18n } from './i18n';
 import { BottomSheet } from './layout/BottomSheet';
 import { TopBar } from './layout/TopBar';
@@ -684,5 +688,252 @@ describe('HUB-276 Mobile PWA UI & Full-Parity Suite', () => {
 
     fireEvent.click(screen.getByTestId('composer-high-risk-confirm'));
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes cacheHitRate across decimal (0..1) and percentage (0..100) forms in TelemetrySheet and Composer', () => {
+    expect(normalizeCacheHitRatePct(0)).toBe(0);
+    expect(normalizeCacheHitRatePct(1)).toBe(100);
+    expect(normalizeCacheHitRatePct(0.92)).toBe(92);
+    expect(normalizeCacheHitRatePct(92)).toBe(92);
+    expect(normalizeCacheHitRatePct(0.725)).toBe(73);
+    expect(normalizeCacheHitRatePct(150)).toBe(100);
+    expect(normalizeCacheHitRatePct(-1)).toBeNull();
+    expect(normalizeCacheHitRatePct(undefined)).toBeNull();
+
+    const withRate = (cacheHitRate: number, displayLocation: 'topbar' | 'composer' = 'topbar'): TelemetryPanels => {
+      const base = makeTelemetry(displayLocation);
+      return {
+        ...base,
+        context: {
+          available: true,
+          data: {
+            ...base.context!.data!,
+            cacheHitRate
+          }
+        }
+      };
+    };
+
+    const { rerender } = render(
+      <I18nProvider locale="en">
+        <TelemetrySheet
+          open={true}
+          activeTab="context"
+          telemetry={withRate(0.92)}
+          modelName="Claude 4.5 Sonnet"
+          permissionLevel="L1"
+          hasActiveSession={true}
+          onSelectTab={vi.fn()}
+          onRunCompact={vi.fn().mockResolvedValue(true)}
+          onClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId('telemetry-hit-rate').textContent).toBe('92%');
+
+    for (const [input, expected] of [
+      [1, '100%'],
+      [0, '0%'],
+      [92, '92%']
+    ] as const) {
+      rerender(
+        <I18nProvider locale="en">
+          <TelemetrySheet
+            open={true}
+            activeTab="context"
+            telemetry={withRate(input)}
+            modelName="Claude 4.5 Sonnet"
+            permissionLevel="L1"
+            hasActiveSession={true}
+            onSelectTab={vi.fn()}
+            onRunCompact={vi.fn().mockResolvedValue(true)}
+            onClose={vi.fn()}
+          />
+        </I18nProvider>
+      );
+      expect(screen.getByTestId('telemetry-hit-rate').textContent).toBe(expected);
+    }
+
+    render(
+      <I18nProvider locale="en">
+        <Composer
+          text=""
+          images={[]}
+          presets={[]}
+          models={SAMPLE_MODELS}
+          selectedModelId="claude-4.5-sonnet"
+          chatMode="chat"
+          permissionLevel="L1"
+          telemetry={withRate(0.92, 'composer')}
+          running={false}
+          voiceSupported={false}
+          onTextChange={vi.fn()}
+          onAddImage={vi.fn()}
+          onRemoveImage={vi.fn()}
+          onModelChange={vi.fn()}
+          onChatModeChange={vi.fn()}
+          onSend={vi.fn()}
+          onCancel={vi.fn()}
+          onOptimize={vi.fn().mockResolvedValue(null)}
+        />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId('composer-context-bar').textContent).toContain('92%');
+  });
+
+  it('renders English locale across chat cards, drawers, Composer, and ModelPickerSheet without hardcoded Chinese', () => {
+    const pendingCmd: SessionEvent = {
+      seq: 11,
+      kind: 'command',
+      status: 'pending',
+      rawType: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      payload: {
+        proposedCommandLine: 'npm run verify',
+        cwd: '/Volumes/external/very-long-workspace-path/agy-daddy/agy-daddy-plugin-remote'
+      }
+    };
+    const askEv: SessionEvent = {
+      seq: 12,
+      kind: 'ask_question',
+      status: 'pending',
+      rawType: 'CORTEX_STEP_TYPE_ASK_QUESTION',
+      payload: {
+        questions: [
+          {
+            question: 'Deploy staging build?',
+            options: [{ label: 'Yes' }, { label: 'No' }]
+          }
+        ]
+      }
+    };
+    const toolEv: SessionEvent = {
+      seq: 13,
+      kind: 'code_action',
+      status: 'done',
+      rawType: 'CORTEX_STEP_TYPE_CODE_ACTION',
+      payload: { path: 'src/index.ts', diff: '+const ok = true;' }
+    };
+
+    const { container } = render(
+      <I18nProvider locale="en">
+        <div>
+          <PendingFloatingCard
+            pendingEvent={pendingCmd}
+            permissionLevel="L1"
+            onApprove={vi.fn().mockResolvedValue(undefined)}
+            onAnswer={vi.fn().mockResolvedValue(undefined)}
+          />
+          <StepCard
+            event={pendingCmd}
+            permissionLevel="L1"
+            onApprove={vi.fn().mockResolvedValue(undefined)}
+          />
+          <StepCard
+            event={askEv}
+            permissionLevel="L1"
+            onAnswer={vi.fn().mockResolvedValue(undefined)}
+          />
+          <ToolGroupCard
+            id="tg-en"
+            events={[toolEv]}
+            onViewDiffFile={vi.fn()}
+          />
+          <Composer
+            text=""
+            images={[]}
+            presets={[]}
+            models={SAMPLE_MODELS}
+            selectedModelId="claude-4.5-sonnet"
+            chatMode="chat"
+            permissionLevel="L1"
+            telemetry={makeTelemetry('composer')}
+            running={false}
+            voiceSupported={false}
+            onTextChange={vi.fn()}
+            onAddImage={vi.fn()}
+            onRemoveImage={vi.fn()}
+            onModelChange={vi.fn()}
+            onChatModeChange={vi.fn()}
+            onSend={vi.fn()}
+            onCancel={vi.fn()}
+            onOptimize={vi.fn().mockResolvedValue(null)}
+          />
+          <ModelPickerSheet
+            open={true}
+            models={SAMPLE_MODELS}
+            selectedModelId="claude-4.5-sonnet"
+            orchestratorThinking={{ carbon: 'medium', argon: 'high', neon: 'high', 'opus5.5': 'xhigh' }}
+            activeOrchestratorMaster="carbon"
+            onSelectModel={vi.fn()}
+            onSelectOrchestrator={vi.fn()}
+            onClose={vi.fn()}
+          />
+          <LeftDrawer
+            sessions={[
+              {
+                cascadeId: 's-en-1',
+                title: 'Fix touch targets',
+                summary: '',
+                status: 'RUNNING',
+                stepCount: 4,
+                lastModifiedTime: '',
+                workspaceUri: 'file:///repo',
+                branchName: 'main',
+                needsAttention: true
+              }
+            ]}
+            activeSessionId="s-en-1"
+            workspaces={['/repo']}
+            groups={[
+              {
+                id: 'grp-1',
+                name: 'Workstation',
+                source: 'user',
+                projectIds: [],
+                workspaceUris: [],
+                sessionIds: []
+              }
+            ]}
+            projects={[{ id: 'proj-1', name: 'agy-daddy', path: '/repo', uri: 'file:///repo' }]}
+            channel="loopback"
+            permissionLevel="L2"
+            token="tok"
+            appearance="dark"
+            soundAlert={true}
+            vibrateAlert={true}
+            pushSubscribed={false}
+            pushBusy={false}
+            onSelectSession={vi.fn()}
+            onCreateSession={vi.fn().mockResolvedValue(undefined)}
+            onCycleAppearance={vi.fn()}
+            onToggleSound={vi.fn()}
+            onToggleVibrate={vi.fn()}
+            onTogglePush={vi.fn().mockResolvedValue(undefined)}
+            onTestPush={vi.fn().mockResolvedValue(undefined)}
+            onClose={vi.fn()}
+          />
+          <RightDrawer
+            open={true}
+            activeTab="diff"
+            rootPath=""
+            sessionId="s-en-1"
+            permissionLevel="L1"
+            token="tok"
+            inspectTargetFile=""
+            onSelectTab={vi.fn()}
+            onClose={vi.fn()}
+            onInjectQuote={vi.fn()}
+            onShowToast={vi.fn()}
+            onRefreshDiffBadge={vi.fn()}
+          />
+        </div>
+      </I18nProvider>
+    );
+
+    const renderedText = container.textContent || '';
+    expect(renderedText).toContain('Pending');
+    expect(renderedText).toContain('Workspaces & Sessions');
+    expect(renderedText).toContain('Files');
+    expect(renderedText).not.toMatch(/[\u4e00-\u9fff]/);
   });
 });

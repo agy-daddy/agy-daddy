@@ -93,7 +93,7 @@ a {
   justify-content: center;
   gap: 5px;
   min-width: 44px;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 13px;
   border-radius: var(--ag-r-pill);
   background: var(--ag-control);
@@ -112,11 +112,7 @@ a {
 .ag-pill-btn::after {
   content: '';
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max(100%, 44px);
-  height: max(100%, 44px);
-  transform: translate(-50%, -50%);
+  inset: -1px;
 }
 
 .ag-pill-btn:hover:not(:disabled) {
@@ -165,6 +161,16 @@ a {
   border: 1px solid var(--ag-border-sub);
   color: var(--ag-secondary);
   white-space: nowrap;
+}
+
+.ag-chip-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .ag-chip[data-tone="warn"] {

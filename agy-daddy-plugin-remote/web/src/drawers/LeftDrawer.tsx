@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'preact/hooks';
+import { useI18n, type I18nKey, type TranslateFn } from '../i18n';
 import { normalizeRootUri } from '../store/useRemoteStore';
 import type {
   AppearanceMode,
@@ -40,16 +41,16 @@ export interface LeftDrawerProps {
   onClose: () => void;
 }
 
-const PERM_DESC: Record<PermissionLevel, string> = {
-  L0: 'L0 只读监控：可看流/Diff/文件/产物，禁止发消息与写操作',
-  L1: 'L1 对话与审批：可新建/发送/中断/审批，禁止文件与终端写',
-  L2: 'L2 工作区完全控制：含文件写/Git/Worktree/PTY 终端（仅宿主机开启）'
+const PERM_DESC_KEYS: Record<PermissionLevel, I18nKey> = {
+  L0: 'left.permDescL0',
+  L1: 'left.permDescL1',
+  L2: 'left.permDescL2'
 };
 
-const APPEARANCE_LABELS: Record<AppearanceMode, string> = {
-  auto: '跟随系统',
-  dark: '深色',
-  light: '浅色'
+const APPEARANCE_KEYS: Record<AppearanceMode, I18nKey> = {
+  auto: 'menu.appearanceAuto',
+  dark: 'menu.appearanceDark',
+  light: 'menu.appearanceLight'
 };
 
 const UNASSIGNED_PROJECT_ID = '__unassigned__';
@@ -106,15 +107,15 @@ function basenameOf(uriOrPath: string | null | undefined): string {
   return parts[parts.length - 1] || norm;
 }
 
-function formatRelTime(iso: string | null | undefined): string {
+function formatRelTime(iso: string | null | undefined, t: TranslateFn): string {
   if (!iso) return '';
   const ts = Date.parse(iso);
   if (!Number.isFinite(ts)) return '';
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (diffSec < 60) return '刚刚';
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}分前`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}时前`;
-  return `${Math.floor(diffSec / 86400)}天前`;
+  if (diffSec < 60) return t('left.justNow');
+  if (diffSec < 3600) return t('left.minsAgo', { n: Math.floor(diffSec / 60) });
+  if (diffSec < 86400) return t('left.hoursAgo', { n: Math.floor(diffSec / 3600) });
+  return t('left.daysAgo', { n: Math.floor(diffSec / 86400) });
 }
 
 interface ProjectBucket {
@@ -130,6 +131,7 @@ interface ProjectBucket {
 }
 
 export function LeftDrawer(props: LeftDrawerProps) {
+  const { t } = useI18n();
   const {
     sessions,
     activeSessionId,
@@ -416,7 +418,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
         if (!bucket) {
           bucket = {
             id: UNASSIGNED_PROJECT_ID,
-            name: '未归类 / 全局会话',
+            name: t('left.unassigned'),
             uri: null,
             branchName: null,
             groupId: null,
@@ -530,7 +532,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
     const isRunning = String(s.status || '').includes('RUNNING');
     const active = s.cascadeId === activeSessionId;
     const isPinned = pinnedSessionSet.has(s.cascadeId);
-    const rel = formatRelTime(s.lastModifiedTime);
+    const rel = formatRelTime(s.lastModifiedTime, t);
     const projLabel = s.projectName || basenameOf(s.workspaceUri);
 
     return (
@@ -551,7 +553,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
             <span className={styles.sessTitle}>{s.title || s.cascadeId}</span>
             {s.needsAttention && (
               <span className="ag-chip" data-tone="danger">
-                {s.attentionReason || '待处理'}
+                {s.attentionReason || t('left.filterAttention')}
               </span>
             )}
           </div>
@@ -560,7 +562,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
               <span className={styles.projTag}>{projLabel}</span>
             )}
             {s.branchName && <span className={styles.branchTag}>{s.branchName}</span>}
-            <span>{s.stepCount} 步</span>
+            <span>{t('left.stepsCount', { count: s.stepCount })}</span>
             {rel && <span>· {rel}</span>}
           </div>
         </button>
@@ -570,8 +572,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
             type="button"
             className={`${styles.pinBtn} ${isPinned ? styles.pinActive : ''}`}
             data-testid={`pin-session-${s.cascadeId}`}
-            aria-label={isPinned ? '取消置顶会话' : '置顶会话'}
-            title={isPinned ? '取消置顶' : '置顶'}
+            aria-label={isPinned ? t('left.unpinSession') : t('left.pinSession')}
+            title={isPinned ? t('left.unpinSession') : t('left.pinSession')}
             onClick={(e) => {
               e.stopPropagation();
               onTogglePin('session', s.cascadeId, !isPinned);
@@ -589,7 +591,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
       {/* Sticky Drawer Header */}
       <div className={styles.head}>
         <div className={styles.headTitle}>
-          <strong>工作区与会话</strong>
+          <strong>{t('left.title')}</strong>
           <span className={styles.headCount}>{baseSessions.length}</span>
         </div>
         <div className={styles.headActions}>
@@ -602,13 +604,13 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 setCreating((v) => !v);
               }}
             >
-              + 新建
+              {t('left.newSessionBtn')}
             </button>
           )}
           <button
             type="button"
             className={styles.closeBtn}
-            aria-label="关闭左侧抽屉"
+            aria-label={t('left.closeDrawer')}
             onClick={onClose}
           >
             ✕
@@ -626,7 +628,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
             type="search"
             className={styles.searchInput}
             data-testid="left-search-input"
-            placeholder="搜索分组、项目、会话或分支..."
+            placeholder={t('left.searchPlaceholder')}
             value={searchQuery}
             onInput={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
           />
@@ -634,7 +636,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
             <button
               type="button"
               className={styles.clearBtn}
-              aria-label="清空搜索"
+              aria-label={t('left.clearSearch')}
               onClick={() => setSearchQuery('')}
             >
               ✕
@@ -642,7 +644,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
           )}
         </div>
 
-        <div className={styles.segmented} role="tablist" aria-label="按会话状态筛选">
+        <div className={styles.segmented} role="tablist" aria-label={t('left.filterAria')}>
           <button
             type="button"
             role="tab"
@@ -650,7 +652,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
             className={`${styles.segBtn} ${statusFilter === 'all' ? styles.segActive : ''}`}
             onClick={() => setStatusFilter('all')}
           >
-            全部
+            {t('left.filterAll')}
           </button>
           <button
             type="button"
@@ -659,7 +661,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
             className={`${styles.segBtn} ${statusFilter === 'running' ? styles.segActive : ''}`}
             onClick={() => setStatusFilter('running')}
           >
-            运行中{runningCount > 0 ? ` ${runningCount}` : ''}
+            {t('left.filterRunning')}
+            {runningCount > 0 ? ` ${runningCount}` : ''}
           </button>
           <button
             type="button"
@@ -668,7 +671,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
             className={`${styles.segBtn} ${statusFilter === 'attention' ? styles.segActive : ''}`}
             onClick={() => setStatusFilter('attention')}
           >
-            待处理{attentionSessions.length > 0 ? ` ${attentionSessions.length}` : ''}
+            {t('left.filterAttention')}
+            {attentionSessions.length > 0 ? ` ${attentionSessions.length}` : ''}
           </button>
         </div>
 
@@ -679,7 +683,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
             data-hscroll="1"
             data-testid="group-filter-bar"
             role="tablist"
-            aria-label="按宿主机分组筛选"
+            aria-label={t('left.groupFilterAria')}
           >
             <button
               type="button"
@@ -688,7 +692,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
               className={`${styles.groupPill} ${activeGroupId === 'all' ? styles.groupPillActive : ''}`}
               onClick={() => setActiveGroupId('all')}
             >
-              <span>全部分组</span>
+              <span>{t('left.allGroups')}</span>
               <span className={styles.pillCount}>{baseSessions.length}</span>
             </button>
 
@@ -716,8 +720,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
                     <button
                       type="button"
                       className={styles.groupInlinePin}
-                      aria-label={isPinned ? '取消置顶分组' : '置顶分组'}
-                      title={isPinned ? '取消置顶分组' : '置顶分组'}
+                      aria-label={isPinned ? t('left.unpinGroup') : t('left.pinGroup')}
+                      title={isPinned ? t('left.unpinGroup') : t('left.pinGroup')}
                       onClick={(e) => {
                         e.stopPropagation();
                         onTogglePin('group', g.id, !isPinned);
@@ -736,7 +740,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 className={styles.groupAddBtn}
                 onClick={() => setCreatingGroup((v) => !v)}
               >
-                + 分组
+                {t('left.addGroup')}
               </button>
             )}
           </div>
@@ -748,11 +752,11 @@ export function LeftDrawer(props: LeftDrawerProps) {
         {/* New Session Card */}
         {creating && (
           <div className={styles.inlineFormCard}>
-            <div className={styles.formHeader}>新建会话</div>
+            <div className={styles.formHeader}>{t('left.newSessionTitle')}</div>
             <input
               type="text"
               className="ag-input"
-              placeholder="会话标题（可选）"
+              placeholder={t('left.sessionTitlePlaceholder')}
               value={newTitle}
               onInput={(e) => setNewTitle((e.target as HTMLInputElement).value)}
             />
@@ -762,7 +766,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 value={newWs}
                 onChange={(e) => setNewWs((e.target as HTMLSelectElement).value)}
               >
-                <option value="">默认工作区</option>
+                <option value="">{t('left.defaultWorkspace')}</option>
                 {uniqueWorkspaces.map(([uri, name]) => (
                   <option key={uri} value={uri}>
                     {name}
@@ -777,7 +781,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 disabled={submitting}
                 onClick={() => setCreating(false)}
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -785,7 +789,11 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 disabled={submitting}
                 onClick={handleCreate}
               >
-                {submitting ? '创建中...' : newTitle.trim() ? '创建会话' : '创建空白会话'}
+                {submitting
+                  ? t('left.creating')
+                  : newTitle.trim()
+                    ? t('left.createSession')
+                    : t('left.createBlankSession')}
               </button>
             </div>
           </div>
@@ -794,11 +802,11 @@ export function LeftDrawer(props: LeftDrawerProps) {
         {/* New Group Card */}
         {creatingGroup && canWrite && onCreateGroup && (
           <div className={styles.inlineFormCard}>
-            <div className={styles.formHeader}>新建分组（同步到宿主机与 Web）</div>
+            <div className={styles.formHeader}>{t('left.newGroupTitle')}</div>
             <input
               type="text"
               className="ag-input"
-              placeholder="分组名称..."
+              placeholder={t('left.groupNamePlaceholder')}
               value={newGroupName}
               onInput={(e) => setNewGroupName((e.target as HTMLInputElement).value)}
             />
@@ -809,7 +817,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 disabled={submittingGroup}
                 onClick={() => setCreatingGroup(false)}
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -817,7 +825,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 disabled={submittingGroup || !newGroupName.trim()}
                 onClick={handleCreateGroup}
               >
-                {submittingGroup ? '保存中...' : '创建分组'}
+                {submittingGroup ? t('left.saving') : t('left.createGroup')}
               </button>
             </div>
           </div>
@@ -827,7 +835,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
         {attentionSessions.length > 0 && (
           <div className={styles.attnBox} data-testid="needs-attention-queue">
             <div className={styles.attnHead}>
-              <span>待处理 ({attentionSessions.length})</span>
+              <span>{t('left.pendingTitle', { count: attentionSessions.length })}</span>
             </div>
             <div className={styles.attnList}>
               {attentionSessions.map((s) => (
@@ -839,7 +847,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 >
                   <span className={styles.sessTitle}>{s.title || s.cascadeId}</span>
                   <span className="ag-chip" data-tone="danger">
-                    {s.attentionReason || '待审批'}
+                    {s.attentionReason || t('left.pendingApprove')}
                   </span>
                 </button>
               ))}
@@ -852,7 +860,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
           <section className={styles.section} data-testid="pinned-section">
             <div className={styles.sectionHead}>
               <span className={styles.sectionTitle}>
-                <PinIcon filled /> 置顶 ({pinnedSessions.length + pinnedProjects.length})
+                <PinIcon filled />{' '}
+                {t('left.pinnedTitle', { count: pinnedSessions.length + pinnedProjects.length })}
               </span>
             </div>
             {pinnedProjects.length > 0 && (
@@ -879,8 +888,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
                       <button
                         type="button"
                         className={styles.iconMiniBtn}
-                        aria-label={`在 ${proj.name} 新建会话`}
-                        title="新建会话"
+                        aria-label={t('left.newInProject', { name: proj.name })}
+                        title={t('left.newSessionTitle')}
                         onClick={() => handleQuickCreateInProject(proj.uri || proj.path || null)}
                       >
                         +
@@ -890,8 +899,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
                       <button
                         type="button"
                         className={`${styles.iconMiniBtn} ${styles.pinActive}`}
-                        aria-label="取消置顶项目"
-                        title="取消置顶"
+                        aria-label={t('left.unpinProject')}
+                        title={t('left.unpinProject')}
                         onClick={() => onTogglePin('project', proj.id, false)}
                       >
                         <PinIcon filled />
@@ -913,7 +922,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
         <section className={styles.section}>
           <div className={styles.sectionHead}>
             <span className={styles.sectionTitle}>
-              项目与会话 ({matchingSessions.length})
+              {t('left.projectsSessions', { count: matchingSessions.length })}
             </span>
             {subagentCount > 0 && (
               <button
@@ -921,13 +930,13 @@ export function LeftDrawer(props: LeftDrawerProps) {
                 className={styles.subToggle}
                 onClick={() => setShowSubagents((v) => !v)}
               >
-                {showSubagents ? '隐藏子代理' : `+${subagentCount} 子代理`}
+                {showSubagents ? t('left.hideSubagents') : t('left.showSubagents', { count: subagentCount })}
               </button>
             )}
           </div>
 
           {projectBuckets.length === 0 ? (
-            <div className="ag-empty">无匹配的项目或会话</div>
+            <div className="ag-empty">{t('left.noMatches')}</div>
           ) : (
             <div className={styles.projectList}>
               {projectBuckets.map((proj) => {
@@ -962,8 +971,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
                           <button
                             type="button"
                             className={`${styles.iconMiniBtn} ${proj.pinned ? styles.pinActive : ''}`}
-                            aria-label={proj.pinned ? '取消置顶项目' : '置顶项目'}
-                            title={proj.pinned ? '取消置顶项目' : '置顶项目'}
+                            aria-label={proj.pinned ? t('left.unpinProject') : t('left.pinProject')}
+                            title={proj.pinned ? t('left.unpinProject') : t('left.pinProject')}
                             onClick={(e) => {
                               e.stopPropagation();
                               onTogglePin('project', proj.id, !proj.pinned);
@@ -976,8 +985,8 @@ export function LeftDrawer(props: LeftDrawerProps) {
                           <button
                             type="button"
                             className={styles.iconMiniBtn}
-                            aria-label={`在 ${proj.name} 新建会话`}
-                            title="在此项目新建会话"
+                            aria-label={t('left.newInProject', { name: proj.name })}
+                            title={t('left.newInProject', { name: proj.name })}
                             onClick={(e) => {
                               e.stopPropagation();
                               handleQuickCreateInProject(proj.uri);
@@ -992,7 +1001,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
                     {!isCollapsed && (
                       <div className={styles.projectBody}>
                         {proj.sessions.length === 0 ? (
-                          <div className={styles.projectEmpty}>暂无会话，点右上角 + 新建</div>
+                          <div className={styles.projectEmpty}>{t('left.projectEmpty')}</div>
                         ) : (
                           proj.sessions.map((s) => renderSessionRow(s, false))
                         )}
@@ -1014,9 +1023,9 @@ export function LeftDrawer(props: LeftDrawerProps) {
           aria-expanded={settingsOpen}
           onClick={() => setSettingsOpen((v) => !v)}
         >
-          <span className={styles.footerLabel}>系统、通知与权限</span>
+          <span className={styles.footerLabel}>{t('left.footerTitle')}</span>
           <span className={styles.footerSummary}>
-            {channel} · {permissionLevel} · {APPEARANCE_LABELS[appearance]}
+            {channel} · {permissionLevel} · {t(APPEARANCE_KEYS[appearance])}
             <ChevronIcon open={settingsOpen} />
           </span>
         </button>
@@ -1024,7 +1033,7 @@ export function LeftDrawer(props: LeftDrawerProps) {
         {settingsOpen && (
           <div className={styles.settingsCard}>
             <div className={styles.settingRow}>
-              <span>当前通道：{channel}</span>
+              <span>{t('left.currentChannel', { channel })}</span>
               <button
                 type="button"
                 className="ag-pill-btn"
@@ -1033,17 +1042,17 @@ export function LeftDrawer(props: LeftDrawerProps) {
                   props.onOpenChannels?.();
                 }}
               >
-                切换通道
+                {t('left.switchChannel')}
               </button>
             </div>
             <div className={styles.settingRow}>
-              <span>外观主题</span>
+              <span>{t('left.appearanceTheme')}</span>
               <button type="button" className="ag-pill-btn" onClick={onCycleAppearance}>
-                {APPEARANCE_LABELS[appearance]}
+                {t(APPEARANCE_KEYS[appearance])}
               </button>
             </div>
             <div className={styles.settingRow}>
-              <span>PWA 锁屏推送</span>
+              <span>{t('menu.pushLockScreen')}</span>
               <div style={{ display: 'flex', gap: 5 }}>
                 <button
                   type="button"
@@ -1051,25 +1060,25 @@ export function LeftDrawer(props: LeftDrawerProps) {
                   disabled={pushBusy}
                   onClick={onTogglePush}
                 >
-                  {pushSubscribed ? '已开启' : '开启'}
+                  {pushSubscribed ? t('menu.pushEnabled') : t('menu.pushEnable')}
                 </button>
                 <button type="button" className="ag-pill-btn" onClick={onTestPush}>
-                  测试
+                  {t('menu.pushTest')}
                 </button>
               </div>
             </div>
             <div className={styles.settingRow}>
-              <span>前台提示音 / 短震</span>
+              <span>{t('left.foregroundAlerts')}</span>
               <div style={{ display: 'flex', gap: 5 }}>
                 <button type="button" className="ag-pill-btn" onClick={onToggleSound}>
-                  音:{soundAlert ? '开' : '关'}
+                  {t('left.soundShort', { state: soundAlert ? t('left.on') : t('left.off') })}
                 </button>
                 <button type="button" className="ag-pill-btn" onClick={onToggleVibrate}>
-                  震:{vibrateAlert ? '开' : '关'}
+                  {t('left.vibrateShort', { state: vibrateAlert ? t('left.on') : t('left.off') })}
                 </button>
               </div>
             </div>
-            <div className={styles.permHint}>{PERM_DESC[permissionLevel]}</div>
+            <div className={styles.permHint}>{t(PERM_DESC_KEYS[permissionLevel])}</div>
           </div>
         )}
       </div>

@@ -1,6 +1,20 @@
-const SHELL_CACHE = 'agy-remote-shell-v2';
-const ASSET_CACHE = 'agy-remote-assets-v2';
-const SHELL_URLS = ['/', '/manifest.webmanifest', '/icon.svg'];
+const SHELL_CACHE = 'agy-remote-shell-v3';
+const ASSET_CACHE = 'agy-remote-assets-v3';
+const SHELL_URLS = [
+  '/?enter=1',
+  '/manifest.webmanifest',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon-maskable-512.png',
+  '/icon.svg'
+];
+const STATIC_PUBLIC_PATHS = new Set([
+  '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon-maskable-512.png',
+  '/manifest.webmanifest'
+]);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -31,7 +45,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // CacheFirst for hashed Vite assets & static shell icons
-  if (url.pathname.startsWith('/assets/') || url.pathname === '/icon.svg' || url.pathname === '/manifest.webmanifest') {
+  if (url.pathname.startsWith('/assets/') || STATIC_PUBLIC_PATHS.has(url.pathname)) {
     event.respondWith(
       caches.open(ASSET_CACHE).then(async (cache) => {
         const cached = await cache.match(req);
@@ -46,19 +60,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // NetworkFirst for / and HTML navigation
+  // NetworkFirst for / and HTML navigation (keep '/' landing and '/?enter=1' console caches isolated)
   if (req.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
+    const isConsoleNav =
+      url.pathname === '/index.html' ||
+      url.searchParams.get('enter') === '1' ||
+      url.searchParams.get('direct') === '1' ||
+      url.searchParams.has('switch_ticket');
+    const hasUrlToken = url.searchParams.has('t') || url.searchParams.has('token');
+    const cacheKey = isConsoleNav ? '/?enter=1' : '/';
     event.respondWith(
       fetch(req)
         .then((res) => {
-          if (res && res.ok) {
+          if (res && res.ok && (isConsoleNav || !hasUrlToken)) {
             const copy = res.clone();
-            caches.open(SHELL_CACHE).then((c) => c.put('/', copy)).catch(() => {});
+            caches.open(SHELL_CACHE).then((c) => c.put(cacheKey, copy)).catch(() => {});
           }
           return res;
         })
         .catch(async () => {
-          const cached = await caches.match('/');
+          const cached =
+            (await caches.match(cacheKey)) ||
+            (await caches.match('/?enter=1')) ||
+            (await caches.match('/'));
           return cached || new Response('Offline', { status: 503, statusText: 'Offline' });
         })
     );
@@ -122,7 +146,7 @@ self.addEventListener('push', (event) => {
     } catch {}
   }
   const sessionId = payload.sessionId || (payload.data && payload.data.sessionId) || '';
-  const targetUrl = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/';
+  const targetUrl = sessionId ? `/?enter=1&session=${encodeURIComponent(sessionId)}` : '/?enter=1';
   const badgeCount = resolveBadgeCountFromPayload(payload);
   const badgeTask = badgeCount >= 0
     ? updateSwAppBadge(badgeCount)
@@ -131,8 +155,8 @@ self.addEventListener('push', (event) => {
     Promise.all([
       self.registration.showNotification(payload.title || 'Agy-Daddy Remote', {
         body: payload.body || '',
-        icon: '/icon.svg',
-        badge: '/icon.svg',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
         tag: payload.tag || (sessionId ? `agy-session-${sessionId}` : 'agy-remote'),
         renotify: true,
         data: { url: targetUrl, sessionId }

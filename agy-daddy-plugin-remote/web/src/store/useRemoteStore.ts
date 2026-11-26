@@ -862,17 +862,20 @@ export class RemoteStoreController {
       } finally {
         scrubSwitchTicketFromUrl();
       }
-    } else if (!this.state.token && refreshed.token) {
+    } else if (refreshed.token) {
       this.setState({
         token: refreshed.token,
         activeSessionId: this.state.activeSessionId || refreshed.sessionId,
-        enteredFromLanding: refreshed.enteredFromLanding
+        enteredFromLanding: this.state.enteredFromLanding || refreshed.enteredFromLanding
       });
     }
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
         this.setState({ online: true });
+        if (this.state.token && !this.state.bootstrap) {
+          void this.connectAndSync();
+        }
         this.flushPendingQueue();
       });
       window.addEventListener('offline', () => {

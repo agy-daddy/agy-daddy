@@ -1,0 +1,406 @@
+{
+  "title": { "zh-CN": "视觉主题与光学定制", "en": "Visual Theme & Optics" },
+  "fields": [
+    {
+      "key": "enabled",
+      "type": "boolean",
+      "default": false,
+      "group": { "zh-CN": "基础与光学预设", "en": "General & Optical Presets" },
+      "label": { "zh-CN": "启用视觉主题增强", "en": "Enable visual theme customization" },
+      "description": {
+        "zh-CN": "默认关闭，100% 保持 Antigravity 宿主原生外观；开启后按下方预设与组件配置实时注入样式，关闭即刻干净回退",
+        "en": "Disabled by default to keep native Antigravity appearance untouched; enable for live hot-reloaded customization with instant clean rollback"
+      }
+    },
+    {
+      "key": "preset",
+      "type": "enum",
+      "default": "native",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "基础与光学预设", "en": "General & Optical Presets" },
+      "options": [
+        { "value": "native", "label": { "zh-CN": "宿主原生（仅应用下方单项自定义）", "en": "Host Native (component overrides only)" } },
+        { "value": "obsidian-void", "label": { "zh-CN": "深空黑曜 · Obsidian Void（深色）", "en": "Obsidian Void (Dark)" } },
+        { "value": "warm-basalt", "label": { "zh-CN": "暖炭玄岩 · Warm Basalt（深色）", "en": "Warm Basalt (Dark)" } },
+        { "value": "cool-crystal", "label": { "zh-CN": "冷晶白 · Cool Crystal（浅色）", "en": "Cool Crystal (Light)" } },
+        { "value": "warm-album", "label": { "zh-CN": "暖白画册 · Warm Album（浅色）", "en": "Warm Album (Light)" } }
+      ],
+      "label": { "zh-CN": "光学配色预设", "en": "Optical color preset" },
+      "description": {
+        "zh-CN": "选择深色或浅色光学预设作为基底，下方任意组件均可在预设之上独立覆盖",
+        "en": "Pick a light or dark optical preset as base; any component setting below overrides the preset"
+      }
+    },
+    {
+      "key": "showTopbarUnit",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "基础与光学预设", "en": "General & Optical Presets" },
+      "label": { "zh-CN": "顶栏显示快捷主题胶囊", "en": "Show quick theme unit in topbar" },
+      "description": {
+        "zh-CN": "默认关闭以保持顶栏零改动；开启后可在顶栏一键切换预设与省电模式",
+        "en": "Off by default to keep topbar untouched; enable for one-click preset & power-save switching"
+      }
+    },
+    {
+      "key": "syncHostCapsules",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "基础与光学预设", "en": "General & Optical Presets" },
+      "label": { "zh-CN": "同步美化 Agy-Daddy 宿主胶囊", "en": "Sync theme tokens to Agy-Daddy capsules" },
+      "description": {
+        "zh-CN": "开启后将当前光学预设的表面与文字颜色同步至 Agy-Daddy Shadow DOM 胶囊与弹窗",
+        "en": "Optionally propagate active optical tokens into Agy-Daddy Shadow DOM capsules and popovers"
+      }
+    },
+    {
+      "key": "userBubbleBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "留空跟随预设/原生，例如 #1c2436",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "#1c2436", "label": { "zh-CN": "深空蓝灰 (#1c2436)", "en": "Obsidian Slate (#1c2436)" } },
+        { "value": "#2a241d", "label": { "zh-CN": "暖炭棕 (#2a241d)", "en": "Warm Basalt (#2a241d)" } },
+        { "value": "#e8eff9", "label": { "zh-CN": "冷晶浅蓝 (#e8eff9)", "en": "Crystal Ice (#e8eff9)" } },
+        { "value": "#efe6d8", "label": { "zh-CN": "暖白纸感 (#efe6d8)", "en": "Warm Paper (#efe6d8)" } }
+      ],
+      "label": { "zh-CN": "用户气泡背景色", "en": "User bubble background" },
+      "description": {
+        "zh-CN": "支持选择预设色板或输入任意合法 CSS 颜色值（hex / rgb / rgba）",
+        "en": "Choose a preset swatch or enter any valid CSS color (hex / rgb / rgba)"
+      }
+    },
+    {
+      "key": "userBubbleBorder",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "留空跟随预设/原生，例如 rgba(148, 163, 184, 0.22)",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "rgba(148, 163, 184, 0.24)", "label": { "zh-CN": "冷银高光线", "en": "Silver Hairline" } },
+        { "value": "rgba(217, 179, 130, 0.26)", "label": { "zh-CN": "暖金高光线", "en": "Warm Gold Hairline" } },
+        { "value": "rgba(37, 99, 235, 0.22)", "label": { "zh-CN": "钴蓝细框", "en": "Cobalt Hairline" } },
+        { "value": "transparent", "label": { "zh-CN": "无边框 (transparent)", "en": "Borderless (transparent)" } }
+      ],
+      "label": { "zh-CN": "用户气泡边框高光", "en": "User bubble border highlight" }
+    },
+    {
+      "key": "userBubbleRadius",
+      "type": "number",
+      "min": 0,
+      "max": 28,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "0",
+      "label": { "zh-CN": "用户气泡圆角", "en": "User bubble radius" },
+      "description": {
+        "zh-CN": "设为 0 表示跟随预设或宿主原生圆角，范围 0–28 px",
+        "en": "0 follows preset or host native radius (0-28 px)"
+      }
+    },
+    {
+      "key": "assistantBubbleBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "留空跟随预设/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "#121722", "label": { "zh-CN": "深空曜面 (#121722)", "en": "Obsidian Surface (#121722)" } },
+        { "value": "#1b1815", "label": { "zh-CN": "暖炭暗面 (#1b1815)", "en": "Basalt Surface (#1b1815)" } },
+        { "value": "#ffffff", "label": { "zh-CN": "纯白画纸 (#ffffff)", "en": "Pure White (#ffffff)" } },
+        { "value": "#fffcf6", "label": { "zh-CN": "暖白羊皮 (#fffcf6)", "en": "Warm Vellum (#fffcf6)" } }
+      ],
+      "label": { "zh-CN": "助手气泡背景色", "en": "Assistant bubble background" }
+    },
+    {
+      "key": "assistantBubbleBorder",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "留空跟随预设/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "rgba(148, 163, 184, 0.14)", "label": { "zh-CN": "轻柔冷灰框", "en": "Subtle Slate Border" } },
+        { "value": "rgba(217, 179, 130, 0.14)", "label": { "zh-CN": "轻柔暖金框", "en": "Subtle Amber Border" } },
+        { "value": "transparent", "label": { "zh-CN": "无边框 (transparent)", "en": "Borderless (transparent)" } }
+      ],
+      "label": { "zh-CN": "助手气泡边框高光", "en": "Assistant bubble border highlight" }
+    },
+    {
+      "key": "assistantBubbleRadius",
+      "type": "number",
+      "min": 0,
+      "max": 28,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "对话气泡", "en": "Message Bubbles" },
+      "placeholder": "0",
+      "label": { "zh-CN": "助手气泡圆角", "en": "Assistant bubble radius" }
+    },
+    {
+      "key": "codeTheme",
+      "type": "enum",
+      "default": "native",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "代码块与语法高亮", "en": "Code Blocks & Syntax" },
+      "options": [
+        { "value": "native", "label": { "zh-CN": "宿主原生语法配色", "en": "Host Native Syntax" } },
+        { "value": "obsidian-night", "label": { "zh-CN": "深空暗夜 (Obsidian Night)", "en": "Obsidian Night" } },
+        { "value": "warm-amber", "label": { "zh-CN": "暖炭琥珀 (Warm Amber)", "en": "Warm Amber" } },
+        { "value": "crystal-light", "label": { "zh-CN": "冷晶浅灰 (Crystal Light)", "en": "Crystal Light" } },
+        { "value": "paper-ink", "label": { "zh-CN": "暖白纸墨 (Paper Ink)", "en": "Paper Ink" } }
+      ],
+      "label": { "zh-CN": "代码高亮主题", "en": "Code highlight theme" },
+      "description": {
+        "zh-CN": "独立定制代码块语法高亮与对比度方案，互不干扰整体明暗预设",
+        "en": "Customize syntax highlighting palette independently from the overall theme preset"
+      }
+    },
+    {
+      "key": "codeBlockBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "代码块与语法高亮", "en": "Code Blocks & Syntax" },
+      "placeholder": "留空跟随代码主题/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随代码主题 / 原生", "en": "Follow Code Theme / Native" } },
+        { "value": "#0d1118", "label": { "zh-CN": "深空曜黑 (#0d1118)", "en": "Deep Obsidian (#0d1118)" } },
+        { "value": "#15120f", "label": { "zh-CN": "暖炭暗褐 (#15120f)", "en": "Warm Charcoal (#15120f)" } },
+        { "value": "#f1f5f9", "label": { "zh-CN": "冷晶浅灰 (#f1f5f9)", "en": "Cool Slate (#f1f5f9)" } },
+        { "value": "#f4efe6", "label": { "zh-CN": "暖白画纸 (#f4efe6)", "en": "Warm Paper (#f4efe6)" } }
+      ],
+      "label": { "zh-CN": "代码块背景色", "en": "Code block background" }
+    },
+    {
+      "key": "codeBlockBorder",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "代码块与语法高亮", "en": "Code Blocks & Syntax" },
+      "placeholder": "留空跟随代码主题/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随代码主题 / 原生", "en": "Follow Code Theme / Native" } },
+        { "value": "rgba(148, 163, 184, 0.18)", "label": { "zh-CN": "冷银细线框", "en": "Cool Silver Border" } },
+        { "value": "rgba(217, 179, 130, 0.18)", "label": { "zh-CN": "暖金细线框", "en": "Warm Amber Border" } },
+        { "value": "rgba(15, 23, 42, 0.12)", "label": { "zh-CN": "浅色描边", "en": "Light Slate Border" } }
+      ],
+      "label": { "zh-CN": "代码块边框", "en": "Code block border" }
+    },
+    {
+      "key": "codeBlockRadius",
+      "type": "number",
+      "min": 0,
+      "max": 24,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "代码块与语法高亮", "en": "Code Blocks & Syntax" },
+      "placeholder": "0",
+      "label": { "zh-CN": "代码块圆角", "en": "Code block radius" }
+    },
+    {
+      "key": "terminalWellBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "终端凹槽与 Artifact 卡片", "en": "Terminal Well & Artifact Cards" },
+      "placeholder": "留空跟随预设/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "#090c11", "label": { "zh-CN": "深邃黑井 (#090c11)", "en": "Deep Well (#090c11)" } },
+        { "value": "#0f0d0b", "label": { "zh-CN": "暖黑凹槽 (#0f0d0b)", "en": "Basalt Well (#0f0d0b)" } },
+        { "value": "#e9eef5", "label": { "zh-CN": "冷晶浅槽 (#e9eef5)", "en": "Crystal Well (#e9eef5)" } },
+        { "value": "#ede6da", "label": { "zh-CN": "暖纸凹槽 (#ede6da)", "en": "Paper Well (#ede6da)" } }
+      ],
+      "label": { "zh-CN": "终端凹槽背景色", "en": "Terminal well background" }
+    },
+    {
+      "key": "terminalWellBorder",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "终端凹槽与 Artifact 卡片", "en": "Terminal Well & Artifact Cards" },
+      "placeholder": "留空跟随预设/原生",
+      "label": { "zh-CN": "终端凹槽边框", "en": "Terminal well border" }
+    },
+    {
+      "key": "terminalWellDepth",
+      "type": "enum",
+      "default": "native",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "终端凹槽与 Artifact 卡片", "en": "Terminal Well & Artifact Cards" },
+      "options": [
+        { "value": "native", "label": { "zh-CN": "宿主原生", "en": "Native" } },
+        { "value": "recessed", "label": { "zh-CN": "深凹光学内阴影", "en": "Recessed Inner Shadow" } },
+        { "value": "subtle", "label": { "zh-CN": "柔和浅凹", "en": "Subtle Inset" } },
+        { "value": "flat", "label": { "zh-CN": "极简扁平", "en": "Flat" } }
+      ],
+      "label": { "zh-CN": "终端凹槽质感", "en": "Terminal well depth style" }
+    },
+    {
+      "key": "artifactRadius",
+      "type": "number",
+      "min": 0,
+      "max": 28,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "终端凹槽与 Artifact 卡片", "en": "Terminal Well & Artifact Cards" },
+      "placeholder": "0",
+      "label": { "zh-CN": "Artifact 卡片圆角", "en": "Artifact card radius" }
+    },
+    {
+      "key": "artifactBorderHighlight",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "终端凹槽与 Artifact 卡片", "en": "Terminal Well & Artifact Cards" },
+      "placeholder": "留空跟随预设/原生",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "rgba(148, 163, 184, 0.28)", "label": { "zh-CN": "冷银切面高光", "en": "Silver Facet Highlight" } },
+        { "value": "rgba(234, 179, 8, 0.28)", "label": { "zh-CN": "暖琥珀高光", "en": "Warm Amber Highlight" } },
+        { "value": "rgba(37, 99, 235, 0.26)", "label": { "zh-CN": "冷晶蓝高光", "en": "Crystal Blue Highlight" } }
+      ],
+      "label": { "zh-CN": "Artifact 卡片边框高光", "en": "Artifact card border highlight" }
+    },
+    {
+      "key": "topbarBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "顶栏、底栏与按钮", "en": "Topbar, Composer & Buttons" },
+      "placeholder": "留空跟随预设/原生",
+      "label": { "zh-CN": "顶栏背景色", "en": "Topbar background" }
+    },
+    {
+      "key": "composerBg",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "顶栏、底栏与按钮", "en": "Topbar, Composer & Buttons" },
+      "placeholder": "留空跟随预设/原生",
+      "label": { "zh-CN": "底部输入框容器背景", "en": "Composer bar background" }
+    },
+    {
+      "key": "composerRadius",
+      "type": "number",
+      "min": 0,
+      "max": 28,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "顶栏、底栏与按钮", "en": "Topbar, Composer & Buttons" },
+      "placeholder": "0",
+      "label": { "zh-CN": "底部输入框圆角", "en": "Composer bar radius" }
+    },
+    {
+      "key": "buttonAccent",
+      "type": "string",
+      "default": "",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "顶栏、底栏与按钮", "en": "Topbar, Composer & Buttons" },
+      "placeholder": "留空跟随预设/原生，例如 #2563eb",
+      "options": [
+        { "value": "", "label": { "zh-CN": "跟随预设 / 原生", "en": "Follow Preset / Native" } },
+        { "value": "#60a5fa", "label": { "zh-CN": "冰川蓝 (#60a5fa)", "en": "Arctic Blue (#60a5fa)" } },
+        { "value": "#2563eb", "label": { "zh-CN": "钴蓝 (#2563eb)", "en": "Cobalt Blue (#2563eb)" } },
+        { "value": "#d97706", "label": { "zh-CN": "暖琥珀 (#d97706)", "en": "Warm Amber (#d97706)" } },
+        { "value": "#b45309", "label": { "zh-CN": "焦糖铜 (#b45309)", "en": "Bronze (#b45309)" } },
+        { "value": "#52525b", "label": { "zh-CN": "中性石墨 (#52525b)", "en": "Graphite (#52525b)" } }
+      ],
+      "label": { "zh-CN": "主要按钮强调色", "en": "Primary button accent color" }
+    },
+    {
+      "key": "buttonRadius",
+      "type": "number",
+      "min": 0,
+      "max": 24,
+      "default": 0,
+      "unit": "px",
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "顶栏、底栏与按钮", "en": "Topbar, Composer & Buttons" },
+      "placeholder": "0",
+      "label": { "zh-CN": "按钮圆角", "en": "Button radius" }
+    },
+    {
+      "key": "powerSaveMode",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "动效、余晖与省电模式", "en": "Motion, Afterglow & Power Save" },
+      "label": { "zh-CN": "静默省电模式", "en": "Quiet power-save mode" },
+      "description": {
+        "zh-CN": "一键关闭所有阻尼动效、微动态图标、边缘余晖与高耗能模糊滤镜",
+        "en": "One-click switch to disable all spring transitions, icon animations, semantic glows, and blur effects"
+      }
+    },
+    {
+      "key": "dampedSpringMotion",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "动效、余晖与省电模式", "en": "Motion, Afterglow & Power Save" },
+      "label": { "zh-CN": "阻尼弹簧动效", "en": "Damped spring motion" },
+      "description": {
+        "zh-CN": "为气泡、卡片与交互按钮启用顺滑的二阶阻尼弹性过渡曲线（静默省电模式下自动抑制）",
+        "en": "Enable smooth spring-eased transitions for bubbles, cards, and buttons (suppressed in power-save mode)"
+      }
+    },
+    {
+      "key": "microAnimatedIcons",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "动效、余晖与省电模式", "en": "Motion, Afterglow & Power Save" },
+      "label": { "zh-CN": "微动态图标", "en": "Micro-animated icons" },
+      "description": {
+        "zh-CN": "悬停与点击按钮时为内置 SVG 图标赋予微尺度弹性反馈（静默省电模式下自动抑制）",
+        "en": "Subtle hover/press scale micro-feedback on interactive icons (suppressed in power-save mode)"
+      }
+    },
+    {
+      "key": "semanticAfterglow",
+      "type": "boolean",
+      "default": false,
+      "visibleWhen": { "key": "enabled", "equals": true },
+      "group": { "zh-CN": "动效、余晖与省电模式", "en": "Motion, Afterglow & Power Save" },
+      "label": { "zh-CN": "语义余晖", "en": "Semantic afterglow" },
+      "description": {
+        "zh-CN": "在输入框聚焦与对话交互边缘呈现柔和的光学环境光晕（静默省电模式下自动关闭）",
+        "en": "Soft ambient edge glow on focused composer and active cards (suppressed in power-save mode)"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "toggle-enabled",
+      "command": "theme.toggle-enabled",
+      "label": { "zh-CN": "启用 / 关闭主题增强", "en": "Toggle Theme On/Off" }
+    },
+    {
+      "id": "toggle-power-save",
+      "command": "theme.toggle-power-save",
+      "label": { "zh-CN": "切换静默省电模式", "en": "Toggle Power-Save Mode" }
+    },
+    {
+      "id": "reset-native",
+      "command": "theme.reset-native",
+      "label": { "zh-CN": "一键恢复宿主原生外观", "en": "Reset to Native Appearance" }
+    }
+  ]
+}

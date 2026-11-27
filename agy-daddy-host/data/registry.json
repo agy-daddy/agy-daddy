@@ -173,6 +173,18 @@
       "subpath": "agy-daddy-plugin-sidebar",
       "npmPackage": "@agy-daddy/plugin-sidebar",
       "description": "零侵入左侧边栏增强：项目分组、拖拽排序、Git 多 Worktree 子组聚合与会话沙盒强绑定"
+    },
+    {
+      "shortName": "viewer",
+      "id": "agy-daddy.viewer",
+      "name": "全能文件检视台",
+      "layer": 2,
+      "trustLevel": "T0",
+      "defaultEnabled": true,
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-viewer",
+      "npmPackage": "@agy-daddy/plugin-viewer",
+      "description": "本地 127.0.0.1 HTTP 206 流式检视台（超大音视频逐帧波形、大体积 CSV 虚拟表格、SVG 无损缩放、字体样张）与只读 Git 安全行内 Diff"
     }
   ]
 }

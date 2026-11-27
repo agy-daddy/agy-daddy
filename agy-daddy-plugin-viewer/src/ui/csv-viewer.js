@@ -424,7 +424,7 @@ async function mountCsvViewer({
     clearNode(tbodyEl);
 
     if (totalRows === 0) {
-      const tr = createEl(doc, 'tr', { attrs: { 'data-row-number': String(rowObj.rowNumber) } });
+      const tr = createEl(doc, 'tr');
       tr.appendChild(createEl(doc, 'td', {
         className: 'agy-v-csv-td',
         text: t('csv.emptyRows'),

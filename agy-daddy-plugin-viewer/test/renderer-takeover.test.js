@@ -519,3 +519,135 @@ test('Omni Viewers & Git Inline Diff: real gateway streaming, SVG sanitize, font
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('CSV Viewer empty-state regression: zero-hit search and zero-data-row CSV render csv.emptyRows without ReferenceError', async () => {
+  const tmpDir = realPath(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-viewer-csv-empty-')));
+  const dataCsv = path.join(tmpDir, 'data.csv');
+  const headerOnlyCsv = path.join(tmpDir, 'header-only.csv');
+  const emptyCsv = path.join(tmpDir, 'empty.csv');
+
+  fs.writeFileSync(dataCsv, 'id,name,note\n1,alpha,"hello"\n2,beta,"world"\n', 'utf8');
+  fs.writeFileSync(headerOnlyCsv, 'id,name,note\n', 'utf8');
+  fs.writeFileSync(emptyCsv, '', 'utf8');
+
+  const { doc, header } = seedFileViewerDoc();
+  header.setAttribute('data-file-path', dataCsv);
+
+  const harness = createMockHostHarness({
+    document: doc,
+    fetch: createChromiumLikeFetch('https://127.0.0.1:51410'),
+    onRpc: async (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            c1: { workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(tmpDir).href }] }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR, { trustLevel: 'T0' });
+
+    const t = createTranslator(doc);
+    const origFetch = globalThis.fetch;
+    const postTicket = async (filePath) => {
+      const resp = await origFetch(`http://127.0.0.1:${port}/plugins/agy-daddy.viewer/gateway/ticket`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AGY-Plugin-Token': harness.bridge.issuePluginToken('agy-daddy.viewer')
+        },
+        body: JSON.stringify({
+          filePath,
+          purpose: 'csv',
+          clientOrigin: 'https://127.0.0.1:51410'
+        })
+      });
+      return resp.json();
+    };
+
+    globalThis.fetch = createChromiumLikeFetch('https://127.0.0.1:51410', origFetch);
+    try {
+      // (a) Searching with zero matching keywords renders csv.emptyRows and does not throw ReferenceError
+      const dataTicket = await postTicket(dataCsv);
+      assert.equal(dataTicket.ok, true);
+      const searchRoot = createMockElement('div', doc);
+      const searchCtrl = new AbortController();
+      await mountCsvViewer({
+        doc,
+        t,
+        rootEl: searchRoot,
+        ticket: dataTicket,
+        settings: { csvChunkSize: 50, csvFirstRowHeader: true },
+        signal: searchCtrl.signal,
+        trackCleanup: () => {}
+      });
+
+      const searchInput = searchRoot.querySelector('input[type="text"]');
+      searchInput.value = '__NO_MATCH_KEYWORD_XYZ__';
+      searchInput.dispatchEvent({ type: 'input', target: searchInput });
+
+      const searchTbody = searchRoot.querySelector('tbody');
+      assert.ok(searchTbody);
+      const emptyTdAfterSearch = await waitFor(() => {
+        const td = searchTbody.querySelector('td');
+        return td && td.textContent === t('csv.emptyRows') ? td : null;
+      });
+      assert.ok(emptyTdAfterSearch);
+      assert.equal(searchTbody.querySelectorAll('tr').length, 1);
+      assert.equal(searchRoot.querySelector('.agy-v-card-center'), null);
+
+      // Clearing search restores rows cleanly
+      const clearBtn = searchRoot.querySelectorAll('button').find((b) => b.textContent === t('csv.clearFilter'));
+      assert.ok(clearBtn);
+      clearBtn.click();
+      const restoredCount = await waitFor(() => {
+        const n = searchTbody.querySelectorAll('tr').length;
+        return n === 2 ? n : null;
+      });
+      assert.equal(restoredCount, 2);
+      searchCtrl.abort();
+
+      // (b) Opening 0-data-row CSV (header-only and completely empty) renders csv.emptyRows instead of error status card
+      for (const zeroRowPath of [headerOnlyCsv, emptyCsv]) {
+        const zeroTicket = await postTicket(zeroRowPath);
+        assert.equal(zeroTicket.ok, true);
+        const zeroRoot = createMockElement('div', doc);
+        const zeroCtrl = new AbortController();
+        await mountCsvViewer({
+          doc,
+          t,
+          rootEl: zeroRoot,
+          ticket: zeroTicket,
+          settings: { csvChunkSize: 50, csvFirstRowHeader: true },
+          signal: zeroCtrl.signal,
+          trackCleanup: () => {}
+        });
+
+        assert.equal(zeroRoot.querySelector('.agy-v-card-center'), null);
+        assert.equal(zeroRoot.querySelector('.agy-v-card'), null);
+        const zeroTbody = zeroRoot.querySelector('tbody');
+        assert.ok(zeroTbody);
+        const tbodyRows = zeroTbody.querySelectorAll('tr');
+        assert.equal(tbodyRows.length, 1);
+        const emptyCell = zeroTbody.querySelector('td');
+        assert.ok(emptyCell);
+        assert.equal(emptyCell.textContent, t('csv.emptyRows'));
+        zeroCtrl.abort();
+      }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    await harness.unloadPlugin('agy-daddy.viewer');
+    harness.assertCleanDispose('agy-daddy.viewer');
+  } finally {
+    await harness.cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

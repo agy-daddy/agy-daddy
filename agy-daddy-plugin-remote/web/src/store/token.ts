@@ -45,20 +45,35 @@ export function saveToken(token: string): void {
 }
 
 export function loadSavedToken(): string {
+  let localToken = '';
+  let sessionToken = '';
   try {
-    return (
-      window.sessionStorage?.getItem(TOKEN_KEY) ||
-      window.localStorage?.getItem(TOKEN_KEY) ||
-      ''
-    );
-  } catch {
-    return '';
+    localToken = (window.localStorage?.getItem(TOKEN_KEY) || '').trim();
+  } catch {}
+  try {
+    sessionToken = (window.sessionStorage?.getItem(TOKEN_KEY) || '').trim();
+  } catch {}
+
+  const resolved = localToken || sessionToken;
+  if (!resolved) return '';
+
+  if (localToken && sessionToken !== localToken) {
+    try {
+      window.sessionStorage?.setItem(TOKEN_KEY, localToken);
+    } catch {}
+  } else if (!localToken && sessionToken) {
+    try {
+      window.localStorage?.setItem(TOKEN_KEY, sessionToken);
+    } catch {}
   }
+  return resolved;
 }
 
 export function clearSavedToken(): void {
   try {
     window.sessionStorage?.removeItem(TOKEN_KEY);
+  } catch {}
+  try {
     window.localStorage?.removeItem(TOKEN_KEY);
   } catch {}
 }
@@ -66,9 +81,11 @@ export function clearSavedToken(): void {
 export function scrubSwitchTicketFromUrl(): void {
   try {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has('switch_ticket') && !url.searchParams.has('enter')) return;
+    if (!url.searchParams.has('switch_ticket')) return;
     url.searchParams.delete('switch_ticket');
-    url.searchParams.delete('enter');
+    if (!url.searchParams.has('enter') && !url.searchParams.has('direct')) {
+      url.searchParams.set('enter', '1');
+    }
     const nextSearch = url.searchParams.toString();
     const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
     window.history?.replaceState?.(null, '', nextUrl);

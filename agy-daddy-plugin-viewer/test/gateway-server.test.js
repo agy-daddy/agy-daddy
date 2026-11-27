@@ -16,6 +16,7 @@ const {
   parseHttpByteRange,
   createGatewayServer
 } = require('../src/gateway-server');
+const { extractSvgMetadata } = require('../src/svg-sanitizer');
 const { activate, deactivate } = require('../src/node');
 
 function rawHttpRequest({ port, method = 'GET', reqPath = '/', headers = {} }) {
@@ -429,4 +430,27 @@ test('node.js: activate/deactivate lifecycle, Bridge routes, markers store, and 
     await deactivate();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('svg-sanitizer: extractSvgMetadata parses single-quoted and mixed-quoted width/height attributes', () => {
+  const singleQuoted = extractSvgMetadata("<svg width='120' height='80' viewBox='0 0 120 80'></svg>");
+  assert.equal(singleQuoted.naturalWidth, 120);
+  assert.equal(singleQuoted.naturalHeight, 80);
+  assert.equal(singleQuoted.viewBox, '0 0 120 80');
+
+  const singleNoViewBox = extractSvgMetadata("<svg width='120' height='80'></svg>");
+  assert.equal(singleNoViewBox.naturalWidth, 120);
+  assert.equal(singleNoViewBox.naturalHeight, 80);
+
+  const mixedSingleWidth = extractSvgMetadata(`<svg width='120' height="80" viewBox="0 0 60 40"></svg>`);
+  assert.equal(mixedSingleWidth.naturalWidth, 120);
+  assert.equal(mixedSingleWidth.naturalHeight, 80);
+
+  const mixedDoubleWidth = extractSvgMetadata(`<svg width="240" height='160'></svg>`);
+  assert.equal(mixedDoubleWidth.naturalWidth, 240);
+  assert.equal(mixedDoubleWidth.naturalHeight, 160);
+
+  const singleWidthFallbackViewBox = extractSvgMetadata("<svg width='120' viewBox='0 0 60 40'></svg>");
+  assert.equal(singleWidthFallbackViewBox.naturalWidth, 120);
+  assert.equal(singleWidthFallbackViewBox.naturalHeight, 40);
 });

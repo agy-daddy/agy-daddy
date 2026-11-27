@@ -124,7 +124,7 @@ function extractSvgMetadata(svgText) {
   const wMatch = attrs.match(/\bwidth\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
   const hMatch = attrs.match(/\bheight\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
 
-  let naturalWidth = parseNumericSvgAttr(wMatch ? (wMatch[1] ?? hMatch?.[2] ?? wMatch[2]) : null);
+  let naturalWidth = parseNumericSvgAttr(wMatch ? (wMatch[1] ?? wMatch[2]) : null);
   let naturalHeight = parseNumericSvgAttr(hMatch ? (hMatch[1] ?? hMatch[2]) : null);
 
   if (viewBox && (naturalWidth === null || naturalHeight === null)) {

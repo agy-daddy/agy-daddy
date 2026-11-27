@@ -199,6 +199,7 @@ agy-daddy auto-on
 | Layer 2 | [`agy-daddy-plugin-context/`](../agy-daddy-plugin-context/README.md) | `@agy-daddy/plugin-context` | 上下文窗口遥测、底部脉冲胶囊、错误分类与附件盘点审计 |
 | Layer 2 | [`agy-daddy-plugin-usage/`](../agy-daddy-plugin-usage/README.md) | `@agy-daddy/plugin-usage` | Token 用量账本、官方模型定价表与 52 周用量热力图 |
 | Layer 2 | [`agy-daddy-plugin-chat-nav/`](../agy-daddy-plugin-chat-nav/README.md) | `@agy-daddy/plugin-chat-nav` | 悬浮对话导航、对话全文检索（`chat.search`）、`chat.navButtons` 扩展槽与内联文件查看辅助 |
+| Layer 2 | [`agy-daddy-plugin-viewer/`](../agy-daddy-plugin-viewer/README.md) | `@agy-daddy/plugin-viewer` | 本地 127.0.0.1 HTTP 206 流式检视台（超大音视频逐帧波形、大体积 CSV 虚拟表格、SVG 无损缩放、字体样张）与只读 Git 安全行内 Diff |
 | Layer 3 | [`agy-daddy-plugin-quota/`](../agy-daddy-plugin-quota/README.md) | `@agy-daddy/plugin-quota` | 模型配额池分组、proto3 零值分片处理与重置倒计时展示 |
 | Layer 3 | [`agy-daddy-plugin-composer/`](../agy-daddy-plugin-composer/README.md) | `@agy-daddy/plugin-composer` | 输入框快捷操作（`composer.quickActions`）、高危命令防护、提示词优化与 Fast-IO 原生规则 |
 | Layer 4 | [`agy-daddy-plugin-remote/`](../agy-daddy-plugin-remote/README.md) | `@agy-daddy/plugin-remote` | 移动端远程控制 PWA 服务、Cloudflare Tunnel 安全校验及 `remote.panels` / `remote.actions` 扩展面 |

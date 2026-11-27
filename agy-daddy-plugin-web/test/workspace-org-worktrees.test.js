@@ -467,3 +467,200 @@ test('web: worktree discovery, sibling auto-auth, locked/running guards, pty cwd
     cleanupDir(outsideDir);
   }
 });
+
+test('HUB-346: GET /api/v1/sessions remaps historical sibling, nested-subdir & missing worktree sessions to primary project and GET /api/v1/tasks preserves worktreeId', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-web-hub346-'));
+  try {
+    const repo = path.join(tmp, 'multi-repo');
+    const siblingWt = path.join(tmp, 'multi-repo-feat-auth');
+    const nestedWt = path.join(repo, '.worktrees', 'wt-inner');
+    const nestedSubdir = path.join(nestedWt, 'src', 'sub');
+    const missingWt = path.join(tmp, 'multi-repo-gone');
+    const prunedWt = path.join(tmp, 'multi-repo-pruned');
+    const defaultDir = path.join(tmp, 'default-ws');
+    fs.mkdirSync(defaultDir, { recursive: true });
+    initGitRepo(repo, 'main');
+    execFileSync('git', ['worktree', 'add', '-b', 'feat/auth', siblingWt], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['worktree', 'add', '-b', 'feat/inner', nestedWt], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['worktree', 'add', '-b', 'feat/gone', missingWt], { cwd: repo, stdio: 'ignore' });
+    fs.mkdirSync(nestedSubdir, { recursive: true });
+    fs.rmSync(missingWt, { recursive: true, force: true });
+
+    const workspaceOrg = resolveWorkspaceOrg(null);
+    const worktreeDiscovery = workspaceOrg.createWorktreeDiscoveryService();
+    const orgPath = path.join(tmp, 'session-org.json');
+    const bridge = createSessionOrgBridge({ orgPath, worktreeDiscovery });
+    const metaStore = createWorkspaceMetaStore({
+      storage: makeMemoryStorage(),
+      sessionOrgBridge: bridge,
+      worktreeDiscovery,
+      defaultBaseDir: defaultDir,
+      conversationDbPath: null,
+      stateVscdbPath: null,
+      sharedReadStatePath: null
+    });
+
+    const grpRes = metaStore.createGroup({ name: 'Core Group' });
+    assert.equal(grpRes.ok, true);
+    const projRes = metaStore.createProject({
+      name: 'Multi Repo',
+      rootPath: repo,
+      groupId: grpRes.group.id
+    });
+    assert.equal(projRes.ok, true);
+
+    const prunedWtId = workspaceOrg.makeWorktreeId(prunedWt);
+    bridge.syncWorktreeTopology({
+      repoProjectId: projRes.project.id,
+      mainWorktreeId: workspaceOrg.makeWorktreeId(repo),
+      isMultiWorktree: true,
+      missingWorktrees: [
+        {
+          worktreeId: prunedWtId,
+          repoRootPath: fs.realpathSync.native(repo),
+          path: prunedWt,
+          branch: 'feat/pruned'
+        }
+      ]
+    });
+
+    const realNestedSubdir = fs.realpathSync.native(nestedSubdir);
+    const realSiblingWt = fs.realpathSync.native(siblingWt);
+    const realNestedWt = fs.realpathSync.native(nestedWt);
+    const adapter = createHarnessAdapter({
+      rpc: {
+        async call(method, params) {
+          if (method === 'GetAllCascadeTrajectories') {
+            return {
+              trajectorySummaries: {
+                'hist-sib': {
+                  summary: 'Historical Sibling Session',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(realSiblingWt).href }]
+                },
+                'hist-nested-sub': {
+                  summary: 'Historical Nested Subdir Session',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(realNestedSubdir).href }]
+                },
+                'hist-missing': {
+                  summary: 'Historical Missing WT Session',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(missingWt).href }]
+                },
+                'hist-pruned': {
+                  summary: 'Historical Pruned Tombstone Session',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  workspaces: [{ workspaceFolderAbsoluteUri: url.pathToFileURL(prunedWt).href }]
+                }
+              }
+            };
+          }
+          if (method === 'GetCascadeTrajectorySteps' || method === 'GetCascadeTrajectory') {
+            const steps = params?.cascadeId === 'hist-nested-sub'
+              ? [
+                  {
+                    stepIndex: 0,
+                    type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+                    status: 'CORTEX_STEP_STATUS_DONE',
+                    runCommand: {
+                      commandLine: 'pwd',
+                      cwd: realNestedSubdir,
+                      exitCode: 0,
+                      combinedOutput: realNestedSubdir
+                    }
+                  }
+                ]
+              : [];
+            return method === 'GetCascadeTrajectory' ? { trajectory: { steps } } : { steps };
+          }
+          return {};
+        }
+      }
+    });
+
+    const taskMgr = createTaskManager({
+      harnessAdapter: adapter,
+      workspaceMetaStore: metaStore,
+      worktreeDiscovery
+    });
+
+    await worktreeDiscovery.warmRoots([repo], { refresh: true });
+
+    const pairingToken = 'test-token-hub346';
+    const server = createWebServer({
+      port: 0,
+      pairingToken,
+      confirmSecret: 'confirm-secret-hub346',
+      channels: { loopback: true, lan: false, cloudflare: false },
+      getChannels: () => ({ loopback: true, lan: false, cloudflare: false }),
+      getPermissionLevel: () => 'L2',
+      resolveChannel: () => 'loopback',
+      harnessAdapter: adapter,
+      workspaceMetaStore: metaStore,
+      sessionOrgBridge: bridge,
+      worktreeDiscovery,
+      taskManager: taskMgr
+    });
+    const info = await server.start();
+    t.after(() => server.stop());
+    const base = `http://127.0.0.1:${info.port}`;
+    const auth = { Authorization: `Bearer ${pairingToken}` };
+
+    const orgRes = await httpRequest(`${base}/api/v1/sessions/org?refreshWorktrees=1`, { headers: auth });
+    assert.equal(orgRes.status, 200);
+    assert.equal(orgRes.json.projects.some((p) => String(p.id).startsWith('implicit:')), false);
+    const aggProj = orgRes.json.projects.find((p) => p.id === projRes.project.id);
+    assert.ok(aggProj);
+    assert.equal(aggProj.isMultiWorktree, true);
+    assert.equal(aggProj.groupId, grpRes.group.id);
+
+    const sessionsRes = await httpRequest(`${base}/api/v1/sessions`, { headers: auth });
+    assert.equal(sessionsRes.status, 200);
+    const byCid = new Map(sessionsRes.json.sessions.map((s) => [s.cascadeId, s]));
+
+    const sib = byCid.get('hist-sib');
+    assert.equal(sib.projectId, projRes.project.id);
+    assert.equal(sib.projectName, 'Multi Repo');
+    assert.equal(sib.groupId, grpRes.group.id);
+    assert.equal(sib.worktreeId, workspaceOrg.makeWorktreeId(realSiblingWt));
+
+    const nested = byCid.get('hist-nested-sub');
+    assert.equal(nested.projectId, projRes.project.id);
+    assert.equal(nested.projectName, 'Multi Repo');
+    assert.equal(nested.groupId, grpRes.group.id);
+    assert.equal(nested.worktreeId, workspaceOrg.makeWorktreeId(realNestedWt));
+
+    const missing = byCid.get('hist-missing');
+    assert.equal(missing.projectId, projRes.project.id);
+    assert.equal(missing.projectName, 'Multi Repo');
+    assert.equal(missing.groupId, grpRes.group.id);
+    assert.equal(missing.worktreeId, workspaceOrg.makeWorktreeId(missingWt));
+    assert.equal(missing.worktreeStatus, 'missing');
+
+    const pruned = byCid.get('hist-pruned');
+    assert.equal(pruned.projectId, projRes.project.id);
+    assert.equal(pruned.projectName, 'Multi Repo');
+    assert.equal(pruned.groupId, grpRes.group.id);
+    assert.equal(pruned.worktreeId, prunedWtId);
+    assert.equal(pruned.worktreeStatus, 'missing');
+
+    const filteredRes = await httpRequest(
+      `${base}/api/v1/sessions?projectId=${encodeURIComponent(projRes.project.id)}`,
+      { headers: auth }
+    );
+    assert.equal(filteredRes.status, 200);
+    assert.equal(filteredRes.json.sessions.length, 4);
+
+    const tasksRes = await httpRequest(`${base}/api/v1/tasks`, { headers: auth });
+    assert.equal(tasksRes.status, 200);
+    const nestedCmd = tasksRes.json.recent.find((x) => x.taskId === 'cmd:hist-nested-sub:0');
+    assert.ok(nestedCmd);
+    assert.equal(nestedCmd.projectPath, realNestedWt);
+    assert.equal(nestedCmd.projectName, 'Multi Repo');
+    assert.equal(nestedCmd.worktreeId, workspaceOrg.makeWorktreeId(realNestedWt));
+    assert.equal(nestedCmd.worktreeBranch, 'feat/inner');
+  } finally {
+    cleanupDir(tmp);
+  }
+});

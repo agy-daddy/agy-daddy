@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LeftDrawer, type LeftDrawerProps } from './drawers/LeftDrawer';
+import leftDrawerStyles from './drawers/LeftDrawer.module.css';
 import { RightDrawer } from './drawers/RightDrawer';
 import { I18nProvider } from './i18n';
 import { SwipeDrawerShell } from './layout/SwipeDrawerShell';
@@ -683,5 +684,50 @@ describe('HUB-338 Stage 4C PWA Collapse Sync, Worktree Subgroups & PTY Isolation
     expect(ctrl.getState().collapsedNodes.worktrees.wt_1).toBe(true);
     expect(ctrl.getState().projects[0].worktrees?.[0].collapsed).toBe(true);
     expect(ctrl.getState().orgRevision).toBe(15);
+  });
+
+  it('enforces >= 44px touch target dimensions and centered alignment on .groupPill (HUB-347)', () => {
+    const nodeProc = (globalThis as {
+      process?: {
+        cwd: () => string;
+        getBuiltinModule?: <T = unknown>(id: string) => T;
+      };
+    }).process;
+    const fsMod = nodeProc?.getBuiltinModule?.<{
+      existsSync: (p: string) => boolean;
+      readFileSync: (p: string, enc: string) => string;
+    }>('node:fs');
+    const pathMod = nodeProc?.getBuiltinModule?.<{
+      resolve: (...parts: string[]) => string;
+    }>('node:path');
+    expect(fsMod).toBeTruthy();
+    expect(pathMod).toBeTruthy();
+    const candidates = [
+      pathMod!.resolve(nodeProc!.cwd(), 'src/drawers/LeftDrawer.module.css'),
+      pathMod!.resolve(nodeProc!.cwd(), 'agy-daddy-plugin-remote/web/src/drawers/LeftDrawer.module.css')
+    ];
+    const cssPath = candidates.find((p) => fsMod!.existsSync(p));
+    expect(cssPath).toBeTruthy();
+    const leftDrawerCss = fsMod!.readFileSync(cssPath!, 'utf8');
+    const groupPillBlock = leftDrawerCss.match(/\.groupPill\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(groupPillBlock).toMatch(/\bmin-width:\s*44px\s*;/);
+    expect(groupPillBlock).toMatch(/\bmin-height:\s*44px\s*;/);
+    expect(groupPillBlock).toMatch(/\bjustify-content:\s*center\s*;/);
+
+    const { container } = render(
+      <I18nProvider locale="en">
+        <ThemeProvider>
+          <LeftDrawer {...makeLeftDrawerProps()} />
+        </ThemeProvider>
+      </I18nProvider>
+    );
+
+    const groupBar = container.querySelector('[role="group"][aria-label="Filter by host group"]');
+    expect(groupBar).toBeTruthy();
+    const pills = Array.from(groupBar?.querySelectorAll('button') ?? []);
+    expect(pills.length).toBeGreaterThanOrEqual(2);
+    for (const pill of pills) {
+      expect(pill.classList.contains(leftDrawerStyles.groupPill)).toBe(true);
+    }
   });
 });

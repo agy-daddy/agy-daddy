@@ -112,6 +112,13 @@ function generateTunnelLandingHtml(options = {}) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#101010" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <title>Agy-Daddy 远程访问 · 选择访问通道</title>
   <style>
     :root {
@@ -502,16 +509,53 @@ function generateTunnelLandingHtml(options = {}) {
 
   <script>
     (function() {
+      var SERVER_AUTHENTICATED = ${JSON.stringify(authenticated)};
+      var TOKEN_KEY = 'agy_remote_token';
+
+      function saveDeviceToken(token) {
+        var clean = String(token || '').trim();
+        if (!clean) return;
+        try { localStorage.setItem(TOKEN_KEY, clean); } catch {}
+        try { sessionStorage.setItem(TOKEN_KEY, clean); } catch {}
+      }
+
+      function loadDeviceToken() {
+        var localToken = '';
+        var sessionToken = '';
+        try { localToken = String(localStorage.getItem(TOKEN_KEY) || '').trim(); } catch {}
+        try { sessionToken = String(sessionStorage.getItem(TOKEN_KEY) || '').trim(); } catch {}
+        var resolved = localToken || sessionToken;
+        if (!resolved) return '';
+        if (localToken && sessionToken !== localToken) {
+          try { sessionStorage.setItem(TOKEN_KEY, localToken); } catch {}
+        } else if (!localToken && sessionToken) {
+          try { localStorage.setItem(TOKEN_KEY, sessionToken); } catch {}
+        }
+        return resolved;
+      }
+
+      var initialUrlToken = '';
+      var initialSearchSnapshot = '';
       try {
-        var sp = new URLSearchParams(window.location.search || '');
-        var urlToken = sp.get('t') || sp.get('token') || '';
-        if (urlToken && window.history && typeof window.history.replaceState === 'function') {
+        initialSearchSnapshot = String(window.location.search || '');
+        var sp = new URLSearchParams(initialSearchSnapshot);
+        initialUrlToken = String(sp.get('t') || sp.get('token') || '').trim();
+        if (initialUrlToken && SERVER_AUTHENTICATED) {
+          saveDeviceToken(initialUrlToken);
+        }
+        if (initialUrlToken && window.history && typeof window.history.replaceState === 'function') {
           sp.delete('t');
           sp.delete('token');
           var rest = sp.toString();
           window.history.replaceState(null, '', rest ? (window.location.pathname + '?' + rest) : window.location.pathname);
         }
       } catch {}
+
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        try {
+          navigator.serviceWorker.register('/sw.js').catch(function() {});
+        } catch {}
+      }
 
       var INITIAL_CHANNEL = ${JSON.stringify(currentChannel)};
       function resolveChannelCopy(ch, tMode) {
@@ -804,10 +848,40 @@ function generateTunnelLandingHtml(options = {}) {
         reprobeBtn.addEventListener('click', runProbes);
       }
 
-      function unlockWithToken() {
-        var val = tokenInput ? String(tokenInput.value || '').trim() : '';
+      function buildConsoleEnterUrl() {
+        try {
+          var nextParams = new URLSearchParams(initialSearchSnapshot || window.location.search || '');
+          nextParams.delete('t');
+          nextParams.delete('token');
+          nextParams.set('enter', '1');
+          var query = nextParams.toString();
+          return '/?' + query + (window.location.hash || '');
+        } catch {
+          return '/?enter=1';
+        }
+      }
+
+      function shouldAutoEnterConsole() {
+        try {
+          var pathname = String((window.location && window.location.pathname) || '/');
+          if (pathname === '/entry') return false;
+          var sp = new URLSearchParams(initialSearchSnapshot || window.location.search || '');
+          if (sp.get('landing') === '1' || sp.get('stay') === '1' || sp.get('channels') === '1') {
+            return false;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      function unlockWithToken(overrideToken, opts) {
+        var isAuto = Boolean(opts && opts.auto);
+        var val = overrideToken !== undefined
+          ? String(overrideToken || '').trim()
+          : (tokenInput ? String(tokenInput.value || '').trim() : '');
         if (!val) {
-          if (authErr) {
+          if (!isAuto && authErr) {
             authErr.textContent = '请输入远程配对令牌';
             authErr.hidden = false;
           }
@@ -817,9 +891,28 @@ function generateTunnelLandingHtml(options = {}) {
         fetch('/api/channels', {
           headers: { 'Authorization': 'Bearer ' + val }
         }).then(function(r) {
-          if (!r.ok) throw new Error('UNAUTHORIZED');
+          if (r.status === 401 || r.status === 403) {
+            var authError = new Error('UNAUTHORIZED');
+            authError.status = r.status;
+            throw authError;
+          }
+          if (!r.ok) {
+            var httpError = new Error('HTTP_' + r.status);
+            httpError.status = r.status;
+            throw httpError;
+          }
           return r.json();
         }).then(function(data) {
+          saveDeviceToken(val);
+          if (isAuto && shouldAutoEnterConsole()) {
+            var targetConsoleUrl = buildConsoleEnterUrl();
+            if (window.location && typeof window.location.replace === 'function') {
+              window.location.replace(targetConsoleUrl);
+            } else if (window.location) {
+              window.location.href = targetConsoleUrl;
+            }
+            return;
+          }
           currentEntries = Array.isArray(data.entries) ? data.entries : [];
           renderEntriesDom(currentEntries);
           if (authCard) authCard.hidden = true;
@@ -846,15 +939,22 @@ function generateTunnelLandingHtml(options = {}) {
             primaryCta.setAttribute('href', cf.enterUrl || '/?enter=1');
           }
           runProbes();
-        }).catch(function() {
+        }).catch(function(err) {
+          if (authCard) authCard.hidden = false;
           if (authErr) {
-            authErr.textContent = '配对令牌无效，请检查后重试';
+            if (err && err.message === 'UNAUTHORIZED') {
+              authErr.textContent = isAuto
+                ? '当前设备缓存的配对令牌已失效，请重新输入配对令牌'
+                : '配对令牌无效，请检查后重试';
+            } else {
+              authErr.textContent = '连接验证失败，请检查网络或重试';
+            }
             authErr.hidden = false;
           }
         });
       }
 
-      if (unlockBtn) unlockBtn.addEventListener('click', unlockWithToken);
+      if (unlockBtn) unlockBtn.addEventListener('click', function() { unlockWithToken(); });
       if (tokenInput) {
         tokenInput.addEventListener('keydown', function(e) {
           if (e.key === 'Enter') unlockWithToken();
@@ -863,6 +963,18 @@ function generateTunnelLandingHtml(options = {}) {
 
       if (currentEntries.length > 0) {
         runProbes();
+      } else if (!SERVER_AUTHENTICATED) {
+        if (initialUrlToken) {
+          if (authErr) {
+            authErr.textContent = '配对令牌无效，请检查后重试';
+            authErr.hidden = false;
+          }
+        } else {
+          var cachedToken = loadDeviceToken();
+          if (cachedToken) {
+            unlockWithToken(cachedToken, { auto: true });
+          }
+        }
       }
     })();
   </script>

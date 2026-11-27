@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-26T14:35:00Z",
+  "updatedAt": "2026-11-27T02:20:00Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
@@ -169,6 +169,18 @@
       "subpath": "agy-daddy-plugin-sidebar",
       "localRepo": "agy-daddy-plugin-sidebar",
       "manifestSha512": "sha512-5LBG0v8eZdF4sUBvt1DK7v83w7qwfJLtbpoJgERH0yI/90aXiW69yKQVPU+pktu/fk2KkHjSmd/J2K9O55II3g=="
+    },
+    {
+      "id": "agy-daddy.viewer",
+      "shortName": "viewer",
+      "layer": 2,
+      "trustLevel": "T0",
+      "version": "1.1.1",
+      "npmPackage": "@agy-daddy/plugin-viewer",
+      "repo": "https://github.com/agy-daddy/agy-daddy.git",
+      "subpath": "agy-daddy-plugin-viewer",
+      "localRepo": "agy-daddy-plugin-viewer",
+      "manifestSha512": "sha512-PbUNX0X4Wu1WvVixhre+Fa0gp0vo/lPEFZ189vkNaf1CHXpILH0381df4Ksp0XxV3eY15AyxOqRMqKsT9Wmb3Q=="
     }
   ]
 }

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "id": "agy-daddy.viewer",
+  "publisher": "agy-daddy",
+  "version": "1.1.1",
+  "license": "MIT",
+  "displayName": {
+    "zh-CN": "全能文件检视台",
+    "en": "Omni File Viewer & Diff"
+  },
+  "description": {
+    "zh-CN": "本地 127.0.0.1 HTTP 206 大文件流式检视台（超大音视频逐帧与波形打点、大体积 CSV 冻结表头与检索、SVG 无损缩放、字体样张）与只读 Git 安全行内 Diff",
+    "en": "Local 127.0.0.1 HTTP 206 streaming Omni Viewer (large media frame-step & waveform markers, virtualized CSV/TSV, lossless SVG canvas, font specimens) and read-only Git inline diff"
+  },
+  "engines": {
+    "agyDaddy": "^1.0.0",
+    "antigravity": ">=2.32.0"
+  },
+  "main": "./src/node.js",
+  "renderer": "./src/renderer.js",
+  "world": "isolated",
+  "activationEvents": ["onStartup"],
+  "requires": {
+    "anchors": ["fileViewer.header"]
+  },
+  "provides": {
+    "services": {
+      "viewer-node": { "version": "1.0.0", "realm": "node" },
+      "viewer": { "version": "1.0.0", "realm": "page-isolated" }
+    },
+    "events": [
+      "viewer:viewer-mode-changed@1",
+      "viewer:diff-opened@1"
+    ],
+    "states": [
+      "state:viewer.gateway@1"
+    ],
+    "surfaces": []
+  },
+  "consumes": {
+    "context": { "version": "^1.0.0", "optional": true }
+  },
+  "permissions": [
+    "dom:read",
+    "dom:write",
+    "rpc:read",
+    "bridge:route",
+    "fs:plugin-data",
+    "fs:user-files",
+    "net:listen",
+    "process:spawn"
+  ],
+  "contributes": {
+    "settings": { "schema": "./settings.schema.json" },
+    "commands": [
+      {
+        "id": "viewer.toggleOmniViewer",
+        "title": {
+          "zh-CN": "切换 Omni 流式检视 / 原生预览",
+          "en": "Toggle Omni Viewer / Native Preview"
+        }
+      },
+      {
+        "id": "viewer.openGitDiff",
+        "title": {
+          "zh-CN": "打开工作区 Git 行内 Diff",
+          "en": "Open Workspace Git Inline Diff"
+        }
+      },
+      {
+        "id": "viewer.gatewayStatus",
+        "title": {
+          "zh-CN": "查看本地流式网关状态",
+          "en": "Check Local Streaming Gateway Status"
+        }
+      },
+      {
+        "id": "viewer.browseAllowedRoot",
+        "title": {
+          "zh-CN": "添加授权工作区根目录",
+          "en": "Browse Allowed Workspace Root"
+        }
+      }
+    ],
+    "locales": "./locales"
+  }
+}

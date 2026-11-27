@@ -96,7 +96,10 @@ test('path-guard: blocks directory traversal, sensitive system/credential paths,
     assert.equal(trav.errorCode, ERROR_CODES.PATH_OUT_OF_BOUNDS);
 
     // Sensitive paths
-    for (const p of ['/etc/passwd', path.join(ws, '.ssh', 'id_rsa'), path.join(ws, '.aws', 'credentials')]) {
+    const systemSensitivePath = process.platform === 'win32'
+      ? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+      : '/etc/passwd';
+    for (const p of [systemSensitivePath, path.join(ws, '.ssh', 'id_rsa'), path.join(ws, '.aws', 'credentials')]) {
       const s = validatePathAccess(p, { allowedRealRoots: [realWs, '/'] });
       assert.equal(s.ok, false);
       assert.equal(s.errorCode, ERROR_CODES.SENSITIVE_PATH_BLOCKED);

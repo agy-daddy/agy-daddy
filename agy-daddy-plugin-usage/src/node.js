@@ -11,7 +11,9 @@ const {
   resolveSubscriptionCost,
   filterCallsBySource,
   normalizeUltraSubTier,
+  normalizePeriodKey,
   detectSubscriptionFromUserStatus,
+  resolveCycleWindow,
   summarizeApiCost,
   summarizeByPeriod,
   buildHeatmap52Weeks,
@@ -25,10 +27,6 @@ const {
 } = require('./history-backfill');
 
 let disposers = [];
-
-function normalizePeriodKey(val) {
-  return ['today', 'month', 'year', 'allTime'].includes(val) ? val : 'allTime';
-}
 
 function normalizePlanConfig(raw = {}) {
   const manualSubTier = normalizeUltraSubTier(raw.ultraSubTier);
@@ -199,12 +197,146 @@ async function activate(host) {
     };
   }
 
+  let liveQuotaSnapshot = null;
+  let cachedCycleWindow = null;
+  const savedCycle = host.storage.readJson('cycle-window.json', null).data;
+  if (savedCycle && typeof savedCycle === 'object' && !savedCycle.isFallback && Number.isFinite(Number(savedCycle.endAtMs))) {
+    cachedCycleWindow = resolveCycleWindow({
+      endAtMs: savedCycle.endAtMs,
+      durationMs: savedCycle.durationMs,
+      windowKey: savedCycle.windowKey,
+      source: 'cached_window'
+    }, Date.now());
+  }
+
+  let latestUserStatusRes = null;
+  let lastQuotaRpcCheckedAt = 0;
+  let inflightCycleResolve = null;
+
+  function applyQuotaSnapshot(snapshot, source = 'quota_state', nowMs = Date.now()) {
+    if (!snapshot || typeof snapshot !== 'object') return null;
+    const resolved = resolveCycleWindow({ ...snapshot, source }, nowMs);
+    if (resolved.isFallback) return null;
+    liveQuotaSnapshot = snapshot;
+    cachedCycleWindow = resolved;
+    host.storage.writeJson('cycle-window.json', resolved);
+    return resolved;
+  }
+
+  function getEffectiveCycleWindow(nowMs = Date.now()) {
+    if (liveQuotaSnapshot) {
+      const cw = resolveCycleWindow({ ...liveQuotaSnapshot, source: 'quota_state' }, nowMs);
+      if (!cw.isFallback) return cw;
+    }
+    if (cachedCycleWindow && !cachedCycleWindow.isFallback) {
+      if (nowMs >= cachedCycleWindow.startAtMs && nowMs < cachedCycleWindow.endAtMs) {
+        return cachedCycleWindow;
+      }
+      return resolveCycleWindow({
+        endAtMs: cachedCycleWindow.endAtMs,
+        durationMs: cachedCycleWindow.durationMs,
+        windowKey: cachedCycleWindow.windowKey,
+        source: cachedCycleWindow.source || 'cached_window'
+      }, nowMs);
+    }
+    return resolveCycleWindow(null, nowMs);
+  }
+
+  async function ensureCycleWindow(nowMs = Date.now(), opts = {}) {
+    if (
+      !opts.force &&
+      cachedCycleWindow &&
+      !cachedCycleWindow.isFallback &&
+      cachedCycleWindow.source !== 'cached_window' &&
+      nowMs >= cachedCycleWindow.startAtMs &&
+      nowMs < cachedCycleWindow.endAtMs
+    ) {
+      return cachedCycleWindow;
+    }
+    if (inflightCycleResolve) return inflightCycleResolve;
+    inflightCycleResolve = (async () => {
+      try {
+        // L1: host.state.get('state:quota.snapshot@1')
+        if (typeof host.state?.get === 'function') {
+          try {
+            const rawState = await Promise.resolve(host.state.get('state:quota.snapshot@1'));
+            const snapVal = (rawState && typeof rawState === 'object' && 'value' in rawState) ? rawState.value : rawState;
+            if (snapVal && typeof snapVal === 'object') {
+              const isStaleExpired = Boolean(
+                cachedCycleWindow &&
+                nowMs >= cachedCycleWindow.endAtMs &&
+                Number(snapVal.updatedAt || 0) <= Number(liveQuotaSnapshot?.updatedAt || 0)
+              );
+              if (!isStaleExpired) {
+                const cw = applyQuotaSnapshot(snapVal, 'quota_state', nowMs);
+                if (cw && !cw.isFallback) return cw;
+              }
+            }
+          } catch {}
+        }
+
+        // L2: services.call('quota', 'getSnapshot')
+        if (typeof host.services?.call === 'function') {
+          try {
+            const res = await host.services.call('quota', 'getSnapshot', [], { optional: true, timeoutMs: 2000 });
+            if (res?.ok && res.value) {
+              const cw = applyQuotaSnapshot(res.value, 'quota_service', nowMs);
+              if (cw && !cw.isFallback) return cw;
+            }
+          } catch {}
+        }
+
+        // L3a: rpc_direct (60s throttle)
+        if (typeof host.rpc?.call === 'function' && (opts.force || !lastQuotaRpcCheckedAt || nowMs - lastQuotaRpcCheckedAt >= 60000)) {
+          lastQuotaRpcCheckedAt = nowMs;
+          let quotaSummaryRes = null;
+          try {
+            quotaSummaryRes = await host.rpc.call('RetrieveUserQuotaSummary', {});
+          } catch {}
+          let userStatusRes = latestUserStatusRes;
+          let rpcCw = quotaSummaryRes
+            ? resolveCycleWindow({ quotaSummaryRes, source: 'rpc_direct' }, nowMs)
+            : null;
+          if (!rpcCw || rpcCw.isFallback) {
+            if (!userStatusRes) {
+              try {
+                userStatusRes = await host.rpc.call('GetUserStatus', {
+                  metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
+                });
+                if (userStatusRes && typeof userStatusRes === 'object') {
+                  latestUserStatusRes = userStatusRes;
+                }
+              } catch {}
+            }
+            if (userStatusRes) {
+              rpcCw = resolveCycleWindow({ quotaSummaryRes, userStatusRes, source: 'rpc_direct' }, nowMs);
+            }
+          }
+          if (rpcCw && !rpcCw.isFallback) {
+            cachedCycleWindow = rpcCw;
+            host.storage.writeJson('cycle-window.json', rpcCw);
+            return rpcCw;
+          }
+        }
+      } finally {
+        inflightCycleResolve = null;
+      }
+      return getEffectiveCycleWindow(nowMs);
+    })();
+    return inflightCycleResolve;
+  }
+
   function publishSummary() {
+    const nowMs = Date.now();
     const calls = getScopedCalls();
     const summary = decorateSummary(summarizeApiCost(calls));
+    const cycleWindow = getEffectiveCycleWindow(nowMs);
+    const periods = summarizeByPeriod(calls, nowMs, planData, { cycleWindow });
     const earliestDate = resolveEarliestCallDate(calls) || backfillStatus.earliestDate;
     const out = {
       ...summary,
+      periods,
+      cycleWindow: periods.cycleWindow,
       corrupted: ledger.corrupted,
       ultraSubTier: planData.ultraSubTier,
       activePeriod: currentSettings.activePeriod,
@@ -214,7 +346,7 @@ async function activate(host) {
       },
       plan: { ...planData },
       backfillStatus: { ...backfillStatus, earliestDate },
-      updatedAt: Date.now()
+      updatedAt: nowMs
     };
     host.state.set('state:usage.summary@1', out);
     return out;
@@ -232,6 +364,9 @@ async function activate(host) {
         const res = await host.rpc.call('GetUserStatus', {
           metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         });
+        if (res && typeof res === 'object') {
+          latestUserStatusRes = res;
+        }
         const detected = detectSubscriptionFromUserStatus(res);
         const changed = (
           detected.detectedTier !== detectedSub.detectedTier ||
@@ -316,6 +451,23 @@ async function activate(host) {
     return inflightBackfill;
   }
 
+  // L1: 订阅 Quota 插件实时快照 state:quota.snapshot@1
+  const stopQuotaSub = typeof host.state?.subscribe === 'function'
+    ? await Promise.resolve(host.state.subscribe('state:quota.snapshot@1', (val) => {
+        if (deactivated) return;
+        const prevKey = cachedCycleWindow
+          ? `${cachedCycleWindow.windowKey}:${cachedCycleWindow.startAtMs}:${cachedCycleWindow.endAtMs}:${cachedCycleWindow.isFallback}`
+          : '';
+        const next = applyQuotaSnapshot(val, 'quota_state', Date.now());
+        if (next) {
+          const nextKey = `${next.windowKey}:${next.startAtMs}:${next.endAtMs}:${next.isFallback}`;
+          if (nextKey !== prevKey) {
+            publishSummary();
+          }
+        }
+      }))
+    : () => {};
+
   // 订阅实时调用事件并幂等落盘
   const stopEventSub = await host.events.on('telemetry:generator-calls@1', (payload) => {
     if (Array.isArray(payload?.calls) && payload.calls.length > 0) {
@@ -355,12 +507,16 @@ async function activate(host) {
       if (currentSettings.ultraSubTier === 'auto' && !detectedSub.checkedAt) {
         await refreshDetectedSubscription(false);
       }
+      const nowMs = Date.now();
+      const cycleWindow = await ensureCycleWindow(nowMs);
       const calls = getScopedCalls();
       const base = decorateSummary(summarizeApiCost(calls));
+      const periods = summarizeByPeriod(calls, nowMs, planData, { cycleWindow });
       const earliestDate = resolveEarliestCallDate(calls) || backfillStatus.earliestDate;
       return {
         ...base,
-        periods: summarizeByPeriod(calls, Date.now(), planData),
+        periods,
+        cycleWindow: periods.cycleWindow,
         corrupted: ledger.corrupted,
         activePeriod: currentSettings.activePeriod,
         scope: {
@@ -374,9 +530,11 @@ async function activate(host) {
       };
     },
     getPeriodSummary(opts = {}) {
+      const nowMs = opts.nowMs || Date.now();
+      const cycleWindow = opts.cycleWindow || getEffectiveCycleWindow(nowMs);
       const cm = getCurrencyMeta(planData.currency);
       return {
-        ...summarizeByPeriod(getScopedCalls(), opts.nowMs || Date.now(), planData),
+        ...summarizeByPeriod(getScopedCalls(), nowMs, planData, { cycleWindow }),
         currency: cm.currency,
         exchangeRate: cm.exchangeRate,
         currencySymbol: cm.currencySymbol
@@ -393,8 +551,11 @@ async function activate(host) {
       };
     },
     getMobileSnapshot() {
+      const nowMs = Date.now();
       const calls = getScopedCalls();
       const sum = decorateSummary(summarizeApiCost(calls));
+      const cycleWindow = getEffectiveCycleWindow(nowMs);
+      const periods = summarizeByPeriod(calls, nowMs, planData, { cycleWindow });
       return {
         totalTokens: sum.totalTokens,
         geminiTokens: sum.geminiTokens,
@@ -405,6 +566,8 @@ async function activate(host) {
         totalDisplayCost: sum.totalDisplayCost,
         callsCount: sum.callsCount,
         byModel: sum.byModel,
+        periods,
+        cycleWindow: periods.cycleWindow,
         ultraSubTier: planData.ultraSubTier,
         activePeriod: currentSettings.activePeriod,
         scope: {
@@ -412,7 +575,7 @@ async function activate(host) {
           includeCliUsage: currentSettings.includeCliUsage
         },
         plan: { ...planData },
-        updatedAt: Date.now()
+        updatedAt: nowMs
       };
     }
   };
@@ -505,12 +668,28 @@ async function activate(host) {
   const stopBackfillRoute = await host.bridge.registerRoute('/backfill', async (body) => await usageService.backfillHistory(body || {}));
   const stopRepairRoute = await host.bridge.registerRoute('/repair', async (body) => usageService.repairLedger(body || {}));
 
+  try {
+    if (!liveQuotaSnapshot && typeof host.state?.get === 'function') {
+      const rawState = await Promise.resolve(host.state.get('state:quota.snapshot@1'));
+      const snapVal = (rawState && typeof rawState === 'object' && 'value' in rawState) ? rawState.value : rawState;
+      if (snapVal && typeof snapVal === 'object') {
+        applyQuotaSnapshot(snapVal, 'quota_state', Date.now());
+      }
+    }
+  } catch {}
+
   publishSummary();
   void refreshDetectedSubscription(false);
+  void ensureCycleWindow(Date.now()).then((cw) => {
+    if (!deactivated && cw && !cw.isFallback) {
+      publishSummary();
+    }
+  }).catch(() => {});
   void triggerBackfill().catch(() => {});
 
   disposers.push(
     () => { deactivated = true; },
+    stopQuotaSub,
     stopEventSub,
     stopSettingsSub,
     stopUsageSvc,
@@ -533,6 +712,7 @@ async function deactivate() {
 }
 
 module.exports = {
+  normalizePeriodKey,
   normalizePlanConfig,
   activate,
   deactivate

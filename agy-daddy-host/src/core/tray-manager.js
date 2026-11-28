@@ -23,6 +23,10 @@ const FAULT_TRAY_MENU_IDS = Object.freeze({
   HEALTH_SUMMARY: 'host:health-summary'
 });
 
+const UPDATE_TRAY_MENU_IDS = Object.freeze({
+  CHECK_UPDATES: 'host:check-updates'
+});
+
 const ALERT_TRAY_TITLE = '⚠️ 未接管';
 
 function truncateTrayText(text, maxLen = 68) {
@@ -977,6 +981,7 @@ class TrayManager {
     this.onRelaunchAntigravity = typeof options.onRelaunchAntigravity === 'function' ? options.onRelaunchAntigravity : null;
     this.onOpenDiagnostics = typeof options.onOpenDiagnostics === 'function' ? options.onOpenDiagnostics : null;
     this.onOpenPluginSettings = typeof options.onOpenPluginSettings === 'function' ? options.onOpenPluginSettings : null;
+    this.onCheckUpdates = typeof options.onCheckUpdates === 'function' ? options.onCheckUpdates : null;
     this.onRestartDaemon = typeof options.onRestartDaemon === 'function' ? options.onRestartDaemon : null;
     this.onQuit = typeof options.onQuit === 'function' ? options.onQuit : null;
 
@@ -1006,6 +1011,7 @@ class TrayManager {
     this.faultOverride = false;
     this._forceStartRequested = false;
     this.hostHealth = null;
+    this.updatesSummary = null;
     this._lastHealthSignature = '';
     this._visibilityChain = Promise.resolve();
     this.refreshTimer = null;
@@ -1014,11 +1020,22 @@ class TrayManager {
     this.lastSnapshot = [];
   }
 
+  setUpdatesSummary(summary = null) {
+    const prevCount = Number(this.updatesSummary?.availableCount || 0);
+    const nextSummary = summary && typeof summary === 'object' ? { ...summary } : null;
+    const nextCount = Number(nextSummary?.availableCount || 0);
+    this.updatesSummary = nextSummary;
+    if (this.started && prevCount !== nextCount) {
+      void this.refreshMenu(true).catch(() => {});
+    }
+  }
+
   setActionHandlers(handlers = {}) {
     if (typeof handlers.onLaunchAntigravity === 'function') this.onLaunchAntigravity = handlers.onLaunchAntigravity;
     if (typeof handlers.onRelaunchAntigravity === 'function') this.onRelaunchAntigravity = handlers.onRelaunchAntigravity;
     if (typeof handlers.onOpenDiagnostics === 'function') this.onOpenDiagnostics = handlers.onOpenDiagnostics;
     if (typeof handlers.onOpenPluginSettings === 'function') this.onOpenPluginSettings = handlers.onOpenPluginSettings;
+    if (typeof handlers.onCheckUpdates === 'function') this.onCheckUpdates = handlers.onCheckUpdates;
     if (typeof handlers.onRestartDaemon === 'function') this.onRestartDaemon = handlers.onRestartDaemon;
     if (typeof handlers.onQuit === 'function') this.onQuit = handlers.onQuit;
     if (typeof handlers.executeCommand === 'function') this.executeCommand = handlers.executeCommand;
@@ -1542,6 +1559,21 @@ class TrayManager {
         bottom: [],
         lifecycle: [...defaultBottomBuiltIns]
       };
+      if (this.hostHealth || this.updatesSummary || this.onCheckUpdates) {
+        const availableCount = Number(this.updatesSummary?.availableCount || 0);
+        buckets.primary.push({
+          id: UPDATE_TRAY_MENU_IDS.CHECK_UPDATES,
+          type: 'normal',
+          label: availableCount > 0 ? `发现 ${availableCount} 个可用更新…` : '检查更新…',
+          group: 'primary',
+          order: 220,
+          seq: 40,
+          isBuiltin: true,
+          tooltip: availableCount > 0
+            ? `共有 ${availableCount} 个更新可用，点击打开插件管理查看详情`
+            : '打开插件管理检查底座与插件更新'
+        });
+      }
       if (this.hostHealth) {
         if (!this.hasExceededFault()) {
           buckets.primary.push({
@@ -1730,6 +1762,15 @@ class TrayManager {
         return { ok: false, id, error: err?.message || String(err) };
       }
     }
+    if (id === UPDATE_TRAY_MENU_IDS.CHECK_UPDATES) {
+      try {
+        const handler = this.onCheckUpdates || this.onOpenPluginSettings;
+        const result = handler ? await handler({ tab: 'plugins' }) : { ok: false, reason: 'NO_HANDLER' };
+        return { ok: true, id, result };
+      } catch (err) {
+        return { ok: false, id, error: err?.message || String(err) };
+      }
+    }
     if (id === DEFAULT_TRAY_MENU_IDS.PLUGIN_SETTINGS) {
       try {
         const result = this.onOpenPluginSettings ? await this.onOpenPluginSettings() : { ok: false, reason: 'NO_HANDLER' };
@@ -1837,6 +1878,7 @@ class TrayManager {
 module.exports = {
   DEFAULT_TRAY_MENU_IDS,
   FAULT_TRAY_MENU_IDS,
+  UPDATE_TRAY_MENU_IDS,
   DEFAULT_TRAY_ITEMS,
   ALERT_TRAY_TITLE,
   MAX_ITEMS_PER_PLUGIN,

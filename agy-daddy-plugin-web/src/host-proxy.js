@@ -957,6 +957,58 @@ function createHostProxy({ host, commands } = {}) {
     return await invokeControl('/host/health', {});
   }
 
+  async function getUpdatesStatus() {
+    return await invokeControl('/host/updates/status', {});
+  }
+
+  async function checkUpdates(body = {}) {
+    const payload = isPlainObject(body) ? body : {};
+    return await invokeControl('/host/updates/check', {
+      ...payload,
+      trigger: 'web'
+    });
+  }
+
+  async function applyUpdates(body = {}) {
+    const payload = isPlainObject(body) ? body : {};
+    return await invokeControl('/host/updates/apply', {
+      ...payload,
+      trigger: 'web'
+    });
+  }
+
+  async function rollbackUpdate(body = {}) {
+    const payload = isPlainObject(body) ? body : {};
+    return await invokeControl('/host/updates/rollback', {
+      ...payload,
+      trigger: 'web'
+    });
+  }
+
+  async function pinPluginUpdate(body = {}) {
+    const payload = isPlainObject(body) ? body : {};
+    return await invokeControl('/host/updates/pin', payload);
+  }
+
+  async function getHostUpdateSettings() {
+    const res = await invokeControl('/host/host-settings', { action: 'get' });
+    return {
+      ok: res?.ok !== false,
+      ...res,
+      values: res?.values !== undefined ? res.values : {}
+    };
+  }
+
+  async function setHostUpdateSettings(patch = {}) {
+    if (!isPlainObject(patch)) {
+      throw createHttpError(400, 'INVALID_SETTINGS_PATCH');
+    }
+    return await invokeControl('/host/host-settings', {
+      action: 'save',
+      patch
+    });
+  }
+
   function buildContextSettings(data, extraSettings) {
     const rawDisplay = data?.displayLocation ?? extraSettings?.displayLocation;
     const displayLocation = rawDisplay === 'topbar' ? 'topbar' : 'composer';
@@ -1764,6 +1816,13 @@ function localExportMarkdown(events = [], opts = {}) {
     setHostLocale,
     runCommand,
     getDoctor,
+    getUpdatesStatus,
+    checkUpdates,
+    applyUpdates,
+    rollbackUpdate,
+    pinPluginUpdate,
+    getHostUpdateSettings,
+    setHostUpdateSettings,
     getTopbar,
     getRemoteStatus,
     getComposerState,

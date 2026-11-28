@@ -1097,6 +1097,188 @@ export interface HostLocaleResponse {
   supportedLanguages: HostLanguageOption[];
 }
 
+export interface HostUpdateTargetInfo {
+  targetId: string;
+  kind?: 'host' | 'registry' | 'plugin' | string;
+  installMode?: 'wrapper' | 'npm-global' | 'git' | string;
+  writable?: boolean;
+  dirtyWorktree?: boolean;
+  trustLevel?: string;
+  pinned?: boolean;
+  sourceKind?: string;
+  sourceSpec?: string;
+  currentVersion?: string | null;
+  latestVersion?: string | null;
+  majorUpdateAvailable?: string | null;
+  currentCommit?: string | null;
+  latestCommit?: string | null;
+  status: 'up_to_date' | 'available' | 'blocked' | 'failed' | string;
+  blockReason?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  addedPermissions?: string[];
+  addedHighRiskPermissions?: string[];
+  requiredHostApi?: string | null;
+  autoSafeEligible?: boolean;
+  requiresHostRestart?: boolean;
+  requiresDaemonRestart?: boolean;
+  wrapperUpdateRecommended?: boolean;
+  wrapperMinVersion?: string | null;
+  releaseNotesUrl?: string | null;
+  hasRollback?: boolean;
+  lastFailedVersion?: string | null;
+}
+
+export interface HostUpdatesSummary {
+  availableCount: number;
+  pluginAvailableCount: number;
+  hostAvailable: boolean;
+  registryAvailable: boolean;
+  blockedCount: number;
+}
+
+export type HostUpdateChannel = 'stable' | 'next';
+export type HostAutoUpdateMode = 'notify' | 'auto-safe' | 'manual';
+export type HostUpdateCheckInterval = '1h' | '6h' | '12h' | '24h';
+export type HostUpdateSourcePreference = 'auto' | 'npm' | 'github';
+
+export interface HostUpdateSettings {
+  updateChannel: HostUpdateChannel | string;
+  autoUpdateMode: HostAutoUpdateMode | string;
+  updateCheckInterval: HostUpdateCheckInterval | string;
+  updateSourcePreference: HostUpdateSourcePreference | string;
+  npmRegistryUrl: string;
+}
+
+export interface HostUpdateSchedulerState {
+  enabled: boolean;
+  runningCheck: boolean;
+  applyingUpdate: boolean;
+  lastCheckedAt: string | null;
+  nextCheckAt: string | null;
+}
+
+export interface HostUpdateHistoryEntry {
+  timestamp?: string;
+  runId?: string;
+  trigger?: string;
+  targetId?: string;
+  sourceKind?: string;
+  sourceUrl?: string;
+  channel?: string;
+  fromVersion?: string | null;
+  toVersion?: string | null;
+  phase?: string;
+  durationMs?: number;
+  outcome?: 'up_to_date' | 'available' | 'succeeded' | 'blocked' | 'rolled_back' | 'failed' | string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface HostUpdatesStatusResponse {
+  ok: boolean;
+  hostVersion: string;
+  hostApiVersion?: string;
+  anchorsVersion?: string;
+  installMode?: 'wrapper' | 'npm-global' | 'git' | string;
+  writable?: boolean;
+  dirtyWorktree?: boolean;
+  settings?: Partial<HostUpdateSettings>;
+  scheduler?: HostUpdateSchedulerState;
+  summary?: HostUpdatesSummary;
+  targets?: Record<string, HostUpdateTargetInfo>;
+  recentHistory?: HostUpdateHistoryEntry[];
+}
+
+export interface HostUpdatesCheckRequest {
+  targets?: string | string[];
+  channel?: string;
+  sourcePreference?: string;
+  npmRegistryUrl?: string;
+  forceRefresh?: boolean;
+}
+
+export interface HostUpdatesCheckResponse extends HostUpdatesStatusResponse {
+  checkedNow?: boolean;
+  debounced?: boolean;
+  errors?: Array<{
+    targetId?: string;
+    errorCode?: string;
+    code?: string;
+    errorMessage?: string;
+    message?: string;
+  }>;
+}
+
+export interface HostUpdateConfirmItem {
+  pluginId: string;
+  displayName?: string;
+  trustLevel?: string;
+  fromVersion?: string;
+  toVersion?: string;
+  isMajor?: boolean;
+  majorUpdate?: boolean;
+  currentPermissions?: string[];
+  addedPermissions?: string[];
+  addedHighRiskPermissions?: string[];
+}
+
+export interface HostUpdatesApplyRequest {
+  targets: string[];
+  channel?: string;
+  sourcePreference?: string;
+  npmRegistryUrl?: string;
+  grantedPermissions?: Record<string, string[]>;
+  allowMajor?: boolean;
+  dryRun?: boolean;
+}
+
+export interface HostUpdateApplyResultItem {
+  targetId: string;
+  outcome: 'succeeded' | 'rolled_back' | 'blocked' | 'failed' | string;
+  fromVersion?: string | null;
+  toVersion?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface HostUpdatesApplyResponse {
+  ok: boolean;
+  runId?: string;
+  handoff?: boolean;
+  deferredReload?: boolean;
+  hostRestartRequired?: boolean;
+  targetVersion?: string;
+  results?: HostUpdateApplyResultItem[];
+  summary?: HostUpdatesSummary;
+  plugins?: HostPluginItem[];
+  hostRestartNotice?: Record<string, unknown> | null;
+  errorCode?: string;
+  error?: string;
+  message?: string;
+  needsPermissionConfirm?: boolean;
+  needsMajorConfirm?: boolean;
+  confirmations?: HostUpdateConfirmItem[];
+}
+
+export interface HostUpdatesRollbackResponse {
+  ok: boolean;
+  target: string;
+  restoredVersion?: string;
+  handoff?: boolean;
+  plugins?: HostPluginItem[];
+  errorCode?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface HostUpdatesPinResponse {
+  ok: boolean;
+  pluginId: string;
+  pinned: boolean;
+  plugins?: HostPluginItem[];
+}
+
 export interface HostPluginItem {
   id: string;
   displayName: string;
@@ -1110,6 +1292,8 @@ export interface HostPluginItem {
   active: boolean;
   hasNative: boolean;
   hasRollback: boolean;
+  pinned?: boolean;
+  updateInfo?: HostUpdateTargetInfo | null;
   permissions: string[];
   sourceKind: string;
   sourceSpec: string;
@@ -1145,6 +1329,7 @@ export interface HostPluginsResponse {
   plugins: HostPluginItem[];
   catalog: HostCatalogItem[];
   marketStats: HostMarketStats;
+  updatesSummary?: HostUpdatesSummary;
   scope?: 'web' | 'all';
   hiddenDesktopCount?: number;
   allPluginsCount?: number;
@@ -1162,6 +1347,7 @@ export interface HostPluginActionResponse {
   plugins?: HostPluginItem[];
   catalog?: HostCatalogItem[];
   marketStats?: HostMarketStats;
+  updatesSummary?: HostUpdatesSummary;
   [key: string]: unknown;
 }
 
@@ -1288,6 +1474,7 @@ export interface DoctorReport {
     migratedAt: string | null;
   };
   legacySuite: Record<string, unknown>;
+  updates?: Record<string, unknown>;
 }
 
 export type ContextDisplayLocation = 'composer' | 'topbar';

@@ -47,6 +47,14 @@ import type {
   HostPluginActionResponse,
   HostPluginsResponse,
   HostSettingsResponse,
+  HostUpdateSettings,
+  HostUpdatesApplyRequest,
+  HostUpdatesApplyResponse,
+  HostUpdatesCheckRequest,
+  HostUpdatesCheckResponse,
+  HostUpdatesPinResponse,
+  HostUpdatesRollbackResponse,
+  HostUpdatesStatusResponse,
   MarkSessionReadResponse,
   ModelsResponse,
   OptimizePromptResponse,
@@ -272,7 +280,9 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   if (!response.ok || dataObj?.ok === false) {
-    const code = typeof dataObj?.error === 'string' ? dataObj.error : `HTTP_${response.status}`;
+    const code = typeof dataObj?.error === 'string'
+      ? dataObj.error
+      : (typeof dataObj?.errorCode === 'string' ? dataObj.errorCode : `HTTP_${response.status}`);
     const msg = typeof dataObj?.message === 'string' ? dataObj.message : code;
     throw new ApiError(msg, response.status, code, parsed);
   }
@@ -881,6 +891,78 @@ export function getHostDoctor(signal?: AbortSignal): Promise<DoctorReport> {
   return apiRequest<DoctorReport>('/api/v1/host/doctor', { signal });
 }
 
+export function getHostUpdates(signal?: AbortSignal): Promise<HostUpdatesStatusResponse> {
+  return apiRequest<HostUpdatesStatusResponse>('/api/v1/host/updates', { signal });
+}
+
+export async function checkHostUpdates(
+  body: HostUpdatesCheckRequest = {},
+): Promise<HostUpdatesCheckResponse> {
+  try {
+    return await apiRequest<HostUpdatesCheckResponse>('/api/v1/host/updates/check', {
+      method: 'POST',
+      body,
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.payload && typeof err.payload === 'object') {
+      const parsed = err.payload as HostUpdatesCheckResponse;
+      const firstErr = Array.isArray(parsed.errors) ? parsed.errors[0] : null;
+      if (firstErr) {
+        const code = firstErr.errorCode || firstErr.code || err.code;
+        const msg = firstErr.errorMessage || firstErr.message || code;
+        throw new ApiError(msg, err.status, code, parsed);
+      }
+    }
+    throw err;
+  }
+}
+
+export async function applyHostUpdates(
+  body: HostUpdatesApplyRequest,
+): Promise<HostUpdatesApplyResponse> {
+  try {
+    return await apiRequest<HostUpdatesApplyResponse>('/api/v1/host/updates/apply', {
+      method: 'POST',
+      body,
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.payload && typeof err.payload === 'object') {
+      const parsed = err.payload as Record<string, unknown>;
+      if (parsed.needsPermissionConfirm || parsed.needsMajorConfirm || Array.isArray(parsed.results)) {
+        return parsed as unknown as HostUpdatesApplyResponse;
+      }
+    }
+    throw err;
+  }
+}
+
+export function rollbackHostUpdate(
+  body: { target: string },
+): Promise<HostUpdatesRollbackResponse> {
+  return apiRequest<HostUpdatesRollbackResponse>('/api/v1/host/updates/rollback', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function pinHostPlugin(
+  body: { pluginId: string; pinned: boolean },
+): Promise<HostUpdatesPinResponse> {
+  return apiRequest<HostUpdatesPinResponse>('/api/v1/host/updates/pin', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function saveHostUpdateSettings(
+  patch: Partial<HostUpdateSettings>,
+): Promise<HostSettingsResponse> {
+  return apiRequest<HostSettingsResponse>('/api/v1/host/update-settings', {
+    method: 'PUT',
+    body: { patch },
+  });
+}
+
 export function getTopbar(signal?: AbortSignal): Promise<TopbarResponse> {
   return apiRequest<TopbarResponse>('/api/v1/topbar', { signal });
 }
@@ -1466,6 +1548,12 @@ export const apiClient = {
   savePluginSettings,
   runHostCommand,
   getHostDoctor,
+  getHostUpdates,
+  checkHostUpdates,
+  applyHostUpdates,
+  rollbackHostUpdate,
+  pinHostPlugin,
+  saveHostUpdateSettings,
   getTopbar,
   getRemoteStatus,
   getWebAccessStatus,

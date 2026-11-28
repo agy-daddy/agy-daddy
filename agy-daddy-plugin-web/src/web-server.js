@@ -2179,6 +2179,146 @@ class WebServer {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/v1/host/updates') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const result = await proxy.getUpdatesStatus();
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/check') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.checkUpdates(body);
+        if (result?.ok !== false || result?.summary) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.summary || null,
+              scheduler: result?.scheduler || null,
+              updatedAt: Date.now()
+            }
+          });
+        }
+        if (result && result.ok === false && !result.error && Array.isArray(result.errors) && result.errors.length > 0) {
+          const firstErr = result.errors[0];
+          const code = firstErr?.errorCode || result.errorCode || 'UPDATE_CHECK_FAILED';
+          sendActionResult(res, {
+            ...result,
+            errorCode: result.errorCode || code,
+            error: code,
+            message: result.message || firstErr?.errorMessage || code
+          });
+          return;
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/apply') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.applyUpdates(body);
+        const hasDiskOrStateEffect = Boolean(
+          result?.ok !== false ||
+          (Array.isArray(result?.results) && result.results.some((r) => r.outcome === 'succeeded' || r.outcome === 'rolled_back'))
+        );
+        if (hasDiskOrStateEffect) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-apply', updatedAt: Date.now() }
+          });
+        }
+        if (result && result.ok === false && !result.error) {
+          const badItem = Array.isArray(result.results)
+            ? result.results.find((r) => r.outcome === 'rolled_back' || r.outcome === 'failed' || r.outcome === 'blocked')
+            : null;
+          const code = result.errorCode || badItem?.errorCode || 'UPDATE_APPLY_FAILED';
+          sendActionResult(res, {
+            ...result,
+            errorCode: result.errorCode || code,
+            error: code,
+            message: result.message || badItem?.errorMessage || code
+          });
+          return;
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/rollback') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.rollbackUpdate(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.updatesSummary || result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-rollback', updatedAt: Date.now() }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/pin') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.pinPluginUpdate(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.updatesSummary || result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-pin', updatedAt: Date.now() }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/v1/host/update-settings') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const patch = ('patch' in (body || {}))
+          ? extractPatch(body)
+          : (isPlainObject(body?.values) ? body.values : (isPlainObject(body) && Object.keys(body).length > 0 ? body : null));
+        if (!patch) {
+          sendJson(res, 400, { ok: false, error: 'INVALID_SETTINGS_PATCH' });
+          return;
+        }
+        const result = await proxy.setHostUpdateSettings(patch);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              settings: result?.values || patch,
+              updatedAt: Date.now()
+            }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/v1/topbar') {
         const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
         const result = await proxy.getTopbar();

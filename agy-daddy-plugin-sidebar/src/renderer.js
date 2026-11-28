@@ -136,6 +136,13 @@ async function mount(ctx) {
   let hoverExpandTimer = null;
   let hoverExpandTarget = null;
   let anchorTimer = null;
+  let bootstrapTimer = null;
+  let hasMountedOnce = false;
+  let hasRenderedOnce = false;
+  let lastBootstrapAt = 0;
+  let lastBootstrapFingerprint = '';
+  let lastReportedHealthKey = '';
+  let lastTopbarKey = '';
 
   // Map<nodeKey, { collapsed: boolean, baseRevision: number }>
   const optimisticCollapse = new Map();
@@ -147,6 +154,12 @@ async function mount(ctx) {
   function setHealth(status, reason = null) {
     healthStatus = status;
     healthReason = reason;
+    const healthKey = `${status}:${reason || ''}:${settings.viewMode}`;
+    if (healthKey === lastReportedHealthKey) {
+      syncTopbarUnit();
+      return;
+    }
+    lastReportedHealthKey = healthKey;
     const payload = {
       status,
       reason,
@@ -172,11 +185,16 @@ async function mount(ctx) {
     const label = degraded
       ? t('topbar.degraded')
       : (isEnhanced ? t('topbar.enhanced') : t('topbar.native'));
+    const tone = degraded ? 'warn' : (isEnhanced ? 'accent' : null);
+    const badge = degraded ? t('mode.native') : (isEnhanced ? t('mode.enhanced') : t('mode.native'));
+    const topbarKey = `${label}:${tone || ''}:${badge}`;
+    if (topbarKey === lastTopbarKey) return;
+    lastTopbarKey = topbarKey;
     try {
       void Promise.resolve(ctx.topbar.updateUnit(TOPBAR_UNIT_ID, {
         label,
-        tone: degraded ? 'warn' : (isEnhanced ? 'accent' : null),
-        badge: degraded ? t('mode.native') : (isEnhanced ? t('mode.enhanced') : t('mode.native')),
+        tone,
+        badge,
         title: t('topbar.title')
       })).catch(() => {});
     } catch {}
@@ -247,12 +265,24 @@ async function mount(ctx) {
     return !getPersistedCollapsed(nodeType, id);
   }
 
+  function computeBootstrapFingerprint(data) {
+    const rev = Number(data?.revision || 0);
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const groups = Array.isArray(data?.groups) ? data.groups : [];
+    const projects = Array.isArray(data?.projects) ? data.projects : [];
+    const sessionSig = sessions
+      .map((s) => `${s.cascadeId || ''}:${s.status || ''}:${s.title || s.summary || ''}:${s.lastModifiedTime || ''}:${s.pinned ? 1 : 0}:${s.archived ? 1 : 0}`)
+      .join('|');
+    return `${rev}#${groups.length}#${projects.length}#${Number(data?.archivedCount || 0)}#${data?.pcWebUrl || ''}#${data?.hostWindowWorkspace || ''}#${sessionSig}`;
+  }
+
   function applyBootstrapPayload(data) {
     if (!data || data.ok === false) return;
     if (isDragging) {
       pendingOrgSnapshot = data;
       return;
     }
+    const nextFingerprint = computeBootstrapFingerprint(data);
     const nextRev = Number(data.revision || 0);
     for (const [k, entry] of Array.from(optimisticCollapse.entries())) {
       if (nextRev > entry.baseRevision) {
@@ -272,10 +302,15 @@ async function mount(ctx) {
       sessionOrder: data.sessionOrder || {},
       worktreeTombstones: data.worktreeTombstones || {}
     };
-    if (healthStatus === 'degraded' && healthReason === 'BRIDGE_UNAVAILABLE' && sidebarRootEl) {
+    const recoveredFromBridge = healthStatus === 'degraded' && healthReason === 'BRIDGE_UNAVAILABLE' && sidebarRootEl;
+    if (recoveredFromBridge) {
       setHealth('ok', null);
       applyVisibilityMode();
     }
+    if (hasRenderedOnce && !recoveredFromBridge && nextFingerprint === lastBootstrapFingerprint) {
+      return;
+    }
+    lastBootstrapFingerprint = nextFingerprint;
     render();
   }
 
@@ -287,6 +322,7 @@ async function mount(ctx) {
         refreshWorktrees: Boolean(opts.refreshWorktrees),
         ...(opts.hostWindowWorkspace ? { hostWindowWorkspace: opts.hostWindowWorkspace } : {})
       });
+      lastBootstrapAt = Date.now();
       if (!res || res.ok === false) {
         setHealth('degraded', 'BRIDGE_UNAVAILABLE');
         applyVisibilityMode();
@@ -428,28 +464,126 @@ async function mount(ctx) {
     return res;
   }
 
+  function normalizeWsComparePath(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.toLowerCase().startsWith('file://')) {
+      s = s.slice(7);
+      try { s = decodeURIComponent(s); } catch {}
+      if (/^\/[a-zA-Z]:\//.test(s)) s = s.slice(1);
+    }
+    return s.replace(/\/+$/, '').toLowerCase();
+  }
+
+  function getNativeSidebarRows() {
+    const fromHostDom = ctx?.hostDom?.getSidebarRows?.();
+    if (Array.isArray(fromHostDom) && fromHostDom.length > 0) return fromHostDom;
+    const fromAnchors = ctx?.anchors?.queryAll?.('sidebar.conversationRows');
+    if (Array.isArray(fromAnchors) && fromAnchors.length > 0) return fromAnchors;
+    if (typeof doc?.querySelectorAll === 'function') {
+      try {
+        const queried = doc.querySelectorAll('[data-testid="conversation-row-sidebar"]');
+        if (queried && queried.length > 0) return Array.from(queried);
+      } catch {}
+    }
+    return Array.isArray(fromHostDom) ? fromHostDom : [];
+  }
+
+  function findMatchingNativeRow(rows, session) {
+    const cid = String(session?.cascadeId || '').trim();
+    const candidates = Array.from(new Set(
+      [session?.title, session?.summary]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+    ));
+    const normCandidates = candidates.map((c) => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+    if (cid) {
+      const byId = rows.find((row) => {
+        const cidAttr = row.getAttribute?.('data-cascade-id') || row.getAttribute?.('data-session-id') || '';
+        if (cidAttr && cidAttr === cid) return true;
+        const href = row.getAttribute?.('href') || '';
+        if (href && href.includes(cid)) return true;
+        if (typeof row.querySelector === 'function') {
+          const idNode = row.querySelector(`[data-cascade-id="${cid}"], [data-session-id="${cid}"]`);
+          if (idNode) return true;
+          const linkNode = row.querySelector('a[href]');
+          if (linkNode && String(linkNode.getAttribute?.('href') || '').includes(cid)) return true;
+        }
+        return false;
+      });
+      if (byId) return byId;
+    }
+
+    if (candidates.length === 0) return null;
+
+    const byExactTitle = rows.find((row) => {
+      const rowTitleAttr = String(row.getAttribute?.('title') || row.getAttribute?.('aria-label') || '').trim();
+      if (rowTitleAttr && candidates.includes(rowTitleAttr)) return true;
+
+      const rawTxt = String(row.textContent || '').trim();
+      if (rawTxt && candidates.includes(rawTxt)) return true;
+
+      const normTxt = rawTxt.replace(/\s+/g, ' ').trim();
+      if (normTxt && normCandidates.includes(normTxt)) return true;
+
+      const firstLine = rawTxt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+      if (firstLine && candidates.includes(firstLine)) return true;
+
+      if (typeof row.querySelectorAll === 'function') {
+        const children = row.querySelectorAll('span, p, div, a, button');
+        for (const el of Array.from(children || [])) {
+          const elAttr = String(el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '').trim();
+          if (elAttr && candidates.includes(elAttr)) return true;
+          const elTxt = String(el.textContent || '').trim();
+          if (elTxt && candidates.includes(elTxt)) return true;
+        }
+      }
+      return false;
+    });
+    if (byExactTitle) return byExactTitle;
+
+    return rows.find((row) => {
+      const normTxt = String(row.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!normTxt) return false;
+      return normCandidates.some((c) => c.length >= 2 && normTxt.startsWith(c));
+    }) || null;
+  }
+
+  function clickNativeRow(matchedRow) {
+    if (!matchedRow) return;
+    const tag = String(matchedRow.tagName || '').toUpperCase();
+    const role = String(matchedRow.getAttribute?.('role') || '').toLowerCase();
+    let target = matchedRow;
+    if (tag !== 'A' && tag !== 'BUTTON' && role !== 'button' && role !== 'link' && typeof matchedRow.querySelector === 'function') {
+      const linkChild = matchedRow.querySelector('a[href], [role="link"]');
+      if (linkChild) target = linkChild;
+    }
+    if (typeof target.click === 'function') {
+      target.click();
+      return;
+    }
+    if (typeof target.dispatchEvent === 'function' && typeof MouseEvent === 'function') {
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+  }
+
   async function activateSessionRow(session) {
     activeSessionId = session.cascadeId;
-    const rows = ctx?.hostDom?.getSidebarRows?.() || [];
-    const matchedRow = rows.find((row) => {
-      const cidAttr = row.getAttribute?.('data-cascade-id') || row.getAttribute?.('data-session-id') || '';
-      if (cidAttr && cidAttr === session.cascadeId) return true;
-      const href = row.getAttribute?.('href') || '';
-      if (href && href.includes(session.cascadeId)) return true;
-      const txt = String(row.textContent || '').trim();
-      const sTitle = String(session.title || session.summary || '').trim();
-      return Boolean(sTitle && txt === sTitle);
-    }) || null;
+    const rows = getNativeSidebarRows();
+    const matchedRow = findMatchingNativeRow(rows, session);
 
     const sessionWs = session.worktreePath || session.workspaceUri || '';
     const windowWs = orgState.hostWindowWorkspace || '';
+    const normSessionWs = normalizeWsComparePath(sessionWs);
+    const normWindowWs = normalizeWsComparePath(windowWs);
     const isCrossWorkspace = Boolean(
-      sessionWs && windowWs && sessionWs.toLowerCase() !== windowWs.toLowerCase()
+      normSessionWs && normWindowWs && normSessionWs !== normWindowWs
     );
 
     if (matchedRow && !isCrossWorkspace) {
       guidanceBanner = null;
-      matchedRow.click?.();
+      clickNativeRow(matchedRow);
       render();
       return { ok: true, mode: 'native-click' };
     }
@@ -819,7 +953,7 @@ async function mount(ctx) {
     if (settings.showWorktreePathHint && wt.displaySubpath) {
       row.appendChild(buildEl('span', 'agy-sb-subpath', wt.displaySubpath));
     }
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(wtSessions.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(wtSessions.length)));
 
     if (!isBare) {
       const addBtn = buildEl('button', 'agy-sb-icon-btn', '+');
@@ -959,7 +1093,7 @@ async function mount(ctx) {
     if (proj.isMultiWorktree && Array.isArray(proj.worktrees)) {
       row.appendChild(buildEl('span', 'agy-sb-badge', `${proj.worktrees.length} wt`));
     }
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(projSessions.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(projSessions.length)));
 
     const addBtn = buildEl('button', 'agy-sb-icon-btn', '+');
     addBtn.type = 'button';
@@ -1121,7 +1255,7 @@ async function mount(ctx) {
     row.appendChild(handle);
     row.appendChild(buildEl('span', 'agy-sb-caret', isExpanded ? '▾' : '▸'));
     row.appendChild(buildEl('span', 'agy-sb-label', group.name));
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(groupProjects.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(groupProjects.length)));
 
     const menuBtn = buildEl('button', 'agy-sb-icon-btn', '···');
     menuBtn.type = 'button';
@@ -1309,7 +1443,10 @@ async function mount(ctx) {
 
   function render() {
     if (disposed || !shellEl) return;
-    shellEl.textContent = '';
+    shellEl.setAttribute('data-dragging-active', isDragging ? 'true' : 'false');
+    const frag = typeof doc.createDocumentFragment === 'function' ? doc.createDocumentFragment() : null;
+    const out = frag || shellEl;
+    if (!frag) shellEl.textContent = '';
 
     // 1. Header
     const header = buildEl('div', 'agy-sb-header');
@@ -1361,7 +1498,7 @@ async function mount(ctx) {
       render();
     });
     header.appendChild(searchInput);
-    shellEl.appendChild(header);
+    out.appendChild(header);
 
     // 2. Banners (toast, inline confirm, cross-workspace guidance)
     if (toastBanner) {
@@ -1373,11 +1510,11 @@ async function mount(ctx) {
       closeBtn.type = 'button';
       closeBtn.addEventListener('click', () => { toastBanner = null; render(); });
       tb.appendChild(closeBtn);
-      shellEl.appendChild(tb);
+      out.appendChild(tb);
     }
 
     const dlgEl = renderInlineDialog();
-    if (dlgEl) shellEl.appendChild(dlgEl);
+    if (dlgEl) out.appendChild(dlgEl);
 
     if (guidanceBanner) {
       const gb = buildEl('div', 'agy-sb-banner');
@@ -1410,7 +1547,7 @@ async function mount(ctx) {
         actions.appendChild(openWebBtn);
       }
       gb.appendChild(actions);
-      shellEl.appendChild(gb);
+      out.appendChild(gb);
     }
 
     // 3. Body Tree
@@ -1534,7 +1671,12 @@ async function mount(ctx) {
       }
     }
 
-    shellEl.appendChild(body);
+    out.appendChild(body);
+    if (frag) {
+      shellEl.textContent = '';
+      shellEl.appendChild(frag);
+    }
+    hasRenderedOnce = true;
   }
 
   function ensureMountedOnRoot(rootEl) {
@@ -1543,6 +1685,11 @@ async function mount(ctx) {
       clearTimeout(anchorTimer);
       anchorTimer = null;
     }
+    if (sidebarRootEl === rootEl && hostContainerEl && hostContainerEl.parentElement === rootEl) {
+      return;
+    }
+    const isReattach = hasMountedOnce && Boolean(hostContainerEl) && hasRenderedOnce;
+    hasMountedOnce = true;
     sidebarRootEl = rootEl;
 
     if (!hostContainerEl) {
@@ -1567,9 +1714,43 @@ async function mount(ctx) {
     }
 
     setHealth('ok', null);
+    syncTopInset();
     applyVisibilityMode();
-    render();
-    void refreshBootstrap();
+    if (!isReattach) {
+      render();
+      void refreshBootstrap();
+    } else if (orgState.revision === 0 || (Date.now() - lastBootstrapAt >= 5000)) {
+      if (bootstrapTimer) {
+        clearTimeout(bootstrapTimer);
+      }
+      bootstrapTimer = setTimeout(() => {
+        bootstrapTimer = null;
+        if (!disposed && sidebarRootEl) {
+          void refreshBootstrap();
+        }
+      }, 0);
+    }
+  }
+
+  function syncTopInset() {
+    if (!hostContainerEl?.style?.setProperty) return;
+    const defaultInset = 40;
+    try {
+      const rootRect = sidebarRootEl?.getBoundingClientRect?.();
+      const titlebarEl = doc?.querySelector?.('[class*="@container/titlebar"]');
+      const titlebarRect = titlebarEl?.getBoundingClientRect?.();
+      if (titlebarRect && titlebarRect.height > 0 && rootRect && rootRect.height > 0) {
+        const overlap = Math.max(0, Math.ceil(titlebarRect.bottom - rootRect.top));
+        hostContainerEl.style.setProperty('--agy-sb-top-inset', `${overlap}px`);
+        return;
+      }
+      if (rootRect && rootRect.height > 0) {
+        const inset = rootRect.top < 36 ? defaultInset : 0;
+        hostContainerEl.style.setProperty('--agy-sb-top-inset', `${inset}px`);
+        return;
+      }
+    } catch {}
+    hostContainerEl.style.setProperty('--agy-sb-top-inset', `${defaultInset}px`);
   }
 
   function findSidebarRootFallback() {
@@ -1580,6 +1761,15 @@ async function mount(ctx) {
       return rows[0].closest('aside, [data-testid="sidebar-panel"], [data-testid="left-sidebar"], .bg-sidebar');
     }
     return null;
+  }
+
+  function handleSidebarCollapsed() {
+    sidebarRootEl = null;
+    if (bootstrapTimer) {
+      clearTimeout(bootstrapTimer);
+      bootstrapTimer = null;
+    }
+    applyVisibilityMode();
   }
 
   function handleAnchorLoss() {
@@ -1614,7 +1804,10 @@ async function mount(ctx) {
       } else {
         const fb = findSidebarRootFallback();
         if (fb) ensureMountedOnRoot(fb);
-        else if (sidebarRootEl) handleAnchorLoss();
+        else if (sidebarRootEl) {
+          if (hasMountedOnce) handleSidebarCollapsed();
+          else handleAnchorLoss();
+        }
       }
     }));
 
@@ -1713,8 +1906,13 @@ async function mount(ctx) {
     });
   }
   if (win?.addEventListener) {
+    const onResize = () => syncTopInset();
     win.addEventListener('blur', onBlur);
-    disposers.push(() => win.removeEventListener?.('blur', onBlur));
+    win.addEventListener('resize', onResize);
+    disposers.push(() => {
+      win.removeEventListener?.('blur', onBlur);
+      win.removeEventListener?.('resize', onResize);
+    });
   }
 
   // Provide isolated-realm service API for diagnostics & deterministic tests
@@ -1751,6 +1949,10 @@ async function mount(ctx) {
       if (anchorTimer) {
         clearTimeout(anchorTimer);
         anchorTimer = null;
+      }
+      if (bootstrapTimer) {
+        clearTimeout(bootstrapTimer);
+        bootstrapTimer = null;
       }
       clearHoverExpand();
       for (const fn of disposers.splice(0).reverse()) {

@@ -478,3 +478,232 @@ test('silent fallback: missing sidebar.root degrades silently after timeout and 
     await harness.cleanup();
   }
 });
+
+test('visual hygiene & top inset: dynamic titlebar overlap clearance and native neutral tokens', async () => {
+  const { SHADOW_CSS } = require(path.join(PLUGIN_DIR, 'src', 'styles'));
+  assert.match(SHADOW_CSS, /padding-top:\s*var\(--agy-sb-top-inset,\s*40px\)/);
+  assert.equal(/#a78bfa/i.test(SHADOW_CSS), false, 'Forbidden purple fallback must not exist in SHADOW_CSS');
+
+  const { doc, aside } = seedSidebarDocument([
+    { cascadeId: 'ses-top-1', title: 'Top Inset Chat' }
+  ]);
+  const titlebar = doc.querySelector('[class*="@container/titlebar"]');
+  titlebar.getBoundingClientRect = () => ({ top: 0, left: 0, right: 800, bottom: 42, width: 800, height: 42 });
+  aside.getBoundingClientRect = () => ({ top: 0, left: 0, right: 280, bottom: 800, width: 280, height: 800 });
+
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'ses-top-1': {
+              summary: 'Top Inset Chat',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-26T10:00:00Z'
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    await waitFor(() => enhancedRoot.style.getPropertyValue('--agy-sb-top-inset') === '42px');
+    assert.equal(enhancedRoot.style.getPropertyValue('--agy-sb-top-inset'), '42px');
+
+    await harness.unloadPlugin('agy-daddy.sidebar');
+    harness.assertCleanDispose('agy-daddy.sidebar');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+  }
+});
+
+test('sidebar toggle collapse/reopen preserves Shadow DOM nodes, avoids degraded flash, and skips redundant bootstrap', async () => {
+  const { doc, aside } = seedSidebarDocument([
+    { cascadeId: 'ses-toggle-1', title: 'Toggle Perf Session' }
+  ]);
+  let rpcCalls = 0;
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        rpcCalls += 1;
+        return {
+          trajectorySummaries: {
+            'ses-toggle-1': {
+              summary: 'Toggle Perf Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-26T12:00:00Z'
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    const sr = enhancedRoot.shadowRoot;
+    await waitFor(() => sr.querySelector('[data-session-id="ses-toggle-1"]'));
+    const initialBodyEl = sr.querySelector('.agy-sb-body');
+    assert.ok(initialBodyEl, 'Initial sidebar body must be rendered');
+    const callsAfterMount = rpcCalls;
+    assert.ok(callsAfterMount >= 1, 'Initial mount should bootstrap once');
+
+    // Simulate closing the left sidebar (host unmounts aside)
+    aside.remove();
+    await waitFor(() => enhancedRoot.hidden === true);
+    const healthAfterClose = harness.bus.getState('state:sidebar.health@1')?.value;
+    assert.equal(healthAfterClose?.status, 'ok', 'Closing sidebar must not flash degraded health');
+
+    // Simulate reopening the left sidebar with a fresh aside element
+    const aside2 = doc.createElement('aside');
+    aside2.setAttribute('data-testid', 'sidebar-panel');
+    aside2.className = 'bg-sidebar';
+    doc.body.appendChild(aside2);
+
+    await waitFor(() => aside2.querySelector('#agy-sidebar-enhanced-root') === enhancedRoot && enhancedRoot.hidden === false);
+    // Give any queued microtasks/timers a chance to run
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(
+      sr.querySelector('.agy-sb-body'),
+      initialBodyEl,
+      'Reopening sidebar must reuse existing Shadow DOM nodes without full rebuild'
+    );
+    assert.equal(
+      rpcCalls,
+      callsAfterMount,
+      'Reopening sidebar within cooldown must skip redundant GetAllCascadeTrajectories RPC'
+    );
+
+    await harness.unloadPlugin('agy-daddy.sidebar');
+    harness.assertCleanDispose('agy-daddy.sidebar');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+  }
+});
+
+test('session click: matches native rows with metadata text, nested links, and file:// URI workspace', async () => {
+  const doc = createMockDocument([]);
+  const aside = createMockElement('aside', doc);
+  aside.setAttribute('data-testid', 'sidebar-panel');
+  aside.className = 'bg-sidebar';
+
+  const nativeList = createMockElement('div', doc);
+  nativeList.setAttribute('data-testid', 'native-list');
+
+  // Row 1: no data-cascade-id, title + trailing timestamp in nested spans
+  const row1 = createMockElement('div', doc);
+  row1.setAttribute('data-testid', 'conversation-row-sidebar');
+  const titleSpan = createMockElement('span', doc);
+  titleSpan.textContent = 'Refactor Sidebar Click';
+  const timeSpan = createMockElement('span', doc);
+  timeSpan.textContent = '2m';
+  row1.appendChild(titleSpan);
+  row1.appendChild(timeSpan);
+  let row1Clicks = 0;
+  row1.addEventListener('click', () => { row1Clicks += 1; });
+
+  // Row 2: no data-cascade-id, multiline textContent with inner <a href>
+  const row2 = createMockElement('div', doc);
+  row2.setAttribute('data-testid', 'conversation-row-sidebar');
+  const link2 = createMockElement('a', doc);
+  link2.setAttribute('href', '#conversation');
+  link2.textContent = 'Nested Link Session\n5m ago';
+  let link2Clicks = 0;
+  link2.addEventListener('click', () => { link2Clicks += 1; });
+  row2.appendChild(link2);
+
+  nativeList.appendChild(row1);
+  nativeList.appendChild(row2);
+  aside.appendChild(nativeList);
+  doc.body.appendChild(aside);
+
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-sb-click-'));
+  const wsReal = realPath(wsDir);
+  const wsUri = url.pathToFileURL(wsReal).href;
+
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'ses-meta-1': {
+              summary: 'Refactor Sidebar Click',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-28T10:00:00Z',
+              workspaces: [{ workspaceFolderAbsoluteUri: wsUri }]
+            },
+            'ses-link-2': {
+              summary: 'Nested Link Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-28T09:00:00Z',
+              workspaces: [{ workspaceFolderAbsoluteUri: wsUri }]
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    const sr = enhancedRoot.shadowRoot;
+    await waitFor(() => sr.querySelectorAll('[data-node-type="session"]').length === 2);
+
+    // Simulate hostWindowWorkspace as local path while session has file:// URI
+    const token = harness.bridge.getPluginToken('agy-daddy.sidebar');
+    await fetch(`http://127.0.0.1:${harness.bridge.port}/plugins/agy-daddy.sidebar/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-AGY-Plugin-Token': token },
+      body: JSON.stringify({ hostWindowWorkspace: wsReal })
+    });
+
+    const ses1El = sr.querySelector('[data-node-type="session"][data-session-id="ses-meta-1"]');
+    assert.ok(ses1El);
+    ses1El.click();
+    await waitFor(() => row1Clicks === 1);
+    assert.equal(row1Clicks, 1, 'Clicking session must click native row even without data-cascade-id and with timestamp text');
+    assert.equal(sr.querySelector('[data-banner="cross-workspace"]'), null);
+
+    const ses2El = sr.querySelector('[data-node-type="session"][data-session-id="ses-link-2"]');
+    assert.ok(ses2El);
+    ses2El.click();
+    await waitFor(() => link2Clicks === 1);
+    assert.equal(link2Clicks, 1, 'Clicking session must click inner <a href> when native row wraps a link');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+    fs.rmSync(wsDir, { recursive: true, force: true });
+  }
+});

@@ -683,3 +683,136 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+
+.updatesBar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.updatesHeaderRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.updatesMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.updatesSettingsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.updateControlGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.updateSelect {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.updateSelect:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.updateRegistryWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+}
+
+.updateRegistryInput {
+  flex: 1 1 auto;
+  min-width: 160px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.badgeWarn {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: var(--status-warning-soft, rgba(245, 158, 11, 0.14));
+  color: var(--text-primary);
+}
+
+.badgeDanger {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: var(--status-danger-soft);
+  color: var(--text-primary);
+}
+
+.releaseLink {
+  color: var(--accent-bright);
+  font-size: var(--text-xs);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+  border: 2px solid var(--border-default);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: hostAdminSpin 0.65s linear infinite;
+  vertical-align: -1px;
+}
+
+@keyframes hostAdminSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.updateConfirmCard {
+  margin: 10px 16px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: var(--status-warning-soft, rgba(245, 158, 11, 0.1));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+
+.updateConfirmItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}

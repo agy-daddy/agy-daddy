@@ -326,8 +326,7 @@ function isTransientNetworkError(err) {
 function sleepMs(ms) {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    if (typeof t.unref === 'function') t.unref();
+    setTimeout(resolve, ms);
   });
 }
 
@@ -380,7 +379,6 @@ async function fetchWithRetryCore(url, fetchOpts = {}, ctx = {}) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(makeUpdateError('UPDATE_NETWORK_TIMEOUT', `Request timed out after ${timeoutMs}ms`)), timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
     try {
       const resp = await fetchImpl(url, {
         ...fetchOpts,

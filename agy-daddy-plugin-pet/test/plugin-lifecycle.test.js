@@ -54,6 +54,9 @@ test('agy-daddy.pet 插件完整生命周期：桌面置顶懒启停、PC-Web �
     const loaded = await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
     assert.equal(loaded.manifest.id, 'agy-daddy.pet');
     assert.equal(loaded.manifest.world, 'isolated');
+    assert.equal(loaded.manifest.contributes['topbar.units'], undefined);
+    assert.equal(loaded.manifest.contributes['topbar.popovers'], undefined);
+    assert.equal(loaded.manifest.requires, undefined);
 
     // 桌面置顶窗口应已懒启动
     assert.equal(harness.overlayManager.listPluginWindows('agy-daddy.pet').length, 1);

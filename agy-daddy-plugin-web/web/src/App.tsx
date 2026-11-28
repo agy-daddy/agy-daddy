@@ -554,6 +554,7 @@ export function App() {
   );
   const [adminTab, setAdminTab] = useState<HostAdminTab>('plugins');
   const [adminSelectedPluginId, setAdminSelectedPluginId] = useState<string | null>(null);
+  const [updatesRevision, setUpdatesRevision] = useState<number>(0);
   const [tasksData, setTasksData] = useState<BackgroundTasksListResponse | null>(null);
   const [tasksLoading, setTasksLoading] = useState<boolean>(false);
   const [taskFilters, setTaskFilters] = useState<{ project: string; sessionId: string }>({
@@ -1467,6 +1468,10 @@ export function App() {
         }
         if (patch.key === 'state:web.status@1') {
           void refreshWebAccessStatus();
+          return;
+        }
+        if (patch.key === 'state:host.updates@1' || patch.key === 'state:host.plugins@1') {
+          setUpdatesRevision((n) => n + 1);
           return;
         }
         if (patch.key === 'state:remote.status@1') {
@@ -3189,6 +3194,7 @@ export function App() {
         open={adminOpen}
         activeTab={adminTab}
         initialSelectedPluginId={adminSelectedPluginId}
+        updatesRevision={updatesRevision}
         onTabChange={setAdminTab}
         channel={webAccessStatus?.channel}
         permissionLevel={webAccessStatus?.permissionLevel}

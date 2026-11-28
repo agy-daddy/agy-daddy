@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   apiClient,
+  applyHostUpdates,
+  checkHostUpdates,
   getHostDoctor,
   getHostPlugins,
+  getHostUpdates,
   getPluginSettings,
+  pinHostPlugin,
+  rollbackHostUpdate,
   runHostCommand,
   runHostPluginAction,
+  saveHostUpdateSettings,
   savePluginSettings,
 } from '../api/client';
 import { normalizeLocale, useI18n } from '../i18n';
@@ -24,6 +30,11 @@ import type {
   HostMarketStats,
   HostPluginAction,
   HostPluginItem,
+  HostUpdateSettings,
+  HostUpdateTargetInfo,
+  HostUpdatesApplyRequest,
+  HostUpdatesApplyResponse,
+  HostUpdatesStatusResponse,
   PluginSettingsResponse,
   RunCommandResponse,
   SettingsSchema,
@@ -61,6 +72,7 @@ export interface HostAdminModalProps {
   knownCommands?: HostCommandSuggestion[];
   channel?: string;
   permissionLevel?: string;
+  updatesRevision?: number;
 }
 
 interface CommandHistoryEntry {
@@ -118,6 +130,7 @@ export function HostAdminModal({
   knownCommands,
   channel: channelProp,
   permissionLevel: permissionLevelProp,
+  updatesRevision = 0,
 }: HostAdminModalProps) {
   const { locale: ctxLocale, supportedLanguages, setLocale, t } = useI18n();
   const { preference, colorTheme, drawerSpeed, setTheme, setColorTheme, setDrawerSpeed } = useTheme();
@@ -226,10 +239,34 @@ export function HostAdminModal({
   const [cmdError, setCmdError] = useState<string | null>(null);
   const [cmdHistory, setCmdHistory] = useState<CommandHistoryEntry[]>([]);
 
+  const [updatesStatus, setUpdatesStatus] = useState<HostUpdatesStatusResponse | null>(null);
+  const [updatesChecking, setUpdatesChecking] = useState(false);
+  const [updatesApplyingTarget, setUpdatesApplyingTarget] = useState<string | null>(null);
+  const [updatesRollingBackTarget, setUpdatesRollingBackTarget] = useState<string | null>(null);
+  const [updatesPinningId, setUpdatesPinningId] = useState<string | null>(null);
+  const [updatesSavingSettings, setUpdatesSavingSettings] = useState(false);
+  const [npmRegistryDraft, setNpmRegistryDraft] = useState('');
+  const [pendingUpdateConfirm, setPendingUpdateConfirm] = useState<{
+    request: HostUpdatesApplyRequest;
+    response: HostUpdatesApplyResponse;
+  } | null>(null);
+
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
   const [doctorLoading, setDoctorLoading] = useState(false);
   const [doctorError, setDoctorError] = useState<string | null>(null);
   const [copiedDoctor, setCopiedDoctor] = useState(false);
+
+  const loadUpdatesStatus = useCallback(async () => {
+    try {
+      const res = await getHostUpdates();
+      if (res && res.ok !== false && (res.targets || res.hostVersion || res.summary)) {
+        setUpdatesStatus(res);
+        setNpmRegistryDraft(res.settings?.npmRegistryUrl ?? '');
+      }
+    } catch {
+      // Ignore when host updates endpoint is unavailable in legacy mocks
+    }
+  }, []);
 
   const loadPlugins = useCallback(async () => {
     setPluginsLoading(true);
@@ -350,10 +387,11 @@ export function HostAdminModal({
     if (!open) return;
     if (currentTab === 'plugins') {
       void loadPlugins();
+      void loadUpdatesStatus();
     } else if (currentTab === 'doctor') {
       void loadDoctor();
     }
-  }, [open, currentTab, loadPlugins, loadDoctor]);
+  }, [open, currentTab, updatesRevision, loadPlugins, loadUpdatesStatus, loadDoctor]);
 
   useEffect(() => {
     if (!open || currentTab !== 'plugins' || !selectedPluginId) {
@@ -361,6 +399,224 @@ export function HostAdminModal({
     }
     void loadPluginSettings(selectedPluginId);
   }, [open, currentTab, selectedPluginId, loadPluginSettings]);
+
+  const isUpdateBusy = Boolean(
+    updatesChecking || updatesApplyingTarget || updatesRollingBackTarget || updatesPinningId,
+  );
+
+  const resolveUpdateInfo = useCallback(
+    (plugin: HostPluginItem): HostUpdateTargetInfo | null => {
+      if (plugin.updateInfo) return plugin.updateInfo;
+      return updatesStatus?.targets?.[plugin.id] ?? null;
+    },
+    [updatesStatus],
+  );
+
+  const handleCheckUpdates = async () => {
+    if (isPermLocked) {
+      setPluginsError(t('updates.l2RequiredHint', { tier: effectiveTier || 'L1' }));
+      return;
+    }
+    if (updatesChecking || isUpdateBusy) return;
+    setUpdatesChecking(true);
+    setPluginsError(null);
+    setPluginNotice(null);
+    try {
+      const settings = updatesStatus?.settings;
+      const res = await checkHostUpdates({
+        targets: 'all',
+        channel: settings?.updateChannel || 'stable',
+        sourcePreference: settings?.updateSourcePreference || 'auto',
+        npmRegistryUrl: settings?.npmRegistryUrl || '',
+        forceRefresh: true,
+      });
+      if (res && (res.targets || res.hostVersion || res.summary)) {
+        setUpdatesStatus(res);
+        setNpmRegistryDraft(res.settings?.npmRegistryUrl ?? settings?.npmRegistryUrl ?? '');
+      }
+      const avail = Number(res?.summary?.availableCount || 0);
+      if (res?.debounced) {
+        setPluginNotice(t('updates.checkDebounced', { count: avail }));
+      } else if (avail > 0) {
+        setPluginNotice(t('updates.checkDoneAvailable', { count: avail }));
+      } else {
+        setPluginNotice(t('updates.checkDoneUpToDate'));
+      }
+      await loadPlugins();
+    } catch (err) {
+      setPluginsError(err instanceof Error ? err.message : t('updates.applyFailed', { error: 'CHECK_FAILED' }));
+    } finally {
+      setUpdatesChecking(false);
+    }
+  };
+
+  const handleApplyUpdates = async (
+    targets: string[],
+    opts: {
+      grantedPermissions?: Record<string, string[]>;
+      allowMajor?: boolean;
+      busyKey?: string;
+    } = {},
+  ) => {
+    if (isPermLocked) {
+      setPluginsError(t('updates.l2RequiredHint', { tier: effectiveTier || 'L1' }));
+      return;
+    }
+    if (isUpdateBusy) return;
+    const busyKey = opts.busyKey || (targets.length === 1 ? targets[0] : '__all__');
+    setUpdatesApplyingTarget(busyKey);
+    setPluginsError(null);
+    setPluginNotice(null);
+    try {
+      const settings = updatesStatus?.settings;
+      const req: HostUpdatesApplyRequest = {
+        targets,
+        channel: settings?.updateChannel || 'stable',
+        sourcePreference: settings?.updateSourcePreference || 'auto',
+        npmRegistryUrl: settings?.npmRegistryUrl || '',
+        grantedPermissions: opts.grantedPermissions || {},
+        allowMajor: Boolean(opts.allowMajor),
+        dryRun: false,
+      };
+      const res = await applyHostUpdates(req);
+      if (res.needsPermissionConfirm || res.needsMajorConfirm) {
+        setPendingUpdateConfirm({ request: req, response: res });
+        return;
+      }
+      setPendingUpdateConfirm(null);
+      if (res.handoff) {
+        setPluginNotice(
+          t('updates.handoffNotice', {
+            version: res.targetVersion || res.results?.[0]?.toVersion || '?',
+          }),
+        );
+        return;
+      }
+      if (res.deferredReload) {
+        setPluginNotice(t('updates.deferredReloadNotice'));
+      } else if (res.hostRestartRequired || res.hostRestartNotice) {
+        setPluginNotice(t('updates.hostRestartNotice'));
+      } else {
+        const results = res.results || [];
+        const rolled = results.find((r) => r.outcome === 'rolled_back');
+        const failed = results.find((r) => r.outcome === 'failed' || r.outcome === 'blocked');
+        const okCount = results.filter((r) => r.outcome === 'succeeded').length;
+        if (rolled) {
+          setPluginsError(
+            t('updates.applyRolledBack', {
+              id: rolled.targetId,
+              error: rolled.errorCode || rolled.errorMessage || 'ROLLBACK',
+            }),
+          );
+        } else if (failed && okCount === 0) {
+          setPluginsError(
+            t('updates.applyFailed', {
+              error: failed.errorCode || failed.errorMessage || 'FAILED',
+            }),
+          );
+        } else {
+          setPluginNotice(t('updates.applySucceeded', { count: Math.max(okCount, targets.length) }));
+        }
+      }
+      await Promise.all([loadPlugins(), loadUpdatesStatus()]);
+      onPluginsChanged?.();
+    } catch (err) {
+      setPluginsError(
+        err instanceof Error
+          ? err.message
+          : t('updates.applyFailed', { error: 'APPLY_FAILED' }),
+      );
+    } finally {
+      setUpdatesApplyingTarget(null);
+    }
+  };
+
+  const handleRollbackUpdate = async (target: string) => {
+    if (isPermLocked) {
+      setPluginsError(t('updates.l2RequiredHint', { tier: effectiveTier || 'L1' }));
+      return;
+    }
+    if (isUpdateBusy) return;
+    setUpdatesRollingBackTarget(target);
+    setPluginsError(null);
+    setPluginNotice(null);
+    try {
+      const res = await rollbackHostUpdate({ target });
+      if (res.handoff) {
+        setPluginNotice(t('updates.handoffNotice', { version: res.restoredVersion || '?' }));
+        return;
+      }
+      setPluginNotice(
+        t('updates.rollbackDone', { target, version: res.restoredVersion || '?' }),
+      );
+      await Promise.all([loadPlugins(), loadUpdatesStatus()]);
+      onPluginsChanged?.();
+    } catch (err) {
+      setPluginsError(err instanceof Error ? err.message : t('admin.actionFailed', { action: 'rollback' }));
+    } finally {
+      setUpdatesRollingBackTarget(null);
+    }
+  };
+
+  const handleTogglePin = async (pluginId: string, nextPinned: boolean) => {
+    if (isPermLocked) {
+      setPluginsError(t('updates.l2RequiredHint', { tier: effectiveTier || 'L1' }));
+      return;
+    }
+    if (isUpdateBusy) return;
+    setUpdatesPinningId(pluginId);
+    setPluginsError(null);
+    setPluginNotice(null);
+    try {
+      await pinHostPlugin({ pluginId, pinned: nextPinned });
+      setPluginNotice(t('updates.pinUpdated', { id: pluginId }));
+      await Promise.all([loadPlugins(), loadUpdatesStatus()]);
+      onPluginsChanged?.();
+    } catch (err) {
+      setPluginsError(err instanceof Error ? err.message : t('admin.actionFailed', { action: 'pin' }));
+    } finally {
+      setUpdatesPinningId(null);
+    }
+  };
+
+  const handleSaveUpdateSettingsPatch = async (patch: Partial<HostUpdateSettings>) => {
+    if (isPermLocked) {
+      setPluginsError(t('updates.l2RequiredHint', { tier: effectiveTier || 'L1' }));
+      return;
+    }
+    if (patch.npmRegistryUrl !== undefined) {
+      const trimmed = patch.npmRegistryUrl.trim().replace(/\/+$/, '');
+      if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+        setPluginsError(t('updates.invalidRegistryUrl'));
+        return;
+      }
+      patch = { ...patch, npmRegistryUrl: trimmed };
+    }
+    setUpdatesSavingSettings(true);
+    setPluginsError(null);
+    setPluginNotice(null);
+    try {
+      const res = await saveHostUpdateSettings(patch);
+      setUpdatesStatus((prev) => ({
+        ok: true,
+        hostVersion: prev?.hostVersion || '1.0.0',
+        ...(prev || {}),
+        settings: {
+          ...(prev?.settings || {}),
+          ...(res?.values || {}),
+          ...patch,
+        },
+      }));
+      if (patch.npmRegistryUrl !== undefined) {
+        setNpmRegistryDraft(patch.npmRegistryUrl);
+      }
+      setPluginNotice(t('updates.settingsSaved'));
+    } catch (err) {
+      setPluginsError(err instanceof Error ? err.message : t('schema.saveFailed'));
+    } finally {
+      setUpdatesSavingSettings(false);
+    }
+  };
 
   const handlePluginAction = async (
     pluginId: string,
@@ -370,6 +626,9 @@ export function HostAdminModal({
     if (isPermLocked) {
       setPluginsError(t('admin.permLockedL0L1', { tier: effectiveTier || 'L1' }));
       return;
+    }
+    if (action === 'rollback') {
+      setUpdatesRollingBackTarget(pluginId);
     }
     setBusyPluginId(pluginId);
     setPluginsError(null);
@@ -400,6 +659,9 @@ export function HostAdminModal({
       setPluginsError(err instanceof Error ? err.message : t('admin.actionFailed', { action }));
     } finally {
       setBusyPluginId(null);
+      if (action === 'rollback') {
+        setUpdatesRollingBackTarget(null);
+      }
     }
   };
 
@@ -776,6 +1038,346 @@ export function HostAdminModal({
                 </div>
               )}
 
+              {pendingUpdateConfirm && (
+                <div
+                  className={styles.updateConfirmCard}
+                  role="alertdialog"
+                  data-testid="host-admin-update-confirm"
+                >
+                  <div className={styles.updatesHeaderRow}>
+                    <strong>{t('updates.confirmTitle')}</strong>
+                    {pendingUpdateConfirm.response.needsMajorConfirm && (
+                      <span className={`${styles.badge} ${styles.badgeDanger}`}>
+                        {t('updates.confirmMajorBadge')}
+                      </span>
+                    )}
+                  </div>
+                  {(pendingUpdateConfirm.response.confirmations || []).map((item) => {
+                    const highRisk = new Set(item.addedHighRiskPermissions || []);
+                    return (
+                      <div key={item.pluginId} className={styles.updateConfirmItem}>
+                        <div className={styles.pluginTitleRow}>
+                          <span className={styles.pluginName}>
+                            {item.displayName || item.pluginId}
+                          </span>
+                          <span className={`${styles.badge} ${styles.badgeWarn}`}>
+                            v{item.fromVersion || '?'} → v{item.toVersion || '?'}
+                          </span>
+                          {item.trustLevel && (
+                            <span className={styles.badge}>{item.trustLevel}</span>
+                          )}
+                        </div>
+                        {item.currentPermissions && item.currentPermissions.length > 0 && (
+                          <span>
+                            {t('updates.confirmCurrentPerms', {
+                              perms: item.currentPermissions.join(', '),
+                            })}
+                          </span>
+                        )}
+                        {item.addedPermissions && item.addedPermissions.length > 0 && (
+                          <div className={styles.pluginTitleRow}>
+                            <span>
+                              {t('updates.confirmAddedPerms', {
+                                perms: item.addedPermissions
+                                  .map((perm) =>
+                                    highRisk.has(perm)
+                                      ? `${perm} ${t('updates.confirmHighRiskTag')}`
+                                      : perm,
+                                  )
+                                  .join(', '),
+                              })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div className={styles.pluginActions}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnPrimary}`}
+                      disabled={isUpdateBusy || isPermLocked}
+                      data-testid="updates-confirm-approve-btn"
+                      onClick={() => {
+                        const grantedMap: Record<string, string[]> = {};
+                        for (const c of pendingUpdateConfirm.response.confirmations || []) {
+                          grantedMap[c.pluginId] = Array.from(
+                            new Set([
+                              ...(c.currentPermissions || []),
+                              ...(c.addedPermissions || []),
+                            ]),
+                          );
+                        }
+                        void handleApplyUpdates(pendingUpdateConfirm.request.targets, {
+                          grantedPermissions: grantedMap,
+                          allowMajor: true,
+                        });
+                      }}
+                    >
+                      {t('updates.confirmApproveBtn')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.btn}
+                      onClick={() => setPendingUpdateConfirm(null)}
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {updatesStatus && (
+                <div className={styles.updatesBar} data-testid="host-updates-panel">
+                  <div className={styles.updatesHeaderRow}>
+                    <div className={styles.updatesMetaRow}>
+                      <span className={styles.pluginName}>{t('updates.sectionTitle')}</span>
+                      <span className={styles.badge}>
+                        {t('updates.hostVersionLabel', { version: updatesStatus.hostVersion })}
+                      </span>
+                      {updatesStatus.installMode && (
+                        <span className={styles.badge}>
+                          {updatesStatus.installMode === 'wrapper'
+                            ? t('updates.modeWrapper')
+                            : updatesStatus.installMode === 'npm-global'
+                              ? t('updates.modeNpmGlobal')
+                              : t('updates.modeGit')}
+                        </span>
+                      )}
+                      {updatesStatus.anchorsVersion && (
+                        <span className={styles.badge}>
+                          {t('updates.anchorsVersionLabel', {
+                            version: updatesStatus.anchorsVersion,
+                          })}
+                        </span>
+                      )}
+                      <span
+                        className={`${styles.badge} ${
+                          (updatesStatus.summary?.availableCount || 0) > 0
+                            ? styles.badgeWarn
+                            : styles.badgeActive
+                        }`}
+                      >
+                        {(updatesStatus.summary?.availableCount || 0) > 0
+                          ? t('updates.availableBadge', {
+                              count: updatesStatus.summary?.availableCount || 0,
+                            })
+                          : t('updates.upToDate')}
+                      </span>
+                      <span>
+                        {updatesStatus.scheduler?.lastCheckedAt
+                          ? t('updates.lastChecked', {
+                              time: updatesStatus.scheduler.lastCheckedAt,
+                            })
+                          : t('updates.neverChecked')}
+                      </span>
+                    </div>
+                    <div className={styles.pluginActions}>
+                      {updatesStatus.targets?.host?.status === 'available' && (
+                        <button
+                          type="button"
+                          className={`${styles.btn} ${styles.btnPrimary}`}
+                          disabled={isUpdateBusy || isPermLocked}
+                          data-testid="updates-host-apply-btn"
+                          onClick={() =>
+                            void handleApplyUpdates(['host'], { busyKey: 'host' })
+                          }
+                        >
+                          {updatesApplyingTarget === 'host' && (
+                            <span className={styles.spinner} aria-hidden="true" />
+                          )}
+                          {updatesApplyingTarget === 'host'
+                            ? t('updates.updatingBtn')
+                            : t('updates.hostAvailable', {
+                                current: updatesStatus.targets.host.currentVersion || updatesStatus.hostVersion,
+                                latest: updatesStatus.targets.host.latestVersion || '?',
+                              })}
+                        </button>
+                      )}
+                      {updatesStatus.targets?.host?.hasRollback && (
+                        <button
+                          type="button"
+                          className={styles.btn}
+                          disabled={isUpdateBusy || isPermLocked}
+                          data-testid="updates-host-rollback-btn"
+                          onClick={() => void handleRollbackUpdate('host')}
+                        >
+                          {updatesRollingBackTarget === 'host' && (
+                            <span className={styles.spinner} aria-hidden="true" />
+                          )}
+                          {updatesRollingBackTarget === 'host'
+                            ? t('updates.rollingBackBtn')
+                            : t('updates.rollbackHostBtn')}
+                        </button>
+                      )}
+                      {(updatesStatus.summary?.availableCount || 0) > 0 && (
+                        <button
+                          type="button"
+                          className={`${styles.btn} ${styles.btnPrimary}`}
+                          disabled={isUpdateBusy || isPermLocked}
+                          data-testid="updates-apply-all-btn"
+                          onClick={() => {
+                            const targetIds = Object.entries(updatesStatus.targets || {})
+                              .filter(([, tv]) => tv.status === 'available' || tv.status === 'blocked')
+                              .map(([id]) => id);
+                            void handleApplyUpdates(targetIds.length > 0 ? targetIds : ['all'], {
+                              busyKey: '__all__',
+                            });
+                          }}
+                        >
+                          {updatesApplyingTarget === '__all__' && (
+                            <span className={styles.spinner} aria-hidden="true" />
+                          )}
+                          {updatesApplyingTarget === '__all__'
+                            ? t('updates.updatingBtn')
+                            : t('updates.updateAllBtn', {
+                                count: updatesStatus.summary?.availableCount || 0,
+                              })}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className={styles.btn}
+                        disabled={isUpdateBusy || isPermLocked}
+                        data-testid="updates-check-btn"
+                        onClick={() => void handleCheckUpdates()}
+                      >
+                        {updatesChecking && (
+                          <span className={styles.spinner} aria-hidden="true" />
+                        )}
+                        {updatesChecking ? t('updates.checkingBtn') : t('updates.checkBtn')}
+                      </button>
+                    </div>
+                  </div>
+
+                  {updatesStatus.targets?.host?.wrapperUpdateRecommended && (
+                    <div className={styles.updatesMetaRow}>
+                      <span className={`${styles.badge} ${styles.badgeWarn}`}>
+                        {t('updates.wrapperHint', {
+                          version: updatesStatus.targets.host.wrapperMinVersion || '?',
+                        })}
+                      </span>
+                      {updatesStatus.targets.host.releaseNotesUrl && (
+                        <a
+                          className={styles.releaseLink}
+                          href={updatesStatus.targets.host.releaseNotesUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {t('updates.releaseNotes')}
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  <div className={styles.updatesSettingsRow}>
+                    <label className={styles.updateControlGroup}>
+                      <span>{t('updates.channelLabel')}</span>
+                      <select
+                        className={styles.updateSelect}
+                        aria-label={t('updates.channelLabel')}
+                        data-testid="updates-channel-select"
+                        disabled={updatesSavingSettings || isPermLocked}
+                        value={updatesStatus.settings?.updateChannel || 'stable'}
+                        onChange={(e) =>
+                          void handleSaveUpdateSettingsPatch({ updateChannel: e.target.value })
+                        }
+                      >
+                        <option value="stable">{t('updates.channelStable')}</option>
+                        <option value="next">{t('updates.channelNext')}</option>
+                      </select>
+                    </label>
+
+                    <label className={styles.updateControlGroup}>
+                      <span>{t('updates.autoModeLabel')}</span>
+                      <select
+                        className={styles.updateSelect}
+                        aria-label={t('updates.autoModeLabel')}
+                        data-testid="updates-auto-mode-select"
+                        disabled={updatesSavingSettings || isPermLocked}
+                        value={updatesStatus.settings?.autoUpdateMode || 'notify'}
+                        onChange={(e) =>
+                          void handleSaveUpdateSettingsPatch({ autoUpdateMode: e.target.value })
+                        }
+                      >
+                        <option value="notify">{t('updates.autoModeNotify')}</option>
+                        <option value="auto-safe">{t('updates.autoModeSafe')}</option>
+                        <option value="manual">{t('updates.autoModeManual')}</option>
+                      </select>
+                    </label>
+
+                    <label className={styles.updateControlGroup}>
+                      <span>{t('updates.intervalLabel')}</span>
+                      <select
+                        className={styles.updateSelect}
+                        aria-label={t('updates.intervalLabel')}
+                        data-testid="updates-interval-select"
+                        disabled={
+                          updatesSavingSettings ||
+                          isPermLocked ||
+                          updatesStatus.settings?.autoUpdateMode === 'manual'
+                        }
+                        value={updatesStatus.settings?.updateCheckInterval || '6h'}
+                        onChange={(e) =>
+                          void handleSaveUpdateSettingsPatch({
+                            updateCheckInterval: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="1h">{t('updates.interval1h')}</option>
+                        <option value="6h">{t('updates.interval6h')}</option>
+                        <option value="12h">{t('updates.interval12h')}</option>
+                        <option value="24h">{t('updates.interval24h')}</option>
+                      </select>
+                    </label>
+
+                    <label className={styles.updateControlGroup}>
+                      <span>{t('updates.sourceLabel')}</span>
+                      <select
+                        className={styles.updateSelect}
+                        aria-label={t('updates.sourceLabel')}
+                        data-testid="updates-source-select"
+                        disabled={updatesSavingSettings || isPermLocked}
+                        value={updatesStatus.settings?.updateSourcePreference || 'auto'}
+                        onChange={(e) =>
+                          void handleSaveUpdateSettingsPatch({
+                            updateSourcePreference: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="auto">{t('updates.sourceAuto')}</option>
+                        <option value="npm">{t('updates.sourceNpm')}</option>
+                        <option value="github">{t('updates.sourceGithub')}</option>
+                      </select>
+                    </label>
+
+                    <div className={styles.updateRegistryWrap}>
+                      <input
+                        type="url"
+                        className={styles.updateRegistryInput}
+                        aria-label={t('updates.registryPlaceholder')}
+                        placeholder={t('updates.registryPlaceholder')}
+                        data-testid="updates-registry-input"
+                        disabled={updatesSavingSettings || isPermLocked}
+                        value={npmRegistryDraft}
+                        onChange={(e) => setNpmRegistryDraft(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className={styles.btn}
+                        disabled={updatesSavingSettings || isPermLocked}
+                        data-testid="updates-registry-save-btn"
+                        onClick={() =>
+                          void handleSaveUpdateSettingsPatch({ npmRegistryUrl: npmRegistryDraft })
+                        }
+                      >
+                        {t('updates.saveRegistryBtn')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div
                 className={styles.scopeBar}
                 data-testid="web-plugin-scope-bar"
@@ -871,6 +1473,27 @@ export function HostAdminModal({
                                     {t('admin.desktopOnlyBadge')}
                                   </span>
                                 )}
+                                {p.pinned && (
+                                  <span className={styles.badge} data-testid={`plugin-pinned-badge-${p.id}`}>
+                                    {t('updates.pinnedBadge')}
+                                  </span>
+                                )}
+                                {(() => {
+                                  const upd = resolveUpdateInfo(p);
+                                  if (!upd || (upd.status !== 'available' && upd.status !== 'blocked')) {
+                                    return null;
+                                  }
+                                  return (
+                                    <span
+                                      className={`${styles.badge} ${
+                                        upd.status === 'blocked' ? styles.badgeDanger : styles.badgeWarn
+                                      }`}
+                                      data-testid={`plugin-update-badge-${p.id}`}
+                                    >
+                                      v{upd.currentVersion || p.version} → v{upd.latestVersion || '?'}
+                                    </span>
+                                  );
+                                })()}
                               </div>
                             </div>
 
@@ -884,10 +1507,53 @@ export function HostAdminModal({
                               className={styles.pluginActions}
                               onClick={(e) => e.stopPropagation()}
                             >
+                              {(() => {
+                                const upd = resolveUpdateInfo(p);
+                                if (!upd || (upd.status !== 'available' && upd.status !== 'blocked')) {
+                                  return null;
+                                }
+                                const needsReview = Boolean(
+                                  (upd.addedPermissions && upd.addedPermissions.length > 0) ||
+                                    upd.majorUpdateAvailable ||
+                                    upd.status === 'blocked',
+                                );
+                                const isUpdatingThis = updatesApplyingTarget === p.id;
+                                return (
+                                  <button
+                                    type="button"
+                                    className={`${styles.btn} ${needsReview ? '' : styles.btnPrimary}`.trim()}
+                                    disabled={isBusy || isUpdateBusy || isPermLocked}
+                                    data-testid={`plugin-update-${p.id}`}
+                                    onClick={() => void handleApplyUpdates([p.id])}
+                                  >
+                                    {isUpdatingThis && (
+                                      <span className={styles.spinner} aria-hidden="true" />
+                                    )}
+                                    {isUpdatingThis
+                                      ? t('updates.updatingBtn')
+                                      : needsReview
+                                        ? t('updates.reviewUpdateBtn')
+                                        : t('updates.updateBtn')}
+                                  </button>
+                                );
+                              })()}
+
+                              {p.sourceKind !== 'memory' && (
+                                <button
+                                  type="button"
+                                  className={styles.btn}
+                                  disabled={isBusy || isUpdateBusy || isPermLocked}
+                                  data-testid={`plugin-pin-${p.id}`}
+                                  onClick={() => void handleTogglePin(p.id, !p.pinned)}
+                                >
+                                  {p.pinned ? t('updates.unpinBtn') : t('updates.pinBtn')}
+                                </button>
+                              )}
+
                               <button
                                 type="button"
                                 className={styles.btn}
-                                disabled={isBusy || isPermLocked}
+                                disabled={isBusy || isUpdateBusy || isPermLocked}
                                 onClick={() => {
                                   if (p.id === 'agy-daddy.web' && p.enabled) {
                                     setConfirmDisableWeb(true);
@@ -903,10 +1569,16 @@ export function HostAdminModal({
                                 <button
                                   type="button"
                                   className={styles.btn}
-                                  disabled={isBusy || isPermLocked}
+                                  disabled={isBusy || isUpdateBusy || isPermLocked}
+                                  data-testid={`plugin-rollback-${p.id}`}
                                   onClick={() => void handlePluginAction(p.id, 'rollback')}
                                 >
-                                  {t('admin.rollback')}
+                                  {updatesRollingBackTarget === p.id && (
+                                    <span className={styles.spinner} aria-hidden="true" />
+                                  )}
+                                  {updatesRollingBackTarget === p.id
+                                    ? t('updates.rollingBackBtn')
+                                    : t('admin.rollback')}
                                 </button>
                               )}
 
@@ -914,7 +1586,7 @@ export function HostAdminModal({
                                 <button
                                   type="button"
                                   className={`${styles.btn} ${confirmingUninstall ? styles.btnDanger : ''}`.trim()}
-                                  disabled={isBusy || isPermLocked}
+                                  disabled={isBusy || isUpdateBusy || isPermLocked}
                                   onClick={() => {
                                     if (!confirmingUninstall) {
                                       setConfirmUninstallId(p.id);
@@ -1449,6 +2121,15 @@ export function HostAdminModal({
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {doctorReport.updates && (
+                    <div className={styles.doctorCard} data-testid="doctor-updates-card">
+                      <h4 className={styles.doctorCardTitle}>{t('updates.doctorTitle')}</h4>
+                      <pre className={styles.codeBlock}>
+                        {JSON.stringify(doctorReport.updates, null, 2)}
+                      </pre>
                     </div>
                   )}
 

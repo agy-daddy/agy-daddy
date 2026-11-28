@@ -121,7 +121,7 @@ test('安装器：local 软链、git 锁定 SHA 升级与回滚、npm sha512 校
     const sha512 = 'sha512-' + crypto.createHash('sha512').update(tgz).digest('base64');
 
     npmServer = http.createServer((req, res) => {
-      if (req.url === '/%40third%2Fnpm-demo' || req.url === '/@third/npm-demo') {
+      if (req.url === '/@third%2Fnpm-demo' || req.url === '/%40third%2Fnpm-demo' || req.url === '/@third/npm-demo') {
         const port = npmServer.address().port;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({

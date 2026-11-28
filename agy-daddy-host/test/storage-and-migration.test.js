@@ -100,7 +100,12 @@ test('彻底移除历史迁移包袱且 host-settings.json 归一化与持久化
       showTopbarEntry: true,
       injectNativeSettings: true,
       autoSyncNativeOnInstall: true,
-      hideTrayIcon: false
+      hideTrayIcon: false,
+      updateChannel: 'stable',
+      autoUpdateMode: 'notify',
+      updateCheckInterval: '6h',
+      updateSourcePreference: 'auto',
+      npmRegistryUrl: ''
     });
 
     const toggledOff = normalizeHostSettings(

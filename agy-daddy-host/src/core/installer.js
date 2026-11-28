@@ -245,6 +245,19 @@ function defaultGitRunner(args, cwd) {
   }).trim();
 }
 
+function encodeNpmPackagePath(packageName) {
+  const pkg = String(packageName || '').trim();
+  if (pkg.startsWith('@')) {
+    const slashIdx = pkg.indexOf('/');
+    if (slashIdx > 1) {
+      const scope = pkg.slice(1, slashIdx);
+      const name = pkg.slice(slashIdx + 1);
+      return `@${encodeURIComponent(scope)}%2F${encodeURIComponent(name)}`;
+    }
+  }
+  return encodeURIComponent(pkg);
+}
+
 async function fetchNpmTarballToDir(parsed, stagingDir, options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
@@ -253,7 +266,7 @@ async function fetchNpmTarballToDir(parsed, stagingDir, options = {}) {
   const registryBase = String(
     options.npmRegistryUrl || process.env.AGY_DADDY_NPM_REGISTRY || 'https://registry.npmjs.org'
   ).replace(/\/+$/, '');
-  const metaUrl = `${registryBase}/${encodeURIComponent(parsed.packageName)}`;
+  const metaUrl = `${registryBase}/${encodeNpmPackagePath(parsed.packageName)}`;
   const metaResp = await fetchImpl(metaUrl, { headers: { Accept: 'application/json' } });
   if (!metaResp.ok) {
     throw new Error(`Failed to fetch npm metadata (${metaResp.status}): ${metaUrl}`);
@@ -439,6 +452,8 @@ async function installPlugin(spec, options = {}) {
       installPath: targetDir,
       commitSha: commitSha || null,
       npmIntegrity: npmMeta?.integrity || null,
+      pinned: options.pinned !== undefined ? Boolean(options.pinned) : Boolean(prevRecord?.pinned),
+      installedChannel: options.channel || prevRecord?.installedChannel || null,
       enabled: options.enabled !== false,
       previousRecord: backedUpPrev,
       installedAt: new Date().toISOString()
@@ -525,7 +540,23 @@ function rollbackPlugin(pluginId, options = {}) {
     };
   }
   writeInstalledIndex(index, options);
-  return { ok: true, plugin: index.plugins[safeId] };
+  let nativeSync = { ok: true, synced: false, skipped: true };
+  if (options.syncNative !== false) {
+    let manifest = null;
+    try { manifest = readManifestFromDir(targetDir); } catch {}
+    if (manifest?.contributes?.native && typeof manifest.contributes.native === 'object') {
+      nativeSync = syncPluginNativeArtifacts(targetDir, manifest, {
+        ...options,
+        grantedPermissions: Array.isArray(index.plugins[safeId].grantedPermissions)
+          ? index.plugins[safeId].grantedPermissions
+          : [],
+        nativeConfig: index.plugins[safeId].nativeConfig
+      });
+    } else {
+      nativeSync = removePluginNativeArtifacts(safeId, options);
+    }
+  }
+  return { ok: true, plugin: index.plugins[safeId], nativeSync };
 }
 
 function updatePluginNativeConfig(pluginId, configPatch = {}, options = {}) {
@@ -970,10 +1001,18 @@ module.exports = {
   loadRegistry,
   getInstalledIndexPath,
   readInstalledIndex,
+  writeInstalledIndex,
+  encodeNpmPackagePath,
+  parseNpmSpec,
   assertSafeSubpath,
   parseGitRefAndSubpath,
   parsePluginSource,
   readManifestFromDir,
+  copyDirSync,
+  moveDirSync,
+  defaultGitRunner,
+  fetchNpmTarballToDir,
+  backupForRollback,
   installPlugin,
   installOfficialPlugins,
   linkPlugin,

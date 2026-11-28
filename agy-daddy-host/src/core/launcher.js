@@ -185,9 +185,18 @@ function createLauncherController(options = {}) {
     };
     targetDaemon.on?.(FAULT_CHANGED, onFaultChanged);
     targetDaemon.on?.(UPGRADE_TAKEOVER_FAILED, onUpgradeFailed);
+    let unsubUpdates = null;
+    if (typeof targetDaemon.bus?.subscribeState === 'function') {
+      unsubUpdates = targetDaemon.bus.subscribeState('agy-daddy.launcher', 'state:host.updates@1', (val) => {
+        if (val && typeof trayManager.setUpdatesSummary === 'function') {
+          trayManager.setUpdatesSummary(val.summary || val);
+        }
+      });
+    }
     unsubDaemonHealth = () => {
       targetDaemon.off?.(FAULT_CHANGED, onFaultChanged);
       targetDaemon.off?.(UPGRADE_TAKEOVER_FAILED, onUpgradeFailed);
+      try { unsubUpdates?.(); } catch {}
     };
     unregisterDiagnostics = registerStandaloneDiagnostics(targetDaemon, {
       onRelaunch: () => relaunchAntigravityWithCdpAction()
@@ -467,6 +476,7 @@ function createLauncherController(options = {}) {
     onRelaunchAntigravity: () => relaunchAntigravityWithCdpAction(),
     onOpenDiagnostics: () => openDiagnosticsPage(),
     onOpenPluginSettings: () => openPluginSettings(),
+    onCheckUpdates: () => openPluginSettings(),
     onRestartDaemon: () => restartDaemon(),
     onQuit: () => quit()
   });

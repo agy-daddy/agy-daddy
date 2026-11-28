@@ -3862,3 +3862,62 @@ test('enum 字段支持 optionsCommand 动态选项、新档位校验、已选�
     await host.dispose();
   }
 });
+
+test('插件详情页与插件市场返回栏作为 .ag-sv-body 直接子节点固定吸顶不随滚动消失', async () => {
+  const doc = createMockDocument();
+  const host = createHostRuntime({
+    document: doc,
+    window: { location: { href: 'https://127.0.0.1:51410/' } },
+    anchorsRegistry: buildFullAnchorsRegistry(),
+    pluginMeta: {
+      'demo.sticky': {
+        id: 'demo.sticky',
+        displayName: 'Sticky Back Demo',
+        version: '1.0.0',
+        trustLevel: 'T0'
+      }
+    }
+  });
+
+  try {
+    await host.mountPlugin('demo.sticky', { mount() {} });
+
+    // 1. 插件详情页：.ag-sv-breadcrumb 直接挂载在 #agy-settings-body 下，位于 #agy-plugin-detail-header 之外
+    await host.openSettings({ tab: 'plugins', pluginId: 'demo.sticky' });
+    const shadow = doc.getElementById('agy-daddy-host').shadowRoot;
+    const bodyEl = shadow.querySelector('#agy-settings-body');
+    const detailHeader = shadow.querySelector('#agy-plugin-detail-header');
+    const detailBackBtn = shadow.querySelector('#agy-detail-back-btn');
+    const detailCrumb = detailBackBtn?.parentElement;
+    assert.ok(bodyEl && detailHeader && detailBackBtn && detailCrumb);
+    assert.equal(detailCrumb.className, 'ag-sv-breadcrumb');
+    assert.equal(detailCrumb.parentElement, bodyEl);
+    assert.notEqual(detailCrumb.parentElement, detailHeader);
+    assert.equal(bodyEl.children[0], detailCrumb);
+    assert.equal(bodyEl.children[1], detailHeader);
+
+    // 2. 插件市场页：点击返回插件列表后，进入市场页时 .ag-sv-breadcrumb 同样直接挂载在 #agy-settings-body 下
+    detailBackBtn.click();
+    const marketBtn = shadow.querySelector('#agy-open-marketplace-btn');
+    if (marketBtn) {
+      marketBtn.click();
+      const marketHeader = shadow.querySelector('#agy-marketplace-header');
+      const marketBackBtn = shadow.querySelector('#agy-marketplace-back-btn');
+      const marketCrumb = marketBackBtn?.parentElement;
+      assert.ok(marketHeader && marketBackBtn && marketCrumb);
+      assert.equal(marketCrumb.className, 'ag-sv-breadcrumb');
+      assert.equal(marketCrumb.parentElement, bodyEl);
+      assert.notEqual(marketCrumb.parentElement, marketHeader);
+    }
+
+    // 3. 样式表包含 position: sticky; top: 0; 与不透明背景
+    const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+    const breadcrumbMatch = stylesCss.match(/\.ag-sv-breadcrumb\s*\{[^}]*\}/);
+    assert.ok(breadcrumbMatch, 'missing .ag-sv-breadcrumb rule in styles.css');
+    assert.match(breadcrumbMatch[0], /position:\s*sticky\b/);
+    assert.match(breadcrumbMatch[0], /top:\s*0\b/);
+    assert.match(breadcrumbMatch[0], /background:\s*var\(--ag-bg-panel\)/);
+  } finally {
+    await host.dispose();
+  }
+});

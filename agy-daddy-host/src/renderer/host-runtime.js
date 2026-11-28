@@ -6581,10 +6581,6 @@
         : marketEntries;
       const uninstalledCount = marketEntries.filter((e) => !e.installed).length;
 
-      const heroWrap = doc.createElement('div');
-      heroWrap.className = 'ag-sv-detail-hero';
-      heroWrap.id = 'agy-marketplace-header';
-
       const crumb = doc.createElement('div');
       crumb.className = 'ag-sv-breadcrumb';
       const backBtn = doc.createElement('button');
@@ -6600,7 +6596,11 @@
         renderSettingsBody();
       });
       crumb.appendChild(backBtn);
-      heroWrap.appendChild(crumb);
+      body.appendChild(crumb);
+
+      const heroWrap = doc.createElement('div');
+      heroWrap.className = 'ag-sv-detail-hero';
+      heroWrap.id = 'agy-marketplace-header';
 
       const headRow = doc.createElement('div');
       headRow.className = 'ag-sv-detail-head-row';
@@ -7835,12 +7835,7 @@
 
       const issue = getPluginDiagnosticIssue(p);
 
-      // 1. 详情页头部：轻量返回 + Antigravity 风格页头 + 生命周期操作
-      const heroWrap = doc.createElement('div');
-      heroWrap.className = 'ag-sv-detail-hero';
-      heroWrap.id = 'agy-plugin-detail-header';
-      heroWrap.setAttribute('data-detail-plugin-id', p.id);
-
+      // 1. 详情页头部：吸顶返回栏 + Antigravity 风格页头 + 生命周期操作
       const crumb = doc.createElement('div');
       crumb.className = 'ag-sv-breadcrumb';
       const backBtn = doc.createElement('button');
@@ -7861,7 +7856,12 @@
         renderSettingsBody();
       });
       crumb.appendChild(backBtn);
-      heroWrap.appendChild(crumb);
+      body.appendChild(crumb);
+
+      const heroWrap = doc.createElement('div');
+      heroWrap.className = 'ag-sv-detail-hero';
+      heroWrap.id = 'agy-plugin-detail-header';
+      heroWrap.setAttribute('data-detail-plugin-id', p.id);
 
       const headRow = doc.createElement('div');
       headRow.className = 'ag-sv-detail-head-row';

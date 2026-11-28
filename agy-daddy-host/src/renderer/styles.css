@@ -1776,9 +1776,15 @@
 }
 
 .ag-sv-breadcrumb {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 0;
+  margin: -8px 0 -12px;
+  background: var(--ag-bg-panel);
 }
 
 .ag-sv-detail-head-row {

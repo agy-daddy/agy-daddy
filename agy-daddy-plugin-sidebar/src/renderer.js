@@ -136,6 +136,13 @@ async function mount(ctx) {
   let hoverExpandTimer = null;
   let hoverExpandTarget = null;
   let anchorTimer = null;
+  let bootstrapTimer = null;
+  let hasMountedOnce = false;
+  let hasRenderedOnce = false;
+  let lastBootstrapAt = 0;
+  let lastBootstrapFingerprint = '';
+  let lastReportedHealthKey = '';
+  let lastTopbarKey = '';
 
   // Map<nodeKey, { collapsed: boolean, baseRevision: number }>
   const optimisticCollapse = new Map();
@@ -147,6 +154,12 @@ async function mount(ctx) {
   function setHealth(status, reason = null) {
     healthStatus = status;
     healthReason = reason;
+    const healthKey = `${status}:${reason || ''}:${settings.viewMode}`;
+    if (healthKey === lastReportedHealthKey) {
+      syncTopbarUnit();
+      return;
+    }
+    lastReportedHealthKey = healthKey;
     const payload = {
       status,
       reason,
@@ -172,11 +185,16 @@ async function mount(ctx) {
     const label = degraded
       ? t('topbar.degraded')
       : (isEnhanced ? t('topbar.enhanced') : t('topbar.native'));
+    const tone = degraded ? 'warn' : (isEnhanced ? 'accent' : null);
+    const badge = degraded ? t('mode.native') : (isEnhanced ? t('mode.enhanced') : t('mode.native'));
+    const topbarKey = `${label}:${tone || ''}:${badge}`;
+    if (topbarKey === lastTopbarKey) return;
+    lastTopbarKey = topbarKey;
     try {
       void Promise.resolve(ctx.topbar.updateUnit(TOPBAR_UNIT_ID, {
         label,
-        tone: degraded ? 'warn' : (isEnhanced ? 'accent' : null),
-        badge: degraded ? t('mode.native') : (isEnhanced ? t('mode.enhanced') : t('mode.native')),
+        tone,
+        badge,
         title: t('topbar.title')
       })).catch(() => {});
     } catch {}
@@ -247,12 +265,24 @@ async function mount(ctx) {
     return !getPersistedCollapsed(nodeType, id);
   }
 
+  function computeBootstrapFingerprint(data) {
+    const rev = Number(data?.revision || 0);
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const groups = Array.isArray(data?.groups) ? data.groups : [];
+    const projects = Array.isArray(data?.projects) ? data.projects : [];
+    const sessionSig = sessions
+      .map((s) => `${s.cascadeId || ''}:${s.status || ''}:${s.title || s.summary || ''}:${s.lastModifiedTime || ''}:${s.pinned ? 1 : 0}:${s.archived ? 1 : 0}`)
+      .join('|');
+    return `${rev}#${groups.length}#${projects.length}#${Number(data?.archivedCount || 0)}#${data?.pcWebUrl || ''}#${data?.hostWindowWorkspace || ''}#${sessionSig}`;
+  }
+
   function applyBootstrapPayload(data) {
     if (!data || data.ok === false) return;
     if (isDragging) {
       pendingOrgSnapshot = data;
       return;
     }
+    const nextFingerprint = computeBootstrapFingerprint(data);
     const nextRev = Number(data.revision || 0);
     for (const [k, entry] of Array.from(optimisticCollapse.entries())) {
       if (nextRev > entry.baseRevision) {
@@ -272,10 +302,15 @@ async function mount(ctx) {
       sessionOrder: data.sessionOrder || {},
       worktreeTombstones: data.worktreeTombstones || {}
     };
-    if (healthStatus === 'degraded' && healthReason === 'BRIDGE_UNAVAILABLE' && sidebarRootEl) {
+    const recoveredFromBridge = healthStatus === 'degraded' && healthReason === 'BRIDGE_UNAVAILABLE' && sidebarRootEl;
+    if (recoveredFromBridge) {
       setHealth('ok', null);
       applyVisibilityMode();
     }
+    if (hasRenderedOnce && !recoveredFromBridge && nextFingerprint === lastBootstrapFingerprint) {
+      return;
+    }
+    lastBootstrapFingerprint = nextFingerprint;
     render();
   }
 
@@ -287,6 +322,7 @@ async function mount(ctx) {
         refreshWorktrees: Boolean(opts.refreshWorktrees),
         ...(opts.hostWindowWorkspace ? { hostWindowWorkspace: opts.hostWindowWorkspace } : {})
       });
+      lastBootstrapAt = Date.now();
       if (!res || res.ok === false) {
         setHealth('degraded', 'BRIDGE_UNAVAILABLE');
         applyVisibilityMode();
@@ -1309,8 +1345,10 @@ async function mount(ctx) {
 
   function render() {
     if (disposed || !shellEl) return;
-    shellEl.textContent = '';
     shellEl.setAttribute('data-dragging-active', isDragging ? 'true' : 'false');
+    const frag = typeof doc.createDocumentFragment === 'function' ? doc.createDocumentFragment() : null;
+    const out = frag || shellEl;
+    if (!frag) shellEl.textContent = '';
 
     // 1. Header
     const header = buildEl('div', 'agy-sb-header');
@@ -1362,7 +1400,7 @@ async function mount(ctx) {
       render();
     });
     header.appendChild(searchInput);
-    shellEl.appendChild(header);
+    out.appendChild(header);
 
     // 2. Banners (toast, inline confirm, cross-workspace guidance)
     if (toastBanner) {
@@ -1374,11 +1412,11 @@ async function mount(ctx) {
       closeBtn.type = 'button';
       closeBtn.addEventListener('click', () => { toastBanner = null; render(); });
       tb.appendChild(closeBtn);
-      shellEl.appendChild(tb);
+      out.appendChild(tb);
     }
 
     const dlgEl = renderInlineDialog();
-    if (dlgEl) shellEl.appendChild(dlgEl);
+    if (dlgEl) out.appendChild(dlgEl);
 
     if (guidanceBanner) {
       const gb = buildEl('div', 'agy-sb-banner');
@@ -1411,7 +1449,7 @@ async function mount(ctx) {
         actions.appendChild(openWebBtn);
       }
       gb.appendChild(actions);
-      shellEl.appendChild(gb);
+      out.appendChild(gb);
     }
 
     // 3. Body Tree
@@ -1535,7 +1573,12 @@ async function mount(ctx) {
       }
     }
 
-    shellEl.appendChild(body);
+    out.appendChild(body);
+    if (frag) {
+      shellEl.textContent = '';
+      shellEl.appendChild(frag);
+    }
+    hasRenderedOnce = true;
   }
 
   function ensureMountedOnRoot(rootEl) {
@@ -1544,6 +1587,11 @@ async function mount(ctx) {
       clearTimeout(anchorTimer);
       anchorTimer = null;
     }
+    if (sidebarRootEl === rootEl && hostContainerEl && hostContainerEl.parentElement === rootEl) {
+      return;
+    }
+    const isReattach = hasMountedOnce && Boolean(hostContainerEl) && hasRenderedOnce;
+    hasMountedOnce = true;
     sidebarRootEl = rootEl;
 
     if (!hostContainerEl) {
@@ -1570,8 +1618,20 @@ async function mount(ctx) {
     setHealth('ok', null);
     syncTopInset();
     applyVisibilityMode();
-    render();
-    void refreshBootstrap();
+    if (!isReattach) {
+      render();
+      void refreshBootstrap();
+    } else if (orgState.revision === 0 || (Date.now() - lastBootstrapAt >= 5000)) {
+      if (bootstrapTimer) {
+        clearTimeout(bootstrapTimer);
+      }
+      bootstrapTimer = setTimeout(() => {
+        bootstrapTimer = null;
+        if (!disposed && sidebarRootEl) {
+          void refreshBootstrap();
+        }
+      }, 0);
+    }
   }
 
   function syncTopInset() {
@@ -1603,6 +1663,15 @@ async function mount(ctx) {
       return rows[0].closest('aside, [data-testid="sidebar-panel"], [data-testid="left-sidebar"], .bg-sidebar');
     }
     return null;
+  }
+
+  function handleSidebarCollapsed() {
+    sidebarRootEl = null;
+    if (bootstrapTimer) {
+      clearTimeout(bootstrapTimer);
+      bootstrapTimer = null;
+    }
+    applyVisibilityMode();
   }
 
   function handleAnchorLoss() {
@@ -1637,7 +1706,10 @@ async function mount(ctx) {
       } else {
         const fb = findSidebarRootFallback();
         if (fb) ensureMountedOnRoot(fb);
-        else if (sidebarRootEl) handleAnchorLoss();
+        else if (sidebarRootEl) {
+          if (hasMountedOnce) handleSidebarCollapsed();
+          else handleAnchorLoss();
+        }
       }
     }));
 
@@ -1779,6 +1851,10 @@ async function mount(ctx) {
       if (anchorTimer) {
         clearTimeout(anchorTimer);
         anchorTimer = null;
+      }
+      if (bootstrapTimer) {
+        clearTimeout(bootstrapTimer);
+        bootstrapTimer = null;
       }
       clearHoverExpand();
       for (const fn of disposers.splice(0).reverse()) {

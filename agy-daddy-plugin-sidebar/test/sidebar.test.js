@@ -528,3 +528,78 @@ test('visual hygiene & top inset: dynamic titlebar overlap clearance and native 
     await harness.cleanup();
   }
 });
+
+test('sidebar toggle collapse/reopen preserves Shadow DOM nodes, avoids degraded flash, and skips redundant bootstrap', async () => {
+  const { doc, aside } = seedSidebarDocument([
+    { cascadeId: 'ses-toggle-1', title: 'Toggle Perf Session' }
+  ]);
+  let rpcCalls = 0;
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        rpcCalls += 1;
+        return {
+          trajectorySummaries: {
+            'ses-toggle-1': {
+              summary: 'Toggle Perf Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-26T12:00:00Z'
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    const sr = enhancedRoot.shadowRoot;
+    await waitFor(() => sr.querySelector('[data-session-id="ses-toggle-1"]'));
+    const initialBodyEl = sr.querySelector('.agy-sb-body');
+    assert.ok(initialBodyEl, 'Initial sidebar body must be rendered');
+    const callsAfterMount = rpcCalls;
+    assert.ok(callsAfterMount >= 1, 'Initial mount should bootstrap once');
+
+    // Simulate closing the left sidebar (host unmounts aside)
+    aside.remove();
+    await waitFor(() => enhancedRoot.hidden === true);
+    const healthAfterClose = harness.bus.getState('state:sidebar.health@1')?.value;
+    assert.equal(healthAfterClose?.status, 'ok', 'Closing sidebar must not flash degraded health');
+
+    // Simulate reopening the left sidebar with a fresh aside element
+    const aside2 = doc.createElement('aside');
+    aside2.setAttribute('data-testid', 'sidebar-panel');
+    aside2.className = 'bg-sidebar';
+    doc.body.appendChild(aside2);
+
+    await waitFor(() => aside2.querySelector('#agy-sidebar-enhanced-root') === enhancedRoot && enhancedRoot.hidden === false);
+    // Give any queued microtasks/timers a chance to run
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(
+      sr.querySelector('.agy-sb-body'),
+      initialBodyEl,
+      'Reopening sidebar must reuse existing Shadow DOM nodes without full rebuild'
+    );
+    assert.equal(
+      rpcCalls,
+      callsAfterMount,
+      'Reopening sidebar within cooldown must skip redundant GetAllCascadeTrajectories RPC'
+    );
+
+    await harness.unloadPlugin('agy-daddy.sidebar');
+    harness.assertCleanDispose('agy-daddy.sidebar');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+  }
+});

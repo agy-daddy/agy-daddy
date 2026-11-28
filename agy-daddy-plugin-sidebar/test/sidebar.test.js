@@ -478,3 +478,53 @@ test('silent fallback: missing sidebar.root degrades silently after timeout and 
     await harness.cleanup();
   }
 });
+
+test('visual hygiene & top inset: dynamic titlebar overlap clearance and native neutral tokens', async () => {
+  const { SHADOW_CSS } = require(path.join(PLUGIN_DIR, 'src', 'styles'));
+  assert.match(SHADOW_CSS, /padding-top:\s*var\(--agy-sb-top-inset,\s*40px\)/);
+  assert.equal(/#a78bfa/i.test(SHADOW_CSS), false, 'Forbidden purple fallback must not exist in SHADOW_CSS');
+
+  const { doc, aside } = seedSidebarDocument([
+    { cascadeId: 'ses-top-1', title: 'Top Inset Chat' }
+  ]);
+  const titlebar = doc.querySelector('[class*="@container/titlebar"]');
+  titlebar.getBoundingClientRect = () => ({ top: 0, left: 0, right: 800, bottom: 42, width: 800, height: 42 });
+  aside.getBoundingClientRect = () => ({ top: 0, left: 0, right: 280, bottom: 800, width: 280, height: 800 });
+
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'ses-top-1': {
+              summary: 'Top Inset Chat',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-26T10:00:00Z'
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    await waitFor(() => enhancedRoot.style.getPropertyValue('--agy-sb-top-inset') === '42px');
+    assert.equal(enhancedRoot.style.getPropertyValue('--agy-sb-top-inset'), '42px');
+
+    await harness.unloadPlugin('agy-daddy.sidebar');
+    harness.assertCleanDispose('agy-daddy.sidebar');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+  }
+});

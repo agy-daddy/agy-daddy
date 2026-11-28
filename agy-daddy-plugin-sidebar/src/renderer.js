@@ -819,7 +819,7 @@ async function mount(ctx) {
     if (settings.showWorktreePathHint && wt.displaySubpath) {
       row.appendChild(buildEl('span', 'agy-sb-subpath', wt.displaySubpath));
     }
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(wtSessions.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(wtSessions.length)));
 
     if (!isBare) {
       const addBtn = buildEl('button', 'agy-sb-icon-btn', '+');
@@ -959,7 +959,7 @@ async function mount(ctx) {
     if (proj.isMultiWorktree && Array.isArray(proj.worktrees)) {
       row.appendChild(buildEl('span', 'agy-sb-badge', `${proj.worktrees.length} wt`));
     }
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(projSessions.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(projSessions.length)));
 
     const addBtn = buildEl('button', 'agy-sb-icon-btn', '+');
     addBtn.type = 'button';
@@ -1121,7 +1121,7 @@ async function mount(ctx) {
     row.appendChild(handle);
     row.appendChild(buildEl('span', 'agy-sb-caret', isExpanded ? '▾' : '▸'));
     row.appendChild(buildEl('span', 'agy-sb-label', group.name));
-    row.appendChild(buildEl('span', 'agy-sb-badge', String(groupProjects.length)));
+    row.appendChild(buildEl('span', 'agy-sb-count', String(groupProjects.length)));
 
     const menuBtn = buildEl('button', 'agy-sb-icon-btn', '···');
     menuBtn.type = 'button';
@@ -1310,6 +1310,7 @@ async function mount(ctx) {
   function render() {
     if (disposed || !shellEl) return;
     shellEl.textContent = '';
+    shellEl.setAttribute('data-dragging-active', isDragging ? 'true' : 'false');
 
     // 1. Header
     const header = buildEl('div', 'agy-sb-header');
@@ -1567,9 +1568,31 @@ async function mount(ctx) {
     }
 
     setHealth('ok', null);
+    syncTopInset();
     applyVisibilityMode();
     render();
     void refreshBootstrap();
+  }
+
+  function syncTopInset() {
+    if (!hostContainerEl?.style?.setProperty) return;
+    const defaultInset = 40;
+    try {
+      const rootRect = sidebarRootEl?.getBoundingClientRect?.();
+      const titlebarEl = doc?.querySelector?.('[class*="@container/titlebar"]');
+      const titlebarRect = titlebarEl?.getBoundingClientRect?.();
+      if (titlebarRect && titlebarRect.height > 0 && rootRect && rootRect.height > 0) {
+        const overlap = Math.max(0, Math.ceil(titlebarRect.bottom - rootRect.top));
+        hostContainerEl.style.setProperty('--agy-sb-top-inset', `${overlap}px`);
+        return;
+      }
+      if (rootRect && rootRect.height > 0) {
+        const inset = rootRect.top < 36 ? defaultInset : 0;
+        hostContainerEl.style.setProperty('--agy-sb-top-inset', `${inset}px`);
+        return;
+      }
+    } catch {}
+    hostContainerEl.style.setProperty('--agy-sb-top-inset', `${defaultInset}px`);
   }
 
   function findSidebarRootFallback() {
@@ -1713,8 +1736,13 @@ async function mount(ctx) {
     });
   }
   if (win?.addEventListener) {
+    const onResize = () => syncTopInset();
     win.addEventListener('blur', onBlur);
-    disposers.push(() => win.removeEventListener?.('blur', onBlur));
+    win.addEventListener('resize', onResize);
+    disposers.push(() => {
+      win.removeEventListener?.('blur', onBlur);
+      win.removeEventListener?.('resize', onResize);
+    });
   }
 
   // Provide isolated-realm service API for diagnostics & deterministic tests

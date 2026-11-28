@@ -1,4 +1,16 @@
 {
   "unit.prefix": "累计",
-  "panel.title": "累计用量与 52 周热力统计"
+  "unit.other": "其他",
+  "panel.title": "累计用量与 52 周热力统计",
+  "popover.title": "用量统计与计费",
+  "period.today": "今日",
+  "period.currentCycle": "本重置周期",
+  "period.currentCycleShort": "本周期",
+  "period.month": "本月",
+  "period.year": "今年",
+  "period.allTime": "累计",
+  "cycle.weeklyLabel": "周配额周期",
+  "cycle.fiveHourLabel": "5H 窗口",
+  "cycle.resetPrefix": "重置",
+  "cycle.fallbackNotice": "暂未获取实时配额重置时间，按本周（周一 00:00 起）统计"
 }

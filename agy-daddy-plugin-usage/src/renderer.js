@@ -2,8 +2,22 @@
 
 const { USD_TO_CNY_RATE } = require('./pricing-ledger');
 const { HEATMAP_STYLES_CSS } = require('./heatmap-svg');
+const LOCALE_ZH_CN = require('../locales/zh-CN.json');
+const LOCALE_EN = require('../locales/en.json');
 
 let disposers = [];
+
+const VALID_PERIOD_KEYS = Object.freeze(['currentCycle', 'today', 'month', 'year', 'allTime']);
+
+const EMPTY_PERIOD_BUCKET = Object.freeze({
+  totalTokens: 0,
+  geminiTokens: 0,
+  otherTokens: 0,
+  totalUsd: 0,
+  callsCount: 0,
+  cacheReadTokens: 0,
+  byModel: {}
+});
 
 const AUTO_LOCALE_LABELS = Object.freeze({
   'zh-CN': '自动',
@@ -19,15 +33,46 @@ const AUTO_LOCALE_LABELS = Object.freeze({
   it: 'Auto'
 });
 
-const PERIOD_LABELS = Object.freeze({
-  today: '今日',
-  month: '本月',
-  year: '今年',
-  allTime: '累计'
-});
+function getLocaleDict(locale = 'zh-CN') {
+  const raw = String(locale || 'zh-CN').trim().toLowerCase();
+  if (!raw || raw.startsWith('zh')) return LOCALE_ZH_CN;
+  return LOCALE_EN;
+}
+
+function t(locale, key, fallback = '') {
+  const dict = getLocaleDict(locale);
+  if (Object.prototype.hasOwnProperty.call(dict, key)) return dict[key];
+  if (Object.prototype.hasOwnProperty.call(LOCALE_ZH_CN, key)) return LOCALE_ZH_CN[key];
+  return fallback;
+}
+
+function getPeriodCompactLabel(periodKey, locale = 'zh-CN', forUnit = false) {
+  const key = normalizePeriodKey(periodKey);
+  if (key === 'today') return t(locale, 'period.today', '今日');
+  if (key === 'currentCycle') return t(locale, 'period.currentCycleShort', '本周期');
+  if (key === 'month') return t(locale, 'period.month', '本月');
+  if (key === 'year') return t(locale, 'period.year', '今年');
+  return t(locale, forUnit ? 'unit.prefix' : 'period.allTime', '累计');
+}
+
+function getPeriodFullLabel(periodKey, locale = 'zh-CN') {
+  const key = normalizePeriodKey(periodKey);
+  if (key === 'currentCycle') return t(locale, 'period.currentCycle', '本重置周期');
+  return getPeriodCompactLabel(key, locale, false);
+}
 
 function normalizePeriodKey(val) {
-  return ['today', 'month', 'year', 'allTime'].includes(val) ? val : 'allTime';
+  return VALID_PERIOD_KEYS.includes(val) ? val : 'allTime';
+}
+
+function resolvePeriodBucket(summary, activePeriod = 'allTime') {
+  if (!summary) return EMPTY_PERIOD_BUCKET;
+  const periodKey = normalizePeriodKey(activePeriod);
+  if (summary.periods && typeof summary.periods === 'object') {
+    if (summary.periods[periodKey]) return summary.periods[periodKey];
+    return periodKey === 'allTime' ? summary : EMPTY_PERIOD_BUCKET;
+  }
+  return summary;
 }
 
 function getLocalizedAutoLabel(locale = 'zh-CN') {
@@ -91,11 +136,12 @@ function formatCurrencyAmount(usdVal, currency = 'USD', exchangeRate = null, dec
   return `${symbol}${((Number(usdVal) || 0) * rate).toFixed(decimals)}`;
 }
 
-function formatUnitText(summary, activePeriod = 'allTime') {
+function formatUnitText(summary, activePeriod = 'allTime', locale = 'zh-CN') {
   const periodKey = normalizePeriodKey(activePeriod);
-  const periodLabel = PERIOD_LABELS[periodKey] || '累计';
-  if (!summary) return `${periodLabel} G:-- · 其他:--`;
-  const bucket = summary.periods?.[periodKey] || summary;
+  const periodLabel = getPeriodCompactLabel(periodKey, locale, true);
+  const otherLabel = t(locale, 'unit.other', '其他');
+  if (!summary) return `${periodLabel} G:-- · ${otherLabel}:--`;
+  const bucket = resolvePeriodBucket(summary, periodKey);
   const totalTok = Math.max(0, Number(bucket?.totalTokens) || 0);
   const geminiTok = Math.max(0, Number(bucket?.geminiTokens ?? 0) || 0);
   const otherTok = Math.max(
@@ -104,7 +150,7 @@ function formatUnitText(summary, activePeriod = 'allTime') {
       ? Number(bucket.otherTokens) || 0
       : Math.max(0, totalTok - geminiTok)
   );
-  return `${periodLabel} G:${formatTokensCompact(geminiTok)} · 其他:${formatTokensCompact(otherTok)}`;
+  return `${periodLabel} G:${formatTokensCompact(geminiTok)} · ${otherLabel}:${formatTokensCompact(otherTok)}`;
 }
 
 function formatSourceScopeLabel(settings = {}) {
@@ -193,7 +239,33 @@ async function mount(ctx) {
     const convertedNote = periodRoi.subscriptionCurrency !== currency
       ? ` · 实付${nativeText}≈${paidStr}`
       : ` · 实付${nativeText}`;
-    return `回本(${PERIOD_LABELS[activePeriod] || '累计'}): API ${estStr} - 成本 ${paidStr} = ${diffLabel} ${diffVal}${convertedNote}`;
+    return `回本(${getPeriodCompactLabel(activePeriod, activeLocale, false)}): API ${estStr} - 成本 ${paidStr} = ${diffLabel} ${diffVal}${convertedNote}`;
+  }
+
+  function renderCycleMetaBar(docRef, cw) {
+    const metaBar = buildEl(docRef, 'div', 'ag-bar-meta');
+    const chip = buildEl(docRef, 'span', 'ag-chip');
+    if (cw && !cw.isFallback) {
+      chip.setAttribute('data-tone', 'muted');
+      chip.setAttribute('data-usage-cycle-meta', 'range');
+      const winLabel = cw.windowKey === '5h'
+        ? t(activeLocale, 'cycle.fiveHourLabel', '5H 窗口')
+        : t(activeLocale, 'cycle.weeklyLabel', '周配额周期');
+      if (cw.rangeText) {
+        chip.textContent = `${winLabel} · ${cw.rangeText}`;
+      } else if (cw.resetTimeText) {
+        chip.textContent = `${winLabel} · ${t(activeLocale, 'cycle.resetPrefix', '重置')} ${cw.resetTimeText}`;
+      } else {
+        chip.textContent = winLabel;
+      }
+    } else {
+      chip.setAttribute('data-tone', 'warn');
+      chip.setAttribute('data-usage-cycle-meta', 'fallback');
+      const notice = t(activeLocale, 'cycle.fallbackNotice', '暂未获取实时配额重置时间，按本周（周一 00:00 起）统计');
+      chip.textContent = cw?.rangeText ? `${notice} · ${cw.rangeText}` : notice;
+    }
+    metaBar.appendChild(chip);
+    return metaBar;
   }
 
   function renderPanel() {
@@ -212,14 +284,31 @@ async function mount(ctx) {
       const periods = latestSummary.periods;
       const lines = [
         `套餐: ${resolveTierLabel()}`,
-        `范围: ${formatSourceScopeLabel(settings)} · ${PERIOD_LABELS[activePeriod] || '累计'}`,
+        `范围: ${formatSourceScopeLabel(settings)} · ${getPeriodFullLabel(activePeriod, activeLocale)}`,
         `累计 Tokens: ${formatTokensCompact(latestSummary.totalTokens)} (${latestSummary.callsCount} 次调用)`,
         `参考 API 费用: ${formatCurrencyAmount(latestSummary.totalUsd || 0, currency, rate, 4)}`
       ];
+      if (activePeriod === 'currentCycle') {
+        const cw = latestSummary.cycleWindow || periods?.cycleWindow || null;
+        if (cw && !cw.isFallback) {
+          const winLabel = cw.windowKey === '5h'
+            ? t(activeLocale, 'cycle.fiveHourLabel', '5H 窗口')
+            : t(activeLocale, 'cycle.weeklyLabel', '周配额周期');
+          lines.push(cw.rangeText ? `${winLabel}: ${cw.rangeText}` : winLabel);
+        } else {
+          const notice = t(activeLocale, 'cycle.fallbackNotice', '暂未获取实时配额重置时间，按本周（周一 00:00 起）统计');
+          lines.push(cw?.rangeText ? `${notice} · ${cw.rangeText}` : notice);
+        }
+      }
       if (latestSummary.backfillStatus?.earliestDate) {
         lines.push(`统计范围: ${latestSummary.backfillStatus.earliestDate} 起`);
       }
-      if (periods) lines.push(`分期统计 · 今日 ${formatTokensCompact(periods.today?.totalTokens)}`);
+      if (periods) {
+        lines.push(
+          `分期统计 · ${t(activeLocale, 'period.today', '今日')} ${formatTokensCompact(periods.today?.totalTokens)}`
+          + ` · ${t(activeLocale, 'period.currentCycleShort', '本周期')} ${formatTokensCompact(periods.currentCycle?.totalTokens)}`
+        );
+      }
       panelNode.textContent = lines.join('\n');
       return;
     }
@@ -272,23 +361,28 @@ async function mount(ctx) {
 
     const periods = latestSummary.periods || {};
     const tabRow = buildEl(docRef, 'div', 'ag-segmented ag-usage-tabs');
-    for (const pDef of [
-      { id: 'today', label: '今日' },
-      { id: 'month', label: '本月' },
-      { id: 'year', label: '今年' },
-      { id: 'allTime', label: '累计' }
-    ]) {
-      const btn = buildEl(docRef, 'button', `switch-pill-btn${activePeriod === pDef.id ? ' active' : ''}`, pDef.label);
+    for (const pId of ['today', 'currentCycle', 'month', 'year', 'allTime']) {
+      const btn = buildEl(
+        docRef,
+        'button',
+        `switch-pill-btn${activePeriod === pId ? ' active' : ''}`,
+        getPeriodCompactLabel(pId, activeLocale, false)
+      );
       btn.type = 'button';
-      btn.setAttribute('data-usage-period', pDef.id);
+      btn.setAttribute('data-usage-period', pId);
       btn.addEventListener('click', () => {
-        selectPeriod(pDef.id);
+        selectPeriod(pId);
       });
       tabRow.appendChild(btn);
     }
     panelNode.appendChild(tabRow);
 
-    const bucket = (periods && periods[activePeriod]) || latestSummary;
+    if (activePeriod === 'currentCycle') {
+      const cw = latestSummary.cycleWindow || periods.cycleWindow || null;
+      panelNode.appendChild(renderCycleMetaBar(docRef, cw));
+    }
+
+    const bucket = resolvePeriodBucket(latestSummary, activePeriod);
 
     const kpiGrid = buildEl(docRef, 'div', 'ag-kpi-grid');
     for (const k of [
@@ -304,14 +398,16 @@ async function mount(ctx) {
     }
     panelNode.appendChild(kpiGrid);
 
-    if (periods.today || periods.month || periods.year || periods.roi) {
+    if (periods.today || periods.currentCycle || periods.month || periods.year || periods.roi) {
       const sumCard = buildEl(docRef, 'div', 'settings-card-box');
       sumCard.appendChild(buildEl(docRef, 'div', 'ag-card-title', '分期统计'));
       const pGrid = buildEl(docRef, 'div', 'ag-panel-mini-grid');
+      pGrid.style?.setProperty?.('grid-template-columns', 'repeat(4, minmax(0, 1fr))');
       for (const item of [
-        { label: '今日', data: periods.today },
-        { label: '本月', data: periods.month },
-        { label: '今年', data: periods.year }
+        { label: t(activeLocale, 'period.today', '今日'), data: periods.today },
+        { label: t(activeLocale, 'period.currentCycleShort', '本周期'), data: periods.currentCycle },
+        { label: t(activeLocale, 'period.month', '本月'), data: periods.month },
+        { label: t(activeLocale, 'period.year', '今年'), data: periods.year }
       ]) {
         const cell = buildEl(docRef, 'div', 'ag-panel-mini-cell');
         cell.appendChild(buildEl(docRef, 'span', 'ag-panel-mini-label', item.label));
@@ -378,9 +474,9 @@ async function mount(ctx) {
   }
 
   async function renderUnit() {
-    const text = formatUnitText(latestSummary, activePeriod);
+    const text = formatUnitText(latestSummary, activePeriod, activeLocale);
     const iconSvg = buildUsageIconSvg();
-    const title = `用量统计 (${PERIOD_LABELS[activePeriod] || '累计'} · ${formatSourceScopeLabel(settings)})`;
+    const title = `用量统计 (${getPeriodFullLabel(activePeriod, activeLocale)} · ${formatSourceScopeLabel(settings)})`;
     if (typeof ctx.topbar?.updateUnit === 'function') {
       try {
         await ctx.topbar.updateUnit('tokens', { label: text, iconSvg, title });
@@ -418,6 +514,7 @@ async function mount(ctx) {
     const next = String(val?.bcp47 || val?.locale || val?.lang || '').trim();
     if (next && next !== activeLocale) {
       activeLocale = next;
+      void renderUnit();
       renderPanel();
     }
   };
@@ -432,7 +529,7 @@ async function mount(ctx) {
   popover = ctx.topbar.registerPopover({
     id: 'usage-panel',
     anchorId: 'tokens',
-    title: '用量统计与计费',
+    title: t(activeLocale, 'popover.title', '用量统计与计费'),
     render(bodyNode) {
       bodyNode.id = 'agy-usage-panel';
       panelNode = bodyNode;
@@ -449,7 +546,7 @@ async function mount(ctx) {
   const stopUnit = ctx.topbar.registerUnit({
     id: 'tokens',
     order: 20,
-    label: formatUnitText(null, activePeriod),
+    label: formatUnitText(null, activePeriod, activeLocale),
     iconSvg: buildUsageIconSvg(),
     render(node) {
       unitNode = node;
@@ -508,6 +605,8 @@ function dispose() {
 }
 
 module.exports = {
+  VALID_PERIOD_KEYS,
+  normalizePeriodKey,
   getLocalizedAutoLabel,
   formatTierChipLabel,
   formatTokensCompact,

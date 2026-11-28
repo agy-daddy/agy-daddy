@@ -8,12 +8,16 @@
       "group": { "zh-CN": "统计范围与周期", "en": "Scope & Period" },
       "options": [
         { "value": "today", "label": { "zh-CN": "今日", "en": "Today" } },
+        { "value": "currentCycle", "label": { "zh-CN": "本重置周期", "en": "Current Cycle" } },
         { "value": "month", "label": { "zh-CN": "本月", "en": "This Month" } },
         { "value": "year", "label": { "zh-CN": "今年", "en": "This Year" } },
         { "value": "allTime", "label": { "zh-CN": "累计", "en": "All Time" } }
       ],
       "label": { "zh-CN": "统计周期（顶栏与面板同步）", "en": "Active period (synced)" },
-      "description": { "zh-CN": "切换顶栏胶囊与详情面板同步展示的统计周期（今日 / 本月 / 今年 / 累计）", "en": "Select the period synced between the topbar capsule and popover panel" }
+      "description": {
+        "zh-CN": "切换顶栏胶囊与详情面板同步展示的统计周期（今日 / 本重置周期 / 本月 / 今年 / 累计）",
+        "en": "Select the period synced between the topbar capsule and popover panel (Today / Current Cycle / This Month / This Year / All Time)"
+      }
     },
     {
       "key": "includeIdeUsage",

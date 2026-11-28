@@ -464,28 +464,126 @@ async function mount(ctx) {
     return res;
   }
 
+  function normalizeWsComparePath(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.toLowerCase().startsWith('file://')) {
+      s = s.slice(7);
+      try { s = decodeURIComponent(s); } catch {}
+      if (/^\/[a-zA-Z]:\//.test(s)) s = s.slice(1);
+    }
+    return s.replace(/\/+$/, '').toLowerCase();
+  }
+
+  function getNativeSidebarRows() {
+    const fromHostDom = ctx?.hostDom?.getSidebarRows?.();
+    if (Array.isArray(fromHostDom) && fromHostDom.length > 0) return fromHostDom;
+    const fromAnchors = ctx?.anchors?.queryAll?.('sidebar.conversationRows');
+    if (Array.isArray(fromAnchors) && fromAnchors.length > 0) return fromAnchors;
+    if (typeof doc?.querySelectorAll === 'function') {
+      try {
+        const queried = doc.querySelectorAll('[data-testid="conversation-row-sidebar"]');
+        if (queried && queried.length > 0) return Array.from(queried);
+      } catch {}
+    }
+    return Array.isArray(fromHostDom) ? fromHostDom : [];
+  }
+
+  function findMatchingNativeRow(rows, session) {
+    const cid = String(session?.cascadeId || '').trim();
+    const candidates = Array.from(new Set(
+      [session?.title, session?.summary]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+    ));
+    const normCandidates = candidates.map((c) => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+    if (cid) {
+      const byId = rows.find((row) => {
+        const cidAttr = row.getAttribute?.('data-cascade-id') || row.getAttribute?.('data-session-id') || '';
+        if (cidAttr && cidAttr === cid) return true;
+        const href = row.getAttribute?.('href') || '';
+        if (href && href.includes(cid)) return true;
+        if (typeof row.querySelector === 'function') {
+          const idNode = row.querySelector(`[data-cascade-id="${cid}"], [data-session-id="${cid}"]`);
+          if (idNode) return true;
+          const linkNode = row.querySelector('a[href]');
+          if (linkNode && String(linkNode.getAttribute?.('href') || '').includes(cid)) return true;
+        }
+        return false;
+      });
+      if (byId) return byId;
+    }
+
+    if (candidates.length === 0) return null;
+
+    const byExactTitle = rows.find((row) => {
+      const rowTitleAttr = String(row.getAttribute?.('title') || row.getAttribute?.('aria-label') || '').trim();
+      if (rowTitleAttr && candidates.includes(rowTitleAttr)) return true;
+
+      const rawTxt = String(row.textContent || '').trim();
+      if (rawTxt && candidates.includes(rawTxt)) return true;
+
+      const normTxt = rawTxt.replace(/\s+/g, ' ').trim();
+      if (normTxt && normCandidates.includes(normTxt)) return true;
+
+      const firstLine = rawTxt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+      if (firstLine && candidates.includes(firstLine)) return true;
+
+      if (typeof row.querySelectorAll === 'function') {
+        const children = row.querySelectorAll('span, p, div, a, button');
+        for (const el of Array.from(children || [])) {
+          const elAttr = String(el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '').trim();
+          if (elAttr && candidates.includes(elAttr)) return true;
+          const elTxt = String(el.textContent || '').trim();
+          if (elTxt && candidates.includes(elTxt)) return true;
+        }
+      }
+      return false;
+    });
+    if (byExactTitle) return byExactTitle;
+
+    return rows.find((row) => {
+      const normTxt = String(row.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!normTxt) return false;
+      return normCandidates.some((c) => c.length >= 2 && normTxt.startsWith(c));
+    }) || null;
+  }
+
+  function clickNativeRow(matchedRow) {
+    if (!matchedRow) return;
+    const tag = String(matchedRow.tagName || '').toUpperCase();
+    const role = String(matchedRow.getAttribute?.('role') || '').toLowerCase();
+    let target = matchedRow;
+    if (tag !== 'A' && tag !== 'BUTTON' && role !== 'button' && role !== 'link' && typeof matchedRow.querySelector === 'function') {
+      const linkChild = matchedRow.querySelector('a[href], [role="link"]');
+      if (linkChild) target = linkChild;
+    }
+    if (typeof target.click === 'function') {
+      target.click();
+      return;
+    }
+    if (typeof target.dispatchEvent === 'function' && typeof MouseEvent === 'function') {
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+  }
+
   async function activateSessionRow(session) {
     activeSessionId = session.cascadeId;
-    const rows = ctx?.hostDom?.getSidebarRows?.() || [];
-    const matchedRow = rows.find((row) => {
-      const cidAttr = row.getAttribute?.('data-cascade-id') || row.getAttribute?.('data-session-id') || '';
-      if (cidAttr && cidAttr === session.cascadeId) return true;
-      const href = row.getAttribute?.('href') || '';
-      if (href && href.includes(session.cascadeId)) return true;
-      const txt = String(row.textContent || '').trim();
-      const sTitle = String(session.title || session.summary || '').trim();
-      return Boolean(sTitle && txt === sTitle);
-    }) || null;
+    const rows = getNativeSidebarRows();
+    const matchedRow = findMatchingNativeRow(rows, session);
 
     const sessionWs = session.worktreePath || session.workspaceUri || '';
     const windowWs = orgState.hostWindowWorkspace || '';
+    const normSessionWs = normalizeWsComparePath(sessionWs);
+    const normWindowWs = normalizeWsComparePath(windowWs);
     const isCrossWorkspace = Boolean(
-      sessionWs && windowWs && sessionWs.toLowerCase() !== windowWs.toLowerCase()
+      normSessionWs && normWindowWs && normSessionWs !== normWindowWs
     );
 
     if (matchedRow && !isCrossWorkspace) {
       guidanceBanner = null;
-      matchedRow.click?.();
+      clickNativeRow(matchedRow);
       render();
       return { ok: true, mode: 'native-click' };
     }

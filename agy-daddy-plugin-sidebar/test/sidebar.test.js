@@ -603,3 +603,107 @@ test('sidebar toggle collapse/reopen preserves Shadow DOM nodes, avoids degraded
     await harness.cleanup();
   }
 });
+
+test('session click: matches native rows with metadata text, nested links, and file:// URI workspace', async () => {
+  const doc = createMockDocument([]);
+  const aside = createMockElement('aside', doc);
+  aside.setAttribute('data-testid', 'sidebar-panel');
+  aside.className = 'bg-sidebar';
+
+  const nativeList = createMockElement('div', doc);
+  nativeList.setAttribute('data-testid', 'native-list');
+
+  // Row 1: no data-cascade-id, title + trailing timestamp in nested spans
+  const row1 = createMockElement('div', doc);
+  row1.setAttribute('data-testid', 'conversation-row-sidebar');
+  const titleSpan = createMockElement('span', doc);
+  titleSpan.textContent = 'Refactor Sidebar Click';
+  const timeSpan = createMockElement('span', doc);
+  timeSpan.textContent = '2m';
+  row1.appendChild(titleSpan);
+  row1.appendChild(timeSpan);
+  let row1Clicks = 0;
+  row1.addEventListener('click', () => { row1Clicks += 1; });
+
+  // Row 2: no data-cascade-id, multiline textContent with inner <a href>
+  const row2 = createMockElement('div', doc);
+  row2.setAttribute('data-testid', 'conversation-row-sidebar');
+  const link2 = createMockElement('a', doc);
+  link2.setAttribute('href', '#conversation');
+  link2.textContent = 'Nested Link Session\n5m ago';
+  let link2Clicks = 0;
+  link2.addEventListener('click', () => { link2Clicks += 1; });
+  row2.appendChild(link2);
+
+  nativeList.appendChild(row1);
+  nativeList.appendChild(row2);
+  aside.appendChild(nativeList);
+  doc.body.appendChild(aside);
+
+  const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-sb-click-'));
+  const wsReal = realPath(wsDir);
+  const wsUri = url.pathToFileURL(wsReal).href;
+
+  const harness = createMockHostHarness({
+    document: doc,
+    onRpc: (method) => {
+      if (method === 'GetAllCascadeTrajectories') {
+        return {
+          trajectorySummaries: {
+            'ses-meta-1': {
+              summary: 'Refactor Sidebar Click',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-28T10:00:00Z',
+              workspaces: [{ workspaceFolderAbsoluteUri: wsUri }]
+            },
+            'ses-link-2': {
+              summary: 'Nested Link Session',
+              status: 'CASCADE_RUN_STATUS_IDLE',
+              lastModifiedTime: '2026-11-28T09:00:00Z',
+              workspaces: [{ workspaceFolderAbsoluteUri: wsUri }]
+            }
+          }
+        };
+      }
+      return { ok: true };
+    }
+  });
+  const prevOrgPath = process.env.AGY_DADDY_SESSION_ORG_PATH;
+  process.env.AGY_DADDY_SESSION_ORG_PATH = path.join(harness.tempRoot, 'session-org.json');
+
+  try {
+    const { port } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port });
+    await harness.loadAndRunPlugin(PLUGIN_DIR);
+
+    const enhancedRoot = await waitFor(() => aside.querySelector('#agy-sidebar-enhanced-root'));
+    const sr = enhancedRoot.shadowRoot;
+    await waitFor(() => sr.querySelectorAll('[data-node-type="session"]').length === 2);
+
+    // Simulate hostWindowWorkspace as local path while session has file:// URI
+    const token = harness.bridge.getPluginToken('agy-daddy.sidebar');
+    await fetch(`http://127.0.0.1:${harness.bridge.port}/plugins/agy-daddy.sidebar/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-AGY-Plugin-Token': token },
+      body: JSON.stringify({ hostWindowWorkspace: wsReal })
+    });
+
+    const ses1El = sr.querySelector('[data-node-type="session"][data-session-id="ses-meta-1"]');
+    assert.ok(ses1El);
+    ses1El.click();
+    await waitFor(() => row1Clicks === 1);
+    assert.equal(row1Clicks, 1, 'Clicking session must click native row even without data-cascade-id and with timestamp text');
+    assert.equal(sr.querySelector('[data-banner="cross-workspace"]'), null);
+
+    const ses2El = sr.querySelector('[data-node-type="session"][data-session-id="ses-link-2"]');
+    assert.ok(ses2El);
+    ses2El.click();
+    await waitFor(() => link2Clicks === 1);
+    assert.equal(link2Clicks, 1, 'Clicking session must click inner <a href> when native row wraps a link');
+  } finally {
+    if (prevOrgPath === undefined) delete process.env.AGY_DADDY_SESSION_ORG_PATH;
+    else process.env.AGY_DADDY_SESSION_ORG_PATH = prevOrgPath;
+    await harness.cleanup();
+    fs.rmSync(wsDir, { recursive: true, force: true });
+  }
+});

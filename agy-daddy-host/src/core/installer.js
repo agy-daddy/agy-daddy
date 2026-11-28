@@ -187,7 +187,7 @@ function parsePluginSource(spec, options = {}) {
     return {
       kind: 'git',
       url: regEntry.repo,
-      ref: null,
+      ref: regEntry.ref || null,
       subpath: regEntry.subpath ? assertSafeSubpath(regEntry.subpath) : null,
       trustLevel: options.trustLevel || regEntry.trustLevel || 'T0',
       registryEntry: regEntry,
@@ -339,7 +339,16 @@ async function installPlugin(spec, options = {}) {
       const cloneArgs = ['clone', '--depth', '1'];
       if (parsed.ref) cloneArgs.push('--branch', parsed.ref);
       cloneArgs.push(parsed.url, stagingDir);
-      gitRun(cloneArgs);
+      try {
+        gitRun(cloneArgs);
+      } catch (cloneErr) {
+        if (parsed.ref && parsed.registryEntry) {
+          try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+          gitRun(['clone', '--depth', '1', parsed.url, stagingDir]);
+        } else {
+          throw cloneErr;
+        }
+      }
       commitSha = gitRun(['rev-parse', 'HEAD'], stagingDir);
       if (parsed.subpath) {
         const safeSubpath = assertSafeSubpath(parsed.subpath);

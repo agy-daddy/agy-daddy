@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const vm = require('vm');
 const { EventEmitter } = require('events');
+const { execFileSync } = require('child_process');
 
 const { AgyDaddyDaemon } = require('../src/core/daemon');
 const { createHostRuntime } = require('../src/renderer/host-runtime');
@@ -458,6 +459,169 @@ test('原生扩展插件详情页：可配置注入开关、Rules 备份撤回�
 
       assert.equal(readInstalledIndex({ stateDir }).plugins['agy-daddy.nativedemo'], undefined);
       assert.equal(fs.existsSync(targetNativeDir), false);
+    } finally {
+      await uiHost.dispose();
+    }
+  } finally {
+    await daemon.stop();
+    await cdpHarness.cleanup();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('全屏插件市场搜索 T1 插件、三项高危权限确认弹窗与免重启热加载挂载', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-market-t1-'));
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+  const emptyWs = path.join(root, 'empty-ws');
+  const originDir = path.join(root, 'origin-design-plugin');
+  const registryPath = path.join(root, 'registry.json');
+  fs.mkdirSync(emptyWs, { recursive: true });
+  fs.mkdirSync(path.join(originDir, 'src'), { recursive: true });
+
+  fs.writeFileSync(path.join(originDir, 'package.json'), JSON.stringify({
+    name: 'agy-plugin-design',
+    version: '0.1.0'
+  }, null, 2));
+  fs.writeFileSync(path.join(originDir, 'agy-plugin.json'), JSON.stringify({
+    schemaVersion: 1,
+    id: 'hubo1989.design',
+    publisher: 'hubo1989',
+    version: '0.1.0',
+    displayName: { 'zh-CN': 'Agy Design Studio', en: 'Agy Design Studio' },
+    description: '本地优先的 Antigravity 可视化设计工作台',
+    category: 'design',
+    tags: ['design', 'slides', 'canvas'],
+    engines: { agyDaddy: '^1.0.0', antigravity: '>=2.32.0' },
+    main: './src/node.js',
+    renderer: './src/renderer.js',
+    world: 'isolated',
+    permissions: ['dom:read', 'dom:write', 'rpc:read', 'fs:user-files', 'net:listen', 'process:spawn'],
+    contributes: { 'topbar.units': [{ id: 'design', order: 48 }] }
+  }, null, 2));
+  fs.writeFileSync(path.join(originDir, 'src', 'node.js'), `
+'use strict';
+async function activate() {}
+async function deactivate() {}
+module.exports = { activate, deactivate };
+`);
+  fs.writeFileSync(path.join(originDir, 'src', 'renderer.js'), `
+'use strict';
+let stop = null;
+function mount(ctx) {
+  stop = ctx.topbar.registerUnit({ id: 'design', order: 48, label: 'Design' });
+}
+function dispose() {
+  if (typeof stop === 'function') stop();
+  stop = null;
+}
+module.exports = { mount, dispose };
+`);
+
+  execFileSync('git', ['init', '-b', 'main'], { cwd: originDir });
+  execFileSync('git', ['config', 'user.email', 'test@agy-daddy.local'], { cwd: originDir });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: originDir });
+  execFileSync('git', ['add', '.'], { cwd: originDir });
+  execFileSync('git', ['commit', '-m', 'init v0.1.0'], { cwd: originDir });
+
+  fs.writeFileSync(registryPath, JSON.stringify({
+    schemaVersion: 1,
+    organization: 'agy-daddy',
+    plugins: [
+      {
+        shortName: 'design',
+        id: 'hubo1989.design',
+        publisher: 'hubo1989',
+        name: 'Agy Design Studio',
+        version: '0.1.0',
+        layer: 4,
+        category: 'design',
+        tags: ['design', 'slides', 'canvas'],
+        trustLevel: 'T1',
+        defaultEnabled: false,
+        external: true,
+        repo: `file://${originDir}`,
+        ref: 'v0.1.0',
+        permissions: ['dom:read', 'dom:write', 'rpc:read', 'fs:user-files', 'net:listen', 'process:spawn'],
+        description: '本地优先的 Antigravity 可视化设计工作台'
+      }
+    ]
+  }, null, 2));
+
+  const cdpHarness = await createLocalCdpHarness();
+  const daemon = new AgyDaddyDaemon({
+    stateDir,
+    pluginsDir,
+    registryPath,
+    workspaceRoot: emptyWs,
+    origin: '*',
+    WebSocket: cdpHarness.MockCdpWebSocket,
+    cdpOptions: { ports: [cdpHarness.cdpPort], allowLsof: false }
+  });
+
+  try {
+    const started = await daemon.start();
+    const inj = await daemon.injectActiveTargets();
+    assert.equal(inj.targetsInjected, 1);
+
+    const listRes = await postHost(started.port, daemon.bridge.hostToken, '/host/plugins', {});
+    const catItem = listRes.data.catalog.find((c) => c.id === 'hubo1989.design');
+    assert.ok(catItem);
+    assert.equal(catItem.version, '0.1.0');
+    assert.equal(catItem.category, 'design');
+    assert.deepEqual(catItem.tags, ['design', 'slides', 'canvas']);
+    assert.equal(catItem.permissions.length, 6);
+
+    const uiDoc = createMockDocument();
+    const uiWin = { location: { href: 'https://127.0.0.1:51410/' } };
+    const uiHost = createHostRuntime({
+      document: uiDoc,
+      window: uiWin,
+      fetch: globalThis.fetch,
+      anchorsRegistry: loadAnchorsRegistry(),
+      bridgePort: started.port,
+      hostToken: daemon.bridge.hostToken
+    });
+
+    try {
+      uiHost.toggleSettingsPanel(true);
+      const shadow = uiDoc.getElementById('agy-daddy-host').shadowRoot;
+      await waitFor(() => Boolean(shadow.querySelector('#agy-marketplace-more-btn')));
+
+      // 进入全屏插件市场页
+      shadow.querySelector('#agy-marketplace-more-btn').click();
+      await waitFor(() => Boolean(shadow.querySelector('#agy-marketplace-full-grid')));
+
+      // 通过 tag/shortName 检索命中 Agy Design Studio
+      const searchInp = shadow.querySelector('#agy-settings-search');
+      searchInp.value = 'slides';
+      searchInp.dispatchEvent({ type: 'input' });
+      assert.ok(shadow.querySelector('[data-catalog-id="hubo1989.design"]'));
+
+      searchInp.value = 'design';
+      searchInp.dispatchEvent({ type: 'input' });
+      const installBtn = shadow.querySelector('[data-catalog-install="hubo1989.design"]');
+      assert.ok(installBtn);
+
+      // 点击安装应在全屏市场页原地弹出 #agy-perm-confirm-box 并完整显示 3 项高危权限
+      installBtn.click();
+      await waitFor(() => Boolean(shadow.querySelector('#agy-perm-confirm-box')));
+
+      const permBox = shadow.querySelector('#agy-perm-confirm-box');
+      assert.ok(permBox, 'Expected #agy-perm-confirm-box in full marketplace view');
+      const chipTexts = permBox.querySelectorAll('.ag-chip').map((el) => el.textContent);
+      assert.ok(chipTexts.includes('process:spawn'), `Missing process:spawn in ${JSON.stringify(chipTexts)}`);
+      assert.ok(chipTexts.includes('fs:user-files'), `Missing fs:user-files in ${JSON.stringify(chipTexts)}`);
+      assert.ok(chipTexts.includes('net:listen'), `Missing net:listen in ${JSON.stringify(chipTexts)}`);
+
+      // 点击「授权并安装」完成安装（含 ref tag 未创建回退默认分支）并热加载挂载顶栏
+      shadow.querySelector('#agy-perm-confirm-btn').click();
+      await waitFor(() => daemon.activePlugins.has('hubo1989.design'));
+
+      assert.equal(daemon.activePlugins.has('hubo1989.design'), true);
+      const getBarTexts = () => cdpHarness.mockDoc.getElementById('agy-daddy-host')
+        .shadowRoot.querySelector('#agy-topbar-slots').children.map((c) => c.textContent);
+      assert.ok(getBarTexts().includes('Design'), 'Expected Design topbar unit mounted via hot reload');
     } finally {
       await uiHost.dispose();
     }

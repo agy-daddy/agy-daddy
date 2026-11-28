@@ -449,4 +449,127 @@ describe('HostAdminModal auto-update UI', () => {
       ).toBeInTheDocument(),
     );
   });
+
+  it('surfaces rollback results and check errors on HTTP 400 instead of HTTP_400, and renders per-item isMajor badge', async () => {
+    const user = userEvent.setup();
+    let checkCalls = 0;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/v1/host/plugins')) {
+          return jsonResponse({
+            ok: true,
+            plugins: [
+              {
+                id: 'agy-daddy.quota',
+                displayName: 'Quota Monitor',
+                version: '1.1.1',
+                trustLevel: 'T0',
+                world: 'isolated',
+                sourceKind: 'npm',
+                enabled: true,
+                active: true,
+                webRelevant: true,
+                permissions: ['rpc:read'],
+              },
+            ],
+            catalog: [],
+          });
+        }
+        if (url === '/api/v1/host/updates') {
+          return jsonResponse({
+            ok: true,
+            hostVersion: '1.1.1',
+            anchorsVersion: '1.1.1',
+            installMode: 'wrapper',
+            settings: {
+              updateChannel: 'stable',
+              autoUpdateMode: 'notify',
+              updateCheckInterval: '6h',
+              updateSourcePreference: 'auto',
+              npmRegistryUrl: '',
+            },
+            summary: { availableCount: 1, pluginAvailableCount: 1, hostAvailable: false },
+            targets: {
+              'agy-daddy.quota': {
+                targetId: 'agy-daddy.quota',
+                kind: 'plugin',
+                currentVersion: '1.1.1',
+                latestVersion: '1.2.0',
+                status: 'available',
+              },
+            },
+          });
+        }
+        if (url === '/api/v1/host/updates/check') {
+          checkCalls++;
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              errorCode: 'UPDATE_RATE_LIMITED',
+              error: 'UPDATE_RATE_LIMITED',
+              message: 'Rate limit exceeded',
+              errors: [
+                {
+                  targetId: 'host',
+                  errorCode: 'UPDATE_RATE_LIMITED',
+                  errorMessage: 'Rate limit exceeded',
+                },
+              ],
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url === '/api/v1/host/updates/apply') {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              errorCode: 'UPDATE_ROLLBACK_TRIGGERED',
+              results: [
+                {
+                  targetId: 'agy-daddy.quota',
+                  outcome: 'rolled_back',
+                  errorCode: 'UPDATE_ROLLBACK_TRIGGERED',
+                  errorMessage: 'Plugin crashed on reload',
+                },
+              ],
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return jsonResponse({ ok: true });
+      }),
+    );
+
+    render(
+      <I18nProvider defaultLocale="en">
+        <ThemeProvider>
+          <HostAdminModal
+            open
+            initialTab="plugins"
+            channel="loopback"
+            permissionLevel="L2"
+            onClose={() => {}}
+          />
+        </ThemeProvider>
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('updates-check-btn')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('updates-check-btn'));
+    await waitFor(() => expect(checkCalls).toBe(1));
+    await waitFor(() => expect(screen.getByText('Rate limit exceeded')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('plugin-update-agy-daddy.quota'));
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'agy-daddy.quota failed health check and rolled back (UPDATE_ROLLBACK_TRIGGERED)',
+        ),
+      ).toBeInTheDocument(),
+    );
+  });
 });

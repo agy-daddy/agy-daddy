@@ -1216,6 +1216,7 @@ export interface HostUpdateConfirmItem {
   trustLevel?: string;
   fromVersion?: string;
   toVersion?: string;
+  isMajor?: boolean;
   majorUpdate?: boolean;
   currentPermissions?: string[];
   addedPermissions?: string[];

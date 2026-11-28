@@ -2190,7 +2190,7 @@ class WebServer {
         const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
         const body = await readJsonBody(req, this.maxBodyBytes);
         const result = await proxy.checkUpdates(body);
-        if (result?.ok !== false) {
+        if (result?.ok !== false || result?.summary) {
           this.broadcast('state.patch', {
             key: 'state:host.updates@1',
             value: {
@@ -2200,6 +2200,17 @@ class WebServer {
             }
           });
         }
+        if (result && result.ok === false && !result.error && Array.isArray(result.errors) && result.errors.length > 0) {
+          const firstErr = result.errors[0];
+          const code = firstErr?.errorCode || result.errorCode || 'UPDATE_CHECK_FAILED';
+          sendActionResult(res, {
+            ...result,
+            errorCode: result.errorCode || code,
+            error: code,
+            message: result.message || firstErr?.errorMessage || code
+          });
+          return;
+        }
         sendActionResult(res, result);
         return;
       }
@@ -2208,7 +2219,11 @@ class WebServer {
         const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
         const body = await readJsonBody(req, this.maxBodyBytes);
         const result = await proxy.applyUpdates(body);
-        if (result?.ok !== false) {
+        const hasDiskOrStateEffect = Boolean(
+          result?.ok !== false ||
+          (Array.isArray(result?.results) && result.results.some((r) => r.outcome === 'succeeded' || r.outcome === 'rolled_back'))
+        );
+        if (hasDiskOrStateEffect) {
           this.broadcast('state.patch', {
             key: 'state:host.updates@1',
             value: {
@@ -2220,6 +2235,19 @@ class WebServer {
             key: 'state:host.plugins@1',
             value: { action: 'updates-apply', updatedAt: Date.now() }
           });
+        }
+        if (result && result.ok === false && !result.error) {
+          const badItem = Array.isArray(result.results)
+            ? result.results.find((r) => r.outcome === 'rolled_back' || r.outcome === 'failed' || r.outcome === 'blocked')
+            : null;
+          const code = result.errorCode || badItem?.errorCode || 'UPDATE_APPLY_FAILED';
+          sendActionResult(res, {
+            ...result,
+            errorCode: result.errorCode || code,
+            error: code,
+            message: result.message || badItem?.errorMessage || code
+          });
+          return;
         }
         sendActionResult(res, result);
         return;

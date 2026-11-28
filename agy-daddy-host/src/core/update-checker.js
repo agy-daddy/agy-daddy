@@ -728,7 +728,70 @@ async function fetchReleaseManifestIfPresent(release, options, ctx) {
 
 function matchPackageInReleaseManifest(releaseManifest, pkgName, dirName) {
   const pkgs = Array.isArray(releaseManifest?.packages) ? releaseManifest.packages : [];
-  return pkgs.find((p) => (pkgName && p.name === pkgName) || (dirName && p.dirName === dirName)) || null;
+  return pkgs.find((p) =>
+    (pkgName && p.name === pkgName) ||
+    (dirName && (p.dirName === dirName || p.dir === dirName))
+  ) || null;
+}
+
+async function resolveReleasePackageSource({ matched, relManifest, pkgName, defaultDir, npmRegistryUrl, ctx }) {
+  const entry = relManifest ? matchPackageInReleaseManifest(relManifest, pkgName, defaultDir) : null;
+  const latestVer = entry?.version || matched.version;
+  const dirSubpath = entry?.dirName || entry?.dir || defaultDir;
+  const releaseAssets = Array.isArray(matched.release?.assets) ? matched.release.assets : [];
+
+  if (entry?.tarballUrl) {
+    return {
+      entry,
+      latestVer,
+      tarballUrl: entry.tarballUrl,
+      integrity: entry.sha512 || null,
+      archiveSubpath: null
+    };
+  }
+
+  if (entry?.tarball) {
+    const matchedAsset = releaseAssets.find((a) => a && a.name === entry.tarball && a.browser_download_url);
+    if (matchedAsset) {
+      return {
+        entry,
+        latestVer,
+        tarballUrl: matchedAsset.browser_download_url,
+        integrity: entry.sha512 || null,
+        archiveSubpath: null
+      };
+    }
+  }
+
+  if (entry?.version && pkgName && relManifest) {
+    const candidateRegistry = normalizeNpmRegistryUrl(npmRegistryUrl) || normalizeNpmRegistryUrl(relManifest.npmRegistryUrl) || DEFAULT_NPM_REGISTRY;
+    const isRealExternalNpm = candidateRegistry === DEFAULT_NPM_REGISTRY && isTestMode() && typeof ctx?.fetch !== 'function';
+    if (!isRealExternalNpm) {
+      try {
+        const { meta } = await fetchNpmPackageMeta(pkgName, candidateRegistry, ctx);
+        const verObj = meta?.versions?.[entry.version];
+        const distTarball = verObj?.dist?.tarball || null;
+        const distIntegrity = verObj?.dist?.integrity || null;
+        if (distTarball && (!entry.sha512 || !distIntegrity || distIntegrity === entry.sha512)) {
+          return {
+            entry,
+            latestVer,
+            tarballUrl: distTarball,
+            integrity: entry.sha512 || distIntegrity,
+            archiveSubpath: null
+          };
+        }
+      } catch {}
+    }
+  }
+
+  return {
+    entry,
+    latestVer,
+    tarballUrl: matched.release?.tarball_url || null,
+    integrity: null,
+    archiveSubpath: dirSubpath
+  };
 }
 
 async function runWithConcurrency(items, limit, worker) {
@@ -1062,7 +1125,7 @@ async function checkHostTarget({ hostInfo, channel, sourcePref, npmRegistryUrl, 
     return {
       ...baseTarget,
       sourceKind: 'npm',
-      sourceUrl: metaUrl,
+      sourceUrl: redactUrl(metaUrl),
       latestVersion: latestVer,
       tarballUrl: sel.tarballUrl,
       integrity: sel.integrity,
@@ -1081,6 +1144,7 @@ async function checkHostTarget({ hostInfo, channel, sourcePref, npmRegistryUrl, 
   let releaseNotesUrl = null;
   let tarballUrl = null;
   let integrity = null;
+  let archiveSubpath = null;
   let wrapperMinVersion = null;
   let wrapperUpdateRecommended = false;
   let wrappersChecksumsUrl = null;
@@ -1088,20 +1152,25 @@ async function checkHostTarget({ hostInfo, channel, sourcePref, npmRegistryUrl, 
   if (matched) {
     latestVer = matched.version;
     releaseNotesUrl = matched.release.html_url || null;
-    tarballUrl = matched.release.tarball_url || null;
     const checksumAsset = (matched.release.assets || []).find((a) => a.name === 'agy-daddy-wrappers-sha256sums.txt');
     if (checksumAsset) wrappersChecksumsUrl = checksumAsset.browser_download_url;
     const relManifest = await fetchReleaseManifestIfPresent(matched.release, options, ctx).catch(() => null);
-    if (relManifest) {
-      const entry = matchPackageInReleaseManifest(relManifest, '@agy-daddy/host', 'agy-daddy-host');
-      if (entry?.version) latestVer = entry.version;
-      if (entry?.sha512) integrity = entry.sha512;
-      if (entry?.tarballUrl) tarballUrl = entry.tarballUrl;
-      if (relManifest.wrapperMinVersion) {
-        wrapperMinVersion = String(relManifest.wrapperMinVersion);
-        if (hostInfo.wrapperVersion && compareSemverSafe(wrapperMinVersion, hostInfo.wrapperVersion) > 0) {
-          wrapperUpdateRecommended = true;
-        }
+    const resolved = await resolveReleasePackageSource({
+      matched,
+      relManifest,
+      pkgName: '@agy-daddy/host',
+      defaultDir: 'agy-daddy-host',
+      npmRegistryUrl,
+      ctx
+    });
+    latestVer = resolved.latestVer;
+    tarballUrl = resolved.tarballUrl;
+    integrity = resolved.integrity;
+    archiveSubpath = resolved.archiveSubpath;
+    if (relManifest?.wrapperMinVersion) {
+      wrapperMinVersion = String(relManifest.wrapperMinVersion);
+      if (hostInfo.wrapperVersion && compareSemverSafe(wrapperMinVersion, hostInfo.wrapperVersion) > 0) {
+        wrapperUpdateRecommended = true;
       }
     }
   } else if (gh.tags.length > 0) {
@@ -1136,6 +1205,7 @@ async function checkHostTarget({ hostInfo, channel, sourcePref, npmRegistryUrl, 
     latestVersion: latestVer,
     tarballUrl,
     integrity,
+    archiveSubpath,
     releaseNotesUrl,
     wrapperMinVersion,
     wrapperUpdateRecommended,
@@ -1171,7 +1241,7 @@ async function checkRegistryTarget({ hostInfo, channel, sourcePref, npmRegistryU
     return {
       ...baseTarget,
       sourceKind: 'npm',
-      sourceUrl: metaUrl,
+      sourceUrl: redactUrl(metaUrl),
       latestVersion: latestVer,
       tarballUrl: sel.tarballUrl,
       integrity: sel.integrity,
@@ -1185,16 +1255,21 @@ async function checkRegistryTarget({ hostInfo, channel, sourcePref, npmRegistryU
   let latestVer = hostInfo.anchorsVersion;
   let tarballUrl = null;
   let integrity = null;
+  let archiveSubpath = null;
   if (matched) {
-    latestVer = matched.version;
-    tarballUrl = matched.release.tarball_url || null;
     const relManifest = await fetchReleaseManifestIfPresent(matched.release, options, ctx).catch(() => null);
-    if (relManifest) {
-      const entry = matchPackageInReleaseManifest(relManifest, '@agy-daddy/registry', 'agy-daddy-registry');
-      if (entry?.version) latestVer = entry.version;
-      if (entry?.sha512) integrity = entry.sha512;
-      if (entry?.tarballUrl) tarballUrl = entry.tarballUrl;
-    }
+    const resolved = await resolveReleasePackageSource({
+      matched,
+      relManifest,
+      pkgName: '@agy-daddy/registry',
+      defaultDir: 'agy-daddy-registry',
+      npmRegistryUrl,
+      ctx
+    });
+    latestVer = resolved.latestVer;
+    tarballUrl = resolved.tarballUrl;
+    integrity = resolved.integrity;
+    archiveSubpath = resolved.archiveSubpath;
   }
   const cmp = compareSemverSafe(latestVer, hostInfo.anchorsVersion);
   const hasUpdate = cmp !== null && cmp > 0;
@@ -1206,6 +1281,7 @@ async function checkRegistryTarget({ hostInfo, channel, sourcePref, npmRegistryU
     latestVersion: latestVer,
     tarballUrl,
     integrity,
+    archiveSubpath,
     status: hasUpdate ? 'available' : 'up_to_date',
     autoSafeEligible: Boolean(hasUpdate && !major && latestVer !== baseTarget.lastFailedVersion)
   };
@@ -1355,7 +1431,7 @@ async function checkPluginTarget({ rec, regEntry, channel, sourcePref, npmRegist
     return {
       ...baseTarget,
       sourceKind: 'npm',
-      sourceUrl: metaUrl,
+      sourceUrl: redactUrl(metaUrl),
       npmPackage,
       latestVersion: latestVer,
       majorUpdateAvailable: sel.majorUpdateAvailable,
@@ -1394,7 +1470,7 @@ async function checkPluginTarget({ rec, regEntry, channel, sourcePref, npmRegist
       if (relManifest && (regEntry?.npmPackage || subpath)) {
         const entry = matchPackageInReleaseManifest(relManifest, regEntry?.npmPackage, subpath);
         if (entry?.version) latestVer = entry.version;
-        if (entry?.sha512) manifestSha512 = entry.sha512;
+        if (entry?.manifestSha512) manifestSha512 = entry.manifestSha512;
       }
     } else if (gh.tags.length > 0) {
       const tagEntries = gh.tags

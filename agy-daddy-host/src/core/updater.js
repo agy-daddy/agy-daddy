@@ -310,6 +310,38 @@ function safeExtractTarGz(tgzBuffer, destDir) {
   }
 }
 
+function extractPackageTarballToDir(tgzBuffer, destDir, archiveSubpath = null) {
+  if (!archiveSubpath) {
+    return safeExtractTarGz(tgzBuffer, destDir);
+  }
+  const archiveTmpDir = `${destDir}.archive`;
+  fs.rmSync(archiveTmpDir, { recursive: true, force: true });
+  fs.mkdirSync(archiveTmpDir, { recursive: true });
+  try {
+    safeExtractTarGz(tgzBuffer, archiveTmpDir);
+    let safeSub;
+    try {
+      safeSub = assertSafeSubpath(archiveSubpath);
+    } catch (err) {
+      throw makeUpdateError('UNSAFE_PATH_TRAVERSAL', err.message);
+    }
+    const subDir = path.resolve(archiveTmpDir, safeSub);
+    const rel = path.relative(archiveTmpDir, subDir);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw makeUpdateError('UNSAFE_PATH_TRAVERSAL', `Unsafe archive subpath: ${archiveSubpath}`);
+    }
+    if (fs.existsSync(subDir) && fs.statSync(subDir).isDirectory()) {
+      copyDirSync(subDir, destDir);
+    } else if (fs.existsSync(path.join(archiveTmpDir, 'package.json'))) {
+      copyDirSync(archiveTmpDir, destDir);
+    } else {
+      throw makeUpdateError('MANIFEST_INVALID', `Archive missing subpath: ${safeSub}`);
+    }
+  } finally {
+    try { fs.rmSync(archiveTmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 async function applyRegistryUpdate({ targetInfo, runId, trigger, channel, options, checkCtx }) {
   const startMs = Date.now();
   const stateDir = getStateDir(options);
@@ -326,7 +358,7 @@ async function applyRegistryUpdate({ targetInfo, runId, trigger, channel, option
     }
     const tgzBuf = await fetchBufferWithRetry(targetInfo.tarballUrl, {}, checkCtx);
     verifyBufferSha512(tgzBuf, targetInfo.integrity, `@agy-daddy/registry@${toVersion}`);
-    safeExtractTarGz(tgzBuf, stagingDir);
+    extractPackageTarballToDir(tgzBuf, stagingDir, targetInfo.archiveSubpath || null);
 
     const anchorsPath = path.join(stagingDir, 'anchors.json');
     if (!fs.existsSync(anchorsPath)) {
@@ -1019,7 +1051,18 @@ async function applyHostUpdate({ hostInfo, targetInfo, runId, trigger, channel, 
     fs.mkdirSync(stagingDir, { recursive: true });
     const tgzBuf = await fetchBufferWithRetry(targetInfo.tarballUrl, {}, checkCtx);
     verifyBufferSha512(tgzBuf, targetInfo.integrity, `@agy-daddy/host@${toVersion}`);
-    safeExtractTarGz(tgzBuf, stagingDir);
+    extractPackageTarballToDir(tgzBuf, stagingDir, targetInfo.archiveSubpath || null);
+
+    const rendererDist = path.join(stagingDir, 'dist', 'host-renderer.js');
+    const buildRendererScript = path.join(stagingDir, 'scripts', 'build-renderer.js');
+    if (!fs.existsSync(rendererDist) && fs.existsSync(buildRendererScript)) {
+      execFileSync(process.execPath, [buildRendererScript], {
+        cwd: stagingDir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+    }
 
     const requiredFiles = ['package.json', 'bin/agy-daddy.js', 'src/cli.js', 'dist/host-renderer.js'];
     for (const rel of requiredFiles) {

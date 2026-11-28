@@ -257,4 +257,15 @@ test('QA-E2E: WebServer + HostProxy 真实联调 AgyDaddyDaemon 完成设置、�
   await new Promise((r) => setTimeout(r, 60));
   const patches = sse.events.filter((e) => e.event === 'state.patch' && e.data?.key === 'state:host.updates@1');
   assert.ok(patches.length >= 4);
+
+  // Check error response carries structured error/errorCode instead of generic HTTP_400
+  const errCheck = await httpRequest(`${webBase}/api/v1/host/updates/check`, {
+    method: 'POST',
+    headers,
+    body: { targets: ['third.webe2e'], npmRegistryUrl: 'http://127.0.0.1:1', forceRefresh: true }
+  });
+  assert.equal(errCheck.status, 400);
+  assert.equal(errCheck.json.error, 'UPDATE_NETWORK_ERROR');
+  assert.equal(errCheck.json.errorCode, 'UPDATE_NETWORK_ERROR');
+  assert.ok(errCheck.json.message);
 });

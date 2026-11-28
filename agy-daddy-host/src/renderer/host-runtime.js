@@ -6683,7 +6683,7 @@
         head.appendChild(nameEl);
         head.appendChild(verChip);
         head.appendChild(trustBadge);
-        if (item.majorUpdate || pending.needsMajorConfirm) {
+        if (item.isMajor || item.majorUpdate || (confirmations.length <= 1 && pending.needsMajorConfirm)) {
           const majChip = doc.createElement('span');
           majChip.className = 'ag-chip';
           majChip.setAttribute('data-tone', 'danger');

@@ -268,9 +268,9 @@ export function HostAdminModal({
     }
   }, []);
 
-  const loadPlugins = useCallback(async () => {
+  const loadPlugins = useCallback(async (opts?: { preserveError?: boolean }) => {
     setPluginsLoading(true);
-    setPluginsError(null);
+    if (!opts?.preserveError) setPluginsError(null);
     try {
       const scope = showDesktopPlugins ? 'all' : 'web';
       const res = await getHostPlugins(scope);
@@ -518,7 +518,7 @@ export function HostAdminModal({
           setPluginNotice(t('updates.applySucceeded', { count: Math.max(okCount, targets.length) }));
         }
       }
-      await Promise.all([loadPlugins(), loadUpdatesStatus()]);
+      await Promise.all([loadPlugins({ preserveError: true }), loadUpdatesStatus()]);
       onPluginsChanged?.();
     } catch (err) {
       setPluginsError(
@@ -1065,6 +1065,11 @@ export function HostAdminModal({
                           </span>
                           {item.trustLevel && (
                             <span className={styles.badge}>{item.trustLevel}</span>
+                          )}
+                          {(item.isMajor || item.majorUpdate) && (
+                            <span className={`${styles.badge} ${styles.badgeDanger}`}>
+                              {t('updates.confirmMajorBadge')}
+                            </span>
                           )}
                         </div>
                         {item.currentPermissions && item.currentPermissions.length > 0 && (

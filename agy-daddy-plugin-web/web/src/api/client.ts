@@ -280,7 +280,9 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   if (!response.ok || dataObj?.ok === false) {
-    const code = typeof dataObj?.error === 'string' ? dataObj.error : `HTTP_${response.status}`;
+    const code = typeof dataObj?.error === 'string'
+      ? dataObj.error
+      : (typeof dataObj?.errorCode === 'string' ? dataObj.errorCode : `HTTP_${response.status}`);
     const msg = typeof dataObj?.message === 'string' ? dataObj.message : code;
     throw new ApiError(msg, response.status, code, parsed);
   }
@@ -893,13 +895,26 @@ export function getHostUpdates(signal?: AbortSignal): Promise<HostUpdatesStatusR
   return apiRequest<HostUpdatesStatusResponse>('/api/v1/host/updates', { signal });
 }
 
-export function checkHostUpdates(
+export async function checkHostUpdates(
   body: HostUpdatesCheckRequest = {},
 ): Promise<HostUpdatesCheckResponse> {
-  return apiRequest<HostUpdatesCheckResponse>('/api/v1/host/updates/check', {
-    method: 'POST',
-    body,
-  });
+  try {
+    return await apiRequest<HostUpdatesCheckResponse>('/api/v1/host/updates/check', {
+      method: 'POST',
+      body,
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.payload && typeof err.payload === 'object') {
+      const parsed = err.payload as HostUpdatesCheckResponse;
+      const firstErr = Array.isArray(parsed.errors) ? parsed.errors[0] : null;
+      if (firstErr) {
+        const code = firstErr.errorCode || firstErr.code || err.code;
+        const msg = firstErr.errorMessage || firstErr.message || code;
+        throw new ApiError(msg, err.status, code, parsed);
+      }
+    }
+    throw err;
+  }
 }
 
 export async function applyHostUpdates(
@@ -913,7 +928,7 @@ export async function applyHostUpdates(
   } catch (err) {
     if (err instanceof ApiError && err.payload && typeof err.payload === 'object') {
       const parsed = err.payload as Record<string, unknown>;
-      if (parsed.needsPermissionConfirm || parsed.needsMajorConfirm) {
+      if (parsed.needsPermissionConfirm || parsed.needsMajorConfirm || Array.isArray(parsed.results)) {
         return parsed as unknown as HostUpdatesApplyResponse;
       }
     }

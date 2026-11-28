@@ -1080,7 +1080,9 @@ class AgyDaddyDaemon extends EventEmitter {
       if (msg.type === 'ipc-call') {
         const reply = (result, error = null, errorCode = null) => {
           if (worker.connected) {
-            worker.send({ type: 'ipc-reply', id: msg.id, result, error, ...(errorCode ? { errorCode } : {}) });
+            try {
+              worker.send({ type: 'ipc-reply', id: msg.id, result, error, ...(errorCode ? { errorCode } : {}) }, () => {});
+            } catch {}
           }
         };
         try {
@@ -2391,9 +2393,11 @@ class AgyDaddyDaemon extends EventEmitter {
       if (res.needsPermissionConfirm || res.needsMajorConfirm) {
         return res;
       }
+      const managePayload = this.buildPluginManagePayload();
       return {
+        ...managePayload,
         ...res,
-        ...this.buildPluginManagePayload()
+        ok: res?.ok !== false
       };
     });
     this.bridge.registerHostRoute('/host/updates/rollback', async (body) => {

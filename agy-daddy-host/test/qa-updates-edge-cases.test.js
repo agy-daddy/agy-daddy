@@ -7,11 +7,11 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 
 const { createTarGzBuffer } = require('../src/core/tar');
 const { installPlugin, linkPlugin, readInstalledIndex } = require('../src/core/installer');
-const { checkUpdates } = require('../src/core/update-checker');
+const { checkUpdates, readUpdateState } = require('../src/core/update-checker');
 const {
   appendUpdateHistory,
   readUpdateHistory,
@@ -19,6 +19,7 @@ const {
 } = require('../src/core/updater');
 const { AgyDaddyDaemon } = require('../src/core/daemon');
 const { MemoryTrayBackend, TrayManager, UPDATE_TRAY_MENU_IDS } = require('../src/core/tray-manager');
+const { KNOWN_ANCHORS } = require('../src/contracts/constants');
 
 const HOST_ROOT = path.resolve(__dirname, '..');
 const CLI_PATH = path.join(HOST_ROOT, 'src', 'cli.js');
@@ -157,11 +158,17 @@ test('QA-INT-01: UpdateScheduler 真实定时器与 AgyDaddyDaemon + TrayManager
   await daemon.start();
   t.after(async () => { await daemon.stop().catch(() => {}); });
 
-  // Wait for initial scheduler cycle (25ms + apply)
+  // Wait for initial scheduler cycle (25ms + apply) to settle completely
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const idx = readInstalledIndex({ stateDir });
-    if (idx.plugins['agy-daddy.qat0']?.version === '1.1.0') break;
+    if (
+      idx.plugins['agy-daddy.qat0']?.version === '1.1.0' &&
+      !daemon.updateScheduler.runningCheck &&
+      !daemon.updateScheduler.applyingUpdate
+    ) {
+      break;
+    }
     await new Promise((r) => setTimeout(r, 40));
   }
 
@@ -356,4 +363,227 @@ test('QA-INT-03: CLI agy-daddy plugin rollback <id> 端到端回滚', async (t) 
   assert.equal(rbOut.status, 0, rbOut.stderr);
   assert.equal(JSON.parse(rbOut.stdout).restoredVersion, '1.0.0');
   assert.equal(readInstalledIndex({ stateDir }).plugins['third.clirb'].version, '1.0.0');
+});
+
+test('QA-INT-04: 真实 release-manifest.json（dir/tarball/sha512）下 GitHub 源升级 host、registry 与 T0 插件', async (t) => {
+  const root = makeTempDir(t);
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+  const hostInstallDir = path.join(root, 'host-install');
+  fs.mkdirSync(hostInstallDir, { recursive: true });
+  fs.writeFileSync(path.join(hostInstallDir, 'package.json'), JSON.stringify({ name: '@agy-daddy/host', version: '1.1.1' }));
+  fs.writeFileSync(path.join(hostInstallDir, '.install-meta.json'), JSON.stringify({ installMode: 'wrapper', wrapperVersion: '1.0.0' }));
+
+  const validAnchors = { schemaVersion: 1, anchors: Object.fromEntries(KNOWN_ANCHORS.map((a) => [a, { versions: [] }])) };
+  const hostTgz = createTarGzBuffer({
+    'package.json': JSON.stringify({ name: '@agy-daddy/host', version: '1.2.0' }),
+    'bin/agy-daddy.js': '#!/usr/bin/env node\n',
+    'src/cli.js': '// cli\n',
+    'dist/host-renderer.js': '// renderer\n',
+    'data/anchors.json': JSON.stringify(validAnchors)
+  });
+  const regTgz = createTarGzBuffer({
+    'package.json': JSON.stringify({ name: '@agy-daddy/registry', version: '1.2.0' }),
+    'anchors.json': JSON.stringify(validAnchors)
+  });
+
+  // Real GitHub monorepo source archive fallback (top-level repo folder + gitignored dist/)
+  const ghSourceArchive = createTarGzBuffer({
+    'agy-daddy-host/package.json': JSON.stringify({ name: '@agy-daddy/host', version: '1.2.0' }),
+    'agy-daddy-host/bin/agy-daddy.js': '#!/usr/bin/env node\n',
+    'agy-daddy-host/src/cli.js': '// cli\n',
+    'agy-daddy-host/src/renderer/styles.css': '.x { color: inherit; }\n',
+    'agy-daddy-host/src/renderer/host-runtime.js': 'const ok = true;\n',
+    'agy-daddy-host/scripts/build-renderer.js': fs.readFileSync(path.join(HOST_ROOT, 'scripts', 'build-renderer.js'), 'utf8'),
+    'agy-daddy-host/data/anchors.json': JSON.stringify(validAnchors),
+    'agy-daddy-registry/package.json': JSON.stringify({ name: '@agy-daddy/registry', version: '1.2.0' }),
+    'agy-daddy-registry/anchors.json': JSON.stringify(validAnchors)
+  }, 'agy-daddy-1.2.0');
+
+  // Setup local git repo for T0 plugin with subpath
+  const pluginRepo = path.join(root, 'plugin-repo');
+  fs.mkdirSync(path.join(pluginRepo, 'agy-daddy-plugin-quota'), { recursive: true });
+  execFileSync('git', ['init', '-b', 'main'], { cwd: pluginRepo });
+  execFileSync('git', ['config', 'user.email', 'qa@test.local'], { cwd: pluginRepo });
+  execFileSync('git', ['config', 'user.name', 'QA'], { cwd: pluginRepo });
+  const quotaMan = {
+    schemaVersion: 1, id: 'agy-daddy.quota', publisher: 'agy-daddy', version: '1.1.1',
+    displayName: 'Quota', engines: { agyDaddy: '^1.0.0' }, world: 'isolated', main: './index.js', permissions: []
+  };
+  fs.writeFileSync(path.join(pluginRepo, 'agy-daddy-plugin-quota', 'agy-plugin.json'), JSON.stringify(quotaMan));
+  fs.writeFileSync(path.join(pluginRepo, 'agy-daddy-plugin-quota', 'index.js'), 'module.exports = {};');
+  execFileSync('git', ['add', '.'], { cwd: pluginRepo });
+  execFileSync('git', ['commit', '-m', 'v1.1.1'], { cwd: pluginRepo });
+  quotaMan.version = '1.2.0';
+  fs.writeFileSync(path.join(pluginRepo, 'agy-daddy-plugin-quota', 'agy-plugin.json'), JSON.stringify(quotaMan));
+  execFileSync('git', ['add', '.'], { cwd: pluginRepo });
+  execFileSync('git', ['commit', '-m', 'v1.2.0'], { cwd: pluginRepo });
+  execFileSync('git', ['tag', 'v1.2.0'], { cwd: pluginRepo });
+
+  await installPlugin(`git:file://${pluginRepo}#main:agy-daddy-plugin-quota`, { stateDir, pluginsDir, trustLevel: 'T0' });
+  const idxPath = path.join(stateDir, 'installed-plugins.json');
+  const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+  idx.plugins['agy-daddy.quota'].version = '1.1.1';
+  idx.plugins['agy-daddy.quota'].sourceSpec = 'github:agy-daddy/agy-daddy#main:agy-daddy-plugin-quota';
+  fs.writeFileSync(idxPath, JSON.stringify(idx));
+
+  const realManifest = {
+    schemaVersion: 1,
+    releaseTag: 'v1.2.0',
+    npmRegistryUrl: 'https://registry.npmjs.org',
+    packages: [
+      { name: '@agy-daddy/host', version: '1.2.0', dir: 'agy-daddy-host', tarball: 'agy-daddy-host-1.2.0.tgz', sha512: sha512Integrity(hostTgz) },
+      { name: '@agy-daddy/registry', version: '1.2.0', dir: 'agy-daddy-registry', tarball: 'agy-daddy-registry-1.2.0.tgz', sha512: sha512Integrity(regTgz) },
+      { name: '@agy-daddy/plugin-quota', version: '1.2.0', dir: 'agy-daddy-plugin-quota', tarball: 'agy-daddy-plugin-quota-1.2.0.tgz', sha512: sha512Integrity(Buffer.from('pkg-tgz')) }
+    ]
+  };
+
+  let includeTgzAssets = false;
+  const mockFetch = async (url) => {
+    if (url.includes('/repos/agy-daddy/agy-daddy/releases')) {
+      const assets = [{ name: 'release-manifest.json', browser_download_url: 'https://mock.gh/release-manifest.json' }];
+      if (includeTgzAssets) {
+        assets.push({ name: 'agy-daddy-host-1.2.0.tgz', browser_download_url: 'https://mock.gh/agy-daddy-host-1.2.0.tgz' });
+        assets.push({ name: 'agy-daddy-registry-1.2.0.tgz', browser_download_url: 'https://mock.gh/agy-daddy-registry-1.2.0.tgz' });
+      }
+      return {
+        ok: true, status: 200, headers: new Map(),
+        arrayBuffer: async () => Buffer.from(JSON.stringify([{
+          tag_name: 'v1.2.0', draft: false, prerelease: false,
+          html_url: 'https://github.com/agy-daddy/agy-daddy/releases/tag/v1.2.0',
+          tarball_url: 'https://mock.gh/source-v1.2.0.tar.gz',
+          assets
+        }]))
+      };
+    }
+    if (url === 'https://mock.gh/release-manifest.json') {
+      return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => Buffer.from(JSON.stringify(realManifest)) };
+    }
+    if (url === 'https://mock.gh/agy-daddy-host-1.2.0.tgz') {
+      return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => hostTgz };
+    }
+    if (url === 'https://mock.gh/agy-daddy-registry-1.2.0.tgz') {
+      return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => regTgz };
+    }
+    if (url === 'https://mock.gh/source-v1.2.0.tar.gz') {
+      return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => ghSourceArchive };
+    }
+    return { ok: false, status: 404, headers: new Map(), arrayBuffer: async () => Buffer.alloc(0) };
+  };
+
+  // A. Monorepo GitHub source archive fallback (builds host-renderer.js + extracts registry + upgrades T0 plugin)
+  const chkFallback = await checkUpdates({
+    stateDir, pluginsDir, hostRoot: hostInstallDir,
+    targets: ['host', 'registry', 'agy-daddy.quota'],
+    sourcePreference: 'github', installMode: 'wrapper', writable: true, fetch: mockFetch, forceRefresh: true
+  });
+  assert.equal(chkFallback.targets.host.archiveSubpath, 'agy-daddy-host');
+  assert.equal(chkFallback.targets.host.integrity, null);
+  assert.equal(chkFallback.targets.registry.archiveSubpath, 'agy-daddy-registry');
+
+  const applyHostFallback = await applyUpdates({ targets: ['host'], checkResult: chkFallback }, {
+    stateDir, pluginsDir, hostRoot: hostInstallDir, installMode: 'wrapper', writable: true,
+    fetch: mockFetch, handoffMode: 'inline', supervisorMode: 'none'
+  });
+  assert.equal(applyHostFallback.ok, true, JSON.stringify(applyHostFallback));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(hostInstallDir, 'package.json'), 'utf8')).version, '1.2.0');
+  assert.equal(fs.existsSync(path.join(hostInstallDir, 'dist', 'host-renderer.js')), true);
+
+  const applyRegAndPlugin = await applyUpdates({ targets: ['registry', 'agy-daddy.quota'], checkResult: chkFallback }, {
+    stateDir, pluginsDir, hostRoot: hostInstallDir, fetch: mockFetch,
+    gitRunner: (args) => {
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1];
+        execFileSync('git', ['clone', '--depth', '1', '--branch', args[4], `file://${pluginRepo}`, dest]);
+        return '';
+      }
+      return execFileSync('git', args.slice(0, -1), { cwd: args[args.length - 1], encoding: 'utf8' }).trim();
+    }
+  });
+  assert.equal(applyRegAndPlugin.ok, true);
+  assert.equal(fs.existsSync(path.join(stateDir, 'anchors.json')), true);
+  assert.equal(readInstalledIndex({ stateDir }).plugins['agy-daddy.quota'].version, '1.2.0');
+
+  // B. Release with matching .tgz assets uses asset URL + SHA-512 verification
+  includeTgzAssets = true;
+  fs.writeFileSync(path.join(hostInstallDir, 'package.json'), JSON.stringify({ name: '@agy-daddy/host', version: '1.1.1' }));
+  const chkAsset = await checkUpdates({
+    stateDir, pluginsDir, hostRoot: hostInstallDir,
+    targets: ['host'], sourcePreference: 'github', installMode: 'wrapper', writable: true,
+    fetch: mockFetch, forceRefresh: true, ignoreDebounce: true
+  });
+  assert.equal(chkAsset.targets.host.tarballUrl, 'https://mock.gh/agy-daddy-host-1.2.0.tgz');
+  assert.equal(chkAsset.targets.host.integrity, sha512Integrity(hostTgz));
+  const applyHostAsset = await applyUpdates({ targets: ['host'], checkResult: chkAsset }, {
+    stateDir, pluginsDir, hostRoot: hostInstallDir, installMode: 'wrapper', writable: true,
+    fetch: mockFetch, handoffMode: 'inline', supervisorMode: 'none'
+  });
+  assert.equal(applyHostAsset.ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(hostInstallDir, 'package.json'), 'utf8')).version, '1.2.0');
+});
+
+test('QA-INT-05: update-state.json sourceUrl 脱敏且 daemon /host/updates/apply 保留失败态 ok=false', async (t) => {
+  const root = makeTempDir(t);
+  const stateDir = path.join(root, 'state');
+  const pluginsDir = path.join(root, 'plugins');
+
+  const v1 = {
+    schemaVersion: 1, id: 'third.okpreserve', publisher: 'third', version: '1.0.0',
+    displayName: 'OK Preserve', engines: { agyDaddy: '^1.0.0' }, world: 'isolated', main: './index.js', permissions: []
+  };
+  const v2Crash = { ...v1, version: '1.1.0' };
+  const tgz1 = makePluginTgz(v1);
+  const tgz2 = makePluginTgz(v2Crash, { 'index.js': 'module.exports = { activate() { throw new Error("CRASH"); } };' });
+
+  const srv = http.createServer((req, res) => {
+    const p = req.url.split('?')[0];
+    const port = srv.address().port;
+    if (p === '/@third%2Fokpreserve') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({
+        name: '@third/okpreserve', 'dist-tags': { latest: '1.1.0' },
+        versions: {
+          '1.0.0': { dist: { tarball: `http://127.0.0.1:${port}/1.tgz`, integrity: sha512Integrity(tgz1) } },
+          '1.1.0': { dist: { tarball: `http://127.0.0.1:${port}/2.tgz`, integrity: sha512Integrity(tgz2) } }
+        }
+      }));
+    }
+    if (p === '/1.tgz') return res.writeHead(200).end(tgz1);
+    if (p === '/2.tgz') return res.writeHead(200).end(tgz2);
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  const regUrl = `http://127.0.0.1:${srv.address().port}`;
+
+  await installPlugin('npm:@third/okpreserve@1.0.0', { stateDir, pluginsDir, npmRegistryUrl: regUrl, trustLevel: 'T2' });
+
+  // Verify sourceUrl in update-state.json redacts embedded credentials
+  await checkUpdates({
+    stateDir, pluginsDir,
+    targets: ['third.okpreserve'],
+    npmRegistryUrl: 'https://user:secretpass@registry.example.test',
+    fetch: async () => ({
+      ok: true, status: 200, headers: new Map(),
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        name: '@third/okpreserve', 'dist-tags': { latest: '1.1.0' }, versions: { '1.1.0': { dist: {} } }
+      }))
+    }),
+    forceRefresh: true
+  });
+  const savedState = readUpdateState({ stateDir });
+  assert.equal(savedState.targets['third.okpreserve'].sourceUrl.includes('secretpass'), false);
+
+  // Verify Daemon /host/updates/apply preserves ok: false on plugin auto-rollback
+  const daemon = new AgyDaddyDaemon({ stateDir, pluginsDir, npmRegistryUrl: regUrl, skipInject: true, initialProbeMs: 30 });
+  const started = await daemon.start();
+  t.after(async () => { await daemon.stop().catch(() => {}); });
+  const resp = await fetch(`http://127.0.0.1:${started.port}/host/updates/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-AGY-Host-Token': started.hostToken },
+    body: JSON.stringify({ targets: ['third.okpreserve'], npmRegistryUrl: regUrl })
+  }).then((r) => r.json());
+  assert.equal(resp.ok, false);
+  assert.equal(resp.results[0].outcome, 'rolled_back');
+  assert.equal(resp.results[0].errorCode, 'UPDATE_ROLLBACK_TRIGGERED');
 });

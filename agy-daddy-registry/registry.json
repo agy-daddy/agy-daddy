@@ -184,7 +184,7 @@
       "repo": "https://github.com/agy-daddy/agy-daddy.git",
       "subpath": "agy-daddy-plugin-pet",
       "localRepo": "agy-daddy-plugin-pet",
-      "manifestSha512": "sha512-VRqxL0MiDer5r98F/F8J2specGIh9PdsWFe2o/FwcnnoluG6P9oCS064D9g7PtjIb3VZQn2CirUzBCSRqBGoPw=="
+      "manifestSha512": "sha512-7OTGy6flNhHg1DEr4rdDNUkNkeueO35Ifl3li47tUCdt5mIWCG2faM60mkT2mXOonZt9duHfvVnDEaGohDG6xQ=="
     },
     {
       "id": "agy-daddy.sidebar",

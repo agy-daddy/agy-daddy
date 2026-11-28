@@ -6927,10 +6927,6 @@
       const isHostUpdating = state.manageBusyId === '__host_update__' && state.manageBusyAction === 'update';
       const isHostRollingBack = state.manageBusyId === '__host_rollback__' && state.manageBusyAction === 'rollback';
 
-      const heroWrap = doc.createElement('div');
-      heroWrap.className = 'ag-sv-detail-hero';
-      heroWrap.id = 'agy-host-update-detail-header';
-
       const crumb = doc.createElement('div');
       crumb.className = 'ag-sv-breadcrumb';
       const backBtn = doc.createElement('button');
@@ -6946,7 +6942,11 @@
         renderSettingsBody();
       });
       crumb.appendChild(backBtn);
-      heroWrap.appendChild(crumb);
+      body.appendChild(crumb);
+
+      const heroWrap = doc.createElement('div');
+      heroWrap.className = 'ag-sv-detail-hero';
+      heroWrap.id = 'agy-host-update-detail-header';
 
       const headRow = doc.createElement('div');
       headRow.className = 'ag-sv-detail-head-row';

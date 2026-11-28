@@ -203,13 +203,21 @@ test('desktop update UI loads status, enforces immediate loading state, and hand
 
     const shadow = doc.getElementById('agy-daddy-host').shadowRoot;
     assert.equal(shadow.querySelector('#agy-update-dot').hidden, false);
+    assert.ok(shadow.querySelector('#agy-host-update-entry-card'));
+    assert.equal(shadow.querySelector('#agy-host-update-card'), null);
+    assert.match(shadow.querySelector('#agy-host-update-available-chip').textContent, /v1\.2\.0/);
+    assert.equal(shadow.querySelector('[data-plugin-update-chip="agy-daddy.quota"]').textContent, 'v1.1.1 → v1.2.0');
+    assert.equal(shadow.querySelector('[data-plugin-pinned-badge="community.pinned"]').textContent, '已锁定');
+
+    // Enter secondary page for host & auto-update configuration
+    shadow.querySelector('#agy-host-update-entry-btn').click();
+    assert.ok(shadow.querySelector('#agy-host-update-detail-header'));
+    assert.ok(shadow.querySelector('#agy-host-update-back-btn'));
     assert.ok(shadow.querySelector('#agy-host-update-card'));
     assert.equal(shadow.querySelector('#agy-host-install-mode-chip').textContent, '包装器');
     assert.match(shadow.querySelector('#agy-host-update-available-chip').textContent, /v1\.2\.0/);
     assert.ok(shadow.querySelector('#agy-wrapper-update-notice'));
     assert.ok(shadow.querySelector('#agy-update-history-list'));
-    assert.equal(shadow.querySelector('[data-plugin-update-chip="agy-daddy.quota"]').textContent, 'v1.1.1 → v1.2.0');
-    assert.equal(shadow.querySelector('[data-plugin-pinned-badge="community.pinned"]').textContent, '已锁定');
 
     // Immediate loading state & anti-double-submit on check updates
     const checkBtn = shadow.querySelector('#agy-check-updates-btn');
@@ -375,7 +383,11 @@ test('desktop update UI handles permission/major confirmation, rollback loading,
     await flushAsync();
     const shadow = doc.getElementById('agy-daddy-host').shadowRoot;
 
-    // 1. Update settings controls persistence
+    // 1. Enter host update secondary page and verify settings controls persistence
+    assert.ok(shadow.querySelector('#agy-host-update-entry-btn'));
+    assert.equal(shadow.querySelector('#agy-update-channel-select'), null);
+    shadow.querySelector('#agy-host-update-entry-btn').click();
+
     const channelSel = shadow.querySelector('#agy-update-channel-select');
     channelSel.value = 'next';
     channelSel.dispatchEvent({ type: 'change' });
@@ -403,6 +415,11 @@ test('desktop update UI handles permission/major confirmation, rollback loading,
     assert.ok(hostSettingCalls.some((c) => c.body.values.updateChannel === 'next'));
     assert.ok(hostSettingCalls.some((c) => c.body.values.autoUpdateMode === 'manual'));
     assert.ok(hostSettingCalls.some((c) => c.body.values.npmRegistryUrl === 'https://registry.npmmirror.com'));
+
+    // Return to general settings page, then review update opens plugin detail view
+    shadow.querySelector('#agy-host-update-back-btn').click();
+    assert.ok(shadow.querySelector('#agy-host-update-entry-card'));
+    assert.equal(shadow.querySelector('#agy-host-update-card'), null);
 
     // 2. Review update opens detail view, shows permission/major confirmation flow
     const reviewBtn = shadow.querySelector('[data-plugin-review-update="third.sample"]');

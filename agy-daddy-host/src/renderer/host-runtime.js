@@ -644,6 +644,7 @@
       selectedPluginId: null,
       focusPluginDiagnostics: null,
       marketplaceOpen: false,
+      hostUpdateOpen: false,
       diagnosticsExpanded: false,
       settingsSearchQuery: '',
       installDrawerOpen: false,
@@ -4800,6 +4801,7 @@
       state.activeSettingsTab = 'plugins';
       state.selectedPluginId = null;
       state.marketplaceOpen = false;
+      state.hostUpdateOpen = false;
       state.diagnosticsExpanded = true;
       ensureDomShell();
       const opened = openFallbackModal();
@@ -5880,6 +5882,7 @@
           if (seg.id === 'plugins') {
             state.selectedPluginId = null;
             state.marketplaceOpen = false;
+            state.hostUpdateOpen = false;
           }
           state.manageConfirmUninstallId = null;
           state.managePendingNativeUninstall = null;
@@ -5976,7 +5979,8 @@
         btn.setAttribute('aria-selected', active ? 'true' : 'false');
       }
       const inPluginDetail = state.activeSettingsTab === 'plugins' && Boolean(state.selectedPluginId);
-      const inDetail = inPluginDetail || (state.activeSettingsTab === 'plugins' && Boolean(state.marketplaceOpen));
+      const inHostUpdateDetail = state.activeSettingsTab === 'plugins' && Boolean(state.hostUpdateOpen);
+      const inDetail = inPluginDetail || inHostUpdateDetail || (state.activeSettingsTab === 'plugins' && Boolean(state.marketplaceOpen));
       const isNativeRoot = rootEl?.id === 'agy-native-settings-root' || state.settingsMode !== 'modal';
       const topbarEl = rootEl.querySelector ? rootEl.querySelector('#agy-settings-topbar') : null;
       if (topbarEl) {
@@ -5988,7 +5992,7 @@
       }
       const searchWrapEl = rootEl.querySelector ? rootEl.querySelector('#agy-settings-search-wrap') : null;
       if (searchWrapEl) {
-        setHidden(searchWrapEl, inPluginDetail);
+        setHidden(searchWrapEl, inPluginDetail || inHostUpdateDetail);
       }
       const heroEl = rootEl.querySelector ? rootEl.querySelector('#agy-settings-hero') : null;
       if (heroEl) {
@@ -6484,6 +6488,7 @@
         openBtn.textContent = '已安装';
         openBtn.addEventListener('click', () => {
           state.marketplaceOpen = false;
+          state.hostUpdateOpen = false;
           state.selectedPluginId = entry.id;
           state.manageConfirmUninstallId = null;
           state.managePendingNativeUninstall = null;
@@ -6765,7 +6770,7 @@
       containerEl.appendChild(box);
     }
 
-    function renderHostUpdateSection(body, hasBridge) {
+    function getHostUpdateViewModel() {
       const status = state.updatesStatus;
       const targets = isPlainObject(status?.targets) ? status.targets : {};
       const hostTarget = isPlainObject(targets.host) ? targets.host : null;
@@ -6795,10 +6800,167 @@
       const anchorsVersion = status?.anchorsVersion || registryTarget?.currentVersion || '';
       const lastCheckedAt = status?.scheduler?.lastCheckedAt || '';
 
+      return {
+        status,
+        hostTarget,
+        registryTarget,
+        availableTargetIds,
+        availableCount,
+        installModeLabel,
+        hostVersion,
+        anchorsVersion,
+        lastCheckedAt
+      };
+    }
+
+    function createHostUpdateStatusChip(vm) {
+      const { hostTarget, availableCount, hostVersion } = vm;
+      const chip = doc.createElement('span');
+      chip.className = 'ag-chip';
+      if (hostTarget?.status === 'available' || (state.updateInfo?.hasUpdate && state.updateInfo.latestVersion !== hostVersion)) {
+        chip.id = 'agy-host-update-available-chip';
+        chip.setAttribute('data-tone', 'warn');
+        chip.textContent = `发现新版本 v${hostTarget?.latestVersion || state.updateInfo.latestVersion}`;
+      } else if (hostTarget?.status === 'blocked') {
+        chip.setAttribute('data-tone', 'danger');
+        chip.textContent = hostTarget.blockReason || '更新受阻';
+      } else {
+        chip.setAttribute('data-tone', availableCount > 0 ? 'warn' : 'muted');
+        chip.textContent = availableCount > 0 ? `${availableCount} 项待更新` : '已是最新';
+      }
+      return chip;
+    }
+
+    function renderHostUpdateEntry(body, queryLower) {
+      if (queryLower) {
+        const hay = '底座与自动更新 底座 自动更新 检查更新 更新通道 镜像 npm host update'.toLowerCase();
+        if (!hay.includes(queryLower)) return;
+      }
+      const vm = getHostUpdateViewModel();
+      const modeMap = {
+        notify: '仅检查并提示',
+        'auto-safe': '安全静默自动更新',
+        manual: '纯手动检查'
+      };
+      const modeLabel = modeMap[state.hostSettings.autoUpdateMode || 'notify'] || '仅检查并提示';
+      const channelLabel = (state.hostSettings.updateChannel || 'stable') === 'next' ? '预览版 (next)' : '稳定版 (stable)';
+
+      const card = doc.createElement('div');
+      card.className = 'settings-card-box';
+      card.id = 'agy-host-update-entry-card';
+
+      const row = doc.createElement('div');
+      row.className = 'settings-pref-row';
+      row.style.cursor = 'pointer';
+
+      const info = doc.createElement('div');
+      info.className = 'ag-sv-row-info';
+      const titleRow = doc.createElement('div');
+      titleRow.className = 'ag-plugin-info';
+
+      const titleSpan = doc.createElement('span');
+      titleSpan.className = 'ag-sv-row-title';
+      titleSpan.textContent = '底座与自动更新';
+      titleRow.appendChild(titleSpan);
+
+      const verChip = doc.createElement('span');
+      verChip.className = 'ag-chip';
+      verChip.setAttribute('data-tone', 'muted');
+      verChip.textContent = `v${vm.hostVersion}`;
+      titleRow.appendChild(verChip);
+
+      titleRow.appendChild(createHostUpdateStatusChip(vm));
+      info.appendChild(titleRow);
+
+      const desc = doc.createElement('span');
+      desc.className = 'ag-sv-row-desc';
+      const parts = [`策略: ${modeLabel}`, `通道: ${channelLabel}`];
+      if (vm.lastCheckedAt) parts.push(`上次检查: ${vm.lastCheckedAt}`);
+      desc.textContent = parts.join(' · ');
+      info.appendChild(desc);
+      row.appendChild(info);
+
+      const actions = doc.createElement('div');
+      actions.className = 'ag-plugin-actions';
+      const openBtn = doc.createElement('button');
+      openBtn.type = 'button';
+      openBtn.id = 'agy-host-update-entry-btn';
+      openBtn.className = 'ag-btn';
+      const lbl = doc.createElement('span');
+      lbl.textContent = '配置';
+      openBtn.appendChild(lbl);
+      openBtn.appendChild(createIconEl('chevronRight'));
+
+      const openDetail = () => {
+        state.hostUpdateOpen = true;
+        renderSettingsBody();
+      };
+      openBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        openDetail();
+      });
+      row.addEventListener('click', openDetail);
+
+      actions.appendChild(openBtn);
+      row.appendChild(actions);
+      card.appendChild(row);
+      body.appendChild(card);
+    }
+
+    function renderHostUpdateDetailView(body) {
+      const hasBridge = hasBridgeAvailable();
+      const vm = getHostUpdateViewModel();
+      const {
+        status,
+        hostTarget,
+        registryTarget,
+        availableTargetIds,
+        availableCount,
+        installModeLabel,
+        hostVersion,
+        anchorsVersion,
+        lastCheckedAt
+      } = vm;
+
       const isChecking = state.manageBusyId === '__check_updates__' && state.manageBusyAction === 'check';
       const isApplyingAll = state.manageBusyId === '__apply_updates__' && state.manageBusyAction === 'update';
       const isHostUpdating = state.manageBusyId === '__host_update__' && state.manageBusyAction === 'update';
       const isHostRollingBack = state.manageBusyId === '__host_rollback__' && state.manageBusyAction === 'rollback';
+
+      const heroWrap = doc.createElement('div');
+      heroWrap.className = 'ag-sv-detail-hero';
+      heroWrap.id = 'agy-host-update-detail-header';
+
+      const crumb = doc.createElement('div');
+      crumb.className = 'ag-sv-breadcrumb';
+      const backBtn = doc.createElement('button');
+      backBtn.type = 'button';
+      backBtn.id = 'agy-host-update-back-btn';
+      backBtn.className = 'ag-btn ag-btn-ghost';
+      backBtn.appendChild(createIconEl('chevronLeft'));
+      const backLbl = doc.createElement('span');
+      backLbl.textContent = '返回通用设置';
+      backBtn.appendChild(backLbl);
+      backBtn.addEventListener('click', () => {
+        state.hostUpdateOpen = false;
+        renderSettingsBody();
+      });
+      crumb.appendChild(backBtn);
+      heroWrap.appendChild(crumb);
+
+      const headRow = doc.createElement('div');
+      headRow.className = 'ag-sv-detail-head-row';
+      const identity = doc.createElement('div');
+      identity.className = 'ag-sv-detail-identity';
+      const titleEl = doc.createElement('h1');
+      titleEl.className = 'ag-sv-detail-title';
+      titleEl.textContent = '底座与自动更新';
+      const descEl = doc.createElement('div');
+      descEl.className = 'ag-plugin-meta';
+      descEl.textContent = '管理 Agy-Daddy 底座、DOM 锚点与插件的检查通道、自动更新策略与版本升级。';
+      identity.appendChild(titleEl);
+      identity.appendChild(descEl);
+      headRow.appendChild(identity);
 
       const headerActions = doc.createElement('div');
       headerActions.className = 'ag-plugin-actions';
@@ -6847,12 +7009,14 @@
         });
         headerActions.appendChild(checkBtn);
       }
+      if (headerActions.children.length > 0) {
+        headRow.appendChild(headerActions);
+      }
+      heroWrap.appendChild(headRow);
+      body.appendChild(heroWrap);
 
-      const section = createSectionBlock(
-        '底座与自动更新',
-        '管理 Agy-Daddy 底座、DOM 锚点与插件的检查通道、自动更新策略与版本升级。',
-        headerActions
-      );
+      const section = doc.createElement('div');
+      section.className = 'ag-sv-section';
       section.id = 'agy-host-update-section';
 
       const card = doc.createElement('div');
@@ -6877,26 +7041,7 @@
         modeChip.textContent = installModeLabel;
         statusTitleRow.appendChild(modeChip);
       }
-      if (hostTarget?.status === 'available' || (state.updateInfo?.hasUpdate && state.updateInfo.latestVersion !== hostVersion)) {
-        const updChip = doc.createElement('span');
-        updChip.className = 'ag-chip';
-        updChip.id = 'agy-host-update-available-chip';
-        updChip.setAttribute('data-tone', 'warn');
-        updChip.textContent = `发现新版本 v${hostTarget?.latestVersion || state.updateInfo.latestVersion}`;
-        statusTitleRow.appendChild(updChip);
-      } else if (hostTarget?.status === 'blocked') {
-        const blkChip = doc.createElement('span');
-        blkChip.className = 'ag-chip';
-        blkChip.setAttribute('data-tone', 'danger');
-        blkChip.textContent = hostTarget.blockReason || '更新受阻';
-        statusTitleRow.appendChild(blkChip);
-      } else {
-        const okChip = doc.createElement('span');
-        okChip.className = 'ag-chip';
-        okChip.setAttribute('data-tone', availableCount > 0 ? 'warn' : 'muted');
-        okChip.textContent = availableCount > 0 ? `${availableCount} 项待更新` : '已是最新';
-        statusTitleRow.appendChild(okChip);
-      }
+      statusTitleRow.appendChild(createHostUpdateStatusChip(vm));
       statusInfo.appendChild(statusTitleRow);
 
       const statusDesc = doc.createElement('span');
@@ -7250,8 +7395,8 @@
       const queryLower = state.settingsSearchQuery.trim().toLowerCase();
       const triggerInstall = createInstallTrigger();
 
-      // 0. 底座与自动更新总览与配置卡片
-      renderHostUpdateSection(body, hasBridge);
+      // 0. 底座与自动更新紧凑入口（点击进入二级页面配置）
+      renderHostUpdateEntry(body, queryLower);
 
       // 1. 顶部常驻紧凑安装栏
       renderInstallBar(body, hasBridge, triggerInstall);
@@ -12303,6 +12448,7 @@
           state.activeSettingsTab = 'plugins';
           state.selectedPluginId = null;
           state.marketplaceOpen = false;
+          state.hostUpdateOpen = true;
           renderSettingsBody();
           void fetchUpdateStatus();
         });
@@ -12666,6 +12812,7 @@
             inspBtn.addEventListener('click', () => {
               state.activeSettingsTab = 'plugins';
               state.marketplaceOpen = false;
+              state.hostUpdateOpen = false;
               state.selectedPluginId = id;
               state.focusPluginDiagnostics = id;
               renderSettingsBody();
@@ -13253,6 +13400,10 @@
         renderMarketplaceView(body);
         return;
       }
+      if (state.hostUpdateOpen) {
+        renderHostUpdateDetailView(body);
+        return;
+      }
       if (state.safeModeViewOpen) {
         renderSafeModeDiagnosticsView(body);
         return;
@@ -13326,10 +13477,16 @@
       if (rawTab === 'diagnostics' || rawTab === 'health') {
         state.diagnosticsExpanded = true;
         state.marketplaceOpen = false;
+        state.hostUpdateOpen = false;
       } else if (rawTab === 'marketplace') {
         state.marketplaceOpen = true;
+        state.hostUpdateOpen = false;
+      } else if (rawTab === 'updates' || rawTab === 'update') {
+        state.hostUpdateOpen = true;
+        state.marketplaceOpen = false;
       } else if (explicitTab) {
         state.marketplaceOpen = false;
+        state.hostUpdateOpen = false;
       }
       if (opts && opts.pluginId !== undefined) {
         if (opts.pluginId && (!explicitTab || explicitTab === 'plugins')) {
@@ -13337,6 +13494,7 @@
           state.selectedPluginId = String(opts.pluginId);
           state.focusPluginDiagnostics = opts.focusDiagnostics ? String(opts.pluginId) : null;
           state.marketplaceOpen = false;
+          state.hostUpdateOpen = false;
         } else if (!opts.pluginId) {
           state.selectedPluginId = null;
           state.focusPluginDiagnostics = null;

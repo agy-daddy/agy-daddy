@@ -1,4 +1,16 @@
 {
   "unit.prefix": "Total",
-  "panel.title": "Cumulative Usage & 52-Week Heatmap"
+  "unit.other": "Other",
+  "panel.title": "Cumulative Usage & 52-Week Heatmap",
+  "popover.title": "Usage & Subscription",
+  "period.today": "Today",
+  "period.currentCycle": "Current Cycle",
+  "period.currentCycleShort": "Cycle",
+  "period.month": "Month",
+  "period.year": "Year",
+  "period.allTime": "All Time",
+  "cycle.weeklyLabel": "Weekly Quota",
+  "cycle.fiveHourLabel": "5H Window",
+  "cycle.resetPrefix": "Resets",
+  "cycle.fallbackNotice": "Live quota reset time unavailable; using current week (Mon 00:00)"
 }

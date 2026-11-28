@@ -9,8 +9,11 @@ function readUsageSummary(dataDir) {
   const dir = dataDir || process.env.AGY_DADDY_PLUGIN_DATA_DIR || '';
   const ledgerPath = dir ? path.join(dir, 'token-pricing-ledger.json') : '';
   const planPath = dir ? path.join(dir, 'custom-plan.json') : '';
+  const cyclePath = dir ? path.join(dir, 'cycle-window.json') : '';
+  const quotaSnapPath = dir ? path.resolve(dir, '..', 'agy-daddy.quota', 'latest-snapshot.json') : '';
   let calls = [];
   let plan = {};
+  let rawCycle = null;
   if (ledgerPath && fs.existsSync(ledgerPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
@@ -20,10 +23,33 @@ function readUsageSummary(dataDir) {
   if (planPath && fs.existsSync(planPath)) {
     try { plan = JSON.parse(fs.readFileSync(planPath, 'utf8')) || {}; } catch {}
   }
+  if (cyclePath && fs.existsSync(cyclePath)) {
+    try {
+      const parsedCycle = JSON.parse(fs.readFileSync(cyclePath, 'utf8'));
+      if (parsedCycle && typeof parsedCycle === 'object' && !parsedCycle.isFallback) {
+        rawCycle = {
+          endAtMs: parsedCycle.endAtMs,
+          durationMs: parsedCycle.durationMs,
+          windowKey: parsedCycle.windowKey,
+          source: parsedCycle.source || 'cached_window'
+        };
+      }
+    } catch {}
+  }
+  if (!rawCycle && quotaSnapPath && fs.existsSync(quotaSnapPath)) {
+    try {
+      const parsedSnap = JSON.parse(fs.readFileSync(quotaSnapPath, 'utf8'));
+      if (parsedSnap && typeof parsedSnap === 'object') {
+        rawCycle = { ...parsedSnap, source: 'cached_window' };
+      }
+    } catch {}
+  }
+  const periods = summarizeByPeriod(calls, Date.now(), plan, { cycleWindow: rawCycle });
   return {
     ok: true,
     ...summarizeApiCost(calls),
-    periods: summarizeByPeriod(calls, Date.now(), plan),
+    periods,
+    cycleWindow: periods.cycleWindow,
     plan
   };
 }

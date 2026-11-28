@@ -610,6 +610,356 @@ const SUBSCRIPTION_ACQUISITION_PRESETS = Object.freeze([
   { id: 'samsung_galaxy', name: 'Samsung Galaxy 设备指定活动', category: 'bundle_free', defaultPaid: 0, note: 'Galaxy 设备活动赠送权益' }
 ]);
 
+const VALID_PERIOD_KEYS = Object.freeze(['currentCycle', 'today', 'month', 'year', 'allTime']);
+const FIVE_HOUR_MS = 5 * 3600 * 1000;
+const WEEKLY_MS = 7 * 24 * 3600 * 1000;
+const MONTHLY_FALLBACK_MS = 30 * 24 * 3600 * 1000;
+const VALID_TIMESTAMP_MIN_MS = 946684800000;
+
+function normalizePeriodKey(val) {
+  return VALID_PERIOD_KEYS.includes(val) ? val : 'allTime';
+}
+
+function formatLocalMonthDayTime(ms) {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function buildCycleWindowMeta({ windowKey, source, isFallback, startAtMs, endAtMs, durationMs }) {
+  const dur = Number.isFinite(Number(durationMs)) && Number(durationMs) > 0
+    ? Number(durationMs)
+    : Math.max(1, endAtMs - startAtMs);
+  const startText = formatLocalMonthDayTime(startAtMs);
+  const endText = formatLocalMonthDayTime(endAtMs);
+  return {
+    windowKey,
+    source,
+    isFallback: Boolean(isFallback),
+    startAtMs,
+    endAtMs,
+    durationMs: dur,
+    startAtIso: new Date(startAtMs).toISOString(),
+    endAtIso: new Date(endAtMs).toISOString(),
+    rangeText: `${startText} ~ ${endText}`,
+    resetTimeText: isFallback ? null : endText
+  };
+}
+
+function buildFallbackWeekWindow(nowMs) {
+  const d = new Date(nowMs);
+  const day = d.getDay();
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const startDt = new Date(d.getFullYear(), d.getMonth(), d.getDate() - diffToMonday, 0, 0, 0, 0);
+  const startAtMs = startDt.getTime();
+  const endAtMs = startAtMs + WEEKLY_MS;
+  return buildCycleWindowMeta({
+    windowKey: 'fallback_week',
+    source: 'fallback_week',
+    isFallback: true,
+    startAtMs,
+    endAtMs,
+    durationMs: WEEKLY_MS
+  });
+}
+
+function parseResetTimestampMs(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw > 0 && raw < 1e11 ? raw * 1000 : raw;
+    return ms > VALID_TIMESTAMP_MIN_MS ? ms : null;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Date.parse(raw.trim());
+    return Number.isFinite(parsed) && parsed > VALID_TIMESTAMP_MIN_MS ? parsed : null;
+  }
+  return null;
+}
+
+function getPoolPriorityRank(identText) {
+  const text = String(identText || '').toLowerCase();
+  if (/3p|claude|sonnet|opus/i.test(text)) return 2;
+  if (/gemini_main|gemini(?!.*(argon|carbon))/i.test(text)) return 0;
+  return 1;
+}
+
+function normalizeCycleCandidate(bucket, poolRank, nowMs) {
+  if (!bucket || typeof bucket !== 'object') return null;
+  if (bucket.hasResetTime === false && !bucket.resetAtMs && !bucket.resetTime && !bucket.reset_time && !bucket.resetTimeIso) {
+    return null;
+  }
+  const resetAtMs = parseResetTimestampMs(
+    bucket.resetAtMs ?? bucket.resetTimeIso ?? bucket.resetTime ?? bucket.reset_time
+  );
+  if (!resetAtMs) return null;
+
+  const idStr = [
+    bucket.windowKey,
+    bucket.window,
+    bucket.bucketId,
+    bucket.id,
+    bucket.windowLabel
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const isWeeklyById = /weekly|week|7d/.test(idStr);
+  const diffMs = resetAtMs - nowMs;
+
+  let windowKey;
+  let durationMs;
+  if (isWeeklyById || diffMs > FIVE_HOUR_MS) {
+    windowKey = 'weekly';
+    durationMs = diffMs > WEEKLY_MS ? MONTHLY_FALLBACK_MS : WEEKLY_MS;
+  } else {
+    windowKey = '5h';
+    durationMs = FIVE_HOUR_MS;
+  }
+
+  return {
+    windowKey,
+    durationMs,
+    resetAtMs,
+    poolRank,
+    windowRank: windowKey === 'weekly' ? 0 : 1,
+    expiredRank: resetAtMs > nowMs ? 0 : 1
+  };
+}
+
+function extractQuotaSnapshotCandidates(input, nowMs) {
+  const candidates = [];
+  const pushBucket = (bucket, poolRank) => {
+    const norm = normalizeCycleCandidate(bucket, poolRank, nowMs);
+    if (norm) candidates.push(norm);
+  };
+
+  if (Array.isArray(input.pools)) {
+    for (const p of input.pools) {
+      if (!p || typeof p !== 'object') continue;
+      const poolRank = getPoolPriorityRank(`${p.id || ''} ${p.title || ''} ${p.sharedGroupKey || ''}`);
+      pushBucket(p.weeklyBucket, poolRank);
+      pushBucket(p.fiveHourBucket, poolRank);
+      if (Array.isArray(p.buckets)) {
+        for (const b of p.buckets) pushBucket(b, poolRank);
+      }
+    }
+  }
+
+  if (input.geminiWindows && typeof input.geminiWindows === 'object') {
+    pushBucket(input.geminiWindows.weekly, 0);
+    pushBucket(input.geminiWindows.fiveHour, 0);
+  }
+  if (input.gemini) pushBucket(input.gemini, 0);
+
+  if (input.claudeWindows && typeof input.claudeWindows === 'object') {
+    pushBucket(input.claudeWindows.weekly, 2);
+    pushBucket(input.claudeWindows.fiveHour, 2);
+  }
+  if (input.claude) pushBucket(input.claude, 2);
+
+  return candidates;
+}
+
+function extractRawRpcCandidates(input, nowMs) {
+  const candidates = [];
+  const qsRoot = input.quotaSummaryRes?.response || input.quotaSummaryRes || (Array.isArray(input.groups) ? input : null);
+  const rawGroups = Array.isArray(qsRoot?.groups) ? qsRoot.groups : [];
+  for (let i = 0; i < rawGroups.length; i++) {
+    const g = rawGroups[i] || {};
+    const poolRank = getPoolPriorityRank(`${g.groupId || ''} ${g.displayName || ''} ${g.name || ''}`);
+    const buckets = Array.isArray(g.buckets) ? g.buckets : [];
+    for (const b of buckets) {
+      if (!b || b.disabled) continue;
+      const norm = normalizeCycleCandidate(b, poolRank, nowMs);
+      if (norm) candidates.push(norm);
+    }
+  }
+
+  const usRoot = input.userStatusRes?.userStatus || input.userStatusRes || input.userStatus || null;
+  const rawConfigs = Array.isArray(usRoot?.cascadeModelConfigData?.clientModelConfigs)
+    ? usRoot.cascadeModelConfigData.clientModelConfigs
+    : [];
+  for (const c of rawConfigs) {
+    if (!c || typeof c !== 'object') continue;
+    const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
+    const disabled = Boolean(
+      c.disabled === true ||
+      c.enabled === false ||
+      c.unavailable === true ||
+      /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle)
+    );
+    if (disabled) continue;
+    const qi = c.quotaInfo || {};
+    const modelText = [c.modelId, c.model, c.label, c.modelOrAlias?.model].filter(Boolean).join(' ');
+    const poolRank = getPoolPriorityRank(modelText);
+    const norm = normalizeCycleCandidate({
+      resetTime: qi.resetTime || qi.reset_time,
+      windowKey: qi.windowKey || qi.window
+    }, poolRank, nowMs);
+    if (norm) candidates.push(norm);
+  }
+
+  return candidates;
+}
+
+function alignRollingWindow(anchorResetMs, durationMs, nowMs) {
+  let endAtMs = anchorResetMs;
+  if (endAtMs <= nowMs) {
+    const elapsedCycles = Math.floor((nowMs - endAtMs) / durationMs) + 1;
+    endAtMs = endAtMs + elapsedCycles * durationMs;
+  } else if (endAtMs - durationMs > nowMs) {
+    const backCycles = Math.ceil((endAtMs - nowMs) / durationMs) - 1;
+    if (backCycles > 0) {
+      endAtMs = endAtMs - backCycles * durationMs;
+    }
+  }
+  const startAtMs = endAtMs - durationMs;
+  return { startAtMs, endAtMs };
+}
+
+function resolveCycleWindow(input = {}, nowMs = Date.now()) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  if (!input || typeof input !== 'object') {
+    return buildFallbackWeekWindow(now);
+  }
+
+  // 形态 1：显式窗口对象 { startAtMs, endAtMs, windowKey?, source?, isFallback? }
+  const hasStart = Number.isFinite(Number(input.startAtMs));
+  const hasEnd = Number.isFinite(Number(input.endAtMs));
+  if (hasStart && hasEnd && Number(input.endAtMs) > Number(input.startAtMs)) {
+    const startAtMs = Number(input.startAtMs);
+    const endAtMs = Number(input.endAtMs);
+    const durationMs = Number.isFinite(Number(input.durationMs)) && Number(input.durationMs) > 0
+      ? Number(input.durationMs)
+      : (endAtMs - startAtMs);
+
+    if (input.isFallback === true) {
+      if (input.source === 'fallback_week' || input.windowKey === 'fallback_week') {
+        return buildFallbackWeekWindow(now);
+      }
+      return buildCycleWindowMeta({
+        windowKey: input.windowKey || 'fallback_week',
+        source: input.source || 'explicit',
+        isFallback: true,
+        startAtMs,
+        endAtMs,
+        durationMs
+      });
+    }
+
+    const isPersistedOrCached = input.source === 'cached_window' ||
+      input.source === 'quota_state' ||
+      input.source === 'quota_service' ||
+      input.source === 'rpc_direct';
+
+    if (!isPersistedOrCached || (input.source !== 'cached_window' && startAtMs <= now && now < endAtMs)) {
+      const inferredKey = durationMs <= FIVE_HOUR_MS + 60000 ? '5h' : 'weekly';
+      return buildCycleWindowMeta({
+        windowKey: input.windowKey || inferredKey,
+        source: input.source || 'explicit',
+        isFallback: false,
+        startAtMs,
+        endAtMs,
+        durationMs
+      });
+    }
+    // 持久化窗口已过期或需按锚点滚动对齐时，继续走形态 4 滚动对齐
+  }
+
+  // 形态 2：Quota 快照对象
+  const hasSnapshotShape = Array.isArray(input.pools) ||
+    Boolean(input.geminiWindows || input.claudeWindows || input.gemini || input.claude);
+  if (hasSnapshotShape) {
+    const candidates = extractQuotaSnapshotCandidates(input, now);
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => (
+        (a.windowRank - b.windowRank) ||
+        (a.expiredRank - b.expiredRank) ||
+        (a.poolRank - b.poolRank) ||
+        (a.resetAtMs - b.resetAtMs)
+      ));
+      const best = candidates[0];
+      const { startAtMs, endAtMs } = alignRollingWindow(best.resetAtMs, best.durationMs, now);
+      return buildCycleWindowMeta({
+        windowKey: best.windowKey,
+        source: input.source || 'quota_state',
+        isFallback: false,
+        startAtMs,
+        endAtMs,
+        durationMs: best.durationMs
+      });
+    }
+  }
+
+  // 形态 3：原始 RPC 对象 { quotaSummaryRes, userStatusRes }
+  const hasRpcShape = Boolean(input.quotaSummaryRes || input.userStatusRes || input.userStatus || Array.isArray(input.groups));
+  if (hasRpcShape) {
+    const candidates = extractRawRpcCandidates(input, now);
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => (
+        (a.windowRank - b.windowRank) ||
+        (a.expiredRank - b.expiredRank) ||
+        (a.poolRank - b.poolRank) ||
+        (a.resetAtMs - b.resetAtMs)
+      ));
+      const best = candidates[0];
+      const { startAtMs, endAtMs } = alignRollingWindow(best.resetAtMs, best.durationMs, now);
+      return buildCycleWindowMeta({
+        windowKey: best.windowKey,
+        source: input.source || 'rpc_direct',
+        isFallback: false,
+        startAtMs,
+        endAtMs,
+        durationMs: best.durationMs
+      });
+    }
+  }
+
+  // 形态 4：缓存窗口对象（含 endAtMs 且非兜底）
+  if (hasEnd && input.isFallback !== true) {
+    const anchorResetMs = Number(input.endAtMs);
+    if (anchorResetMs > VALID_TIMESTAMP_MIN_MS) {
+      const windowKey = input.windowKey === '5h' ? '5h' : 'weekly';
+      const durationMs = Number.isFinite(Number(input.durationMs)) && Number(input.durationMs) > 0
+        ? Number(input.durationMs)
+        : (windowKey === '5h' ? FIVE_HOUR_MS : WEEKLY_MS);
+      const { startAtMs, endAtMs } = alignRollingWindow(anchorResetMs, durationMs, now);
+      return buildCycleWindowMeta({
+        windowKey,
+        source: input.source || 'cached_window',
+        isFallback: false,
+        startAtMs,
+        endAtMs,
+        durationMs
+      });
+    }
+  }
+
+  return buildFallbackWeekWindow(now);
+}
+
+function resolveCallTimestampMs(call) {
+  if (!call || typeof call !== 'object') return 0;
+  if (call.timestamp !== undefined && call.timestamp !== null && call.timestamp !== '') {
+    const num = Number(call.timestamp);
+    if (Number.isFinite(num)) {
+      const ms = num > 0 && num < 1e11 ? num * 1000 : num;
+      if (ms > VALID_TIMESTAMP_MIN_MS) return ms;
+    }
+  }
+  const isoRaw = call.created_at || call.createdAt;
+  if (isoRaw) {
+    const parsed = Date.parse(isoRaw);
+    if (Number.isFinite(parsed) && parsed > VALID_TIMESTAMP_MIN_MS) return parsed;
+  }
+  if (call.date) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(call.date));
+    if (m) {
+      const ms = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0).getTime();
+      if (Number.isFinite(ms) && ms > VALID_TIMESTAMP_MIN_MS) return ms;
+    }
+  }
+  return 0;
+}
+
 function resolveCallDateStr(call) {
   if (call?.date && /^\d{4}-\d{2}-\d{2}/.test(String(call.date))) {
     return String(call.date).slice(0, 10);
@@ -621,18 +971,24 @@ function resolveCallDateStr(call) {
   return '';
 }
 
-function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}) {
+function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}, options = {}) {
   const list = Array.isArray(calls) ? calls : [];
   const todayStr = formatLocalDateStr(new Date(nowMs));
   const monthPrefix = todayStr.slice(0, 7);
   const yearPrefix = todayStr.slice(0, 4);
+  const cycleWindow = resolveCycleWindow(options?.cycleWindow || plan?.cycleWindow || null, nowMs);
 
+  const cycleCalls = [];
   const todayCalls = [];
   const monthCalls = [];
   const yearCalls = [];
   const yearMonths = new Set();
   const allMonths = new Set();
   for (const c of list) {
+    const ts = resolveCallTimestampMs(c);
+    if (ts >= cycleWindow.startAtMs && ts < cycleWindow.endAtMs) {
+      cycleCalls.push(c);
+    }
     const ds = resolveCallDateStr(c);
     if (ds.length >= 7) allMonths.add(ds.slice(0, 7));
     if (ds === todayStr) todayCalls.push(c);
@@ -643,6 +999,7 @@ function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}) {
     }
   }
 
+  const currentCycle = summarizeApiCost(cycleCalls);
   const today = summarizeApiCost(todayCalls);
   const month = summarizeApiCost(monthCalls);
   const year = summarizeApiCost(yearCalls);
@@ -675,12 +1032,17 @@ function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}) {
     };
   };
 
+  const cycleDays = Math.max(0, cycleWindow.durationMs / 86400000);
+  const currentCycleCostUsd = costInfo.isLegacyFlatPaid
+    ? costInfo.monthlyCostUsd
+    : (costInfo.monthlyCostUsd * (cycleDays / 30));
   const todayCostUsd = costInfo.isLegacyFlatPaid ? costInfo.monthlyCostUsd : (costInfo.monthlyCostUsd / 30);
   const monthCostUsd = costInfo.monthlyCostUsd;
   const yearCostUsd = costInfo.isLegacyFlatPaid ? costInfo.monthlyCostUsd : (costInfo.monthlyCostUsd * yearActiveMonths);
   const allTimeCostUsd = costInfo.isLegacyFlatPaid ? costInfo.monthlyCostUsd : (costInfo.monthlyCostUsd * allTimeActiveMonths);
 
   const roiByPeriod = {
+    currentCycle: buildPeriodRoi(currentCycle.totalUsd, currentCycleCostUsd, 1),
     today: buildPeriodRoi(today.totalUsd, todayCostUsd, 1),
     month: buildPeriodRoi(month.totalUsd, monthCostUsd, 1),
     year: buildPeriodRoi(year.totalUsd, yearCostUsd, yearActiveMonths),
@@ -689,6 +1051,8 @@ function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}) {
 
   return {
     todayDate: todayStr,
+    cycleWindow,
+    currentCycle,
     today,
     month,
     year,
@@ -699,7 +1063,6 @@ function summarizeByPeriod(calls = [], nowMs = Date.now(), plan = {}) {
 }
 
 const LEDGER_VERSION = '1.2.0';
-const VALID_TIMESTAMP_MIN_MS = 946684800000;
 
 function normalizeCallSource(source) {
   return String(source || '').trim().toLowerCase() === 'cli' ? 'cli' : 'desktop';
@@ -1049,6 +1412,10 @@ class LedgerManager {
 
 module.exports = {
   LEDGER_VERSION,
+  VALID_PERIOD_KEYS,
+  FIVE_HOUR_MS,
+  WEEKLY_MS,
+  MONTHLY_FALLBACK_MS,
   USD_TO_CNY_RATE,
   CURRENCY_SYMBOLS,
   SUBSCRIPTION_REGIONS_PRESET,
@@ -1061,6 +1428,7 @@ module.exports = {
   isGeminiModel,
   filterCallsBySource,
   normalizeUltraSubTier,
+  normalizePeriodKey,
   detectSubscriptionFromUserStatus,
   normalizeModelId,
   resolveModelBucketKey,
@@ -1069,6 +1437,8 @@ module.exports = {
   mergeCallEntries,
   calculateRequestApiCost,
   summarizeApiCost,
+  resolveCallTimestampMs,
+  resolveCycleWindow,
   summarizeByPeriod,
   buildHeatmap52Weeks,
   LedgerManager

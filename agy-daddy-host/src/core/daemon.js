@@ -64,6 +64,22 @@ const {
   rollbackMcpConfig
 } = require('./customizations');
 const { createWorkspaceOrgRuntime } = require('./workspace-org');
+const {
+  VALID_UPDATE_CHANNELS,
+  VALID_AUTO_UPDATE_MODES,
+  VALID_CHECK_INTERVALS,
+  VALID_SOURCE_PREFERENCES,
+  normalizeNpmRegistryUrl,
+  getCachedUpdateStatus,
+  checkUpdates
+} = require('./update-checker');
+const {
+  readUpdateHistory,
+  applyUpdates,
+  rollbackUpdate,
+  setPluginPinned,
+  UpdateScheduler
+} = require('./updater');
 
 const HOST_ROOT = path.resolve(__dirname, '..', '..');
 const WORKER_SCRIPT = path.resolve(__dirname, 'plugin-worker.js');
@@ -77,6 +93,11 @@ const HOST_CONTROL_ROUTE_ALLOWLIST = Object.freeze([
   '/host/plugins/install',
   '/host/plugins/uninstall',
   '/host/plugins/rollback',
+  '/host/updates/status',
+  '/host/updates/check',
+  '/host/updates/apply',
+  '/host/updates/rollback',
+  '/host/updates/pin',
   '/host/antigravity/relaunch',
   '/host/reload',
   '/host/reload-all',
@@ -172,7 +193,12 @@ const DEFAULT_HOST_SETTINGS = Object.freeze({
   showTopbarEntry: true,
   injectNativeSettings: true,
   autoSyncNativeOnInstall: true,
-  hideTrayIcon: false
+  hideTrayIcon: false,
+  updateChannel: 'stable',
+  autoUpdateMode: 'notify',
+  updateCheckInterval: '6h',
+  updateSourcePreference: 'auto',
+  npmRegistryUrl: ''
 });
 
 const VALID_THEME_MODES = new Set(['auto', 'light', 'dark']);
@@ -270,6 +296,26 @@ function normalizeHostSettings(patch = {}, base = DEFAULT_HOST_SETTINGS) {
     ? Boolean(srcPatch.hideTrayIcon)
     : (srcBase.hideTrayIcon !== undefined ? Boolean(srcBase.hideTrayIcon) : DEFAULT_HOST_SETTINGS.hideTrayIcon);
 
+  const rawChannel = srcPatch.updateChannel !== undefined ? srcPatch.updateChannel : srcBase.updateChannel;
+  const updateChannel = VALID_UPDATE_CHANNELS.has(rawChannel) ? rawChannel : DEFAULT_HOST_SETTINGS.updateChannel;
+
+  const rawAutoMode = srcPatch.autoUpdateMode !== undefined ? srcPatch.autoUpdateMode : srcBase.autoUpdateMode;
+  const autoUpdateMode = VALID_AUTO_UPDATE_MODES.has(rawAutoMode) ? rawAutoMode : DEFAULT_HOST_SETTINGS.autoUpdateMode;
+
+  const rawCheckInterval = srcPatch.updateCheckInterval !== undefined ? srcPatch.updateCheckInterval : srcBase.updateCheckInterval;
+  const updateCheckInterval = VALID_CHECK_INTERVALS.has(rawCheckInterval) ? rawCheckInterval : DEFAULT_HOST_SETTINGS.updateCheckInterval;
+
+  const rawSourcePref = srcPatch.updateSourcePreference !== undefined ? srcPatch.updateSourcePreference : srcBase.updateSourcePreference;
+  const updateSourcePreference = VALID_SOURCE_PREFERENCES.has(rawSourcePref) ? rawSourcePref : DEFAULT_HOST_SETTINGS.updateSourcePreference;
+
+  let npmRegistryUrl = DEFAULT_HOST_SETTINGS.npmRegistryUrl;
+  if (srcPatch.npmRegistryUrl !== undefined) {
+    const rawUrl = String(srcPatch.npmRegistryUrl || '').trim();
+    npmRegistryUrl = rawUrl === '' ? '' : (normalizeNpmRegistryUrl(rawUrl) || normalizeNpmRegistryUrl(srcBase.npmRegistryUrl));
+  } else if (typeof srcBase.npmRegistryUrl === 'string') {
+    npmRegistryUrl = normalizeNpmRegistryUrl(srcBase.npmRegistryUrl);
+  }
+
   return {
     themeMode,
     heatPreset,
@@ -280,7 +326,12 @@ function normalizeHostSettings(patch = {}, base = DEFAULT_HOST_SETTINGS) {
     showTopbarEntry,
     injectNativeSettings,
     autoSyncNativeOnInstall,
-    hideTrayIcon
+    hideTrayIcon,
+    updateChannel,
+    autoUpdateMode,
+    updateCheckInterval,
+    updateSourcePreference,
+    npmRegistryUrl
   };
 }
 
@@ -446,6 +497,12 @@ class AgyDaddyDaemon extends EventEmitter {
     this.running = false;
     this.lockAcquired = false;
     this.workspaceOrg = options.workspaceOrg || createWorkspaceOrgRuntime();
+    this._activeUpdateWatchdogs = new Map();
+    this.updateScheduler = options.updateScheduler || new UpdateScheduler({
+      ...options,
+      stateDir: this.stateDir,
+      daemon: this
+    });
   }
 
   getHostHealthPlugins() {
@@ -555,7 +612,52 @@ class AgyDaddyDaemon extends EventEmitter {
     if (!opts.skipTraySync) {
       void this.syncTrayVisibility(next).catch(() => {});
     }
+    const changedKeys = computeChangedKeys(current, next);
+    if (changedKeys.some((k) => ['updateChannel', 'autoUpdateMode', 'updateCheckInterval', 'updateSourcePreference', 'npmRegistryUrl'].includes(k))) {
+      this.updateScheduler?.reschedule?.();
+      this.publishUpdatesState();
+    }
     return { ok: true, values: next };
+  }
+
+  getUpdatesStatus() {
+    const cached = getCachedUpdateStatus({
+      ...this.options,
+      stateDir: this.stateDir,
+      hostSettings: this.getHostSettings()
+    });
+    return {
+      ...cached,
+      scheduler: this.updateScheduler?.getStatus?.() || {
+        enabled: false,
+        runningCheck: false,
+        applyingUpdate: false,
+        lastCheckedAt: cached.lastCheckedAt || null,
+        nextCheckAt: null
+      },
+      recentHistory: readUpdateHistory({ stateDir: this.stateDir, limit: 10 })
+    };
+  }
+
+  publishUpdatesState(statusOverride = null) {
+    try {
+      const status = statusOverride && statusOverride.summary ? statusOverride : this.getUpdatesStatus();
+      const payload = {
+        summary: status.summary,
+        scheduler: status.scheduler || this.updateScheduler?.getStatus?.() || null,
+        hostVersion: status.hostVersion,
+        anchorsVersion: status.anchorsVersion,
+        lastCheckedAt: status.lastCheckedAt || null,
+        updatedAt: Date.now()
+      };
+      this.bus.setState('agy-daddy.host', 'state:host.updates@1', payload);
+      if (typeof this.trayManager?.setUpdatesSummary === 'function') {
+        this.trayManager.setUpdatesSummary(status.summary);
+      }
+      return payload;
+    } catch {
+      return null;
+    }
   }
 
   loadPluginSettingsSchema(pluginId, manifestOverride = null, installPathOverride = null) {
@@ -1660,8 +1762,19 @@ class AgyDaddyDaemon extends EventEmitter {
     const items = Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
     const catalog = this.listPluginCatalog(new Set(byId.keys()), registryById);
     const marketStats = this.marketplaceStats.getCachedStatsForPlugins([...items, ...catalog]);
+    let cachedUpdates = null;
+    try {
+      cachedUpdates = getCachedUpdateStatus({
+        ...this.options,
+        stateDir: this.stateDir,
+        hostSettings: this.getHostSettings()
+      });
+    } catch {}
     for (const item of items) {
       item.marketStats = marketStats[item.id] || null;
+      const updTarget = cachedUpdates?.targets?.[item.id] || null;
+      item.pinned = Boolean(updTarget?.pinned);
+      item.updateInfo = updTarget;
     }
     for (const cat of catalog) {
       cat.marketStats = marketStats[cat.id] || null;
@@ -1671,6 +1784,13 @@ class AgyDaddyDaemon extends EventEmitter {
       plugins: items,
       catalog,
       marketStats,
+      updatesSummary: cachedUpdates?.summary || {
+        availableCount: 0,
+        pluginAvailableCount: 0,
+        hostAvailable: false,
+        registryAvailable: false,
+        blockedCount: 0
+      },
       hostRestartNotice: this.getHostRestartNotice(),
       proxyFallback: this.getSessionProxyFallbackStatus()
     };
@@ -2218,7 +2338,92 @@ class AgyDaddyDaemon extends EventEmitter {
       if (!pluginId) throw new Error('pluginId is required');
       const rbRes = rollbackPlugin(pluginId, this.options);
       const reload = await this.reloadPlugin(pluginId);
+      this.publishUpdatesState();
       return { ...rbRes, reload, ...this.buildPluginManagePayload() };
+    });
+    this.bridge.registerHostRoute('/host/updates/status', async () => {
+      return this.getUpdatesStatus();
+    });
+    this.bridge.registerHostRoute('/host/updates/check', async (body) => {
+      const res = await checkUpdates({
+        ...this.options,
+        stateDir: this.stateDir,
+        hostSettings: this.getHostSettings(),
+        targets: body?.targets !== undefined ? body.targets : 'all',
+        channel: body?.channel,
+        sourcePreference: body?.sourcePreference,
+        npmRegistryUrl: body?.npmRegistryUrl,
+        forceRefresh: body?.forceRefresh !== false,
+        trigger: body?.trigger || 'ui'
+      });
+      this.publishUpdatesState(res);
+      const status = this.getUpdatesStatus();
+      return {
+        ...status,
+        ok: res.ok,
+        checkedNow: Boolean(res.checkedNow),
+        debounced: Boolean(res.debounced),
+        errors: Array.isArray(res.errors) ? res.errors : []
+      };
+    });
+    this.bridge.registerHostRoute('/host/updates/apply', async (body) => {
+      const res = await applyUpdates(
+        {
+          targets: body?.targets !== undefined ? body.targets : 'all',
+          channel: body?.channel,
+          sourcePreference: body?.sourcePreference,
+          npmRegistryUrl: body?.npmRegistryUrl,
+          grantedPermissions: body?.grantedPermissions,
+          approveAllPermissions: Boolean(body?.approveAllPermissions),
+          allowMajor: Boolean(body?.allowMajor),
+          dryRun: Boolean(body?.dryRun),
+          yes: Boolean(body?.yes),
+          trigger: body?.trigger || 'ui'
+        },
+        {
+          ...this.options,
+          stateDir: this.stateDir,
+          hostSettings: this.getHostSettings(),
+          daemon: this
+        }
+      );
+      this.publishUpdatesState();
+      if (res.needsPermissionConfirm || res.needsMajorConfirm) {
+        return res;
+      }
+      return {
+        ...res,
+        ...this.buildPluginManagePayload()
+      };
+    });
+    this.bridge.registerHostRoute('/host/updates/rollback', async (body) => {
+      const target = String(body?.target || '').trim();
+      if (!target) throw new Error('target is required');
+      const rbRes = await rollbackUpdate(
+        { target, trigger: body?.trigger || 'ui' },
+        {
+          ...this.options,
+          stateDir: this.stateDir,
+          hostSettings: this.getHostSettings(),
+          daemon: this
+        }
+      );
+      this.publishUpdatesState();
+      return {
+        ...rbRes,
+        ...this.buildPluginManagePayload()
+      };
+    });
+    this.bridge.registerHostRoute('/host/updates/pin', async (body) => {
+      const pluginId = String(body?.pluginId || '').trim();
+      if (!pluginId) throw new Error('pluginId is required');
+      const pinned = body?.pinned !== false;
+      const pinRes = setPluginPinned(pluginId, pinned, { ...this.options, stateDir: this.stateDir });
+      this.publishUpdatesState();
+      return {
+        ...pinRes,
+        ...this.buildPluginManagePayload()
+      };
     });
     this.bridge.registerHostRoute('/host/reload', async (body) => {
       if (!body?.pluginId) throw new Error('pluginId is required');
@@ -2949,6 +3154,9 @@ class AgyDaddyDaemon extends EventEmitter {
         activePlugins: Array.from(this.activePlugins.keys())
       });
 
+      this.publishUpdatesState();
+      this.updateScheduler?.start?.();
+
       return { ...bridgeInfo, activationErrors };
     } catch (err) {
       await this.stop();
@@ -2958,6 +3166,13 @@ class AgyDaddyDaemon extends EventEmitter {
 
   async stop() {
     this.running = false;
+    this.updateScheduler?.stop?.();
+    if (this._activeUpdateWatchdogs instanceof Map) {
+      for (const cleanup of Array.from(this._activeUpdateWatchdogs.values())) {
+        try { cleanup(); } catch {}
+      }
+      this._activeUpdateWatchdogs.clear();
+    }
     this.health.reset();
     try {
       await this.injector.disposeAll();

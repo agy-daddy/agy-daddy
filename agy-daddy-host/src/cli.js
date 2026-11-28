@@ -6,7 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { spawnSync, spawn } = require('child_process');
 const HOST_PKG_VERSION = require('../package.json').version;
-const { getStateDir, isTestMode } = require('./core/paths');
+const { getStateDir, getHostSettingsPath, isTestMode } = require('./core/paths');
 const { resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./core/cdp');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./core/storage');
 const { runDoctor, exportDiagnosticBundle } = require('./core/doctor');
@@ -25,7 +25,7 @@ const {
   uninstallPlugin,
   listInstalledPlugins
 } = require('./core/installer');
-const { AgyDaddyDaemon, isPidAlive } = require('./core/daemon');
+const { AgyDaddyDaemon, DEFAULT_HOST_SETTINGS, normalizeHostSettings, isPidAlive } = require('./core/daemon');
 const {
   installAutoStart,
   removeAutoStart,
@@ -39,9 +39,11 @@ const {
 const { createLiveWatchdog } = require('./core/live-watchdog');
 const { createLauncherController, readLauncherLock } = require('./core/launcher');
 const { auditUpstreamsAndBaselines } = require('./core/upstreams');
+const { checkUpdates } = require('./core/update-checker');
+const { applyUpdates, rollbackUpdate, setPluginPinned } = require('./core/updater');
 
 const BOOLEAN_FLAGS = new Set([
-  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native', 'tray', 'launch-app', 'dock-icon', 'no-takeover', 'official'
+  'json', 'dry-run', 'force', 'yes', 'y', 'help', 'copy', 'once', 'skip-inject', 'skip-cdp', 'reset-token', 'no-open', 'no-auto-relaunch', 'replace', 'rollback-rules', 'no-native', 'tray', 'launch-app', 'dock-icon', 'no-takeover', 'official', 'check', 'rollback', 'allow-major', 'all', 'off'
 ]);
 
 function openBrowserUrl(url) {
@@ -136,6 +138,58 @@ function stopRunningDaemon(stateDir = getStateDir()) {
   const lock = safeReadJsonSync(lockPath, null, { quarantineCorrupt: false }).data;
   const pid = Number(lock?.pid);
   return stopProcessByPid(pid, 2000);
+}
+
+function readCliHostSettings() {
+  const raw = safeReadJsonSync(getHostSettingsPath(), null, { quarantineCorrupt: false }).data;
+  return normalizeHostSettings(raw || {}, DEFAULT_HOST_SETTINGS);
+}
+
+async function runCliApplyWithConfirm(request, cliOpts, flags) {
+  const res = await applyUpdates(request, cliOpts);
+  if ((res.needsPermissionConfirm || res.needsMajorConfirm) && process.stdin.isTTY && process.stdout.isTTY && !flags.json) {
+    const confirmations = Array.isArray(res.confirmations) ? res.confirmations : [];
+    for (const item of confirmations) {
+      console.error(`⚠️ ${item.displayName || item.pluginId}: ${item.fromVersion} → ${item.toVersion}`);
+      if (item.addedPermissions?.length) {
+        console.error(`   新增权限: ${item.addedPermissions.join(', ')}`);
+      }
+      if (item.isMajor) {
+        console.error('   注意: 此次为跨 Major 大版本升级');
+      }
+    }
+    const agreed = await promptConfirm('确认继续执行上述更新并授予新增权限? [y/N] ');
+    if (!agreed) {
+      const cancelled = { ok: false, cancelled: true, confirmations };
+      console.log(JSON.stringify(cancelled, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    const grantedMap = {};
+    for (const item of confirmations) {
+      if (item.pluginId && item.pluginId !== 'host' && Array.isArray(item.addedPermissions) && item.addedPermissions.length > 0) {
+        grantedMap[item.pluginId] = item.addedPermissions;
+      }
+    }
+    const retried = await applyUpdates({
+      ...request,
+      grantedPermissions: { ...(request.grantedPermissions || {}), ...grantedMap },
+      allowMajor: true,
+      yes: true
+    }, cliOpts);
+    console.log(JSON.stringify(retried, null, 2));
+    if (!retried.ok) process.exitCode = 1;
+    return;
+  }
+
+  console.log(JSON.stringify(res, null, 2));
+  if (res.needsPermissionConfirm || res.needsMajorConfirm) {
+    process.exitCode = 2;
+    return;
+  }
+  if (!res.ok) {
+    process.exitCode = 1;
+  }
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -408,10 +462,60 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (cmd === 'update') {
-    const repoDir = typeof flags.repo === 'string' ? flags.repo : path.resolve(__dirname, '..');
-    const res = checkAndPullGitUpdate(repoDir, { dryRun: Boolean(flags['dry-run']) });
-    console.log(JSON.stringify(res, null, 2));
-    if (!res.ok) process.exitCode = 1;
+    if (typeof flags.repo === 'string') {
+      const res = checkAndPullGitUpdate(flags.repo, { dryRun: Boolean(flags['dry-run']) });
+      console.log(JSON.stringify(res, null, 2));
+      if (!res.ok) process.exitCode = 1;
+      return;
+    }
+    const hostSettings = readCliHostSettings();
+    const registryUrl = typeof flags.registry === 'string' ? flags.registry : undefined;
+    const channel = typeof flags.channel === 'string' ? flags.channel : undefined;
+    const sourcePreference = typeof flags.source === 'string' ? flags.source : undefined;
+    const target = typeof flags.target === 'string' ? flags.target : 'all';
+
+    if (flags.rollback) {
+      const rbTarget = typeof flags.target === 'string' ? flags.target : 'host';
+      const rbRes = await rollbackUpdate({ target: rbTarget, trigger: 'cli' }, { hostSettings });
+      console.log(JSON.stringify(rbRes, null, 2));
+      if (!rbRes.ok) process.exitCode = 1;
+      return;
+    }
+
+    if (flags.check) {
+      const chkRes = await checkUpdates({
+        targets: target,
+        channel,
+        sourcePreference,
+        npmRegistryUrl: registryUrl,
+        hostSettings,
+        forceRefresh: true,
+        ignoreDebounce: true,
+        trigger: 'cli'
+      });
+      console.log(JSON.stringify(chkRes, null, 2));
+      if (!chkRes.ok) process.exitCode = 1;
+      return;
+    }
+
+    const grantedPermissionsList = typeof flags.grant === 'string'
+      ? flags.grant.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    await runCliApplyWithConfirm(
+      {
+        targets: target,
+        channel,
+        sourcePreference,
+        npmRegistryUrl: registryUrl,
+        grantedPermissionsList,
+        allowMajor: Boolean(flags['allow-major'] || flags.yes || flags.y),
+        dryRun: Boolean(flags['dry-run']),
+        yes: Boolean(flags.yes || flags.y),
+        trigger: 'cli'
+      },
+      { hostSettings },
+      flags
+    );
     return;
   }
 
@@ -519,7 +623,51 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (sub === 'rollback') {
       if (!target) throw new Error('Usage: agy-daddy plugin rollback <pluginId>');
-      console.log(JSON.stringify(rollbackPlugin(target), null, 2));
+      const rbRes = await rollbackUpdate({ target, trigger: 'cli' }, { hostSettings: readCliHostSettings() });
+      console.log(JSON.stringify(rbRes, null, 2));
+      if (!rbRes.ok) process.exitCode = 1;
+      return;
+    }
+    if (sub === 'check') {
+      const hostSettings = readCliHostSettings();
+      const chkRes = await checkUpdates({
+        targets: target || 'plugins',
+        channel: typeof flags.channel === 'string' ? flags.channel : undefined,
+        sourcePreference: typeof flags.source === 'string' ? flags.source : undefined,
+        npmRegistryUrl: typeof flags.registry === 'string' ? flags.registry : undefined,
+        hostSettings,
+        forceRefresh: true,
+        ignoreDebounce: true,
+        trigger: 'cli'
+      });
+      console.log(JSON.stringify(chkRes, null, 2));
+      if (!chkRes.ok) process.exitCode = 1;
+      return;
+    }
+    if (sub === 'update') {
+      const hostSettings = readCliHostSettings();
+      const targets = flags.all || !target ? 'plugins' : target;
+      await runCliApplyWithConfirm(
+        {
+          targets,
+          channel: typeof flags.channel === 'string' ? flags.channel : undefined,
+          sourcePreference: typeof flags.source === 'string' ? flags.source : undefined,
+          npmRegistryUrl: typeof flags.registry === 'string' ? flags.registry : undefined,
+          grantedPermissionsList: grantedPermissions,
+          allowMajor: Boolean(flags['allow-major'] || flags.yes || flags.y),
+          dryRun: Boolean(flags['dry-run']),
+          yes: Boolean(flags.yes || flags.y),
+          trigger: 'cli'
+        },
+        { hostSettings },
+        flags
+      );
+      return;
+    }
+    if (sub === 'pin') {
+      if (!target) throw new Error('Usage: agy-daddy plugin pin <pluginId> [--off]');
+      const pinRes = setPluginPinned(target, !Boolean(flags.off));
+      console.log(JSON.stringify(pinRes, null, 2));
       return;
     }
     if (sub === 'native') {
@@ -876,9 +1024,10 @@ async function main(argv = process.argv.slice(2)) {
   agy-daddy install-launcher [--dir <path>]           生成桌面端 Agy-Daddy Launcher 启动器与图标
   agy-daddy remote [--reset-token]                    查看手机远程链接或轮换配对令牌
   agy-daddy web [--port <n>] [--no-open] [--reset-token] 查看或打开 PC Web 工作台链接
-  agy-daddy update [--dry-run] | upstreams [--json]   拉取更新与上游基线漂移追踪
+  agy-daddy update [--check] [--target all|host|registry|plugins|<id>] [--channel stable|next] [--source auto|npm|github] [--registry <url>] [--rollback] [--yes] [--dry-run] [--json]
+  agy-daddy upstreams [--json]                         追踪上游基线漂移
   agy-daddy run <commandId>                           执行已安装插件贡献命令
-  agy-daddy plugin list|install|link|enable|disable|rollback|native|uninstall|audit
+  agy-daddy plugin list|install|check|update|pin|link|enable|disable|rollback|native|uninstall|audit
   agy-daddy plugin install --official [--tag latest|next] [--registry <url>]
   agy-daddy daemon start|stop|status                  管理 agy-daddyd 单实例守护进程
   agy-daddy dev test-all|link-all|clone-all|capture-fixture|smoke`);

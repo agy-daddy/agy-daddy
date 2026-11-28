@@ -11,6 +11,8 @@ const { fetchHttpJsonLoopback, resolveActiveCdpTarget, inspectAntigravityHostPro
 const { loadAnchorsRegistry } = require('./anchors');
 const { listInstalledPlugins, readManifestFromDir } = require('./installer');
 const { HostHealth } = require('./health-snapshot');
+const { detectHostInstallMode, readUpdateState, getCachedUpdateStatus } = require('./update-checker');
+const { readUpdateHistory } = require('./updater');
 
 function sanitizeString(raw, homeDir, extraSecrets = []) {
   let s = String(raw);
@@ -164,7 +166,33 @@ async function runDoctor(options = {}) {
     daemon: {
       lockPresent: Boolean(daemonLock),
       lock: daemonLock
-    }
+    },
+    updates: (() => {
+      try {
+        const installInfo = detectHostInstallMode({ ...options, stateDir });
+        const updState = readUpdateState({ ...options, stateDir });
+        const cachedStatus = getCachedUpdateStatus({ ...options, stateDir });
+        const skippedFailedVersions = {};
+        for (const [tid, t] of Object.entries(updState.targets || {})) {
+          if (t?.lastFailedVersion) skippedFailedVersions[tid] = t.lastFailedVersion;
+        }
+        return {
+          installMode: installInfo.installMode,
+          writable: installInfo.writable,
+          dirtyWorktree: installInfo.dirtyWorktree,
+          hostVersion: installInfo.hostVersion,
+          anchorsVersion: installInfo.anchorsVersion,
+          lastCheckedAt: updState.lastCheckedAt || null,
+          channel: updState.channel || 'stable',
+          rateLimits: updState.rateLimits || {},
+          skippedFailedVersions,
+          summary: cachedStatus.summary,
+          recentHistory: readUpdateHistory({ stateDir, limit: 10 })
+        };
+      } catch (err) {
+        return { error: err?.message || String(err) };
+      }
+    })()
   };
 }
 

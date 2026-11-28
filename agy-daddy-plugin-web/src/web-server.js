@@ -2179,6 +2179,118 @@ class WebServer {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/v1/host/updates') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const result = await proxy.getUpdatesStatus();
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/check') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.checkUpdates(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.summary || null,
+              scheduler: result?.scheduler || null,
+              updatedAt: Date.now()
+            }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/apply') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.applyUpdates(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-apply', updatedAt: Date.now() }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/rollback') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.rollbackUpdate(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.updatesSummary || result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-rollback', updatedAt: Date.now() }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/v1/host/updates/pin') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const result = await proxy.pinPluginUpdate(body);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              summary: result?.updatesSummary || result?.summary || null,
+              updatedAt: Date.now()
+            }
+          });
+          this.broadcast('state.patch', {
+            key: 'state:host.plugins@1',
+            value: { action: 'updates-pin', updatedAt: Date.now() }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/v1/host/update-settings') {
+        const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
+        const body = await readJsonBody(req, this.maxBodyBytes);
+        const patch = ('patch' in (body || {}))
+          ? extractPatch(body)
+          : (isPlainObject(body?.values) ? body.values : (isPlainObject(body) && Object.keys(body).length > 0 ? body : null));
+        if (!patch) {
+          sendJson(res, 400, { ok: false, error: 'INVALID_SETTINGS_PATCH' });
+          return;
+        }
+        const result = await proxy.setHostUpdateSettings(patch);
+        if (result?.ok !== false) {
+          this.broadcast('state.patch', {
+            key: 'state:host.updates@1',
+            value: {
+              settings: result?.values || patch,
+              updatedAt: Date.now()
+            }
+          });
+        }
+        sendActionResult(res, result);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/v1/topbar') {
         const proxy = this._requireDep(this.hostProxy, 'HOST_PROXY');
         const result = await proxy.getTopbar();

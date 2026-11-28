@@ -15,6 +15,9 @@ const { createMockHostHarness } = require(path.join(HOST_ROOT, 'sdk', 'mock-harn
 const { PluginDataStore } = require(path.join(HOST_ROOT, 'src', 'core', 'storage'));
 const {
   LEDGER_VERSION,
+  VALID_PERIOD_KEYS,
+  FIVE_HOUR_MS,
+  WEEKLY_MS,
   SUBSCRIPTION_ACQUISITION_PRESETS,
   SUBSCRIPTION_REGIONS_PRESET,
   findRegionPreset,
@@ -22,11 +25,14 @@ const {
   resolveSubscriptionCost,
   isGeminiModel,
   filterCallsBySource,
+  normalizePeriodKey,
   detectSubscriptionFromUserStatus,
   normalizeModelId,
   resolveModelBucketKey,
   calculateRequestApiCost,
   summarizeApiCost,
+  resolveCallTimestampMs,
+  resolveCycleWindow,
   summarizeByPeriod,
   buildHeatmap52Weeks,
   LedgerManager
@@ -38,7 +44,15 @@ const {
   extractModelSelectionFromText
 } = require('../src/history-backfill');
 const { renderHeatmapSvg } = require('../src/heatmap-svg');
-const { getLocalizedAutoLabel, formatTierChipLabel, formatUnitText } = require('../src/renderer');
+const {
+  VALID_PERIOD_KEYS: RENDERER_VALID_PERIOD_KEYS,
+  normalizePeriodKey: normalizeRendererPeriodKey,
+  getLocalizedAutoLabel,
+  formatTierChipLabel,
+  formatUnitText
+} = require('../src/renderer');
+const { normalizePeriodKey: normalizeNodePeriodKey } = require('../src/node');
+const { readUsageSummary } = require('../native/mcp-server');
 
 test('计价费率阶梯、区域订阅换算、Gemini/其他模型拆分、IDE/CLI 过滤与损坏账本 fail-closed', async () => {
   // gemini-4-carbon 11月 ($2/$10/$0.1) vs 12月涨价 ($4/$20/$0.2)
@@ -968,6 +982,439 @@ test('extractModelSelectionFromText、scanTranscriptBackfill 与 repairLedgerFro
     assert.equal(fixed5.costUSD, 3);
   } finally {
     fs.rmSync(tmpCliBrain, { recursive: true, force: true });
+    await harness.cleanup();
+  }
+});
+
+test('currentCycle 周期窗口解析：weekly/5h 优先级、假 5h 修正、滚动对齐、L4 自然周兜底与配置字典校验', () => {
+  // 1. 枚举白名单、normalizePeriodKey、settings.schema.json 与 locales 契约校验
+  const expectedKeys = ['currentCycle', 'today', 'month', 'year', 'allTime'];
+  assert.deepEqual([...VALID_PERIOD_KEYS], expectedKeys);
+  assert.deepEqual([...RENDERER_VALID_PERIOD_KEYS], expectedKeys);
+  for (const fn of [normalizePeriodKey, normalizeNodePeriodKey, normalizeRendererPeriodKey]) {
+    for (const k of expectedKeys) assert.equal(fn(k), k);
+    assert.equal(fn('invalid_period'), 'allTime');
+    assert.equal(fn(undefined), 'allTime');
+    assert.equal(fn('thisWeek'), 'allTime');
+  }
+
+  const schema = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'settings.schema.json'), 'utf8'));
+  const activePeriodField = schema.fields.find((f) => f.key === 'activePeriod');
+  assert.ok(activePeriodField);
+  assert.equal(activePeriodField.default, 'allTime');
+  assert.deepEqual(activePeriodField.options.map((o) => o.value), ['today', 'currentCycle', 'month', 'year', 'allTime']);
+
+  const zhDict = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'locales', 'zh-CN.json'), 'utf8'));
+  const enDict = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'locales', 'en.json'), 'utf8'));
+  for (const key of [
+    'unit.prefix', 'unit.other', 'panel.title', 'popover.title',
+    'period.today', 'period.currentCycle', 'period.currentCycleShort', 'period.month', 'period.year', 'period.allTime',
+    'cycle.weeklyLabel', 'cycle.fiveHourLabel', 'cycle.resetPrefix', 'cycle.fallbackNotice'
+  ]) {
+    assert.ok(typeof zhDict[key] === 'string' && zhDict[key].length > 0, `zh-CN missing ${key}`);
+    assert.ok(typeof enDict[key] === 'string' && enDict[key].length > 0, `en missing ${key}`);
+  }
+
+  // 2. Quota 快照优先选择 Gemini 主池 weekly 桶，忽略仅有 5h 之外的次级池
+  const nowMs = new Date(2026, 10, 25, 14, 0, 0, 0).getTime(); // 周三 14:00
+  const claudeWeeklyEnd = nowMs + 2 * 24 * 3600 * 1000;
+  const geminiWeeklyEnd = nowMs + 4 * 24 * 3600 * 1000;
+  const gemini5hEnd = nowMs + 2 * 3600 * 1000;
+  const cwWeekly = resolveCycleWindow({
+    source: 'quota_state',
+    pools: [
+      {
+        id: 'claude_3p',
+        title: 'Claude 3P',
+        weeklyBucket: { windowKey: 'weekly', resetAtMs: claudeWeeklyEnd },
+        fiveHourBucket: { windowKey: '5h', resetAtMs: nowMs + 3600 * 1000 }
+      },
+      {
+        id: 'gemini_main',
+        title: 'Gemini Main',
+        weeklyBucket: { windowKey: 'weekly', resetAtMs: geminiWeeklyEnd },
+        fiveHourBucket: { windowKey: '5h', resetAtMs: gemini5hEnd }
+      }
+    ]
+  }, nowMs);
+  assert.equal(cwWeekly.windowKey, 'weekly');
+  assert.equal(cwWeekly.source, 'quota_state');
+  assert.equal(cwWeekly.isFallback, false);
+  assert.equal(cwWeekly.endAtMs, geminiWeeklyEnd);
+  assert.equal(cwWeekly.startAtMs, geminiWeeklyEnd - WEEKLY_MS);
+  assert.equal(cwWeekly.durationMs, WEEKLY_MS);
+  assert.ok(cwWeekly.startAtMs <= nowMs && nowMs < cwWeekly.endAtMs);
+  assert.ok(typeof cwWeekly.resetTimeText === 'string' && cwWeekly.resetTimeText.length > 0);
+
+  // 3. 仅有 5h 窗口时降选 5h（durationMs = FIVE_HOUR_MS）
+  const cw5h = resolveCycleWindow({
+    source: 'quota_service',
+    pools: [
+      { id: 'gemini_main', fiveHourBucket: { windowKey: '5h', resetAtMs: gemini5hEnd } }
+    ]
+  }, nowMs);
+  assert.equal(cw5h.windowKey, '5h');
+  assert.equal(cw5h.source, 'quota_service');
+  assert.equal(cw5h.durationMs, FIVE_HOUR_MS);
+  assert.equal(cw5h.startAtMs, gemini5hEnd - FIVE_HOUR_MS);
+  assert.equal(cw5h.endAtMs, gemini5hEnd);
+
+  // 4. GetUserStatus 假 5h 修正：windowKey 标为 5h 但重置时间超过 5 小时，归一化为 weekly
+  const fake5hEnd = nowMs + 3 * 24 * 3600 * 1000;
+  const cwFixedFake5h = resolveCycleWindow({
+    userStatusRes: {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            {
+              modelId: 'gemini-4-hydrogen',
+              quotaInfo: { windowKey: '5h', resetTime: new Date(fake5hEnd).toISOString() }
+            }
+          ]
+        }
+      }
+    }
+  }, nowMs);
+  assert.equal(cwFixedFake5h.windowKey, 'weekly');
+  assert.equal(cwFixedFake5h.source, 'rpc_direct');
+  assert.equal(cwFixedFake5h.durationMs, WEEKLY_MS);
+  assert.equal(cwFixedFake5h.endAtMs, fake5hEnd);
+
+  // 5. 刚过重置点滚动对齐（保证 startAtMs <= nowMs < endAtMs）及未过期优先于已过期
+  const staleExpiredEnd = nowMs - 10 * 60 * 1000; // 10 分钟前刚刚过期
+  const rolledWeekly = resolveCycleWindow({
+    pools: [
+      { id: 'gemini_main', weeklyBucket: { windowKey: 'weekly', resetAtMs: staleExpiredEnd } }
+    ]
+  }, nowMs);
+  assert.equal(rolledWeekly.windowKey, 'weekly');
+  assert.equal(rolledWeekly.endAtMs, staleExpiredEnd + WEEKLY_MS);
+  assert.equal(rolledWeekly.startAtMs, staleExpiredEnd);
+  assert.ok(rolledWeekly.startAtMs <= nowMs && nowMs < rolledWeekly.endAtMs);
+
+  // 过期 cached_window 跨多周期自动滚动到当前周期
+  const oldCachedEnd = nowMs - 2 * WEEKLY_MS - 30 * 60 * 1000;
+  const rolledCached = resolveCycleWindow({
+    source: 'cached_window',
+    windowKey: 'weekly',
+    durationMs: WEEKLY_MS,
+    startAtMs: oldCachedEnd - WEEKLY_MS,
+    endAtMs: oldCachedEnd
+  }, nowMs);
+  assert.equal(rolledCached.isFallback, false);
+  assert.equal(rolledCached.endAtMs, oldCachedEnd + 3 * WEEKLY_MS);
+  assert.ok(rolledCached.startAtMs <= nowMs && nowMs < rolledCached.endAtMs);
+
+  // 同为 weekly 时未过期桶优先于已过期桶
+  const preferFresh = resolveCycleWindow({
+    pools: [
+      { id: 'gemini_main', weeklyBucket: { windowKey: 'weekly', resetAtMs: staleExpiredEnd } },
+      { id: 'claude_3p', weeklyBucket: { windowKey: 'weekly', resetAtMs: claudeWeeklyEnd } }
+    ]
+  }, nowMs);
+  assert.equal(preferFresh.endAtMs, claudeWeeklyEnd);
+
+  // 6. L4 本地自然周兜底（含周三与周日 day === 0 边界验证）
+  const fallbackWed = resolveCycleWindow(null, nowMs);
+  assert.equal(fallbackWed.windowKey, 'fallback_week');
+  assert.equal(fallbackWed.source, 'fallback_week');
+  assert.equal(fallbackWed.isFallback, true);
+  assert.equal(fallbackWed.resetTimeText, null);
+  assert.equal(fallbackWed.startAtMs, new Date(2026, 10, 23, 0, 0, 0, 0).getTime());
+  assert.equal(fallbackWed.endAtMs, fallbackWed.startAtMs + WEEKLY_MS);
+
+  const sundayMs = new Date(2026, 10, 29, 23, 30, 0, 0).getTime();
+  const fallbackSun = resolveCycleWindow({ pools: [{ id: 'gemini', weeklyBucket: { hasResetTime: false } }] }, sundayMs);
+  assert.equal(fallbackSun.isFallback, true);
+  assert.equal(fallbackSun.startAtMs, new Date(2026, 10, 23, 0, 0, 0, 0).getTime());
+  assert.ok(fallbackSun.startAtMs <= sundayMs && sundayMs < fallbackSun.endAtMs);
+});
+
+test('currentCycle 账本时间戳解析、左闭右开边界聚合、7天/5h ROI 摊销与 formatUnitText 防误回退', () => {
+  // 1. resolveCallTimestampMs 解析顺序（毫秒 / 秒 / created_at / YYYY-MM-DD 本地零点 / 无效）
+  const msExact = Date.UTC(2026, 10, 25, 6, 0, 0);
+  assert.equal(resolveCallTimestampMs({ timestamp: msExact }), msExact);
+  assert.equal(resolveCallTimestampMs({ timestamp: Math.floor(msExact / 1000) }), Math.floor(msExact / 1000) * 1000);
+  assert.equal(resolveCallTimestampMs({ created_at: '2026-11-25T06:00:00.000Z' }), msExact);
+  assert.equal(
+    resolveCallTimestampMs({ date: '2026-11-25' }),
+    new Date(2026, 10, 25, 0, 0, 0, 0).getTime()
+  );
+  assert.equal(resolveCallTimestampMs({ date: 'invalid' }), 0);
+  assert.equal(resolveCallTimestampMs(null), 0);
+
+  // 2. 左闭右开 [startAtMs, endAtMs) 精确过滤与 7 天周期 ROI 摊销
+  const startAtMs = new Date(2026, 10, 23, 14, 0, 0, 0).getTime();
+  const endAtMs = startAtMs + WEEKLY_MS;
+  const nowMs = new Date(2026, 10, 25, 15, 0, 0, 0).getTime();
+  const calls = [
+    // 早于周期起点 1ms -> 排除
+    { callId: 'before', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: startAtMs - 1, date: '2026-11-23' },
+    // 恰好等于周期起点 -> 计入
+    { callId: 'at_start', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: startAtMs, date: '2026-11-23' },
+    // 周期内通过 date 字段（本地零点 11-25 00:00 >= 11-23 14:00）-> 计入
+    { callId: 'in_date', model: 'claude-opus-5-5', inputTokens: 1000000, outputTokens: 0, date: '2026-11-25' },
+    // 恰好等于周期终点 -> 排除（左闭右开）
+    { callId: 'at_end', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: endAtMs, date: '2026-11-30' }
+  ];
+
+  const weeklyRes = summarizeByPeriod(calls, nowMs, {
+    subscriptionRegion: 'US',
+    priceMode: 'custom',
+    actualPricePaid: 30,
+    billingCycle: 'monthly'
+  }, {
+    cycleWindow: { startAtMs, endAtMs, windowKey: 'weekly', source: 'quota_state', durationMs: WEEKLY_MS }
+  });
+
+  assert.equal(weeklyRes.currentCycle.callsCount, 2);
+  assert.equal(weeklyRes.currentCycle.geminiTokens, 1000000);
+  assert.equal(weeklyRes.currentCycle.otherTokens, 1000000);
+  assert.equal(weeklyRes.currentCycle.totalTokens, 2000000);
+  // gemini-4-hydrogen 1M input ($1.5) + claude-opus-5-5 1M input ($4) = $5.5
+  assert.equal(weeklyRes.currentCycle.totalUsd, 5.5);
+  // 7 天 ROI 摊销 = 30 * (7 / 30) = 7 USD
+  assert.equal(weeklyRes.roiByPeriod.currentCycle.actualPaidUsd, 7);
+  assert.equal(weeklyRes.roiByPeriod.currentCycle.estimatedApiUsd, 5.5);
+  assert.equal(weeklyRes.roiByPeriod.currentCycle.effectiveSavedUsd, -1.5);
+  // 原有周期逻辑保持不变
+  assert.equal(weeklyRes.today.callsCount, 1);
+  assert.equal(weeklyRes.allTime.callsCount, 4);
+
+  // 3. 5 小时窗口边界过滤与 ROI 摊销（5h / 24 / 30）
+  const fiveStart = nowMs - 2 * 3600 * 1000;
+  const fiveEnd = fiveStart + FIVE_HOUR_MS;
+  const fiveCalls = [
+    { callId: 'out_5h', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: fiveStart - 1000 },
+    { callId: 'in_5h', model: 'gemini-4-hydrogen', inputTokens: 2000000, outputTokens: 0, timestamp: nowMs - 60000 }
+  ];
+  const fiveRes = summarizeByPeriod(fiveCalls, nowMs, {
+    subscriptionRegion: 'US',
+    priceMode: 'custom',
+    actualPricePaid: 144,
+    billingCycle: 'monthly'
+  }, {
+    cycleWindow: { startAtMs: fiveStart, endAtMs: fiveEnd, windowKey: '5h', source: 'quota_state', durationMs: FIVE_HOUR_MS }
+  });
+  assert.equal(fiveRes.currentCycle.callsCount, 1);
+  assert.equal(fiveRes.currentCycle.geminiTokens, 2000000);
+  // 144 * (5 / 24 / 30) = 1.0 USD
+  assert.equal(fiveRes.roiByPeriod.currentCycle.actualPaidUsd, 1);
+  assert.equal(fiveRes.roiByPeriod.currentCycle.estimatedApiUsd, 3);
+  assert.equal(fiveRes.roiByPeriod.currentCycle.effectiveSavedUsd, 2);
+
+  // 4. formatUnitText 多语言、防误回退到 allTime、空态与非法周期处理
+  assert.equal(formatUnitText({ periods: weeklyRes }, 'currentCycle', 'zh-CN'), '本周期 G:1M · 其他:1M');
+  assert.equal(formatUnitText({ periods: weeklyRes }, 'currentCycle', 'en'), 'Cycle G:1M · Other:1M');
+  assert.equal(formatUnitText(null, 'currentCycle', 'zh-CN'), '本周期 G:-- · 其他:--');
+  assert.equal(formatUnitText(null, 'currentCycle', 'en'), 'Cycle G:-- · Other:--');
+  // 含 periods 但缺失 currentCycle 时，严禁误回退到代表 allTime 的根对象
+  assert.equal(
+    formatUnitText({ geminiTokens: 999000, otherTokens: 888000, periods: { today: weeklyRes.today } }, 'currentCycle', 'zh-CN'),
+    '本周期 G:0 · 其他:0'
+  );
+  assert.equal(formatUnitText({ periods: weeklyRes }, 'unknown_period', 'zh-CN'), '累计 G:3M · 其他:1M');
+});
+
+test('currentCycle 跨插件 L1-L3b 联动、MCP readUsageSummary 与前端面板交互/多语言回归', async () => {
+  const now = Date.now();
+
+  // 1. 验证 MCP readUsageSummary 分别从 cycle-window.json 与兄弟目录 latest-snapshot.json 读取周期
+  const tmpMcpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-usage-mcp-'));
+  try {
+    const usageDir = path.join(tmpMcpRoot, 'agy-daddy.usage');
+    const quotaDir = path.join(tmpMcpRoot, 'agy-daddy.quota');
+    fs.mkdirSync(usageDir, { recursive: true });
+    fs.mkdirSync(quotaDir, { recursive: true });
+
+    const mcpEnd = now + 2 * 24 * 3600 * 1000;
+    const mcpStart = mcpEnd - WEEKLY_MS;
+    fs.writeFileSync(path.join(usageDir, 'token-pricing-ledger.json'), JSON.stringify({
+      version: LEDGER_VERSION,
+      calls: {
+        in_win: { callId: 'in_win', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: now - 3600 * 1000 },
+        out_win: { callId: 'out_win', model: 'gemini-4-hydrogen', inputTokens: 2000000, outputTokens: 0, timestamp: mcpStart - 3600 * 1000 }
+      }
+    }));
+    fs.writeFileSync(path.join(usageDir, 'cycle-window.json'), JSON.stringify({
+      windowKey: 'weekly',
+      source: 'quota_state',
+      isFallback: false,
+      startAtMs: mcpStart,
+      endAtMs: mcpEnd,
+      durationMs: WEEKLY_MS
+    }));
+    const mcpFromCycle = readUsageSummary(usageDir);
+    assert.equal(mcpFromCycle.ok, true);
+    assert.equal(mcpFromCycle.cycleWindow.isFallback, false);
+    assert.equal(mcpFromCycle.periods.currentCycle.geminiTokens, 1000000);
+    assert.equal(mcpFromCycle.periods.allTime.geminiTokens, 3000000);
+
+    // 移除 cycle-window.json 后从兄弟目录 ../agy-daddy.quota/latest-snapshot.json 回退读取
+    fs.unlinkSync(path.join(usageDir, 'cycle-window.json'));
+    fs.writeFileSync(path.join(quotaDir, 'latest-snapshot.json'), JSON.stringify({
+      pools: [{ id: 'gemini_main', fiveHourBucket: { windowKey: '5h', resetAtMs: now + 2 * 3600 * 1000 } }]
+    }));
+    const mcpFromQuotaSnap = readUsageSummary(usageDir);
+    assert.equal(mcpFromQuotaSnap.cycleWindow.windowKey, '5h');
+    assert.equal(mcpFromQuotaSnap.cycleWindow.isFallback, false);
+    assert.equal(mcpFromQuotaSnap.periods.currentCycle.geminiTokens, 1000000);
+  } finally {
+    fs.rmSync(tmpMcpRoot, { recursive: true, force: true });
+  }
+
+  // 2. 验证 L3a RPC 直连（RetrieveUserQuotaSummary）与 L3b cycle-window.json 持久化
+  const rpcResetIso = new Date(now + 3 * 24 * 3600 * 1000).toISOString();
+  const l3Harness = createMockHostHarness({
+    onRpc: (method) => {
+      if (method === 'RetrieveUserQuotaSummary') {
+        return {
+          groups: [
+            { groupId: 'gemini_main', buckets: [{ windowKey: 'weekly', resetTime: rpcResetIso }] }
+          ]
+        };
+      }
+      if (method === 'GetUserStatus') {
+        return { userStatus: { userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' } } };
+      }
+      return {};
+    }
+  });
+  try {
+    const { port, hostToken } = await l3Harness.bridge.start(0);
+    l3Harness.rendererHost.configure({ bridgePort: port, hostToken });
+    await l3Harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+    const usageSvc = l3Harness.bus.getServiceProxy('usage');
+    const summaryL3 = await usageSvc.getSummary();
+    assert.equal(summaryL3.cycleWindow.windowKey, 'weekly');
+    assert.equal(summaryL3.cycleWindow.source, 'rpc_direct');
+    assert.equal(summaryL3.cycleWindow.isFallback, false);
+    const store = new PluginDataStore('agy-daddy.usage', { stateDir: l3Harness.stateDir });
+    const persisted = store.readJson('cycle-window.json', null).data;
+    assert.equal(persisted?.windowKey, 'weekly');
+    assert.equal(persisted?.isFallback, false);
+    await l3Harness.unloadPlugin('agy-daddy.usage');
+    l3Harness.assertCleanDispose('agy-daddy.usage');
+  } finally {
+    await l3Harness.cleanup();
+  }
+
+  // 3. 端到端链路：无 Quota 降级兜底 -> 面板切换 currentCycle -> L1 state:quota.snapshot@1 实时联动(weekly/5h) -> 英文切换
+  const harness = createMockHostHarness({
+    onRpc: (method) => {
+      if (method === 'GetUserStatus') {
+        return { userStatus: { userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' } } };
+      }
+      return {};
+    }
+  });
+  try {
+    const { port, hostToken } = await harness.bridge.start(0);
+    harness.rendererHost.configure({ bridgePort: port, hostToken });
+    await harness.loadAndRunPlugin(PLUGIN_ROOT, { trustLevel: 'T0' });
+
+    const usageSvc = harness.bus.getServiceProxy('usage');
+    const fallbackWin = resolveCycleWindow(null, now);
+    const recentTs = Math.max(fallbackWin.startAtMs, now - 500);
+    const dayAgoTs = now - 24 * 3600 * 1000;
+    const oldCycleTs = now - 10 * 24 * 3600 * 1000;
+    await usageSvc.recordCalls([
+      { callId: 'c_recent', model: 'gemini-4-hydrogen', inputTokens: 1000000, outputTokens: 0, timestamp: recentTs },
+      { callId: 'c_day_ago', model: 'claude-opus-5-5', inputTokens: 500000, outputTokens: 0, timestamp: dayAgoTs },
+      { callId: 'c_old', model: 'gemini-4-hydrogen', inputTokens: 2000000, outputTokens: 0, timestamp: oldCycleTs }
+    ]);
+
+    const shadowRoot = harness.mockDoc.getElementById('agy-daddy-host').shadowRoot;
+    const usageBtn = shadowRoot.querySelector('#agy-topbar-slots').children.find((c) => c.id === 'agy-unit-agy-daddy.usage-tokens');
+    const usagePanel = shadowRoot.querySelector('#agy-usage-panel');
+    assert.ok(usageBtn);
+    assert.ok(usagePanel);
+
+    usagePanel.querySelector('button.ag-btn-primary').click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 点击「本周期」Tab：验证配置持久化、4 列分期网格、回本(本周期) 与 L4 fallback 提示条
+    const cycleTab = usagePanel.querySelector('[data-usage-period="currentCycle"]');
+    assert.ok(cycleTab, 'Expected [data-usage-period="currentCycle"] tab button');
+    cycleTab.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(harness.getPluginSettings('agy-daddy.usage').activePeriod, 'currentCycle');
+    assert.doesNotMatch(usageBtn.textContent, /[$¥]/);
+    assert.match(usageBtn.textContent, /^本周期 G:/);
+
+    const fallbackChip = usagePanel.querySelector('[data-usage-cycle-meta="fallback"]');
+    assert.ok(fallbackChip);
+    assert.equal(fallbackChip.getAttribute('data-tone'), 'warn');
+    assert.match(fallbackChip.textContent, /暂未获取实时配额重置时间/);
+
+    const miniGrid = usagePanel.querySelector('.ag-panel-mini-grid');
+    assert.ok(miniGrid);
+    assert.equal(miniGrid.children.length, 4);
+    assert.match(miniGrid.textContent, /今日/);
+    assert.match(miniGrid.textContent, /本周期/);
+    assert.match(miniGrid.textContent, /本月/);
+    assert.match(miniGrid.textContent, /今年/);
+    assert.match(usagePanel.textContent, /回本\(本周期\)/);
+
+    // 通过 L1 state:quota.snapshot@1 实时推送 7 天 weekly 周期（涵盖 recentTs 与 dayAgoTs，排除 oldCycleTs）
+    const weeklyEnd = now + 2 * 24 * 3600 * 1000;
+    harness.bus.setState('agy-daddy.quota', 'state:quota.snapshot@1', {
+      updatedAt: Date.now(),
+      pools: [
+        { id: 'gemini_main', weeklyBucket: { windowKey: 'weekly', resetAtMs: weeklyEnd } }
+      ]
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    usagePanel.querySelector('button.ag-btn-primary').click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(usageBtn.textContent, '本周期 G:1M · 其他:500k');
+    const rangeChipWeekly = usagePanel.querySelector('[data-usage-cycle-meta="range"]');
+    assert.ok(rangeChipWeekly);
+    assert.equal(rangeChipWeekly.getAttribute('data-tone'), 'muted');
+    assert.match(rangeChipWeekly.textContent, /周配额周期/);
+
+    // 校验 getPeriodSummary 与 getMobileSnapshot 返回契约
+    const periodSummary = await usageSvc.getPeriodSummary({ nowMs: now });
+    assert.equal(periodSummary.cycleWindow.windowKey, 'weekly');
+    assert.equal(periodSummary.currentCycle.geminiTokens, 1000000);
+    assert.equal(periodSummary.currentCycle.otherTokens, 500000);
+    const mobileSnap = await usageSvc.getMobileSnapshot();
+    assert.equal(mobileSnap.activePeriod, 'currentCycle');
+    assert.equal(mobileSnap.cycleWindow.windowKey, 'weekly');
+    assert.equal(mobileSnap.periods.currentCycle.geminiTokens, 1000000);
+
+    // L1 推送 5h 窗口：仅命中 recentTs，排除 dayAgoTs 与 oldCycleTs
+    harness.bus.setState('agy-daddy.quota', 'state:quota.snapshot@1', {
+      updatedAt: Date.now() + 1,
+      pools: [
+        { id: 'gemini_main', fiveHourBucket: { windowKey: '5h', resetAtMs: now + 2 * 3600 * 1000 } }
+      ]
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    usagePanel.querySelector('button.ag-btn-primary').click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(usageBtn.textContent, '本周期 G:1M · 其他:0');
+    const rangeChip5h = usagePanel.querySelector('[data-usage-cycle-meta="range"]');
+    assert.ok(rangeChip5h);
+    assert.match(rangeChip5h.textContent, /5H 窗口/);
+
+    // 切换宿主语言至 en，验证顶栏胶囊与面板文案同步切换
+    await harness.rendererHost.mountPlugin('test.locale.emitter.cycle', {
+      mount(ctx) {
+        ctx.state.set('state:host.locale@1', { lang: 'en', bcp47: 'en', locale: 'en' });
+      }
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(usageBtn.textContent, 'Cycle G:1M · Other:0');
+    assert.match(usagePanel.textContent, /5H Window/);
+    assert.equal(usagePanel.querySelector('[data-usage-period="currentCycle"]').textContent, 'Cycle');
+    await harness.rendererHost.disposePlugin('test.locale.emitter.cycle');
+
+    await harness.unloadPlugin('agy-daddy.usage');
+    harness.assertCleanDispose('agy-daddy.usage');
+  } finally {
     await harness.cleanup();
   }
 });

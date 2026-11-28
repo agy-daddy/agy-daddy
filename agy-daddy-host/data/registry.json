@@ -141,13 +141,43 @@
     {
       "shortName": "design",
       "id": "hubo1989.design",
+      "publisher": "hubo1989",
       "name": "Agy Design Studio",
+      "version": "0.1.0",
       "layer": 4,
+      "category": "design",
+      "tags": [
+        "design",
+        "slides",
+        "canvas",
+        "design-system",
+        "dashboard",
+        "motion"
+      ],
       "trustLevel": "T1",
       "defaultEnabled": false,
       "external": true,
       "repo": "https://github.com/hubo1989/agy-plugin-design.git",
       "ref": "v0.1.0",
+      "icon": "./assets/icon.png",
+      "screenshots": [
+        "./assets/cover.png",
+        "./assets/gallery.png",
+        "./assets/editor.png"
+      ],
+      "engines": {
+        "agyDaddy": "^1.0.0",
+        "antigravity": ">=2.32.0"
+      },
+      "permissions": [
+        "dom:read",
+        "dom:write",
+        "rpc:read",
+        "fs:user-files",
+        "net:listen",
+        "process:spawn"
+      ],
+      "manifestSha512": "sha512-bhXf+Mm4sFdhBDRmfvwZ+kDJijkAEKxeHqm4h+fk4joSC2E/aNZVKTp2LpYBqemuhAHx/OWjCb/Nzn15SQOT2A==",
       "description": "本地优先的 Antigravity 可视化设计工作台：统一管理幻灯片、无限画布、设计系统、数据看板与动效五类作品，与 <workspace>/.design/ 双向互通"
     },
     {

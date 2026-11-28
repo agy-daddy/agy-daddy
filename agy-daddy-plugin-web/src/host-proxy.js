@@ -718,11 +718,44 @@ function createHostProxy({ host, commands } = {}) {
       });
     }
     if (cleanAction === 'install') {
-      return await invokeControl('/host/plugins/install', {
+      let installBody = {
         ...extra,
         spec: extra.spec || cleanId,
         pluginId: cleanId
-      });
+      };
+      if (extra.approvePermissions === true && (!Array.isArray(extra.grantedPermissions) || extra.grantedPermissions.length === 0)) {
+        const probe = await invokeControl('/host/plugins/install', {
+          ...installBody,
+          grantedPermissions: []
+        });
+        if (!probe?.needsPermissionConfirm) {
+          return probe;
+        }
+        const requestedPermissions = Array.from(new Set([
+          ...(probe.trustPolicy?.denied || []),
+          ...(probe.trustPolicy?.needsConfirmation || [])
+        ]));
+        installBody = {
+          ...installBody,
+          trustLevel: installBody.trustLevel || probe.trustPolicy?.trustLevel,
+          grantedPermissions: requestedPermissions
+        };
+      }
+      const res = await invokeControl('/host/plugins/install', installBody);
+      if (res?.needsPermissionConfirm && res.trustPolicy) {
+        const requestedPermissions = Array.from(new Set([
+          ...(res.trustPolicy.denied || []),
+          ...(res.trustPolicy.needsConfirmation || [])
+        ]));
+        return {
+          ...res,
+          trustPolicy: {
+            ...res.trustPolicy,
+            requestedPermissions
+          }
+        };
+      }
+      return res;
     }
     return await invokeControl(`/host/plugins/${cleanAction}`, {
       ...extra,

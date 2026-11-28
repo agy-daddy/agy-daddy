@@ -5797,7 +5797,8 @@
 
     function filterPluginByQuery(plugin, queryLower) {
       if (!queryLower) return { matched: true, matchedFields: [] };
-      const hay = `${plugin.id} ${plugin.displayName || ''} ${plugin.description || ''}`.toLowerCase();
+      const tagsText = Array.isArray(plugin.tags) ? plugin.tags.join(' ') : '';
+      const hay = `${plugin.id} ${plugin.shortName || ''} ${plugin.displayName || ''} ${plugin.description || ''} ${plugin.category || ''} ${tagsText}`.toLowerCase();
       const matchedFields = [];
       for (const field of plugin.settingsSchema?.fields || []) {
         const fLabel = pickLocaleText(field.label, field.key);
@@ -5817,6 +5818,68 @@
       };
     }
 
+    function matchesMarketplaceEntryQuery(entry, queryLower) {
+      if (!queryLower) return true;
+      const tagsText = Array.isArray(entry?.tags) ? entry.tags.join(' ') : '';
+      const hay = `${entry?.id || ''} ${entry?.shortName || ''} ${entry?.displayName || ''} ${entry?.description || ''} ${entry?.category || ''} ${tagsText}`.toLowerCase();
+      return hay.includes(queryLower);
+    }
+
+    function renderPermissionConfirmBox(containerEl, triggerInstall) {
+      if (!state.managePendingPerm) return;
+      const pInfo = state.managePendingPerm;
+      const confirmPerms = Array.isArray(pInfo.confirmPerms) && pInfo.confirmPerms.length > 0
+        ? pInfo.confirmPerms
+        : (Array.isArray(pInfo.denied) ? pInfo.denied : []);
+      const permBox = doc.createElement('div');
+      permBox.id = 'agy-perm-confirm-box';
+      permBox.className = 'ag-perm-confirm-box';
+      const permTitle = doc.createElement('div');
+      permTitle.className = 'ag-sv-row-title';
+      permTitle.textContent = `需要授权 (${pInfo.trustLevel})：${pInfo.spec}`;
+      permBox.appendChild(permTitle);
+
+      const permTags = doc.createElement('div');
+      permTags.className = 'ag-channels-row';
+      for (const perm of confirmPerms) {
+        const chip = doc.createElement('span');
+        chip.className = 'ag-chip';
+        chip.setAttribute('data-tone', 'warn');
+        chip.textContent = perm;
+        permTags.appendChild(chip);
+      }
+      permBox.appendChild(permTags);
+
+      const permActions = doc.createElement('div');
+      permActions.className = 'ag-panel-actions';
+      const confirmBtn = doc.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.id = 'agy-perm-confirm-btn';
+      confirmBtn.className = 'ag-btn ag-btn-primary';
+      confirmBtn.textContent = '授权并安装';
+      confirmBtn.addEventListener('click', () => {
+        triggerInstall(pInfo.spec, {
+          trustLevel: pInfo.trustLevel,
+          grantedPermissions: confirmPerms,
+          copy: pInfo.copy
+        });
+      });
+      const cancelPermBtn = doc.createElement('button');
+      cancelPermBtn.type = 'button';
+      cancelPermBtn.id = 'agy-perm-cancel-btn';
+      cancelPermBtn.className = 'ag-btn';
+      cancelPermBtn.textContent = '取消';
+      cancelPermBtn.addEventListener('click', () => {
+        state.managePendingPerm = null;
+        state.manageToast = null;
+        renderSettingsBody();
+      });
+      permActions.appendChild(confirmBtn);
+      permActions.appendChild(cancelPermBtn);
+      permBox.appendChild(permActions);
+      containerEl.appendChild(permBox);
+    }
+
     function renderInstallBar(body, hasBridge, triggerInstall) {
       const section = createSectionBlock('安装插件');
       const installCard = doc.createElement('div');
@@ -5833,7 +5896,7 @@
       installInput.type = 'text';
       installInput.id = 'agy-plugin-install-input';
       installInput.className = 'settings-input';
-      installInput.placeholder = '输入本地目录路径、github:作者/仓库 或 npm:包名';
+      installInput.placeholder = '输入插件短名(如 design)、本地目录路径、github:作者/仓库 或 npm:包名';
       installInput.setAttribute('aria-label', '插件来源地址');
       installInput.value = state.manageInstallSpec;
       installInput.addEventListener('input', () => { state.manageInstallSpec = installInput.value; });
@@ -5876,56 +5939,7 @@
       installRow.appendChild(installBtn);
       wrap.appendChild(installRow);
 
-      if (state.managePendingPerm) {
-        const pInfo = state.managePendingPerm;
-        const permBox = doc.createElement('div');
-        permBox.id = 'agy-perm-confirm-box';
-        permBox.className = 'ag-perm-confirm-box';
-        const permTitle = doc.createElement('div');
-        permTitle.className = 'ag-sv-row-title';
-        permTitle.textContent = `需要授权 (${pInfo.trustLevel})：${pInfo.spec}`;
-        permBox.appendChild(permTitle);
-
-        const permTags = doc.createElement('div');
-        permTags.className = 'ag-channels-row';
-        for (const perm of pInfo.denied) {
-          const chip = doc.createElement('span');
-          chip.className = 'ag-chip';
-          chip.setAttribute('data-tone', 'warn');
-          chip.textContent = perm;
-          permTags.appendChild(chip);
-        }
-        permBox.appendChild(permTags);
-
-        const permActions = doc.createElement('div');
-        permActions.className = 'ag-panel-actions';
-        const confirmBtn = doc.createElement('button');
-        confirmBtn.type = 'button';
-        confirmBtn.id = 'agy-perm-confirm-btn';
-        confirmBtn.className = 'ag-btn ag-btn-primary';
-        confirmBtn.textContent = '授权并安装';
-        confirmBtn.addEventListener('click', () => {
-          triggerInstall(pInfo.spec, {
-            trustLevel: pInfo.trustLevel,
-            grantedPermissions: pInfo.denied,
-            copy: pInfo.copy
-          });
-        });
-        const cancelPermBtn = doc.createElement('button');
-        cancelPermBtn.type = 'button';
-        cancelPermBtn.id = 'agy-perm-cancel-btn';
-        cancelPermBtn.className = 'ag-btn';
-        cancelPermBtn.textContent = '取消';
-        cancelPermBtn.addEventListener('click', () => {
-          state.managePendingPerm = null;
-          state.manageToast = null;
-          renderSettingsBody();
-        });
-        permActions.appendChild(confirmBtn);
-        permActions.appendChild(cancelPermBtn);
-        permBox.appendChild(permActions);
-        wrap.appendChild(permBox);
-      }
+      renderPermissionConfirmBox(wrap, triggerInstall);
 
       installCard.appendChild(wrap);
       section.appendChild(installCard);
@@ -5940,9 +5954,13 @@
         seen.add(cat.id);
         entries.push({
           id: cat.id,
+          shortName: cat.shortName || '',
           displayName: pickLocaleText(cat.displayName, cat.id),
           description: pickLocaleText(cat.description, cat.recommendedSpec || cat.id),
           version: cat.version || '1.0.0',
+          category: cat.category || '',
+          tags: Array.isArray(cat.tags) ? cat.tags : [],
+          permissions: Array.isArray(cat.permissions) ? cat.permissions : [],
           trustLevel: cat.trustLevel || (cat.id.startsWith('agy-daddy.') ? 'T0' : 'T1'),
           recommendedSpec: cat.recommendedSpec,
           repo: cat.repo || '',
@@ -5958,9 +5976,13 @@
         seen.add(p.id);
         entries.push({
           id: p.id,
+          shortName: p.shortName || '',
           displayName: p.displayName || p.id,
           description: p.description || p.id,
           version: p.version || '1.0.0',
+          category: p.category || '',
+          tags: Array.isArray(p.tags) ? p.tags : [],
+          permissions: Array.isArray(p.permissions) ? p.permissions : [],
           trustLevel: p.trustLevel || (p.id.startsWith('agy-daddy.') ? 'T0' : 'T1'),
           recommendedSpec: '',
           repo: p.repo || '',
@@ -6126,10 +6148,15 @@
             grantedPermissions: extraOpts.grantedPermissions || []
           });
           if (res?.needsPermissionConfirm) {
+            const confirmPerms = Array.from(new Set([
+              ...(res.trustPolicy?.denied || []),
+              ...(res.trustPolicy?.needsConfirmation || [])
+            ]));
             state.managePendingPerm = {
               spec: res.spec || spec,
               trustLevel: res.trustPolicy?.trustLevel || 'T2',
-              denied: res.trustPolicy?.denied || [],
+              denied: confirmPerms,
+              confirmPerms,
               granted: res.trustPolicy?.granted || [],
               warnings: res.trustPolicy?.warnings || [],
               copy: extraOpts.copy !== undefined ? extraOpts.copy : state.manageCopyMode
@@ -6160,7 +6187,7 @@
       const allItems = getCombinedPlugins();
       const marketEntries = getMarketplaceEntries(allItems);
       const filtered = queryLower
-        ? marketEntries.filter((e) => `${e.id} ${e.displayName} ${e.description}`.toLowerCase().includes(queryLower))
+        ? marketEntries.filter((e) => matchesMarketplaceEntryQuery(e, queryLower))
         : marketEntries;
       const uninstalledCount = marketEntries.filter((e) => !e.installed).length;
 
@@ -6214,6 +6241,7 @@
       }
       heroWrap.appendChild(headRow);
       body.appendChild(heroWrap);
+      renderPermissionConfirmBox(body, triggerInstall);
 
       if (filtered.length === 0) {
         const emptyCard = doc.createElement('div');
@@ -6247,7 +6275,7 @@
       const allItems = getCombinedPlugins();
       const marketEntries = getMarketplaceEntries(allItems);
       const filteredMarket = queryLower
-        ? marketEntries.filter((e) => `${e.id} ${e.displayName} ${e.description}`.toLowerCase().includes(queryLower))
+        ? marketEntries.filter((e) => matchesMarketplaceEntryQuery(e, queryLower))
         : marketEntries;
       if (filteredMarket.length > 0) {
         const moreBtn = doc.createElement('button');

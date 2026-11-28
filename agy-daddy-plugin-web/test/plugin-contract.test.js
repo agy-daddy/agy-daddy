@@ -173,6 +173,45 @@ test('E1: getPlugins, pluginAction, settings (with secretState), runCommand, and
   const doctorRes = await proxy.getDoctor();
   assert.equal(doctorRes.ok, true);
   assert.equal(calls.at(-1).routePath, '/host/health');
+
+  // 验证 install 权限确认透传 requestedPermissions 与 approvePermissions 自动探测重试
+  const permCalls = [];
+  const { host: permHost } = createMockHost({
+    onControl(routePath, body) {
+      permCalls.push({ routePath, body });
+      if (routePath === '/host/plugins/install') {
+        const granted = Array.isArray(body?.grantedPermissions) ? body.grantedPermissions : [];
+        if (granted.length < 3) {
+          return {
+            ok: false,
+            needsPermissionConfirm: true,
+            spec: body.spec,
+            trustPolicy: {
+              allowed: false,
+              trustLevel: 'T1',
+              denied: ['process:spawn'],
+              needsConfirmation: ['fs:user-files', 'net:listen', 'process:spawn']
+            }
+          };
+        }
+        return { ok: true, plugin: { id: 'hubo1989.design', grantedPermissions: granted } };
+      }
+      return { ok: true };
+    }
+  });
+  const permProxy = createHostProxy({ host: permHost });
+  const firstAttempt = await permProxy.pluginAction('hubo1989.design', 'install', { spec: 'design' });
+  assert.equal(firstAttempt.needsPermissionConfirm, true);
+  assert.deepEqual(firstAttempt.trustPolicy.requestedPermissions, ['process:spawn', 'fs:user-files', 'net:listen']);
+
+  const approvedAttempt = await permProxy.pluginAction('hubo1989.design', 'install', {
+    spec: 'design',
+    confirmed: true,
+    approvePermissions: true
+  });
+  assert.equal(approvedAttempt.ok, true);
+  assert.deepEqual(approvedAttempt.plugin.grantedPermissions, ['process:spawn', 'fs:user-files', 'net:listen']);
+  assert.equal(permCalls.length, 3);
 });
 
 test('E1: getPlugins cleanly fails with 503 when host.control is unavailable', async () => {

@@ -282,3 +282,79 @@ test('已彻底移除 legacy-suite 注册表项，且 doctor 返回 15 锚点并
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('注册表 ref 克隆优先命中指定 tag，远端尚无 tag 时自动回退默认分支', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-reg-ref-'));
+  const originDir = path.join(tmp, 'origin');
+  const stateDir = path.join(tmp, 'state');
+  const pluginsDir = path.join(tmp, 'plugins');
+  const regPath = path.join(tmp, 'registry.json');
+  fs.mkdirSync(originDir, { recursive: true });
+
+  const manifestObj = {
+    schemaVersion: 1,
+    id: 'third.refdemo',
+    publisher: 'third',
+    version: '0.1.0',
+    displayName: 'Ref Demo',
+    engines: { agyDaddy: '^1.0.0' },
+    main: './index.js',
+    permissions: ['dom:read']
+  };
+
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: originDir });
+    execFileSync('git', ['config', 'user.email', 'test@agy-daddy.local'], { cwd: originDir });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: originDir });
+    fs.writeFileSync(path.join(originDir, 'agy-plugin.json'), JSON.stringify(manifestObj, null, 2));
+    fs.writeFileSync(path.join(originDir, 'index.js'), 'module.exports={activate(){}};');
+    execFileSync('git', ['add', '.'], { cwd: originDir });
+    execFileSync('git', ['commit', '-m', 'v0.1.0'], { cwd: originDir });
+
+    fs.writeFileSync(regPath, JSON.stringify({
+      schemaVersion: 1,
+      organization: 'agy-daddy',
+      plugins: [
+        {
+          id: 'third.refdemo',
+          shortName: 'refdemo',
+          trustLevel: 'T1',
+          external: true,
+          repo: `file://${originDir}`,
+          ref: 'v0.1.0'
+        }
+      ]
+    }, null, 2));
+
+    const parsed = parsePluginSource('refdemo', { registryPath: regPath });
+    assert.equal(parsed.ref, 'v0.1.0');
+
+    // 1. 远端尚无 v0.1.0 tag 时应自动回退默认分支克隆
+    const resFallback = await installPlugin('refdemo', {
+      stateDir,
+      pluginsDir,
+      registryPath: regPath
+    });
+    assert.equal(resFallback.ok, true);
+    assert.equal(resFallback.plugin.version, '0.1.0');
+
+    // 2. 创建 v0.1.0 tag 后再提交 v0.2.0 到 main，克隆应锁定 v0.1.0 tag
+    execFileSync('git', ['tag', 'v0.1.0'], { cwd: originDir });
+    fs.writeFileSync(
+      path.join(originDir, 'agy-plugin.json'),
+      JSON.stringify({ ...manifestObj, version: '0.2.0' }, null, 2)
+    );
+    execFileSync('git', ['add', '.'], { cwd: originDir });
+    execFileSync('git', ['commit', '-m', 'v0.2.0'], { cwd: originDir });
+
+    const resTagged = await installPlugin('refdemo', {
+      stateDir,
+      pluginsDir,
+      registryPath: regPath
+    });
+    assert.equal(resTagged.ok, true);
+    assert.equal(resTagged.plugin.version, '0.1.0');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

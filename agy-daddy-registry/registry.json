@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-27T02:20:00Z",
+  "updatedAt": "2026-11-28T08:42:00Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
@@ -138,13 +138,41 @@
     {
       "id": "hubo1989.design",
       "shortName": "design",
+      "publisher": "hubo1989",
       "layer": 4,
+      "category": "design",
+      "tags": [
+        "design",
+        "slides",
+        "canvas",
+        "design-system",
+        "dashboard",
+        "motion"
+      ],
       "trustLevel": "T1",
       "external": true,
       "version": "0.1.0",
       "repo": "https://github.com/hubo1989/agy-plugin-design.git",
       "ref": "v0.1.0",
-      "manifestSha512": "sha512-oBq+/6e2W/jEjD4nUtZq8Tc62xcjUH3hJzwDeL36z2ucPoYKdT27ZFEy4KMbtKrDJWngNeM22UT6Ikn6KR7i9w=="
+      "icon": "./assets/icon.png",
+      "screenshots": [
+        "./assets/cover.png",
+        "./assets/gallery.png",
+        "./assets/editor.png"
+      ],
+      "engines": {
+        "agyDaddy": "^1.0.0",
+        "antigravity": ">=2.32.0"
+      },
+      "permissions": [
+        "dom:read",
+        "dom:write",
+        "rpc:read",
+        "fs:user-files",
+        "net:listen",
+        "process:spawn"
+      ],
+      "manifestSha512": "sha512-bhXf+Mm4sFdhBDRmfvwZ+kDJijkAEKxeHqm4h+fk4joSC2E/aNZVKTp2LpYBqemuhAHx/OWjCb/Nzn15SQOT2A=="
     },
     {
       "id": "agy-daddy.pet",

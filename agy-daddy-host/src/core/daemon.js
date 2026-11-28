@@ -1416,9 +1416,19 @@ class AgyDaddyDaemon extends EventEmitter {
           const regEntry = regMap.get(manifest.id);
           items.push({
             id: manifest.id,
+            publisher: manifest.publisher || regEntry?.publisher || '',
             displayName: this.pickLocaleText(manifest.displayName, manifest.id),
             description: this.pickLocaleText(manifest.description, ''),
             version: manifest.version,
+            category: manifest.category || regEntry?.category || '',
+            tags: Array.isArray(manifest.tags)
+              ? manifest.tags
+              : (Array.isArray(regEntry?.tags) ? regEntry.tags : []),
+            icon: manifest.icon || regEntry?.icon || '',
+            screenshots: Array.isArray(manifest.screenshots)
+              ? manifest.screenshots
+              : (Array.isArray(regEntry?.screenshots) ? regEntry.screenshots : []),
+            engines: manifest.engines || regEntry?.engines || null,
             trustLevel: manifest.id.startsWith('agy-daddy.') ? 'T0' : 'T1',
             hasNative: Boolean(manifest.contributes?.native),
             permissions: Array.isArray(manifest.permissions) ? manifest.permissions : [],
@@ -1439,12 +1449,18 @@ class AgyDaddyDaemon extends EventEmitter {
         seenIds.add(entry.id);
         items.push({
           id: entry.id,
+          publisher: entry.publisher || '',
           displayName: entry.name || entry.id,
           description: entry.description || '',
           version: entry.version || '1.0.0',
+          category: entry.category || '',
+          tags: Array.isArray(entry.tags) ? entry.tags : [],
+          icon: entry.icon || '',
+          screenshots: Array.isArray(entry.screenshots) ? entry.screenshots : [],
+          engines: entry.engines || null,
           trustLevel: entry.trustLevel || 'T0',
-          hasNative: false,
-          permissions: [],
+          hasNative: Boolean(entry.hasNative),
+          permissions: Array.isArray(entry.permissions) ? entry.permissions : [],
           recommendedSpec: entry.shortName || entry.repo || entry.id,
           repo: entry.repo || '',
           npmPackage: entry.npmPackage || '',
@@ -1578,6 +1594,10 @@ class AgyDaddyDaemon extends EventEmitter {
         npmPackage: regEntry?.npmPackage || '',
         subpath: regEntry?.subpath || '',
         shortName: regEntry?.shortName || '',
+        category: manifest?.category || regEntry?.category || '',
+        tags: Array.isArray(manifest?.tags)
+          ? manifest.tags
+          : (Array.isArray(regEntry?.tags) ? regEntry.tags : []),
         settingsSchema,
         settingsValues: redacted.values,
         settingsSecretState: redacted.secretState,
@@ -1623,6 +1643,10 @@ class AgyDaddyDaemon extends EventEmitter {
         npmPackage: regEntry?.npmPackage || '',
         subpath: regEntry?.subpath || '',
         shortName: regEntry?.shortName || '',
+        category: entry.manifest?.category || regEntry?.category || '',
+        tags: Array.isArray(entry.manifest?.tags)
+          ? entry.manifest.tags
+          : (Array.isArray(regEntry?.tags) ? regEntry.tags : []),
         settingsSchema,
         settingsValues: redacted.values,
         settingsSecretState: redacted.secretState,

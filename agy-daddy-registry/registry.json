@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "organization": "agy-daddy",
-  "updatedAt": "2026-11-28T08:42:00Z",
+  "updatedAt": "2026-11-28T10:16:00Z",
   "plugins": [
     {
       "id": "agy-daddy.proxy",
@@ -151,9 +151,9 @@
       ],
       "trustLevel": "T1",
       "external": true,
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repo": "https://github.com/hubo1989/agy-plugin-design.git",
-      "ref": "v0.1.0",
+      "ref": "v0.2.0",
       "icon": "./assets/icon.png",
       "screenshots": [
         "./assets/cover.png",
@@ -172,7 +172,7 @@
         "net:listen",
         "process:spawn"
       ],
-      "manifestSha512": "sha512-bhXf+Mm4sFdhBDRmfvwZ+kDJijkAEKxeHqm4h+fk4joSC2E/aNZVKTp2LpYBqemuhAHx/OWjCb/Nzn15SQOT2A=="
+      "manifestSha512": "sha512-N+NgwiuwzNmt8xsZNPRrjplGK81h+3hBtMaFsDBy3MGeIqkc1GBGmwf4R/IQiIDp5QySVYCNc8DaBz58kdcg3A=="
     },
     {
       "id": "agy-daddy.pet",
